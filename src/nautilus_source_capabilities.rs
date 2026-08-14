@@ -1,4 +1,4 @@
-//! Build-generated capability facts for the exact official NautilusTrader pin.
+//! Build-generated capability facts for the exact NautilusTrader pin.
 //!
 //! These facts are generated from governed CI policy and are not exposed in
 //! operator TOML. The selected source supports both required Binance facts, so

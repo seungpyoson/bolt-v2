@@ -2,16 +2,18 @@ use bolt_v2::{
     bolt_v3_config::BoltV3RootConfig, nautilus_source_capabilities::NAUTILUS_SOURCE_CAPABILITIES,
 };
 
-const OFFICIAL_NAUTILUS_REVISION: &str = "3b5d7a29b63421457f94540f6af43ba05db685e9";
+const PINNED_NAUTILUS_REVISION: &str = "35dbdbc104db6c91e501635d335b5cfe671294b9";
 
 #[test]
-fn generated_registry_exposes_the_exact_official_source_facts() {
+fn generated_registry_exposes_the_exact_pinned_source_facts() {
     assert_eq!(
         NAUTILUS_SOURCE_CAPABILITIES.revision,
-        OFFICIAL_NAUTILUS_REVISION
+        PINNED_NAUTILUS_REVISION
     );
-    assert!(NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_schema_3_5);
-    assert!(NAUTILUS_SOURCE_CAPABILITIES.binance_adapter_receive_timestamps);
+    const {
+        assert!(NAUTILUS_SOURCE_CAPABILITIES.binance_spot_sbe_schema_3_5);
+        assert!(NAUTILUS_SOURCE_CAPABILITIES.binance_adapter_receive_timestamps);
+    }
 }
 
 #[test]

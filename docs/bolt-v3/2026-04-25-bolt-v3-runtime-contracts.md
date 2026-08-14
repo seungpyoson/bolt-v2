@@ -853,7 +853,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `3b5d7a29b63421457f94540f6af43ba05db685e9`
+  - current value: `35dbdbc104db6c91e501635d335b5cfe671294b9`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1242,10 +1242,12 @@ startup reconciliation. The gate remains unreconciled and rejects submission unt
 from the reconciled NT cache, current evidence, and provider-only collateral allowance succeeds.
 The Polymarket provider boundary rejects the legacy singular allowance because it carries no
 spender identity. The current spender-keyed map must contain exactly the three configured venue
-spender addresses. Bolt reduces those three allowances and the reported balance to their minimum
+spender addresses, and the configured set must equal the pinned adapter's canonical approval
+targets. Bolt reduces those three allowances and the reported balance to their minimum
 before constructing scalar spendable-collateral authority; missing, extra, negative, malformed, or
-misidentified allowance evidence fails closed. Digit-only values above Decimal range are treated as
-unbounded only after the result has already been capped by reported balance.
+misidentified allowance evidence fails closed. A digit-only allowance is first validated as a
+`uint256`; valid values above Decimal range saturate only for the subsequent minimum with reported
+balance, while values above `uint256` fail closed.
 At the pinned revision NautilusTrader's Polymarket mass-status construction is not fail-closed: a venue
 open order whose instrument cannot be mapped into the instrument universe, and a venue position that
 cannot be represented as an NT quantity, are both dropped, so the returned report can be silently
@@ -1438,7 +1440,7 @@ Governance rules:
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
-`3b5d7a29b63421457f94540f6af43ba05db685e9`. WebSocket frames flow through
+`35dbdbc104db6c91e501635d335b5cfe671294b9`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
 `decode_market_data` parser family. Exact pinned source shows the handler
 capturing one local clock value per decoded message and supplying it to
@@ -1607,10 +1609,12 @@ Unknown panic behavior is not acceptable.
 
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
-Current status: this branch pins the official NautilusTrader repository at
-exact official commit `3b5d7a29b63421457f94540f6af43ba05db685e9`, merged upstream.
-That official commit contains the Binance Spot SBE schema 3:5 instrument-loading
-fix, schema 3:5 request negotiation, and adapter receive-clock ownership.
+Current status: this branch pins the official NautilusTrader repository URL at
+exact fork commit `35dbdbc104db6c91e501635d335b5cfe671294b9`. That commit descends from merged
+official commit `3b5d7a29b63421457f94540f6af43ba05db685e9` and adds fail-closed Polymarket
+allowance decoding and canonical approval-target exports. The merged base contains the Binance Spot
+SBE schema 3:5 instrument-loading fix, schema 3:5 request negotiation, and adapter receive-clock
+ownership.
 The pin carries Polymarket CLOB V2 adapter support, version-tolerant Binance
 Spot REST SBE decode within schema id 3, and the Hyperliquid HIP-4 metadata
 path. The compatibility

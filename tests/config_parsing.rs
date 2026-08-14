@@ -6353,6 +6353,17 @@ fn rejects_missing_or_duplicate_polymarket_allowance_spender_config() {
         message.contains("provider_collateral_allowance_spenders")
             && message.contains("surrounding whitespace")
     }));
+
+    let noncanonical: BoltV3RootConfig = toml::from_str(&fixture.replace(
+        "0xadA2005600Dec949baf300f4C6120000bDB6eAab",
+        "0xdddddddddddddddddddddddddddddddddddddddd",
+    ))
+    .expect("noncanonical spender address should parse before validation");
+    let noncanonical_messages = validate_root_only(&noncanonical);
+    assert!(noncanonical_messages.iter().any(|message| {
+        message.contains("provider_collateral_allowance_spenders")
+            && message.contains("canonical Polymarket approval targets")
+    }));
 }
 
 #[test]

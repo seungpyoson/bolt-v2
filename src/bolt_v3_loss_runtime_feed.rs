@@ -666,22 +666,15 @@ struct PositionPnlFact {
 
 fn position_pnl_fact(event: &PositionEvent) -> Option<PositionPnlFact> {
     match event {
-        PositionEvent::PositionOpened(opened) => {
-            let (currency, per_trade_pnl) = opened
-                .realized_pnl
-                .map_or((opened.currency, Decimal::ZERO), |realized_pnl| {
-                    (realized_pnl.currency, realized_pnl.as_decimal())
-                });
-            Some(PositionPnlFact {
-                account_id: opened.account_id,
-                position_id: opened.position_id,
-                currency,
-                per_trade_pnl: Some(per_trade_pnl),
-                observed_at_ns: opened.ts_event.as_u64(),
-                closed: false,
-                reset_completed_position_pnl: true,
-            })
-        }
+        PositionEvent::PositionOpened(opened) => Some(PositionPnlFact {
+            account_id: opened.account_id,
+            position_id: opened.position_id,
+            currency: opened.currency,
+            per_trade_pnl: Some(Decimal::ZERO),
+            observed_at_ns: opened.ts_event.as_u64(),
+            closed: false,
+            reset_completed_position_pnl: true,
+        }),
         PositionEvent::PositionChanged(changed) => Some(PositionPnlFact {
             account_id: changed.account_id,
             position_id: changed.position_id,
@@ -849,45 +842,9 @@ fn sum_money<'a>(values: impl Iterator<Item = &'a Money>, currency: Currency) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{LossGovernorRuntimeFeedState, TimedDecimal, position_pnl_fact};
-    use nautilus_core::{UUID4, UnixNanos};
-    use nautilus_model::{
-        enums::{OrderSide, PositionSide},
-        events::{PositionEvent, PositionOpened},
-        identifiers::{AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId},
-        types::{Currency, Money, Price, Quantity},
-    };
+    use super::{LossGovernorRuntimeFeedState, TimedDecimal};
+    use nautilus_model::identifiers::PositionId;
     use rust_decimal::Decimal;
-
-    #[test]
-    fn position_opened_fact_uses_realized_pnl_cost_currency() {
-        let event = PositionEvent::PositionOpened(PositionOpened {
-            trader_id: TraderId::from("TRADER-001"),
-            strategy_id: StrategyId::from("STRATEGY-001"),
-            instrument_id: InstrumentId::from("XBTUSD.BITMEX"),
-            position_id: PositionId::from("P-OPENED-001"),
-            account_id: AccountId::from("BITMEX-001"),
-            opening_order_id: ClientOrderId::from("O-OPENED-001"),
-            entry: OrderSide::Buy,
-            side: PositionSide::Long,
-            signed_qty: 1.0,
-            quantity: Quantity::from("1"),
-            last_qty: Quantity::from("1"),
-            last_px: Price::from("10000"),
-            currency: Currency::USD(),
-            avg_px_open: 10_000.0,
-            realized_pnl: Some(Money::from("-0.01 BTC")),
-            event_id: UUID4::default(),
-            ts_event: UnixNanos::from(1_000),
-            ts_init: UnixNanos::from(1_000),
-        });
-
-        let fact = position_pnl_fact(&event).expect("opening realized PnL should form a loss fact");
-
-        assert_eq!(fact.currency, Currency::BTC());
-        assert_eq!(fact.per_trade_pnl, Some(Decimal::new(-1, 2)));
-        assert!(fact.reset_completed_position_pnl);
-    }
 
     #[test]
     fn active_position_pnl_cap_keeps_bounded_map_and_conservative_overflow_floor() {

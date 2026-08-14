@@ -783,7 +783,6 @@ fn position_opened_resets_completed_position_per_trade_pnl() {
             "POSITION-LOSS-NEW",
             "INSTRUMENT-LOSS-NEW.SIM",
             1_300,
-            None,
         ))
         .expect("opened position should reset completed per-trade pnl");
 
@@ -792,46 +791,6 @@ fn position_opened_resets_completed_position_per_trade_pnl() {
         .admit_at(&submit_request(Decimal::new(1, 0)), 1_350)
         .expect("fresh new position baseline should admit entry submit")
         .commit_submitted();
-}
-
-#[test]
-fn position_opened_realized_loss_halts_entry_submit() {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_loss_governor(
-        writer.recorder(),
-        loss_policy(),
-    ));
-    let account_id = AccountId::from("SIM-LOSS-PER-TRADE-OPENING-COMMISSION");
-    let mut feed = LossGovernorRuntimeFeed::new(
-        LossGovernorRuntimeFeedConfig {
-            account_id,
-            rolling_window_ns: 250,
-            active_position_pnl_max_entries: 64,
-        },
-        admission.clone(),
-    );
-
-    feed.on_account_state(&account_state(account_id, 1_000, 1_000.0))
-        .expect("account baseline should publish");
-    let opened = feed
-        .on_position_event(&opened_position_event(
-            account_id,
-            "POSITION-LOSS-OPENING-COMMISSION",
-            "INSTRUMENT-LOSS-OPENING-COMMISSION.SIM",
-            1_100,
-            Some(Money::new(-12.0, Currency::USD())),
-        ))
-        .expect("opening realized loss should publish per-trade PnL");
-
-    assert_eq!(opened.per_trade_pnl, Some(Decimal::new(-12, 0)));
-    let error = admission
-        .admit_at(&submit_request(Decimal::new(1, 0)), 1_150)
-        .expect_err("opening realized loss should halt entry submit");
-    assert!(matches!(
-        error,
-        BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }
-            if reasons == vec![LossHaltReason::PerTradeLossLimit]
-    ));
 }
 
 #[test]
@@ -1232,7 +1191,6 @@ fn opened_position_event(
     position_id: &str,
     instrument_id: &str,
     ts_event: u64,
-    realized_pnl: Option<Money>,
 ) -> PositionEvent {
     PositionEvent::PositionOpened(PositionOpened {
         trader_id: TraderId::from("TRADER-LOSS-001"),
@@ -1249,7 +1207,7 @@ fn opened_position_event(
         last_px: Price::from("1.00"),
         currency: Currency::USD(),
         avg_px_open: 1.0,
-        realized_pnl,
+        realized_pnl: None,
         event_id: UUID4::default(),
         ts_event: UnixNanos::from(ts_event),
         ts_init: UnixNanos::from(ts_event),

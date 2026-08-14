@@ -27,22 +27,20 @@ Config validation accepts `flatten_open_positions_on_breach = true` only when th
 - same-day realized PnL accumulator
 - settlement currency bound to the realized PnL accumulator
 - per-position cumulative realized PnL baselines
-- current-cycle and prior-close NT event identities bound to those baselines
 - closed-position replay guards
 - adjusted-position replay guards
 - pending halt-action retry schedule, when a halt action has not completed
 
 The first realized-PnL observation establishes the accumulator's settlement currency.
-Later `PositionOpened`, `PositionChanged`, `PositionClosed`, or `PositionAdjusted` observations must use the same currency.
+Later `PositionChanged`, `PositionClosed`, or `PositionAdjusted` observations must use the same currency.
 A mismatch is not netted or ignored: the controller latches `FailedManualIntervention`, replaces submit-admission state so entries remain blocked, persists or invalidates the store, and returns the `mixed_settlement_currency` failure reason.
 The established currency is persisted with the snapshot, so restart recovery cannot silently re-bind a restored daily total or position baseline to a different unit.
 
 The accumulator rotates only when an observed event moves to a later UTC day bucket.
 Older out-of-order events for prior UTC day buckets are ignored and cannot clear same-day losses.
 
-Closed positions move their cumulative PnL baseline and closing NT event identity into replay guards
-after the final delta is applied. A later lifecycle for the same position id carries that closing
-identity into its new baseline, so a duplicated pre-flip close cannot erase or replace the new cycle.
+Closed positions move their cumulative PnL baseline into replay guards after the final delta is applied.
+A later lifecycle for the same position id can clear the guard only through fresh position evidence.
 
 Pending halt actions are retried from a live timer using `action_retry_interval_ms`, not from position-event arrival.
 If the retry deadline is exceeded, the controller persists `FailedManualIntervention` and blocks entries.
@@ -55,8 +53,6 @@ Startup loads `state_path` before the NT runner loop starts.
 - `Halted` and `Flat` recover as stored.
 - `Halting` and `FailedManualIntervention` fail closed and block entries.
 - Missing, corrupt, oversized, incomplete, or unsupported evidence fails closed and blocks entries.
-- A nonempty cumulative or closed-position baseline without its NT event identity is incomplete and
-  fails closed; an older empty snapshot remains recoverable.
 
 Deleting the store file is not a reset. A missing store is treated as missing evidence.
 

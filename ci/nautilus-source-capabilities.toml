@@ -1,7 +1,7 @@
-# Immutable source facts for the exact official NautilusTrader dependency.
+# Immutable source facts for the exact pinned NautilusTrader dependency.
 # build.rs binds this revision to dependencies.nautilus-binance and generates
 # the Rust registry. This is governed build evidence, not operator config.
-revision = "3b5d7a29b63421457f94540f6af43ba05db685e9"
+revision = "35dbdbc104db6c91e501635d335b5cfe671294b9"
 
 [binance_spot]
 sbe_schema_3_5 = true

@@ -251,53 +251,6 @@ fn overlapping_loss_snapshot_position_maps_recover_corrupt_fail_closed() {
 }
 
 #[test]
-fn legacy_nonempty_cycle_snapshot_without_event_identity_recovers_fail_closed() {
-    let temp = tempfile::tempdir().expect("tempdir should create");
-    let legacy_cycle = serde_json::json!({
-        "P-001": {
-            "realized_pnl": "-10",
-            "last_observed_at_unix_nanos": 1_717_200_000_000_000_000_u64
-        }
-    });
-
-    for (case, cumulative, closed) in [
-        ("cumulative", legacy_cycle.clone(), serde_json::json!({})),
-        ("closed", serde_json::json!({}), legacy_cycle.clone()),
-    ] {
-        let path = temp.path().join(format!("kill-switch-{case}.json"));
-        let store = KillSwitchStore::new(path.clone(), 65_536);
-        let persisted = serde_json::json!({
-            "schema_version": KILL_SWITCH_STORE_SCHEMA_VERSION,
-            "state": "Armed",
-            "loss_protection": {
-                "daily_bucket": 19_875,
-                "daily_realized_pnl": "-10",
-                "settlement_currency": "USDC",
-                "cumulative_position_pnl": cumulative,
-                "closed_position_pnl": closed,
-                "adjusted_position_pnl": {}
-            }
-        });
-        fs::write(
-            &path,
-            serde_json::to_vec_pretty(&persisted).expect("test json should serialize"),
-        )
-        .expect("legacy snapshot should write");
-
-        assert_eq!(
-            store
-                .load_recovery_state()
-                .expect("legacy snapshot should classify"),
-            KillSwitchRecoveryState::FailClosed {
-                reason: KillSwitchRecoveryReason::CorruptEvidence,
-                state: Some(KillSwitchState::Armed),
-            },
-            "case={case}"
-        );
-    }
-}
-
-#[test]
 fn loss_snapshot_missing_settlement_currency_recovers_corrupt_fail_closed() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let path = temp.path().join("kill-switch-state.json");

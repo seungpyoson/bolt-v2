@@ -410,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn max_entry_fee_bps_uses_raw_nt_fee_rate_as_cash_debit_floor() {
+    fn max_entry_fee_bps_pins_unit_exponent_rounding_bound() {
         let clock = TestClock::new();
         let fetcher = MockFeeRateFetcher::new(vec![MockFetchResult::Success(decimal("1000"))]);
         let provider = PolymarketClobFeeProvider::new_for_tests(
@@ -425,7 +425,27 @@ mod tests {
             .max_entry_fee_bps(&instrument, decimal("0.27"))
             .expect("fee bound should be computable");
 
-        assert!(bound >= decimal("700.00"), "bound={bound}");
+        assert_eq!(bound, decimal("1600"));
+    }
+
+    #[test]
+    fn max_entry_fee_bps_pins_non_unit_exponent_raw_rate_floor() {
+        let clock = TestClock::new();
+        let fetcher = MockFeeRateFetcher::new(Vec::new());
+        let provider = PolymarketClobFeeProvider::new_for_tests(
+            Arc::new(fetcher),
+            clock.source(),
+            test_fee_cache_ttl(),
+        );
+        let instrument_id = instrument_id_for_token("token_squared_exponent");
+        let instrument =
+            binary_option_with_taker_fee_and_exponent(instrument_id, decimal("0.07"), Some(2.0));
+
+        let bound = provider
+            .max_entry_fee_bps(&instrument, decimal("0.27"))
+            .expect("fee bound should be computable");
+
+        assert_eq!(bound, decimal("1400"));
     }
 
     #[test]

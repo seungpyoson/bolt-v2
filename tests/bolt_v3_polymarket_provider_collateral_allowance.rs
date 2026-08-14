@@ -18,9 +18,11 @@ use rust_decimal::Decimal;
 
 const UINT256_MAX: &str =
     "115792089237316195423570985008687907853269984665640564039457584007913129639935";
-const SPENDER_A: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const SPENDER_B: &str = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const SPENDER_C: &str = "0xcccccccccccccccccccccccccccccccccccccccc";
+const UINT256_MAX_PLUS_ONE: &str =
+    "115792089237316195423570985008687907853269984665640564039457584007913129639936";
+const SPENDER_A: &str = "0xE111180000d2663C0091e4f400237545B87B996B";
+const SPENDER_B: &str = "0xe2222d279d744050d28e00520010520000310F59";
+const SPENDER_C: &str = "0xadA2005600Dec949baf300f4C6120000bDB6eAab";
 const SPENDER_D: &str = "0xdddddddddddddddddddddddddddddddddddddddd";
 
 #[test]
@@ -81,6 +83,25 @@ fn unlimited_plural_allowances_are_capped_by_available_balance() {
         .expect("uint256-max allowances should not overflow Bolt money");
 
     assert_eq!(snapshot.collateral_allowance, Decimal::new(5000, 2));
+}
+
+#[test]
+fn rejects_plural_allowance_above_uint256_range() {
+    let oversized =
+        build_polymarket_provider_collateral_allowance_snapshot(input(BalanceAllowance {
+            balance: Decimal::new(50_000_000, 0),
+            allowance: None,
+            allowances: HashMap::from([
+                (SPENDER_A.to_string(), UINT256_MAX_PLUS_ONE.to_string()),
+                (SPENDER_B.to_string(), UINT256_MAX.to_string()),
+                (SPENDER_C.to_string(), UINT256_MAX.to_string()),
+            ]),
+        }));
+
+    assert_eq!(
+        oversized,
+        Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance)
+    );
 }
 
 #[test]

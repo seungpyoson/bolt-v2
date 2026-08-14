@@ -1,5 +1,6 @@
 //! Polymarket collateral allowance input for Bolt admission policy.
 
+use alloy_primitives::U256;
 use anyhow::{Context, Result};
 use nautilus_core::UnixNanos;
 use nautilus_model::{identifiers::AccountId, types::Currency};
@@ -235,6 +236,9 @@ fn parse_wire_allowance(
     if significant.is_empty() {
         return Ok(Decimal::ZERO);
     }
+
+    let _validated = U256::from_str_radix(significant, 10)
+        .map_err(|_| PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance)?;
 
     Ok(significant.parse::<Decimal>().unwrap_or(Decimal::MAX))
 }

@@ -64,6 +64,7 @@ use nautilus_polymarket::{
     },
     http::clob::PolymarketClobHttpClient,
     http::query::{GetGammaMarketsParams, GetSearchParams},
+    signing::eip712::COLLATERAL_APPROVAL_TARGETS,
 };
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::Deserialize;
@@ -562,6 +563,15 @@ fn normalize_provider_collateral_allowance_spenders(
     }
     if normalized.iter().collect::<BTreeSet<_>>().len() != normalized.len() {
         return Err("spender addresses must be unique".to_string());
+    }
+    let canonical = COLLATERAL_APPROVAL_TARGETS
+        .iter()
+        .map(|address| format!("{address:#x}"))
+        .collect::<BTreeSet<_>>();
+    if normalized.iter().cloned().collect::<BTreeSet<_>>() != canonical {
+        return Err(
+            "spender addresses must match the canonical Polymarket approval targets".to_string(),
+        );
     }
     normalized
         .try_into()

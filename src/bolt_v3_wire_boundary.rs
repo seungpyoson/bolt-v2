@@ -56,9 +56,7 @@ fn adapt_epoch_message_handler(
     message_handler: Option<WireMessageHandler>,
     post_reconnection: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> Option<EpochMessageHandler> {
-    if message_handler.is_none() && post_reconnection.is_none() {
-        return None;
-    }
+    message_handler.as_ref()?;
 
     let last_reconnect_epoch = AtomicU64::new(0);
     Some(Arc::new(move |connection_epoch, message| {
@@ -113,7 +111,7 @@ pub async fn connect_websocket(
         .ok_or_else(|| {
             TransportError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Handler mode requires message_handler or post_reconnection to be set",
+                "Handler mode requires message_handler to be set",
             ))
         })?;
     let ping_handler = ping_handler.map(|handler| -> PingHandler { handler });
@@ -171,6 +169,13 @@ mod tests {
             &[WireMessage::Text(b"payload".to_vec())]
         );
         assert_eq!(reconnect_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn reconnect_callback_without_message_handler_preserves_handler_mode_rejection() {
+        let post_reconnection: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+
+        assert!(adapt_epoch_message_handler(None, Some(post_reconnection)).is_none());
     }
 
     #[test]

@@ -7976,7 +7976,6 @@ fn settlement_position_realized_pnl_observation(
             settlement_currency,
         },
         cumulative_realized_pnl: false,
-        opens_position_cycle: false,
         closes_position: true,
     })
 }

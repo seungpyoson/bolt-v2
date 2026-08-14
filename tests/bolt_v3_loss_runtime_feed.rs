@@ -1207,6 +1207,7 @@ fn opened_position_event(
         last_px: Price::from("1.00"),
         currency: Currency::USD(),
         avg_px_open: 1.0,
+        realized_pnl: None,
         event_id: UUID4::default(),
         ts_event: UnixNanos::from(ts_event),
         ts_init: UnixNanos::from(ts_event),

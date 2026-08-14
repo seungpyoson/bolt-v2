@@ -46,6 +46,7 @@ pub struct PolymarketProviderCollateralAllowanceInput {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolymarketProviderCollateralAllowanceBuildError {
     MissingCollateralAllowance,
+    InvalidCollateralAllowance,
     InvalidCollateralMoney,
 }
 
@@ -142,10 +143,7 @@ pub fn build_polymarket_provider_collateral_allowance_snapshot(
     input: PolymarketProviderCollateralAllowanceInput,
 ) -> Result<ProviderCollateralAllowanceSnapshot, PolymarketProviderCollateralAllowanceBuildError> {
     let collateral_allowance = decimal_from_clob_pusd_units(
-        input
-            .collateral
-            .allowance
-            .ok_or(PolymarketProviderCollateralAllowanceBuildError::MissingCollateralAllowance)?,
+        conservative_spendable_allowance(&input.collateral)?,
         input.collateral_currency,
     )?;
 
@@ -157,6 +155,61 @@ pub fn build_polymarket_provider_collateral_allowance_snapshot(
         collateral_currency: input.collateral_currency.to_string(),
         collateral_allowance,
     })
+}
+
+fn conservative_spendable_allowance(
+    collateral: &BalanceAllowance,
+) -> Result<Decimal, PolymarketProviderCollateralAllowanceBuildError> {
+    if collateral.balance.is_sign_negative() {
+        return Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralMoney);
+    }
+
+    let mut spendable = collateral.balance;
+    let mut found_allowance = false;
+
+    if let Some(allowance) = collateral.allowance {
+        if allowance.is_sign_negative() {
+            return Err(
+                PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance,
+            );
+        }
+        spendable = spendable.min(allowance);
+        found_allowance = true;
+    }
+
+    for allowance in collateral.allowances.values() {
+        spendable = spendable.min(parse_wire_allowance(allowance)?);
+        found_allowance = true;
+    }
+
+    if !found_allowance {
+        return Err(PolymarketProviderCollateralAllowanceBuildError::MissingCollateralAllowance);
+    }
+
+    Ok(spendable)
+}
+
+fn parse_wire_allowance(
+    value: &str,
+) -> Result<Decimal, PolymarketProviderCollateralAllowanceBuildError> {
+    if let Ok(value) = value.parse::<Decimal>() {
+        return if value.is_sign_negative() {
+            Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance)
+        } else {
+            Ok(value)
+        };
+    }
+
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance);
+    }
+
+    let significant = value.trim_start_matches('0');
+    if significant.is_empty() {
+        return Ok(Decimal::ZERO);
+    }
+
+    Ok(significant.parse::<Decimal>().unwrap_or(Decimal::MAX))
 }
 
 fn decimal_from_clob_pusd_units(

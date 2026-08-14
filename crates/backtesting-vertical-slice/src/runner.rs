@@ -1593,6 +1593,15 @@ fn capture_account_terminal(account: &AccountAny) -> AccountTerminalRecord {
                 .collect(),
         ),
         AccountAny::Betting(_) => (AccountType::Betting, Vec::new(), Vec::new()),
+        AccountAny::Wallet(account) => (
+            AccountType::Wallet,
+            account
+                .balances_locked
+                .iter()
+                .map(|((instrument_id, currency), money)| (*instrument_id, *currency, *money))
+                .collect(),
+            Vec::new(),
+        ),
     };
     let mut balances = account.balances().into_values().collect::<Vec<_>>();
     balances.sort_by_key(|balance| balance.currency.to_string());
@@ -6180,6 +6189,45 @@ mod tests {
     }
 
     #[test]
+    fn issue_789_terminal_capture_preserves_wallet_account_type_and_transient_locks() {
+        let state = AccountState::new(
+            AccountId::from("POLYMARKET-001"),
+            AccountType::Wallet,
+            vec![AccountBalance::new(
+                Money::from("100.00000000 USDC"),
+                Money::from("0.00000000 USDC"),
+                Money::from("100.00000000 USDC"),
+            )],
+            Vec::new(),
+            true,
+            UUID4::default(),
+            UnixNanos::from(1),
+            UnixNanos::from(1),
+            None,
+        );
+        let mut account = nautilus_model::accounts::WalletAccount::new(state, true);
+        account.balances_locked.insert(
+            (InstrumentId::from("YES.POLYMARKET"), Currency::BTC()),
+            Money::from("0.00000000 BTC"),
+        );
+
+        let terminal =
+            super::capture_account_terminal(&nautilus_model::accounts::AccountAny::Wallet(account));
+
+        assert_eq!(terminal.account_type, AccountType::Wallet);
+        assert_eq!(terminal.base_currency, None);
+        assert_eq!(
+            terminal.cash_locks,
+            vec![(
+                InstrumentId::from("YES.POLYMARKET"),
+                Currency::BTC(),
+                Money::from("0.00000000 BTC"),
+            )]
+        );
+        assert!(terminal.margins.is_empty());
+    }
+
+    #[test]
     fn issue_789_terminal_account_rejects_extra_locked_currency() {
         let terminal = super::AccountTerminalRecord {
             account_id: AccountId::from("POLYMARKET-001"),
@@ -7433,6 +7481,7 @@ mod tests {
   "endDate": "2026-04-22T00:05:00Z",
   "active": true,
   "closed": false,
+  "negRisk": false,
   "acceptingOrders": true,
   "enableOrderBook": true,
   "orderPriceMinTickSize": 0.001,

@@ -2621,6 +2621,7 @@ fn polymarket_provider_collateral_allowance_snapshot(
             collateral: BalanceAllowance {
                 balance,
                 allowance: Some(allowance),
+                allowances: std::collections::HashMap::new(),
             },
         },
     )

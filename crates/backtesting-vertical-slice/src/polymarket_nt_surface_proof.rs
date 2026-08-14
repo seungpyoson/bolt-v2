@@ -9,17 +9,21 @@ use std::{any::type_name, collections::HashMap};
 use nautilus_backtest::config::NautilusDataType;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::{Data, InstrumentClose, InstrumentStatus, OrderBookDeltas, QuoteTick, TradeTick},
+    data::{
+        Data, InstrumentClose, InstrumentStatus, OrderBookDelta, OrderBookDeltas, QuoteTick,
+        TradeTick,
+    },
     identifiers::InstrumentId,
     instruments::InstrumentAny,
+    types::Price,
 };
 use nautilus_polymarket::{
     http::parse::rebuild_instrument_with_tick_size,
     providers::{PolymarketInstrumentProvider, build_gamma_params_from_hashmap},
     websocket::{
         messages::{
-            MarketWsMessage, PolymarketBookSnapshot, PolymarketQuote, PolymarketQuotes,
-            PolymarketTickSizeChange, PolymarketTrade,
+            MarketWsMessage, PolymarketBookSnapshot, PolymarketQuote, PolymarketTickSizeChange,
+            PolymarketTrade,
         },
         parse::{
             parse_book_deltas, parse_book_snapshot, parse_quote_from_price_change, parse_trade_tick,
@@ -33,8 +37,14 @@ type GammaQueryBuilder =
     ) -> anyhow::Result<nautilus_polymarket::http::query::GetGammaMarketsParams>;
 type BookSnapshotParser =
     fn(&PolymarketBookSnapshot, InstrumentId, u8, u8, UnixNanos) -> anyhow::Result<OrderBookDeltas>;
-type BookDeltaParser =
-    fn(&PolymarketQuotes, InstrumentId, u8, u8, UnixNanos) -> anyhow::Result<OrderBookDeltas>;
+type BookDeltaParser = fn(
+    &[&PolymarketQuote],
+    InstrumentId,
+    u8,
+    u8,
+    UnixNanos,
+    UnixNanos,
+) -> Vec<anyhow::Result<OrderBookDelta>>;
 type TradeParser =
     fn(&PolymarketTrade, InstrumentId, u8, u8, UnixNanos) -> anyhow::Result<TradeTick>;
 type TickSizeRebuilder =
@@ -44,6 +54,7 @@ type QuoteParser = fn(
     InstrumentId,
     u8,
     u8,
+    Price,
     bool,
     Option<&QuoteTick>,
     UnixNanos,

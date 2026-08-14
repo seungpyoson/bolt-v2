@@ -523,6 +523,7 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     assert_eq!(data.update_instruments_interval_mins, Some(1));
     assert!(!data.subscribe_new_markets);
     assert!(data.drop_quotes_missing_side);
+    assert!(!data.compute_effective_deltas);
     assert_eq!(
         data.base_url_rtds.as_deref(),
         Some("wss://ws-live-data.polymarket.com")

@@ -5,8 +5,8 @@ Status: approved doctrine
 Path: `docs/bolt-v3/2026-04-28-nt-first-boundary-doctrine.md`
 Last full NT doctrine audit rev: `56a438216442f079edf322a39cdc0d9e655ba6d8`
 Last full NT doctrine audit date: 2026-04-28
-Last NT pin compatibility verified rev: `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
-Last NT pin compatibility verified date: 2026-07-26
+Last NT pin compatibility verified rev: `3b5d7a29b63421457f94540f6af43ba05db685e9`
+Last NT pin compatibility verified date: 2026-08-14
 Owner: Bolt-v3 maintainers
 
 This artifact records the current Bolt-v3 boundary doctrine for
@@ -124,10 +124,10 @@ The following source anchors were verified for this doctrine or a later
 compatibility slice:
 
 - `Cargo.toml` pins the official NT repository at the exact official
-  merged commit `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`. It contains upstream PR #4474. The
-  2026-07-26 compatibility scope covers the governed Binance boundary required
-  by the thin-NT decision-evidence slice. It does not re-audit all NT-owned
-  behaviors cited by this doctrine.
+  merged commit `3b5d7a29b63421457f94540f6af43ba05db685e9`. It contains upstream PR #4474. The
+  2026-08-14 compatibility scope covers the governed source-capability registry
+  and the Bolt compile/runtime boundary adaptations required by NautilusTrader
+  0.62. It does not re-audit all NT-owned behaviors cited by this doctrine.
 - `ci/nautilus-source-capabilities.toml` binds the selected official revision
   to its Binance Spot schema 3:5 and adapter receive-timestamp behavior.
   `build.rs` verifies the bound behavior-test

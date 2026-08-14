@@ -940,6 +940,7 @@ fn map_data(
         update_instruments_interval_mins: Some(cfg.update_instruments_interval_mins),
         subscribe_new_markets: cfg.subscribe_new_markets,
         drop_quotes_missing_side: cfg.drop_quotes_missing_side,
+        compute_effective_deltas: false,
         new_market_fetch_max_concurrency,
         auto_load_missing_instruments: cfg.auto_load_missing_instruments,
         auto_load_debounce_ms: cfg.auto_load_debounce_ms,

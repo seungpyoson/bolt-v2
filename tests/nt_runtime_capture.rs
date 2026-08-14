@@ -620,6 +620,7 @@ async fn captures_execution_state_jsonl_records_for_order_and_position_events() 
                     last_px: Price::from("0.51"),
                     currency: Currency::USD(),
                     avg_px_open: 0.51,
+                    realized_pnl: None,
                     event_id: UUID4::default(),
                     ts_event: 21.into(),
                     ts_init: 22.into(),

@@ -7,9 +7,11 @@ use std::{
 use anyhow::{Context, Result};
 use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_model::{enums::LiquiditySide, identifiers::InstrumentId, instruments::InstrumentAny};
-use nautilus_polymarket::execution::parse::{compute_commission, instrument_taker_fee};
+use nautilus_polymarket::execution::parse::{
+    compute_commission, instrument_fee_exponent, instrument_taker_fee,
+};
 use nautilus_polymarket::{common::consts::POLYMARKET, http::clob::PolymarketClobHttpClient};
-use rust_decimal::{Decimal, prelude::FromPrimitive};
+use rust_decimal::Decimal;
 
 use crate::bolt_v3_providers::FeeProvider;
 
@@ -170,14 +172,14 @@ impl FeeProvider for PolymarketClobFeeProvider {
         }
         let commission = compute_commission(
             instrument_taker_fee(instrument),
+            instrument_fee_exponent(instrument),
             Decimal::ONE,
             entry_price,
             LiquiditySide::Taker,
         );
-        if !commission.is_finite() || commission.is_sign_negative() {
+        if commission.is_sign_negative() {
             return None;
         }
-        let commission = Decimal::from_f64(commission)?;
         Some(commission / entry_price * Decimal::from(ENTRY_FEE_BPS_SCALE))
     }
 
@@ -238,7 +240,22 @@ mod tests {
         instrument_id: InstrumentId,
         taker_fee: Decimal,
     ) -> InstrumentAny {
+        binary_option_with_taker_fee_and_exponent(instrument_id, taker_fee, None)
+    }
+
+    fn binary_option_with_taker_fee_and_exponent(
+        instrument_id: InstrumentId,
+        taker_fee: Decimal,
+        fee_exponent: Option<f64>,
+    ) -> InstrumentAny {
         let ts = UnixNanos::from(1_000_000_000);
+        let mut info = Params::new();
+        if let Some(fee_exponent) = fee_exponent {
+            info.insert(
+                "fee_schedule".to_string(),
+                serde_json::json!({ "exponent": fee_exponent }),
+            );
+        }
         InstrumentAny::BinaryOption(BinaryOption::new(
             instrument_id,
             Symbol::from("0xcondition-token_a"),
@@ -263,7 +280,7 @@ mod tests {
             Some(Decimal::ZERO),
             Some(taker_fee),
             None,
-            Some(Params::new()),
+            Some(info),
             ts,
             ts,
         ))
@@ -310,6 +327,28 @@ mod tests {
             .to_f64()
             .expect("entry fee bps should fit in f64 for assertion");
         assert!((fee_bps - 511.111111111111).abs() < 1e-9);
+    }
+
+    #[test]
+    fn entry_fee_bps_uses_instrument_fee_schedule_exponent() {
+        let clock = TestClock::new();
+        let fetcher = MockFeeRateFetcher::new(Vec::new());
+        let provider = PolymarketClobFeeProvider::new_for_tests(
+            Arc::new(fetcher),
+            clock.source(),
+            test_fee_cache_ttl(),
+        );
+        let instrument_id = instrument_id_for_token("token_exponent");
+        let instrument =
+            binary_option_with_taker_fee_and_exponent(instrument_id, decimal("0.07"), Some(2.0));
+
+        let fee_bps = provider
+            .entry_fee_bps(&instrument, decimal("0.27"))
+            .expect("entry fee bps should use the instrument fee exponent")
+            .to_f64()
+            .expect("entry fee bps should fit in f64 for assertion");
+
+        assert!((fee_bps - 100.74074074074075).abs() < 1e-9);
     }
 
     #[test]

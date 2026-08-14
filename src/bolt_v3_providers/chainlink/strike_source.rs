@@ -375,7 +375,7 @@ impl ChainlinkStrikeSourceClient {
                         index_price.ts_event
                     );
                     if sender
-                        .send(DataEvent::Data(Data::IndexPriceUpdate(index_price)))
+                        .send(DataEvent::Data(Data::IndexPrice(index_price)))
                         .is_err()
                     {
                         log::error!(

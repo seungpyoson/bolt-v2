@@ -22,15 +22,21 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FeeRoundingMode {
-    ToZero,
+    MidpointNearestEven,
 }
 
 impl FeeRoundingMode {
     fn strategy(self) -> RoundingStrategy {
         match self {
-            Self::ToZero => RoundingStrategy::ToZero,
+            Self::MidpointNearestEven => RoundingStrategy::MidpointNearestEven,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolymarketAbsentFeeDescriptorPolicy {
+    FailClosed,
+    AssertFeeFree,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +51,7 @@ pub struct PolymarketEconomicsConfig {
     pub platform_rate_factor_id: FormulaId,
     pub fee_round_decimal_places: u32,
     pub fee_rounding_mode: FeeRoundingMode,
+    pub absent_fee_descriptor_policy: PolymarketAbsentFeeDescriptorPolicy,
     pub edge_basis_resolver_id: FormulaId,
     pub edge_basis_product_metadata_source: SourceIdentity,
     pub edge_basis_policy_version: u64,
@@ -85,7 +92,7 @@ struct PolymarketAuthoritativeEconomics {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PolymarketPlatformPlan {
-    FeeFree,
+    FeeDescriptorUnknown,
     PriceShaped {
         rate: Decimal,
         exponent: u32,
@@ -148,6 +155,7 @@ pub enum PolymarketEconomicsError {
     InvalidRequestScope,
     UnsupportedExponent,
     InvalidRate,
+    FeeDescriptorUnknown,
     InvalidFillLeg,
     ArithmeticOverflow,
     InvalidEffect(EconomicsError),
@@ -164,6 +172,9 @@ impl std::fmt::Display for PolymarketEconomicsError {
                 f.write_str("Polymarket fee exponent is not fixture-supported")
             }
             Self::InvalidRate => f.write_str("Polymarket fee rate is invalid"),
+            Self::FeeDescriptorUnknown => {
+                f.write_str("Polymarket fee descriptor is absent and therefore unknown")
+            }
             Self::InvalidFillLeg => f.write_str("Polymarket fill leg is invalid"),
             Self::ArithmeticOverflow => f.write_str("Polymarket fee arithmetic overflowed"),
             Self::InvalidEffect(error) => error.fmt(f),
@@ -213,7 +224,7 @@ impl PolymarketMarketInfoSnapshot {
             return Err(PolymarketEconomicsError::InvalidMarketInfo);
         }
         let platform = match wire.fd {
-            None => PolymarketPlatformPlan::FeeFree,
+            None => PolymarketPlatformPlan::FeeDescriptorUnknown,
             Some(descriptor) if descriptor.r >= Decimal::ZERO => {
                 let exponent = descriptor
                     .e
@@ -356,7 +367,13 @@ fn adapter_config_from_toml(
         platform_rate_factor_id: FormulaId::try_new(platform.rate_factor_id.clone())
             .map_err(id_error)?,
         fee_round_decimal_places,
-        fee_rounding_mode: FeeRoundingMode::ToZero,
+        fee_rounding_mode: FeeRoundingMode::MidpointNearestEven,
+        absent_fee_descriptor_policy: match config.formula["absent_fee_descriptor_policy"].as_str()
+        {
+            "fail_closed" => PolymarketAbsentFeeDescriptorPolicy::FailClosed,
+            "assert_fee_free" => PolymarketAbsentFeeDescriptorPolicy::AssertFeeFree,
+            _ => return Err("Polymarket absent_fee_descriptor_policy is invalid".to_string()),
+        },
         edge_basis_resolver_id: FormulaId::try_new(edge_basis.resolver_id.clone())
             .map_err(id_error)?,
         edge_basis_product_metadata_source: SourceIdentity::try_new(
@@ -385,6 +402,7 @@ pub(crate) fn validate_execution_economics_config(
             .map(String::as_str)
             .collect::<Vec<_>>()
             != [
+                "absent_fee_descriptor_policy",
                 "fee_round_decimal_places",
                 "fee_rounding_mode",
                 "sub_fee_quantum_behavior",
@@ -401,17 +419,25 @@ pub(crate) fn validate_execution_economics_config(
     {
         return Err("Polymarket economics contains unsupported authority keys".to_string());
     }
-    if config.formula["sub_fee_quantum_behavior"] != "round_to_zero" {
-        return Err("Polymarket sub-fee quantum behavior must be round_to_zero".to_string());
+    if config.formula["sub_fee_quantum_behavior"] != "round_to_nearest_even" {
+        return Err(
+            "Polymarket sub-fee quantum behavior must be round_to_nearest_even".to_string(),
+        );
     }
     config.formula["fee_round_decimal_places"]
         .parse::<u32>()
         .map_err(|_| "Polymarket fee_round_decimal_places is invalid".to_string())?;
-    if config.formula["fee_rounding_mode"] != "to_zero" {
+    if config.formula["fee_rounding_mode"] != "midpoint_nearest_even" {
         return Err(
-            "Polymarket fee_rounding_mode must be to_zero when sub-fee quantum behavior is round_to_zero"
+            "Polymarket fee_rounding_mode must be midpoint_nearest_even when sub-fee quantum behavior is round_to_nearest_even"
                 .to_string(),
         );
+    }
+    if !matches!(
+        config.formula["absent_fee_descriptor_policy"].as_str(),
+        "fail_closed" | "assert_fee_free"
+    ) {
+        return Err("Polymarket absent_fee_descriptor_policy is invalid".to_string());
     }
     let id_error = |error: EconomicsError| error.to_string();
     SourceIdentity::try_new(config.sources["schedule"].clone()).map_err(id_error)?;
@@ -462,6 +488,27 @@ impl PolymarketEconomicsAdapter {
         self.validate_request_authority(request)?;
         let authority = self.authority();
         let mut components = Vec::new();
+        if self.snapshot.platform == PolymarketPlatformPlan::FeeDescriptorUnknown {
+            match self.config.absent_fee_descriptor_policy {
+                PolymarketAbsentFeeDescriptorPolicy::FailClosed => {
+                    return Err(PolymarketEconomicsError::FeeDescriptorUnknown);
+                }
+                PolymarketAbsentFeeDescriptorPolicy::AssertFeeFree => {
+                    components.push(self.effect(
+                        request,
+                        EffectPlan {
+                            component_id: self.config.platform_component_id.clone(),
+                            formula_id: self.config.platform_formula_id.clone(),
+                            rate_factor_id: self.config.platform_rate_factor_id.clone(),
+                            rate: Decimal::ZERO,
+                            kind: ExecutionKind::ProtocolTrading,
+                            fee: Decimal::ZERO,
+                            debit_risk_bound: None,
+                        },
+                    )?);
+                }
+            }
+        }
         if let PolymarketPlatformPlan::PriceShaped {
             rate, taker_only, ..
         } = self.snapshot.platform
@@ -673,6 +720,7 @@ impl VenueEconomicsAdapter for PolymarketEconomicsAdapter {
             PolymarketEconomicsError::InvalidEffect(error) => error.into(),
             PolymarketEconomicsError::InvalidMarketInfo
             | PolymarketEconomicsError::InvalidRate
+            | PolymarketEconomicsError::FeeDescriptorUnknown
             | PolymarketEconomicsError::InvalidFillLeg
             | PolymarketEconomicsError::ArithmeticOverflow => {
                 VenueEconomicsUnavailable::InvalidAuthoritativeSnapshot
@@ -715,7 +763,8 @@ mod tests {
             platform_formula_id: id("platform-v2", FormulaId::try_new),
             platform_rate_factor_id: id("platform-rate", FormulaId::try_new),
             fee_round_decimal_places: 5,
-            fee_rounding_mode: FeeRoundingMode::ToZero,
+            fee_rounding_mode: FeeRoundingMode::MidpointNearestEven,
+            absent_fee_descriptor_policy: PolymarketAbsentFeeDescriptorPolicy::FailClosed,
             edge_basis_resolver_id: id("product-metadata", FormulaId::try_new),
             edge_basis_product_metadata_source: id(
                 "polymarket-market-info",
@@ -886,19 +935,95 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_fee_free_schedule_produces_no_component() {
-        let adapter = adapter(include_str!(
-            "../../../tests/fixtures/economics/polymarket/fee_free.json"
-        ))
-        .expect("fee-free fixture should construct");
+    fn absent_fee_descriptor_fails_closed_unless_config_asserts_fee_free() {
+        let snapshot = PolymarketMarketInfoSnapshot::from_json(
+            metadata(),
+            include_str!("../../../tests/fixtures/economics/polymarket/fee_free.json"),
+        )
+        .expect("descriptor-absent fixture should parse as typed unknown");
         let request = request(LiquidityRole::Taker, false);
-        assert!(
-            adapter
-                .quote(&request)
-                .expect("fee-free quote should resolve")
-                .components
-                .is_empty()
+        let fail_closed = PolymarketEconomicsAdapter::try_new(config(), snapshot.clone())
+            .expect("typed-unknown adapter should construct");
+        assert_eq!(
+            fail_closed.quote(&request),
+            Err(PolymarketEconomicsError::FeeDescriptorUnknown)
         );
+
+        let mut asserted_config = config();
+        asserted_config.absent_fee_descriptor_policy =
+            PolymarketAbsentFeeDescriptorPolicy::AssertFeeFree;
+        let estimate = PolymarketEconomicsAdapter::try_new(asserted_config, snapshot)
+            .expect("asserted fee-free adapter should construct")
+            .quote(&request)
+            .expect("explicit fee-free assertion should admit");
+        let [component] = estimate.components.as_slice() else {
+            panic!("asserted fee-free must emit one audit component");
+        };
+        assert!(matches!(
+            component.point_estimate,
+            PointEstimate::ProvenZero { .. }
+        ));
+        assert_eq!(
+            component.admission_treatment,
+            AdmissionTreatment::GuaranteedConditionalOnAction
+        );
+        assert_eq!(component.source, estimate.authority);
+    }
+
+    #[test]
+    fn point_fee_rounding_matches_pinned_nt_calculate_commission_at_boundaries() {
+        use nautilus_model::enums::LiquiditySide;
+        use nautilus_polymarket::execution::parse::compute_commission;
+
+        let adapter = adapter(include_str!(
+            "../../../tests/fixtures/economics/polymarket/fee_enabled.json"
+        ))
+        .expect("fee-enabled fixture should construct");
+        for price in [
+            Decimal::new(365, 4),
+            Decimal::new(728, 4),
+            Decimal::new(9635, 4),
+        ] {
+            let mut request = request(LiquidityRole::Taker, false);
+            request.planned_fill_legs = vec![PlannedFillLeg {
+                price,
+                quantity: Decimal::ONE,
+            }];
+            let estimate = adapter
+                .quote(&request)
+                .expect("rounding-boundary request should quote");
+            let [component] = estimate.components.as_slice() else {
+                panic!("fee-bearing boundary fixture should emit one component");
+            };
+            let bolt_point = match &component.point_estimate {
+                PointEstimate::NonZero(effect) => -effect.amount(),
+                PointEstimate::ProvenZero { .. } => Decimal::ZERO,
+            };
+            let nt_point = Decimal::from_str_exact(&format!(
+                "{:.5}",
+                compute_commission(
+                    Decimal::new(3, 2),
+                    Decimal::ONE,
+                    price,
+                    LiquiditySide::Taker,
+                )
+            ))
+            .expect("NT commission should format as a decimal");
+            let superseded_truncation = Decimal::new(3, 2)
+                .checked_mul(price)
+                .and_then(|value| value.checked_mul(Decimal::ONE - price))
+                .expect("rounding fixture arithmetic should fit")
+                .round_dp_with_strategy(5, RoundingStrategy::ToZero);
+            let reserved_debit = -component
+                .debit_risk_bound
+                .as_ref()
+                .expect("fee point must retain its conservative debit bound")
+                .amount();
+
+            assert_eq!(bolt_point, nt_point, "price {price}");
+            assert_ne!(bolt_point, superseded_truncation, "price {price}");
+            assert!(reserved_debit >= bolt_point, "price {price}");
+        }
     }
 
     #[test]
@@ -967,13 +1092,10 @@ mod tests {
             .expect("fixture should be an object")
             .remove("fd");
         let metadata_only = adapter(&partial_descriptor.to_string())
-            .expect("builder metadata without a platform fee descriptor is fee-free");
-        assert!(
-            metadata_only
-                .quote(&request(LiquidityRole::Taker, false))
-                .expect("metadata-only market info should quote")
-                .components
-                .is_empty()
+            .expect("builder metadata without a platform fee descriptor should remain typed");
+        assert_eq!(
+            metadata_only.quote(&request(LiquidityRole::Taker, false)),
+            Err(PolymarketEconomicsError::FeeDescriptorUnknown)
         );
         let mut stale_metadata = metadata();
         stale_metadata.valid_until_ns = 999;

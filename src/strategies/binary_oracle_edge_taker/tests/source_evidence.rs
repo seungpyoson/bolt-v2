@@ -3073,7 +3073,7 @@ fn terminal_close_reclaims_exit_decision_for_reused_position_identity() {
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(reused_context),
+            CanonicalPositionProjection::ExactlyOne(Box::new(reused_context)),
         )));
     strategy
         .record_exit_intent_or_hold_once(1_202, trigger, &decision)
@@ -4180,7 +4180,7 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(saved_exposure),
+            CanonicalPositionProjection::ExactlyOne(Box::new(saved_exposure)),
         )));
 
     let saved_exit_order = strategy.config.exit_order.clone();

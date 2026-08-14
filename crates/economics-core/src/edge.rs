@@ -11,6 +11,83 @@ pub struct GrossExpectedValue {
     currency_id: CurrencyId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitVsHoldDecision {
+    Hold,
+    Exit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeeAdjustedLegValue {
+    gross_value: Decimal,
+    execution_economics: Decimal,
+}
+
+impl FeeAdjustedLegValue {
+    pub const fn new(gross_value: Decimal, execution_economics: Decimal) -> Self {
+        Self {
+            gross_value,
+            execution_economics,
+        }
+    }
+
+    pub const fn proven_zero_execution_economics(gross_value: Decimal) -> Self {
+        Self::new(gross_value, Decimal::ZERO)
+    }
+
+    pub fn net_value(self) -> Result<Decimal, EconomicsError> {
+        self.gross_value
+            .checked_add(self.execution_economics)
+            .ok_or(EconomicsError::ArithmeticOverflow)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FeeAdjustedExitVsHoldComparison {
+    decision: ExitVsHoldDecision,
+    hold_net_value: Decimal,
+    exit_net_value: Decimal,
+}
+
+impl FeeAdjustedExitVsHoldComparison {
+    pub const fn decision(self) -> ExitVsHoldDecision {
+        self.decision
+    }
+
+    pub const fn hold_net_value(self) -> Decimal {
+        self.hold_net_value
+    }
+
+    pub const fn exit_net_value(self) -> Decimal {
+        self.exit_net_value
+    }
+}
+
+pub fn compare_fee_adjusted_exit_vs_hold(
+    hold: FeeAdjustedLegValue,
+    exit: FeeAdjustedLegValue,
+    hysteresis: Decimal,
+) -> Result<FeeAdjustedExitVsHoldComparison, EconomicsError> {
+    if hysteresis.is_sign_negative() {
+        return Err(EconomicsError::InvalidExitVsHoldHysteresis);
+    }
+    let hold_net_value = hold.net_value()?;
+    let exit_net_value = exit.net_value()?;
+    let exit_threshold = hold_net_value
+        .checked_add(hysteresis)
+        .ok_or(EconomicsError::ArithmeticOverflow)?;
+    let decision = if exit_net_value > exit_threshold {
+        ExitVsHoldDecision::Exit
+    } else {
+        ExitVsHoldDecision::Hold
+    };
+    Ok(FeeAdjustedExitVsHoldComparison {
+        decision,
+        hold_net_value,
+        exit_net_value,
+    })
+}
+
 impl GrossExpectedValue {
     pub fn new(amount: Decimal, currency_id: CurrencyId) -> Self {
         Self {
@@ -128,6 +205,28 @@ mod tests {
 
     fn id<T>(value: &str, constructor: impl FnOnce(String) -> Result<T, EconomicsError>) -> T {
         constructor(value.to_owned()).expect("fixture identifier should be canonical")
+    }
+
+    #[test]
+    fn fee_adjusted_exit_comparison_holds_when_fees_reverse_the_gross_preference() {
+        let hold = FeeAdjustedLegValue::proven_zero_execution_economics(Decimal::new(495, 3));
+        let gross_favorable_exit =
+            FeeAdjustedLegValue::new(Decimal::new(500, 3), Decimal::new(-75, 4));
+        let zero_fee_exit =
+            FeeAdjustedLegValue::proven_zero_execution_economics(Decimal::new(500, 3));
+
+        assert_eq!(
+            compare_fee_adjusted_exit_vs_hold(hold, gross_favorable_exit, Decimal::ZERO)
+                .expect("fee-adjusted comparison should succeed")
+                .decision(),
+            ExitVsHoldDecision::Hold
+        );
+        assert_eq!(
+            compare_fee_adjusted_exit_vs_hold(hold, zero_fee_exit, Decimal::ZERO)
+                .expect("zero-fee comparison should succeed")
+                .decision(),
+            ExitVsHoldDecision::Exit
+        );
     }
 
     #[test]

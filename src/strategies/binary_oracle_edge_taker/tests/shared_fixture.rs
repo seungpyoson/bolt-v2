@@ -1503,9 +1503,9 @@ pub(super) fn set_managed_position(
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(managed_position_context(
+            CanonicalPositionProjection::ExactlyOne(Box::new(managed_position_context(
                 position, origin, None,
-            )),
+            ))),
         )));
 }
 
@@ -1525,11 +1525,11 @@ pub(super) fn set_managed_position_with_pending_entry(
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(managed_position_context(
+            CanonicalPositionProjection::ExactlyOne(Box::new(managed_position_context(
                 position,
                 origin,
                 Some(pending_entry),
-            )),
+            ))),
         )));
 }
 

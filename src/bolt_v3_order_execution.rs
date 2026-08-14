@@ -424,6 +424,12 @@ enum BoltV3ExitOrderAuthorityProgress {
     TerminalFenced(BoltV3PositionReductionFence),
 }
 
+#[derive(Clone, Copy)]
+struct BoltV3LocallySubmittedExitBaseline {
+    signed_quantity: Decimal,
+    side: PositionSideSpecified,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BoltV3FillSetProof {
     Eligible,
@@ -434,8 +440,7 @@ enum BoltV3FillSetProof {
 enum BoltV3ExitOrderAuthority {
     LocallySubmitted {
         state: BoltV3ExitOrderAuthorityState,
-        baseline_signed_quantity: Decimal,
-        baseline_side: PositionSideSpecified,
+        baseline: BoltV3LocallySubmittedExitBaseline,
         compiled_quantity: Quantity,
     },
     Recovered {
@@ -546,8 +551,10 @@ impl BoltV3ExitOrderAuthorityHandle {
             instrument_id,
             position_id,
             episode,
-            canonical.signed_quantity(),
-            canonical.side(),
+            BoltV3LocallySubmittedExitBaseline {
+                signed_quantity: canonical.signed_quantity(),
+                side: canonical.side(),
+            },
             compiled_quantity,
             lease,
         )
@@ -569,8 +576,10 @@ impl BoltV3ExitOrderAuthorityHandle {
             instrument_id,
             position_id,
             episode,
-            baseline_signed_quantity,
-            baseline_side,
+            BoltV3LocallySubmittedExitBaseline {
+                signed_quantity: baseline_signed_quantity,
+                side: baseline_side,
+            },
             compiled_quantity,
             lease,
         )
@@ -581,14 +590,13 @@ impl BoltV3ExitOrderAuthorityHandle {
         instrument_id: InstrumentId,
         position_id: PositionId,
         episode: BoltV3PositionEpisodeFingerprint,
-        baseline_signed_quantity: Decimal,
-        baseline_side: PositionSideSpecified,
+        baseline: BoltV3LocallySubmittedExitBaseline,
         compiled_quantity: Quantity,
         lease: BoltV3PositionAuthorityLease,
     ) -> Result<Self> {
         anyhow::ensure!(
             matches!(
-                baseline_side,
+                baseline.side,
                 PositionSideSpecified::Long | PositionSideSpecified::Short
             ),
             "local exit authority requires a non-flat baseline side"
@@ -609,8 +617,7 @@ impl BoltV3ExitOrderAuthorityHandle {
                     lease: Rc::new(lease),
                     progress: BoltV3ExitOrderAuthorityProgress::Working,
                 },
-                baseline_signed_quantity,
-                baseline_side,
+                baseline,
                 compiled_quantity,
             }),
         })
@@ -1014,13 +1021,9 @@ impl BoltV3ExitOrderAuthority {
 
     fn fence_basis(&self) -> BoltV3ExitFenceBasis {
         match self {
-            Self::LocallySubmitted {
-                baseline_signed_quantity,
-                baseline_side,
-                ..
-            } => BoltV3ExitFenceBasis::Local {
-                baseline_signed_quantity: *baseline_signed_quantity,
-                baseline_side: *baseline_side,
+            Self::LocallySubmitted { baseline, .. } => BoltV3ExitFenceBasis::Local {
+                baseline_signed_quantity: baseline.signed_quantity,
+                baseline_side: baseline.side,
             },
             Self::Recovered {
                 adopted_signed_ceiling,

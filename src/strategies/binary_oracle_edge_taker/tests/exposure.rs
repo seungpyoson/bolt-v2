@@ -4033,7 +4033,7 @@ fn same_episode_refresh_preserves_fingerprint_and_close_floor() {
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(refreshed),
+            CanonicalPositionProjection::ExactlyOne(Box::new(refreshed)),
         )));
 
     let preserved = strategy
@@ -4079,7 +4079,7 @@ fn delayed_close_for_reused_position_id_cannot_release_new_episode() {
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(episode_b.clone()),
+            CanonicalPositionProjection::ExactlyOne(Box::new(episode_b.clone())),
         )));
     strategy.exposure.reduce(ExposureEvent::PositionClosed(
         PositionClosedEvent::Observed {
@@ -4126,7 +4126,7 @@ fn replacement_conflict_requires_retained_episode_close_and_matching_candidate()
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(candidate_b.clone()),
+            CanonicalPositionProjection::ExactlyOne(Box::new(candidate_b.clone())),
         )));
     assert!(matches!(
         strategy.exposure.state(),
@@ -4150,7 +4150,7 @@ fn replacement_conflict_requires_retained_episode_close_and_matching_candidate()
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(candidate_b.clone()),
+            CanonicalPositionProjection::ExactlyOne(Box::new(candidate_b.clone())),
         )));
     assert!(matches!(
         strategy.exposure.state(),
@@ -4186,12 +4186,12 @@ fn replacement_conflict_never_adopts_a_candidate_that_is_no_longer_canonical() {
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(candidate_b),
+            CanonicalPositionProjection::ExactlyOne(Box::new(candidate_b)),
         )));
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(candidate_c.clone()),
+            CanonicalPositionProjection::ExactlyOne(Box::new(candidate_c.clone())),
         )));
     strategy.exposure.reduce(ExposureEvent::PositionClosed(
         PositionClosedEvent::Observed {
@@ -4216,12 +4216,12 @@ fn replacement_conflict_never_adopts_a_candidate_that_is_no_longer_canonical() {
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(stale_candidate),
+            CanonicalPositionProjection::ExactlyOne(Box::new(stale_candidate)),
         )));
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(retained.clone()),
+            CanonicalPositionProjection::ExactlyOne(Box::new(retained.clone())),
         )));
     assert!(matches!(
         strategy.exposure.state(),
@@ -4379,7 +4379,7 @@ fn pending_entry_identity_conflict_retains_entry_until_its_terminal_fill() {
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(candidate),
+            CanonicalPositionProjection::ExactlyOne(Box::new(candidate)),
         )));
     assert!(matches!(
         strategy.exposure.state(),
@@ -4549,7 +4549,7 @@ fn every_blind_recovery_reason_rejects_raw_truth_and_uses_its_authorized_class()
         let authorized_projection = match recovery.provenance {
             BlindRecoveryProvenance::IdentityBearing { .. }
             | BlindRecoveryProvenance::RestartAdoption { .. } => {
-                CanonicalPositionProjection::ExactlyOne(managed.clone())
+                CanonicalPositionProjection::ExactlyOne(Box::new(managed.clone()))
             }
             BlindRecoveryProvenance::ProbeClass { .. }
             | BlindRecoveryProvenance::ForeignVenue { .. } => CanonicalPositionProjection::None,
@@ -4560,7 +4560,7 @@ fn every_blind_recovery_reason_rejects_raw_truth_and_uses_its_authorized_class()
         strategy
             .exposure
             .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-                CanonicalPositionProjection::ExactlyOne(managed.clone()),
+                CanonicalPositionProjection::ExactlyOne(Box::new(managed.clone())),
             )));
         strategy
             .exposure
@@ -5523,7 +5523,7 @@ fn bootstrap_and_correction_grants_commit_atomically_and_unwind_exactly() {
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(refreshed),
+            CanonicalPositionProjection::ExactlyOne(Box::new(refreshed)),
         )));
     let stale = correction.commit(ExposureEvent::SettlementEffect(
         SettlementEffectEvent::ReleaseFlat {
@@ -6464,7 +6464,7 @@ fn correction_closing_episode_a_never_rebases_reopened_episode_b_with_the_same_p
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(context_b.clone()),
+            CanonicalPositionProjection::ExactlyOne(Box::new(context_b.clone())),
         )));
     strategy.exposure.reduce(ExposureEvent::PositionTruth(
         PositionTruthEvent::AuthenticatedEpisodeRebase {

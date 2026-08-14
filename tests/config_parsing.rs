@@ -144,7 +144,7 @@ fn root_validation_rejects_incoherent_polymarket_fee_rounding_before_runtime_bin
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "fee_rounding_mode = \"to_zero\"",
+        "fee_rounding_mode = \"midpoint_nearest_even\"",
         "fee_rounding_mode = \"midpoint_away_from_zero\"",
     );
     let root: BoltV3RootConfig =
@@ -154,9 +154,37 @@ fn root_validation_rejects_incoherent_polymarket_fee_rounding_before_runtime_bin
     assert!(
         messages.iter().any(|message| {
             message.contains("clients.polymarket_main.execution.economics")
-                && message.contains("fee_rounding_mode must be to_zero")
+                && message.contains("fee_rounding_mode must be midpoint_nearest_even")
         }),
         "provider economics must fail during root validation, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn config_load_rejects_unknown_valuation_origin_kind() {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+
+    let temp = tempfile::tempdir().expect("config-load tempdir should create");
+    let strategies_dir = temp.path().join("strategies");
+    fs::create_dir(&strategies_dir).expect("strategy fixture dir should create");
+    fs::copy(
+        support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        strategies_dir.join("binary_oracle.toml"),
+    )
+    .expect("strategy fixture should copy");
+    let root_text = support::repo_text("tests/fixtures/bolt_v3/root.toml").replacen(
+        "from_kind = \"currency\"",
+        "from_kind = \"unsupported_native_kind\"",
+        1,
+    );
+    let root_path = temp.path().join("root.toml");
+    fs::write(&root_path, root_text).expect("mutated root fixture should write");
+
+    let error = load_bolt_v3_config(&root_path)
+        .expect_err("an unknown valuation origin kind must fail config load");
+    assert!(
+        error.to_string().contains("unsupported_native_kind"),
+        "load failure must identify the unknown native-unit kind: {error}"
     );
 }
 

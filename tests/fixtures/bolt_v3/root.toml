@@ -295,8 +295,9 @@ schedule = "clob_market_info"
 
 [clients.polymarket_main.execution.economics.formula]
 fee_round_decimal_places = "5"
-fee_rounding_mode = "to_zero"
-sub_fee_quantum_behavior = "round_to_zero"
+fee_rounding_mode = "midpoint_nearest_even"
+sub_fee_quantum_behavior = "round_to_nearest_even"
+absent_fee_descriptor_policy = "assert_fee_free"
 
 [clients.polymarket_main.execution.economics.quote_components.platform]
 component_id = "polymarket-platform-execution"
@@ -316,10 +317,11 @@ product_metadata_source = "polymarket-market-info"
 binary_outcome = "primary"
 
 [clients.polymarket_main.execution.economics.valuation.routes.pusd_usd]
+from_kind = "currency"
 from_unit = "pUSD"
 to_currency = "USD"
 legs = [
-  { authority = "provider_exact_conversion", from_unit = "pUSD", to_unit = "USD", source_id = "fixture-collateral", max_age_ms = 60000 },
+  { authority = "provider_exact_conversion", from_kind = "currency", from_unit = "pUSD", to_unit = "USD", source_id = "fixture-collateral", max_age_ms = 60000 },
 ]
 
 [clients.polymarket_main.secrets]

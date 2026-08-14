@@ -1738,6 +1738,10 @@ mod tests {
             buy_effect.unit(),
             NativeUnitId::Asset(id("HYPE", AssetId::try_new))
         );
+        assert_eq!(
+            buy_effect.unit().kind(),
+            crate::economics::NativeUnitKind::Asset
+        );
         assert_eq!(buy_effect.amount(), Decimal::new(-14112, 6));
 
         let sell = request(
@@ -1756,6 +1760,10 @@ mod tests {
         assert_eq!(
             sell_effect.unit(),
             NativeUnitId::Currency(id("hUSD", CurrencyId::try_new))
+        );
+        assert_eq!(
+            sell_effect.unit().kind(),
+            crate::economics::NativeUnitKind::Currency
         );
         assert_eq!(sell_effect.amount(), Decimal::new(-65856, 6));
     }

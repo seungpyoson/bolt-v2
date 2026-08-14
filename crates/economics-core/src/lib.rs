@@ -6,7 +6,9 @@ mod types;
 mod valuation;
 
 pub use edge::{
-    EdgeBasisAmount, EdgeBasisEvidence, GrossExpectedValue, NetEdgeQuote, fold_net_edge,
+    EdgeBasisAmount, EdgeBasisEvidence, ExitVsHoldDecision, FeeAdjustedExitVsHoldComparison,
+    FeeAdjustedLegValue, GrossExpectedValue, NetEdgeQuote, compare_fee_adjusted_exit_vs_hold,
+    fold_net_edge,
 };
 pub use health::EconomicsCapabilityHealth;
 pub use ports::{VenueEconomicsAdapter, VenueEconomicsUnavailable, VenueEdgeBasisEstimate};
@@ -19,9 +21,9 @@ pub use types::{
     DecisionCorrelationId, EconomicClass, EconomicComponentId, EconomicKind, EconomicScope,
     EconomicsError, EconomicsInstrumentId, EdgeBasisPolicyId, EstimatedEffect, ExecutionClientId,
     ExecutionKind, FormulaId, IncentiveKind, InventoryApplication, LifecyclePath, LiquidityRole,
-    NativeUnitId, OrderSide, PlannedFillLeg, PointEstimate, PositionContext, PositionId,
-    PositionSide, ProductSurfaceId, ReportingPolicyId, RiskBoundAuthority, RoutingAttachmentId,
-    RoutingContext, SignedNativeEffect, SnapshotId, SourceIdentity, SourceValidity,
-    ValuationRouteId,
+    NativeUnitId, NativeUnitKind, OrderSide, PlannedFillLeg, PointEstimate, PositionContext,
+    PositionId, PositionSide, ProductSurfaceId, ReportingPolicyId, RiskBoundAuthority,
+    RoutingAttachmentId, RoutingContext, SignedNativeEffect, SnapshotId, SourceIdentity,
+    SourceValidity, ValuationRouteId,
 };
 pub use valuation::{ValuationEvidence, ValuationLeg, ValuationRoute, value_with_routes};

@@ -301,8 +301,9 @@ schedule = "clob_market_info"
 
 [clients.polymarket_main.execution.economics.formula]
 fee_round_decimal_places = "5"
-fee_rounding_mode = "to_zero"
-sub_fee_quantum_behavior = "round_to_zero"
+fee_rounding_mode = "midpoint_nearest_even"
+sub_fee_quantum_behavior = "round_to_nearest_even"
+absent_fee_descriptor_policy = "assert_fee_free"
 
 [clients.polymarket_main.execution.economics.quote_components.platform]
 component_id = "polymarket-platform-execution"
@@ -322,15 +323,17 @@ product_metadata_source = "polymarket-market-info"
 binary_outcome = "primary"
 
 [clients.polymarket_main.execution.economics.valuation.exact_currency_identities.usdc_e_usdc]
+from_kind = "currency"
 from_unit = "USDC.e"
 source_currency = "USDC"
 
 [clients.polymarket_main.execution.economics.valuation.routes.pusd_usd]
+from_kind = "currency"
 from_unit = "pUSD"
 to_currency = "USD"
 legs = [
-  { authority = "provider_exact_conversion", from_unit = "pUSD", to_unit = "USDC.e", source_id = "collateral", max_age_ms = 300000 },
-  { authority = "market_quote", from_unit = "USDC.e", source_currency = "USDC", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
+  { authority = "provider_exact_conversion", from_kind = "currency", from_unit = "pUSD", to_unit = "USDC.e", source_id = "collateral", max_age_ms = 300000 },
+  { authority = "market_quote", from_kind = "currency", from_unit = "USDC.e", source_currency = "USDC", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
 ]
 
 

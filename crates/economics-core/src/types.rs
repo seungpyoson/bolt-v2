@@ -1,4 +1,5 @@
 use rust_decimal::Decimal;
+use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EconomicsError {
@@ -59,6 +60,7 @@ pub enum EconomicsError {
         gross_currency: CurrencyId,
         reporting_currency: CurrencyId,
     },
+    InvalidExitVsHoldHysteresis,
     MissingGuaranteedPointValuation {
         component_id: EconomicComponentId,
     },
@@ -141,6 +143,9 @@ impl std::fmt::Display for EconomicsError {
                 f,
                 "economics gross currency {gross_currency} does not match reporting currency {reporting_currency}"
             ),
+            Self::InvalidExitVsHoldHysteresis => {
+                f.write_str("economics exit-vs-hold hysteresis must be non-negative")
+            }
             Self::MissingGuaranteedPointValuation { component_id } => write!(
                 f,
                 "economics guaranteed component {component_id} has no point valuation"
@@ -215,6 +220,38 @@ validated_identifier!(ValuationRouteId, "valuation_route_id");
 pub enum NativeUnitId {
     Currency(CurrencyId),
     Asset(AssetId),
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeUnitKind {
+    Currency,
+    Asset,
+}
+
+impl NativeUnitKind {
+    pub fn try_id(self, value: impl Into<String>) -> Result<NativeUnitId, EconomicsError> {
+        match self {
+            Self::Currency => CurrencyId::try_new(value).map(NativeUnitId::Currency),
+            Self::Asset => AssetId::try_new(value).map(NativeUnitId::Asset),
+        }
+    }
+}
+
+impl NativeUnitId {
+    pub const fn kind(&self) -> NativeUnitKind {
+        match self {
+            Self::Currency(_) => NativeUnitKind::Currency,
+            Self::Asset(_) => NativeUnitKind::Asset,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Currency(currency) => currency.as_str(),
+            Self::Asset(asset) => asset.as_str(),
+        }
+    }
 }
 
 impl std::fmt::Display for NativeUnitId {

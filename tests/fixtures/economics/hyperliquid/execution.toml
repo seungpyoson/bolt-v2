@@ -58,10 +58,11 @@ product_metadata_source = "meta-and-asset-contexts"
 standard_perps = "primary"
 
 [economics.valuation.routes.husd_usd]
+from_kind = "currency"
 from_unit = "hUSD"
 to_currency = "USD"
 legs = [
-  { authority = "provider_exact_conversion", from_unit = "hUSD", to_unit = "USD", source_id = "fixture-settlement", max_age_ms = 60000 },
+  { authority = "provider_exact_conversion", from_kind = "currency", from_unit = "hUSD", to_unit = "USD", source_id = "fixture-settlement", max_age_ms = 60000 },
 ]
 
 [economics.carry]

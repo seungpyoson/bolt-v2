@@ -648,6 +648,7 @@ pub struct EconomicsValuationConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct EconomicsExactCurrencyIdentityConfig {
+    pub from_kind: crate::economics::NativeUnitKind,
     pub from_unit: String,
     pub source_currency: String,
 }
@@ -655,6 +656,7 @@ pub struct EconomicsExactCurrencyIdentityConfig {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct EconomicsValuationRouteConfig {
+    pub from_kind: crate::economics::NativeUnitKind,
     pub from_unit: String,
     pub to_currency: String,
     pub legs: Vec<EconomicsValuationLegConfig>,
@@ -664,6 +666,7 @@ pub struct EconomicsValuationRouteConfig {
 #[serde(tag = "authority", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EconomicsValuationLegConfig {
     MarketQuote {
+        from_kind: crate::economics::NativeUnitKind,
         from_unit: String,
         source_currency: String,
         to_unit: String,
@@ -674,6 +677,7 @@ pub enum EconomicsValuationLegConfig {
         max_age_ms: u64,
     },
     ProviderExactConversion {
+        from_kind: crate::economics::NativeUnitKind,
         from_unit: String,
         to_unit: String,
         source_id: String,

@@ -3,6 +3,7 @@ use nautilus_model::{
     identifiers::{ClientOrderId, InstrumentId, PositionId},
     types::Quantity,
 };
+use rust_decimal::{Decimal, prelude::FromPrimitive};
 
 use crate::{
     bolt_v3_current_evidence::{
@@ -15,6 +16,10 @@ use crate::{
     bolt_v3_market_families::OutcomeSide,
     bolt_v3_realized_volatility::RealizedVolBlockReason,
     bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs},
+    economics::{
+        ExitVsHoldDecision, FeeAdjustedExitVsHoldComparison, FeeAdjustedLegValue,
+        compare_fee_adjusted_exit_vs_hold,
+    },
 };
 
 use super::{
@@ -382,17 +387,51 @@ pub(super) fn evaluate_exit_decision(
     if !exit_hysteresis_bps.is_finite() {
         return ExitDecision::Hold;
     }
+    let Some(hold_ev_bps) = Decimal::from_f64(hold_ev_bps) else {
+        return ExitDecision::Hold;
+    };
+    let Some(exit_ev_bps) = Decimal::from_f64(exit_ev_bps) else {
+        return ExitDecision::Hold;
+    };
+    let Some(exit_hysteresis_bps) = Decimal::from_f64(exit_hysteresis_bps) else {
+        return ExitDecision::Hold;
+    };
+    compare_fee_adjusted_exit_vs_hold(
+        FeeAdjustedLegValue::proven_zero_execution_economics(hold_ev_bps),
+        FeeAdjustedLegValue::proven_zero_execution_economics(exit_ev_bps),
+        exit_hysteresis_bps,
+    )
+    .map(exit_decision_from_fee_adjusted_comparison)
+    .unwrap_or(ExitDecision::Hold)
+}
 
-    if exit_ev_bps > hold_ev_bps + exit_hysteresis_bps {
-        ExitDecision::Exit
-    } else {
-        ExitDecision::Hold
+pub(super) const fn exit_decision_from_fee_adjusted_comparison(
+    comparison: FeeAdjustedExitVsHoldComparison,
+) -> ExitDecision {
+    match comparison.decision() {
+        ExitVsHoldDecision::Hold => ExitDecision::Hold,
+        ExitVsHoldDecision::Exit => ExitDecision::Exit,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strategy_consumes_shared_fee_adjusted_hold_result() {
+        let comparison = compare_fee_adjusted_exit_vs_hold(
+            FeeAdjustedLegValue::proven_zero_execution_economics(Decimal::new(495, 3)),
+            FeeAdjustedLegValue::new(Decimal::new(500, 3), Decimal::new(-75, 4)),
+            Decimal::ZERO,
+        )
+        .expect("shared fee-adjusted comparison should succeed");
+
+        assert_eq!(
+            exit_decision_from_fee_adjusted_comparison(comparison),
+            ExitDecision::Hold
+        );
+    }
 
     #[test]
     fn exit_decision_evidence_preserves_observed_inputs_from_log_fields() {

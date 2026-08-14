@@ -139,7 +139,7 @@ pub(super) enum PositionTruthEvent {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum CanonicalPositionProjection {
     None,
-    ExactlyOne(ManagedPositionContext),
+    ExactlyOne(Box<ManagedPositionContext>),
     Multiple {
         count: usize,
         recovery: BlindRecoveryState,
@@ -697,8 +697,8 @@ impl BlindRecoveryState {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum RouteOperationPayload {
-    Entry(PendingEntryState),
-    Exit(ExitAttemptingState),
+    Entry(Box<PendingEntryState>),
+    Exit(Box<ExitAttemptingState>),
 }
 
 impl RouteOperationPayload {
@@ -793,7 +793,7 @@ pub(super) enum ExposureState {
     BlindRecovery(BlindRecoveryState),
     OperationSinkUnknown(OperationSinkUnknownState),
     ObligationSaturated(ObligationSaturatedState),
-    ReplacementConflict(ReplacementConflictState),
+    ReplacementConflict(Box<ReplacementConflictState>),
 }
 
 /// The strategy's sole exposure mutation authority.
@@ -1510,47 +1510,50 @@ impl GovernedExposureInner {
                 | ExposureState::OperationSinkUnknown(_)
                 | ExposureState::ObligationSaturated(_) => false,
             },
-            CanonicalPositionProjection::ExactlyOne(managed) => match &mut self.state {
-                ExposureState::ReplacementConflict(conflict)
-                    if conflict.retained.episode == managed.episode =>
-                {
-                    let mut retained = managed;
-                    retained.episode_close_seen = conflict.retained.episode_close_seen;
-                    retained.canonical_none_seen = conflict.retained.canonical_none_seen;
-                    self.state = ExposureState::Managed(retained);
-                    true
-                }
-                ExposureState::ReplacementConflict(conflict)
-                    if conflict.candidate.episode == managed.episode =>
-                {
-                    conflict.candidate = managed;
-                    conflict.candidate_visible = true;
-                    if conflict.retained_close_seen {
-                        self.state = ExposureState::Managed(conflict.candidate.clone());
+            CanonicalPositionProjection::ExactlyOne(managed) => {
+                let managed = *managed;
+                match &mut self.state {
+                    ExposureState::ReplacementConflict(conflict)
+                        if conflict.retained.episode == managed.episode =>
+                    {
+                        let mut retained = managed;
+                        retained.episode_close_seen = conflict.retained.episode_close_seen;
+                        retained.canonical_none_seen = conflict.retained.canonical_none_seen;
+                        self.state = ExposureState::Managed(retained);
+                        true
                     }
-                    true
-                }
-                ExposureState::ReplacementConflict(conflict) => {
-                    conflict.candidate = managed;
-                    conflict.candidate_visible = true;
-                    if conflict.retained_close_seen {
-                        self.state = ExposureState::Managed(conflict.candidate.clone());
+                    ExposureState::ReplacementConflict(conflict)
+                        if conflict.candidate.episode == managed.episode =>
+                    {
+                        conflict.candidate = managed;
+                        conflict.candidate_visible = true;
+                        if conflict.retained_close_seen {
+                            self.state = ExposureState::Managed(conflict.candidate.clone());
+                        }
+                        true
                     }
-                    true
+                    ExposureState::ReplacementConflict(conflict) => {
+                        conflict.candidate = managed;
+                        conflict.candidate_visible = true;
+                        if conflict.retained_close_seen {
+                            self.state = ExposureState::Managed(conflict.candidate.clone());
+                        }
+                        true
+                    }
+                    ExposureState::BlindRecovery(_) => false,
+                    ExposureState::Flat
+                    | ExposureState::PendingEntry(_)
+                    | ExposureState::EntryReconcilePending { .. }
+                    | ExposureState::Managed(_)
+                    | ExposureState::ExitAttempting(_)
+                    | ExposureState::ExitPending(_)
+                    | ExposureState::TerminalExitAwaitingPosition(_)
+                    | ExposureState::ExitAuthorityRecoveryHold(_)
+                    | ExposureState::UnsupportedObserved(_)
+                    | ExposureState::OperationSinkUnknown(_)
+                    | ExposureState::ObligationSaturated(_) => self.apply_managed_truth(managed),
                 }
-                ExposureState::BlindRecovery(_) => false,
-                ExposureState::Flat
-                | ExposureState::PendingEntry(_)
-                | ExposureState::EntryReconcilePending { .. }
-                | ExposureState::Managed(_)
-                | ExposureState::ExitAttempting(_)
-                | ExposureState::ExitPending(_)
-                | ExposureState::TerminalExitAwaitingPosition(_)
-                | ExposureState::ExitAuthorityRecoveryHold(_)
-                | ExposureState::UnsupportedObserved(_)
-                | ExposureState::OperationSinkUnknown(_)
-                | ExposureState::ObligationSaturated(_) => self.apply_managed_truth(managed),
-            },
+            }
             CanonicalPositionProjection::Multiple { recovery, .. }
             | CanonicalPositionProjection::ProbeFailed { recovery, .. } => {
                 self.enter_blind_recovery(recovery)
@@ -1580,30 +1583,33 @@ impl GovernedExposureInner {
                 | ExposureState::ObligationSaturated(_)
                 | ExposureState::ReplacementConflict(_) => false,
             },
-            CanonicalPositionProjection::ExactlyOne(managed) => match &self.state {
-                ExposureState::BlindRecovery(recovery)
-                    if recovery.authorizes_exactly_one(&managed) =>
-                {
-                    let changed = self.apply_managed_truth(managed);
-                    if changed {
-                        self.identity_conflict = None;
+            CanonicalPositionProjection::ExactlyOne(managed) => {
+                let managed = *managed;
+                match &self.state {
+                    ExposureState::BlindRecovery(recovery)
+                        if recovery.authorizes_exactly_one(&managed) =>
+                    {
+                        let changed = self.apply_managed_truth(managed);
+                        if changed {
+                            self.identity_conflict = None;
+                        }
+                        changed
                     }
-                    changed
+                    ExposureState::Flat
+                    | ExposureState::PendingEntry(_)
+                    | ExposureState::EntryReconcilePending { .. }
+                    | ExposureState::Managed(_)
+                    | ExposureState::ExitAttempting(_)
+                    | ExposureState::ExitPending(_)
+                    | ExposureState::TerminalExitAwaitingPosition(_)
+                    | ExposureState::ExitAuthorityRecoveryHold(_)
+                    | ExposureState::UnsupportedObserved(_)
+                    | ExposureState::BlindRecovery(_)
+                    | ExposureState::OperationSinkUnknown(_)
+                    | ExposureState::ObligationSaturated(_)
+                    | ExposureState::ReplacementConflict(_) => false,
                 }
-                ExposureState::Flat
-                | ExposureState::PendingEntry(_)
-                | ExposureState::EntryReconcilePending { .. }
-                | ExposureState::Managed(_)
-                | ExposureState::ExitAttempting(_)
-                | ExposureState::ExitPending(_)
-                | ExposureState::TerminalExitAwaitingPosition(_)
-                | ExposureState::ExitAuthorityRecoveryHold(_)
-                | ExposureState::UnsupportedObserved(_)
-                | ExposureState::BlindRecovery(_)
-                | ExposureState::OperationSinkUnknown(_)
-                | ExposureState::ObligationSaturated(_)
-                | ExposureState::ReplacementConflict(_) => false,
-            },
+            }
             CanonicalPositionProjection::Multiple { recovery, .. }
             | CanonicalPositionProjection::ProbeFailed { recovery, .. } => {
                 self.enter_blind_recovery(recovery)
@@ -1909,12 +1915,12 @@ impl GovernedExposureInner {
                     });
                     ExposureState::Managed(managed)
                 } else {
-                    ExposureState::ReplacementConflict(ReplacementConflictState {
+                    ExposureState::ReplacementConflict(Box::new(ReplacementConflictState {
                         retained: current.clone(),
                         candidate: managed,
                         retained_close_seen: false,
                         candidate_visible: true,
-                    })
+                    }))
                 };
                 true
             }
@@ -2038,8 +2044,7 @@ impl GovernedExposureInner {
                     let ExposureState::OperationSinkUnknown(unknown) = &*saturated.retained else {
                         return false;
                     };
-                    saturated.retained =
-                        Box::new(sink_unknown_resolution_state(unknown, resolution));
+                    *saturated.retained = sink_unknown_resolution_state(unknown, resolution);
                     true
                 }
                 ExposureState::Flat
@@ -2680,8 +2685,8 @@ impl BoltV3RouteAttemptParticipant for ExposureOperationGrant {
             .ok_or_else(|| anyhow::anyhow!("exposure route grant has no bound payload"))?;
         arm.phase = OperationArmPhase::Consumed;
         let next = match payload {
-            RouteOperationPayload::Entry(pending) => ExposureState::PendingEntry(pending),
-            RouteOperationPayload::Exit(attempt) => ExposureState::ExitAttempting(attempt),
+            RouteOperationPayload::Entry(pending) => ExposureState::PendingEntry(*pending),
+            RouteOperationPayload::Exit(attempt) => ExposureState::ExitAttempting(*attempt),
         };
         inner.replace_from_operation(next);
         Ok(())
@@ -2725,8 +2730,9 @@ impl BoltV3RouteAttemptParticipant for ExposureOperationGrant {
                     .payload
                     .expect("submitted exposure operation must carry its route payload")
                 {
-                    inner
-                        .replace_from_operation(ExposureState::ExitPending(attempt.into_pending()));
+                    inner.replace_from_operation(ExposureState::ExitPending(
+                        (*attempt).into_pending(),
+                    ));
                 }
                 inner.generation = arm
                     .generation
@@ -2770,7 +2776,7 @@ impl EntryOperationGrant {
         pending: PendingEntryState,
     ) -> Result<Box<dyn BoltV3RouteAttemptParticipant>> {
         self.0
-            .bind_route_payload(RouteOperationPayload::Entry(pending))?;
+            .bind_route_payload(RouteOperationPayload::Entry(Box::new(pending)))?;
         Ok(Box::new(self.0))
     }
 }
@@ -2788,7 +2794,7 @@ impl ExitOperationGrant {
         attempt: ExitAttemptingState,
     ) -> Result<Box<dyn BoltV3RouteAttemptParticipant>> {
         self.0
-            .bind_route_payload(RouteOperationPayload::Exit(attempt))?;
+            .bind_route_payload(RouteOperationPayload::Exit(Box::new(attempt)))?;
         Ok(Box::new(self.0))
     }
 }
@@ -3247,9 +3253,11 @@ fn sink_unknown_resolution_state(
 ) -> ExposureState {
     match resolution {
         SinkUnknownResolution::Submitted => match &unknown.attempted {
-            RouteOperationPayload::Entry(pending) => ExposureState::PendingEntry(pending.clone()),
+            RouteOperationPayload::Entry(pending) => {
+                ExposureState::PendingEntry((**pending).clone())
+            }
             RouteOperationPayload::Exit(attempt) => {
-                ExposureState::ExitPending(attempt.clone().into_pending())
+                ExposureState::ExitPending((**attempt).clone().into_pending())
             }
         },
         SinkUnknownResolution::Terminal { residual } => {

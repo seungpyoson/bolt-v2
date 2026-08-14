@@ -436,6 +436,9 @@ fn guaranteed_point_amount(
     component: &EstimatedEffect,
     point_valuation: Option<&ValuationEvidence>,
 ) -> Result<Decimal, EconomicsError> {
+    if matches!(component.point_estimate, PointEstimate::ProvenZero { .. }) {
+        return Ok(Decimal::ZERO);
+    }
     point_valuation
         .map(|valuation| valuation.normalized_amount)
         .ok_or_else(|| EconomicsError::MissingGuaranteedPointValuation {
@@ -472,7 +475,8 @@ fn validate_component_sign(component: &EstimatedEffect) -> Result<(), EconomicsE
         PointEstimate::ProvenZero { factor_id }
             if !matches!(
                 component.admission_treatment,
-                AdmissionTreatment::RiskBound { .. }
+                AdmissionTreatment::GuaranteedConditionalOnAction
+                    | AdmissionTreatment::RiskBound { .. }
             ) || component.class != EconomicClass::Charge
                 || !component
                     .calculation_factors
@@ -491,8 +495,8 @@ fn validate_component_sign(component: &EstimatedEffect) -> Result<(), EconomicsE
 mod tests {
     use super::*;
     use crate::{
-        EconomicKind, EconomicScope, ExecutionKind, FormulaId, PointEstimate, SignedNativeEffect,
-        SnapshotId, SourceIdentity,
+        CalculationFactor, EconomicKind, EconomicScope, ExecutionKind, FormulaId, PointEstimate,
+        SignedNativeEffect, SnapshotId, SourceIdentity,
     };
 
     fn id<T>(value: &str, constructor: impl FnOnce(String) -> Result<T, EconomicsError>) -> T {
@@ -621,6 +625,38 @@ mod tests {
         );
         assert_eq!(reward.component().component_id.as_str(), "reward");
         assert!(reward.debit_risk_bound_valuation().is_none());
+    }
+
+    #[test]
+    fn guaranteed_proven_zero_is_an_auditable_zero_component() {
+        let request = request();
+        let mut zero = component(
+            "asserted-fee-free",
+            Decimal::NEGATIVE_ONE,
+            AdmissionTreatment::GuaranteedConditionalOnAction,
+        );
+        let zero_factor_id = id("asserted-zero", FormulaId::try_new);
+        zero.point_estimate = PointEstimate::ProvenZero {
+            factor_id: zero_factor_id.clone(),
+        };
+        zero.calculation_factors = vec![CalculationFactor {
+            factor_id: zero_factor_id,
+            value: Decimal::ZERO,
+        }];
+
+        let quote = validate_and_aggregate_quote(
+            &request,
+            VenueQuoteEstimate {
+                authority: source(1_100),
+                dependency_sources: Vec::new(),
+                components: vec![zero],
+            },
+            &[],
+        )
+        .expect("a proven-zero guaranteed component should aggregate");
+
+        assert_eq!(quote.core_total(), Decimal::ZERO);
+        assert_eq!(quote.components().len(), 1);
     }
 
     #[test]

@@ -5,8 +5,9 @@ use bolt_v2::{
     bolt_v3_economics_runtime::{
         AuthoritativeEconomicsInputStore, AuthoritativeValuationObservation,
         AuthoritativeVenueEconomicsInput, EconomicsAdmissionIntent, EconomicsAdmissionPolicy,
-        EconomicsOrderBinding, EconomicsRuntimeBindingError, RestingOrderEconomicsCancelReason,
-        RestingOrderEconomicsRefresh, bind_execution_economics, refresh_resting_order_economics,
+        EconomicsEdgeAdmissionPolicy, EconomicsOrderBinding, EconomicsRuntimeBindingError,
+        RestingOrderEconomicsCancelReason, RestingOrderEconomicsRefresh, bind_execution_economics,
+        refresh_resting_order_economics,
     },
     bolt_v3_order_execution::{
         BoltV3FinalOrderEconomicsInput, BoltV3FinalOrderEconomicsScenario,
@@ -27,10 +28,11 @@ use bolt_v2::{
     },
     bolt_v3_submit_admission::OrderValuationContext,
     economics::{
-        AccountId, CurrencyId, DecisionCorrelationId, EconomicsInstrumentId, EconomicsQuoteRequest,
-        EdgeBasisPolicyId, ExecutionClientId, LifecyclePath, LiquidityRole, OrderSide,
-        PlannedFillLeg, PositionContext, PositionId, PositionSide, ProductSurfaceId,
-        ReportingPolicyId, RoutingContext, SnapshotId, SourceIdentity, VenueEconomicsUnavailable,
+        AccountId, AssetId, CurrencyId, DecisionCorrelationId, EconomicsInstrumentId,
+        EconomicsQuoteRequest, EdgeBasisPolicyId, ExecutionClientId, ExitVsHoldDecision,
+        LifecyclePath, LiquidityRole, NativeUnitId, OrderSide, PlannedFillLeg, PointEstimate,
+        PositionContext, PositionId, PositionSide, ProductSurfaceId, ReportingPolicyId,
+        RoutingContext, SnapshotId, SourceIdentity, VenueEconomicsUnavailable,
     },
 };
 use nautilus_model::{
@@ -264,6 +266,38 @@ fn authoritative_input_without_valuation_for(
         snapshot,
     )
     .expect("Polymarket authority scope should match its market snapshot")
+}
+
+fn fee_free_authoritative_input() -> AuthoritativeVenueEconomicsInput {
+    let snapshot = PolymarketMarketInfoSnapshot::from_json(
+        PolymarketSnapshotMetadata {
+            snapshot_id: id("market-info-fee-free", SnapshotId::try_new),
+            source_at_ns: 900,
+            fetched_at_ns: 950,
+            valid_until_ns: 2_000,
+        },
+        include_str!("fixtures/economics/polymarket/fee_free.json"),
+    )
+    .expect("descriptor-absent market-info should parse as typed unknown");
+    polymarket_authoritative_economics_input(
+        "polymarket_main",
+        "token-yes.POLYMARKET",
+        "binary_outcome",
+        "token-yes",
+        snapshot,
+    )
+    .expect("fee-free authority scope should match")
+    .with_valuation_observations([
+        AuthoritativeValuationObservation::ProviderExactConversion {
+            source_id: id("fixture-collateral", SourceIdentity::try_new),
+            from_unit: id("pUSD", CurrencyId::try_new),
+            to_unit: id("USD", CurrencyId::try_new),
+            snapshot_id: id("collateral-fee-free", SnapshotId::try_new),
+            observed_at_ns: 900,
+            fetched_at_ns: 950,
+            valid_until_ns: 2_000,
+        },
+    ])
 }
 
 fn authoritative_refresh_input(
@@ -518,6 +552,133 @@ fn hyperliquid_loaded() -> bolt_v2::bolt_v3_config::LoadedBoltV3Config {
     loaded
 }
 
+fn hyperliquid_spot_loaded() -> bolt_v2::bolt_v3_config::LoadedBoltV3Config {
+    let mut loaded = hyperliquid_loaded();
+    let execution = loaded
+        .root
+        .clients
+        .get_mut("hyperliquid_offline")
+        .expect("offline Hyperliquid client should exist")
+        .execution
+        .as_mut()
+        .expect("offline Hyperliquid execution should exist");
+    execution["product_surfaces"]
+        .as_array_mut()
+        .expect("product surfaces should be an array")
+        .push(toml::Value::String("spot".to_string()));
+    let economics = execution["economics"]
+        .as_table_mut()
+        .expect("economics should be a table");
+    economics["product_surface_policies"]
+        .as_table_mut()
+        .expect("surface policies should be a table")
+        .insert(
+            "spot".to_string(),
+            toml::Value::String("primary".to_string()),
+        );
+    let valuation = economics["valuation"]
+        .as_table_mut()
+        .expect("valuation should be a table");
+    valuation.insert(
+        "exact_currency_identities".to_string(),
+        toml::from_str::<toml::Value>(
+            r#"[hype_hype]
+from_kind = "asset"
+from_unit = "HYPE"
+source_currency = "HYPE"
+"#,
+        )
+        .expect("asset identity should parse"),
+    );
+    valuation["routes"]
+        .as_table_mut()
+        .expect("valuation routes should be a table")
+        .insert(
+            "hype_usd".to_string(),
+            toml::from_str::<toml::Value>(
+                r#"from_kind = "asset"
+from_unit = "HYPE"
+to_currency = "USD"
+legs = [
+  { authority = "market_quote", from_kind = "asset", from_unit = "HYPE", source_currency = "HYPE", to_unit = "hUSD", valuation_policy = "top_of_book_midpoint", client_id = "hyperliquid_spot_data", instrument_id = "HYPE-hUSD.HYPERLIQUID", orientation = "base_to_quote", max_age_ms = 60000 },
+  { authority = "provider_exact_conversion", from_kind = "currency", from_unit = "hUSD", to_unit = "USD", source_id = "fixture-settlement", max_age_ms = 60000 },
+]
+"#,
+            )
+            .expect("asset valuation route should parse"),
+        );
+    loaded
+}
+
+fn hyperliquid_spot_input() -> AuthoritativeVenueEconomicsInput {
+    let user_fees = HyperliquidUserFeesSnapshot::from_json(
+        hyperliquid_metadata("user-fees", "spot-fees-1"),
+        id("HYPERLIQUID-001", AccountId::try_new),
+        include_str!("fixtures/economics/hyperliquid/user_fees_discounted.json"),
+    )
+    .expect("spot user-fees authority should parse");
+    let unaligned = include_str!("fixtures/economics/hyperliquid/aligned_quote.json").replacen(
+        "\"isAligned\": true",
+        "\"isAligned\": false",
+        1,
+    );
+    let product = HyperliquidProductEconomicsSnapshot::spot_from_json(
+        hyperliquid_metadata("meta-and-asset-contexts", "spot-product-1"),
+        id("HYPE-hUSD.HYPERLIQUID", EconomicsInstrumentId::try_new),
+        id("spot", ProductSurfaceId::try_new),
+        id("HYPE", AssetId::try_new),
+        id("hUSD", CurrencyId::try_new),
+        false,
+        (
+            &hyperliquid_metadata("aligned-quote", "spot-alignment-1"),
+            unaligned.as_str(),
+        ),
+    )
+    .expect("spot product authority should parse");
+    hyperliquid_authoritative_economics_input(
+        "hyperliquid_offline",
+        "HYPE-hUSD.HYPERLIQUID",
+        "spot",
+        user_fees,
+        product,
+        None,
+    )
+    .expect("spot authority scope should match")
+    .with_valuation_observations([
+        AuthoritativeValuationObservation::MarketQuote {
+            client_id: "hyperliquid_spot_data".to_string(),
+            instrument_id: "HYPE-hUSD.HYPERLIQUID".to_string(),
+            base_currency: id("HYPE", CurrencyId::try_new),
+            quote_currency: id("hUSD", CurrencyId::try_new),
+            price: Decimal::TEN,
+            snapshot_id: id("hype-husd-quote-1", SnapshotId::try_new),
+            observed_at_ns: 900,
+            fetched_at_ns: 950,
+            valid_until_ns: 2_000,
+        },
+        AuthoritativeValuationObservation::ProviderExactConversion {
+            source_id: id("fixture-settlement", SourceIdentity::try_new),
+            from_unit: id("hUSD", CurrencyId::try_new),
+            to_unit: id("USD", CurrencyId::try_new),
+            snapshot_id: id("spot-settlement-1", SnapshotId::try_new),
+            observed_at_ns: 900,
+            fetched_at_ns: 950,
+            valid_until_ns: 2_000,
+        },
+    ])
+}
+
+fn hyperliquid_spot_quote_request() -> EconomicsQuoteRequest {
+    let mut request = quote_request("HYPE-hUSD.HYPERLIQUID", "spot");
+    request.execution_client_id = id("hyperliquid_offline", ExecutionClientId::try_new);
+    request.account_id = id("HYPERLIQUID-001", AccountId::try_new);
+    request.planned_fill_legs = vec![PlannedFillLeg {
+        price: Decimal::TEN,
+        quantity: Decimal::from(2),
+    }];
+    request
+}
+
 fn hyperliquid_quote_request() -> EconomicsQuoteRequest {
     let mut request = quote_request("BTC-PERP.HYPERLIQUID", "standard_perps");
     request.execution_client_id = id("hyperliquid_offline", ExecutionClientId::try_new);
@@ -679,6 +840,72 @@ fn bound_execution_economics_quotes_and_folds_admission_from_one_authority() {
             .map(|id| id.as_str())
             .collect::<Vec<_>>(),
         vec!["collateral-conversion-1", "market-info-1"]
+    );
+}
+
+#[test]
+fn risk_reduction_admits_negative_edge_and_fee_adjusted_exit_comparison_holds() {
+    let loaded = loaded();
+    let fee_inputs = AuthoritativeEconomicsInputStore::try_new([authoritative_input()])
+        .expect("fee-bearing input should construct");
+    let fee_bound = bind_execution_economics(&loaded, "polymarket_main", &fee_inputs)
+        .expect("fee-bearing authority should bind");
+    let fee_admission = fee_bound
+        .quote_admission(economics_admission_intent! {
+            request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
+            order_binding: order_binding(),
+            policy: EconomicsAdmissionPolicy::RiskReduction,
+            gross_expected_value: Decimal::NEGATIVE_ONE,
+            reservation_basis: Decimal::from(5),
+        })
+        .expect("RiskReduction must admit regardless of fee-adjusted edge");
+    assert_eq!(
+        fee_admission.edge_admission_policy(),
+        EconomicsEdgeAdmissionPolicy::AdmitRegardlessOfEdge
+    );
+    assert!(fee_admission.net_edge().core_net_edge.is_sign_negative());
+    assert_eq!(
+        fee_admission
+            .compare_fee_adjusted_exit_vs_hold(
+                Decimal::new(495, 3),
+                Decimal::new(600, 3),
+                Decimal::ZERO,
+            )
+            .expect("sealed fee-aware comparison should succeed")
+            .decision(),
+        ExitVsHoldDecision::Hold
+    );
+
+    let fee_free_inputs =
+        AuthoritativeEconomicsInputStore::try_new([fee_free_authoritative_input()])
+            .expect("asserted fee-free input should construct");
+    let fee_free_bound = bind_execution_economics(&loaded, "polymarket_main", &fee_free_inputs)
+        .expect("asserted fee-free authority should bind");
+    let fee_free_admission = fee_free_bound
+        .quote_admission(economics_admission_intent! {
+            request: quote_request("token-yes.POLYMARKET", "binary_outcome"),
+            order_binding: order_binding(),
+            policy: EconomicsAdmissionPolicy::RiskReduction,
+            gross_expected_value: Decimal::NEGATIVE_ONE,
+            reservation_basis: Decimal::from(5),
+        })
+        .expect("explicit fee-free assertion should admit");
+    assert!(matches!(
+        fee_free_admission.quote().components()[0]
+            .component()
+            .point_estimate,
+        PointEstimate::ProvenZero { .. }
+    ));
+    assert_eq!(
+        fee_free_admission
+            .compare_fee_adjusted_exit_vs_hold(
+                Decimal::new(495, 3),
+                Decimal::new(600, 3),
+                Decimal::ZERO,
+            )
+            .expect("zero-fee comparison should succeed")
+            .decision(),
+        ExitVsHoldDecision::Exit
     );
 }
 
@@ -1121,6 +1348,41 @@ fn hyperliquid_execution_economics_binds_from_offline_toml_and_raw_authority() {
         basis.product_metadata_source.as_str(),
         "meta-and-asset-contexts"
     );
+}
+
+#[test]
+fn hyperliquid_spot_buy_admits_through_runtime_built_asset_origin_route() {
+    let loaded = hyperliquid_spot_loaded();
+    let inputs = AuthoritativeEconomicsInputStore::try_new([hyperliquid_spot_input()])
+        .expect("one Hyperliquid spot input should construct");
+    let bound = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
+        .expect("kind-tagged spot valuation TOML should bind");
+    let admission = bound
+        .quote_admission(economics_admission_intent! {
+            request: hyperliquid_spot_quote_request(),
+            order_binding: order_binding(),
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(20),
+        })
+        .expect("spot BUY asset-denominated fee should value and admit");
+
+    let point = match &admission.quote().components()[0].component().point_estimate {
+        PointEstimate::NonZero(point) => point,
+        PointEstimate::ProvenZero { .. } => panic!("spot BUY fee should be non-zero"),
+    };
+    assert_eq!(
+        point.unit(),
+        NativeUnitId::Asset(id("HYPE", AssetId::try_new))
+    );
+    assert!(
+        admission.quote().components()[0]
+            .point_valuation()
+            .is_some()
+    );
+    assert!(admission.net_edge().core_net_edge.is_sign_positive());
 }
 
 #[test]

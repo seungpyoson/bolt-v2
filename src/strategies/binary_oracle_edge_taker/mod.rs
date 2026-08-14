@@ -370,6 +370,7 @@ use self::exit_decision::{
     ExitEvaluationLogFields, ExitEvaluationTriggerContext, ExitIntentDecision, ExitOutcomeKey,
     ExitRealizedVolatilityGateReceipt, evaluate_exit_decision, exit_block_reason_label,
     exit_decision_details, exit_decision_evidence_from_optional,
+    exit_decision_from_fee_adjusted_comparison,
 };
 
 mod orders;
@@ -5121,10 +5122,12 @@ impl BinaryOracleEdgeTaker {
             NtCanonicalPositionProjection::None => CanonicalPositionProjection::None,
             NtCanonicalPositionProjection::ExactlyOne(spec) => {
                 let position = self.build_open_position_state(None, None, spec, false);
-                CanonicalPositionProjection::ExactlyOne(self.managed_position_context_from_cache(
-                    position,
-                    ManagedPositionOrigin::RecoveryBootstrap,
-                    None,
+                CanonicalPositionProjection::ExactlyOne(Box::new(
+                    self.managed_position_context_from_cache(
+                        position,
+                        ManagedPositionOrigin::RecoveryBootstrap,
+                        None,
+                    ),
                 ))
             }
             NtCanonicalPositionProjection::Multiple { count } => {
@@ -5321,7 +5324,7 @@ impl BinaryOracleEdgeTaker {
             pending_context.as_ref().map_or_else(
                 || {
                     PositionTruthEvent::Canonical(CanonicalPositionProjection::ExactlyOne(
-                        managed_context.clone(),
+                        Box::new(managed_context.clone()),
                     ))
                 },
                 |_pending| PositionTruthEvent::EntryTerminalMaterialization {
@@ -5330,9 +5333,9 @@ impl BinaryOracleEdgeTaker {
                 },
             )
         } else {
-            PositionTruthEvent::Canonical(CanonicalPositionProjection::ExactlyOne(
+            PositionTruthEvent::Canonical(CanonicalPositionProjection::ExactlyOne(Box::new(
                 managed_context.clone(),
-            ))
+            )))
         };
         self.exposure
             .reduce(ExposureEvent::PositionTruth(truth_event));
@@ -8204,6 +8207,19 @@ impl BinaryOracleEdgeTaker {
         attempt.into_result()
     }
 
+    fn reject_exit_preparation_after_recording_intent(
+        &mut self,
+        now_ms: u64,
+        trigger_context: ExitEvaluationTriggerContext,
+        decision: ExitIntentDecision,
+        stage: ExitPreparationStage,
+        failure: anyhow::Error,
+    ) -> Result<ExitAttemptExecution> {
+        self.record_exit_intent_or_hold_once(now_ms, trigger_context, &decision)?;
+        self.log_exit_evaluation(now_ms, trigger_context, &decision);
+        Ok(rejected_exit_preparation(decision, stage, failure))
+    }
+
     fn try_submit_exit_order_inner(
         &mut self,
         now_ms: u64,
@@ -8258,30 +8274,35 @@ impl BinaryOracleEdgeTaker {
                 return Ok(ExitAttemptExecution::completed(decision, outcome));
             }
         };
-        self.record_exit_intent_or_hold_once(now_ms, trigger_context, &decision)?;
         let Some(order_config) = decision.execution_config() else {
             let failure = anyhow::anyhow!("exit intent decision missing order config");
-            return Ok(rejected_exit_preparation(
+            return self.reject_exit_preparation_after_recording_intent(
+                now_ms,
+                trigger_context,
                 decision,
                 ExitPreparationStage::OrderTemplate,
                 failure,
-            ));
+            );
         };
         let Some(instrument) = self.current_instrument(instrument_id) else {
             let failure = anyhow::anyhow!("exit instrument missing from cache");
-            return Ok(rejected_exit_preparation(
+            return self.reject_exit_preparation_after_recording_intent(
+                now_ms,
+                trigger_context,
                 decision,
                 ExitPreparationStage::InstrumentAuthority,
                 failure,
-            ));
+            );
         };
         let Some(managed_position) = self.managed_position() else {
             let failure = anyhow::anyhow!("exit submit requires managed position state");
-            return Ok(rejected_exit_preparation(
+            return self.reject_exit_preparation_after_recording_intent(
+                now_ms,
+                trigger_context,
                 decision,
                 ExitPreparationStage::PositionAuthority,
                 failure,
-            ));
+            );
         };
         let requested_price = Price::new(raw_price, instrument.price_precision());
         let client_order_id = self.core.order_factory().generate_client_order_id();
@@ -8296,22 +8317,26 @@ impl BinaryOracleEdgeTaker {
         ) {
             Ok(order) => order,
             Err(failure) => {
-                return Ok(rejected_exit_preparation(
+                return self.reject_exit_preparation_after_recording_intent(
+                    now_ms,
+                    trigger_context,
                     decision,
                     ExitPreparationStage::OrderTemplate,
                     failure,
-                ));
+                );
             }
         };
 
         let client_id = ClientId::from(self.config.client_id.as_str());
         let Some(managed_context) = self.exposure.managed_position_context() else {
             let failure = anyhow::anyhow!("exit submit requires managed position context");
-            return Ok(rejected_exit_preparation(
+            return self.reject_exit_preparation_after_recording_intent(
+                now_ms,
+                trigger_context,
                 decision,
                 ExitPreparationStage::PositionAuthority,
                 failure,
-            ));
+            );
         };
         let prediction_market_outcome = match managed_position.position.lifecycle.outcome_side() {
             Some(OutcomeSide::Up) => PredictionMarketOutcomeSide::Yes,
@@ -8320,11 +8345,13 @@ impl BinaryOracleEdgeTaker {
                 let failure = anyhow::anyhow!(
                     "exit submission requires a canonical prediction-market outcome"
                 );
-                return Ok(rejected_exit_preparation(
+                return self.reject_exit_preparation_after_recording_intent(
+                    now_ms,
+                    trigger_context,
                     decision,
                     ExitPreparationStage::PositionAuthority,
                     failure,
-                ));
+                );
             }
         };
         let intent = order_intent_details_from_compiled_order(
@@ -8338,19 +8365,23 @@ impl BinaryOracleEdgeTaker {
             .and_then(Decimal::from_f64)
         else {
             let failure = anyhow::anyhow!("exit economics requires a valid entry cost basis");
-            return Ok(rejected_exit_preparation(
+            return self.reject_exit_preparation_after_recording_intent(
+                now_ms,
+                trigger_context,
                 decision,
                 ExitPreparationStage::EconomicsSeal,
                 failure,
-            ));
+            );
         };
         let Some(position_authority) = self.context.position_authority() else {
             let failure = anyhow::anyhow!("exit submission requires position authority capability");
-            return Ok(rejected_exit_preparation(
+            return self.reject_exit_preparation_after_recording_intent(
+                now_ms,
+                trigger_context,
                 decision,
                 ExitPreparationStage::PositionAuthority,
                 failure,
-            ));
+            );
         };
         let compiled =
             match compile_and_seal_risk_reducing_ioc(BoltV3CompileAndSealRiskReducingIocInput {
@@ -8373,11 +8404,13 @@ impl BinaryOracleEdgeTaker {
                 Ok(compiled) => compiled,
                 Err(failure) => {
                     let stage = evidence_preparation_stage(failure.stage());
-                    return Ok(rejected_exit_preparation(
+                    return self.reject_exit_preparation_after_recording_intent(
+                        now_ms,
+                        trigger_context,
                         decision,
                         stage,
                         anyhow::Error::new(failure),
-                    ));
+                    );
                 }
             };
         let (intent, order, sealed, compiled, sealed_position_authority) = compiled.into_parts();
@@ -8385,6 +8418,103 @@ impl BinaryOracleEdgeTaker {
         let price = compiled.worst_executable_price;
         decision.quantity = Some(quantity);
         decision.price = Some(price.as_f64());
+        if decision.forced_flat_reasons.is_empty() {
+            let Some(hold_ev_bps) = decision.evaluation.hold_ev_bps.and_then(Decimal::from_f64)
+            else {
+                let failure =
+                    anyhow::anyhow!("fee-adjusted exit comparison requires the gross hold value");
+                return self.reject_exit_preparation_after_recording_intent(
+                    now_ms,
+                    trigger_context,
+                    decision,
+                    ExitPreparationStage::EconomicsSeal,
+                    failure,
+                );
+            };
+            let comparison = match (|| -> Result<_> {
+                let bps_denominator = Decimal::from_f64(BPS_DENOMINATOR)
+                    .ok_or_else(|| anyhow::anyhow!("basis-point denominator is invalid"))?;
+                let hold_gross_value_per_unit =
+                    entry_cost
+                        .checked_mul(
+                            Decimal::ONE
+                                .checked_add(hold_ev_bps.checked_div(bps_denominator).ok_or_else(
+                                    || anyhow::anyhow!("hold EV division overflowed"),
+                                )?)
+                                .ok_or_else(|| anyhow::anyhow!("hold EV addition overflowed"))?,
+                        )
+                        .ok_or_else(|| anyhow::anyhow!("hold EV multiplication overflowed"))?;
+                let hysteresis_per_unit = entry_cost
+                    .checked_mul(Decimal::from(self.config.exit_hysteresis_bps))
+                    .and_then(|value| value.checked_div(bps_denominator))
+                    .ok_or_else(|| anyhow::anyhow!("exit hysteresis arithmetic overflowed"))?;
+                sealed
+                    .economics()
+                    .compare_fee_adjusted_exit_vs_hold(
+                        hold_gross_value_per_unit,
+                        entry_cost,
+                        hysteresis_per_unit,
+                    )
+                    .map(|comparison| (comparison, bps_denominator))
+                    .map_err(anyhow::Error::new)
+            })() {
+                Ok(comparison) => comparison,
+                Err(failure) => {
+                    return self.reject_exit_preparation_after_recording_intent(
+                        now_ms,
+                        trigger_context,
+                        decision,
+                        ExitPreparationStage::EconomicsSeal,
+                        failure,
+                    );
+                }
+            };
+            let (comparison, bps_denominator) = comparison;
+            decision.evaluation.hold_ev_bps = comparison
+                .hold_net_value()
+                .checked_sub(entry_cost)
+                .and_then(|value| value.checked_div(entry_cost))
+                .and_then(|value| value.checked_mul(bps_denominator))
+                .and_then(|value| value.to_f64());
+            decision.evaluation.exit_ev_bps = comparison
+                .exit_net_value()
+                .checked_sub(entry_cost)
+                .and_then(|value| value.checked_div(entry_cost))
+                .and_then(|value| value.checked_mul(bps_denominator))
+                .and_then(|value| value.to_f64());
+            decision.evaluation.exit_decision =
+                Some(exit_decision_from_fee_adjusted_comparison(comparison));
+            if decision.evaluation.exit_decision == Some(ExitDecision::Hold) {
+                decision.instrument_id = None;
+                decision.order_type = None;
+                decision.order_side = None;
+                decision.position_side = None;
+                decision.time_in_force = None;
+                decision.price = None;
+                decision.quantity = None;
+                decision.client_order_id = None;
+                decision.is_post_only = None;
+                decision.is_reduce_only = None;
+                decision.is_quote_quantity = None;
+                decision.expire_time_unix_nanos = None;
+                decision.trigger_price = None;
+                decision.activation_price = None;
+                decision.trigger_type = None;
+                decision.trigger_instrument_id = None;
+                decision.trailing_offset = None;
+                decision.trailing_offset_type = None;
+                decision.blocked_reason = Some(EvidenceExitBlockedReason::ExitHold);
+                self.record_exit_intent_or_hold_once(now_ms, trigger_context, &decision)?;
+                self.log_exit_evaluation(now_ms, trigger_context, &decision);
+                return Ok(ExitAttemptExecution::completed(
+                    decision,
+                    ExitAttemptOutcome::Held {
+                        outcome: ExitHoldOutcome::Hold,
+                    },
+                ));
+            }
+        }
+        self.record_exit_intent_or_hold_once(now_ms, trigger_context, &decision)?;
         let exit_authority = match BoltV3ExitOrderAuthorityHandle::locally_submitted(
             client_order_id,
             instrument_id,
@@ -8395,11 +8525,13 @@ impl BinaryOracleEdgeTaker {
         ) {
             Ok(authority) => authority,
             Err(failure) => {
-                return Ok(rejected_exit_preparation(
+                return self.reject_exit_preparation_after_recording_intent(
+                    now_ms,
+                    trigger_context,
                     decision,
                     ExitPreparationStage::PositionAuthority,
                     failure,
-                ));
+                );
             }
         };
         let prepared_order = prepared_order_linkage(&intent);

@@ -1872,6 +1872,7 @@ name = "bolt-economics-core"
 version = "0.1.0"
 dependencies = [
  "rust_decimal",
+ "serde",
 ]
 
 [[package]]

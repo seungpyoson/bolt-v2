@@ -18,10 +18,11 @@ use crate::{
     economics::{
         AccountId, AdmissionTreatment, CurrencyId, EconomicScope, EconomicsError,
         EconomicsInstrumentId, EconomicsQuote, EconomicsQuoteRequest, EdgeBasisEvidence,
-        GrossExpectedValue, LiquidityRole, NativeUnitId, NetEdgeQuote, PlannedFillNotional,
-        ProductSurfaceId, ReportingPolicyId, SnapshotId, SourceIdentity, SourceValidity,
-        ValuationLeg, ValuationRoute, ValuationRouteId, VenueEconomicsAdapter,
-        VenueEconomicsUnavailable, VenueQuoteEstimate, fold_net_edge, validate_and_aggregate_quote,
+        FeeAdjustedExitVsHoldComparison, FeeAdjustedLegValue, GrossExpectedValue, LiquidityRole,
+        NativeUnitId, NetEdgeQuote, PlannedFillNotional, ProductSurfaceId, ReportingPolicyId,
+        SnapshotId, SourceIdentity, SourceValidity, ValuationLeg, ValuationRoute, ValuationRouteId,
+        VenueEconomicsAdapter, VenueEconomicsUnavailable, VenueQuoteEstimate,
+        compare_fee_adjusted_exit_vs_hold, fold_net_edge, validate_and_aggregate_quote,
     },
 };
 
@@ -469,19 +470,21 @@ impl BoundExecutionEconomics {
             &quote,
             basis,
         )?;
-        if let EconomicsAdmissionPolicy::TradingEdge {
-            minimum_core_edge_ratio,
-        } = policy
-        {
-            // Strategy policy may intentionally allow a negative raw threshold,
-            // but shared economics never admits a non-positive fee-adjusted edge.
-            let required_core_edge_ratio = minimum_core_edge_ratio.max(Decimal::ZERO);
-            if net_edge.core_edge_ratio <= required_core_edge_ratio {
-                return Err(EconomicsAdmissionError::CoreEdgeBelowMinimum {
-                    minimum_core_edge_ratio: required_core_edge_ratio,
-                    actual_core_edge_ratio: net_edge.core_edge_ratio,
-                });
+        match policy.edge_admission_policy() {
+            EconomicsEdgeAdmissionPolicy::RequirePositiveCoreEdge {
+                minimum_core_edge_ratio,
+            } => {
+                // The TradingEdge branch alone requires a positive fee-adjusted edge,
+                // even when strategy policy supplies a negative raw threshold.
+                let required_core_edge_ratio = minimum_core_edge_ratio.max(Decimal::ZERO);
+                if net_edge.core_edge_ratio <= required_core_edge_ratio {
+                    return Err(EconomicsAdmissionError::CoreEdgeBelowMinimum {
+                        minimum_core_edge_ratio: required_core_edge_ratio,
+                        actual_core_edge_ratio: net_edge.core_edge_ratio,
+                    });
+                }
             }
+            EconomicsEdgeAdmissionPolicy::AdmitRegardlessOfEdge => {}
         }
         let guaranteed_debit = if quote.core_total().is_sign_negative() {
             Decimal::ZERO
@@ -523,11 +526,28 @@ pub enum EconomicsAdmissionPolicy {
     RiskReduction,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EconomicsEdgeAdmissionPolicy {
+    RequirePositiveCoreEdge { minimum_core_edge_ratio: Decimal },
+    AdmitRegardlessOfEdge,
+}
+
 impl EconomicsAdmissionPolicy {
     pub const fn purpose(self) -> EconomicsAdmissionPurpose {
         match self {
             Self::TradingEdge { .. } => EconomicsAdmissionPurpose::TradingEdge,
             Self::RiskReduction => EconomicsAdmissionPurpose::RiskReduction,
+        }
+    }
+
+    pub const fn edge_admission_policy(self) -> EconomicsEdgeAdmissionPolicy {
+        match self {
+            Self::TradingEdge {
+                minimum_core_edge_ratio,
+            } => EconomicsEdgeAdmissionPolicy::RequirePositiveCoreEdge {
+                minimum_core_edge_ratio,
+            },
+            Self::RiskReduction => EconomicsEdgeAdmissionPolicy::AdmitRegardlessOfEdge,
         }
     }
 }
@@ -641,6 +661,65 @@ impl EconomicsAdmission {
 
     pub const fn purpose(&self) -> EconomicsAdmissionPurpose {
         self.policy.purpose()
+    }
+
+    pub const fn edge_admission_policy(&self) -> EconomicsEdgeAdmissionPolicy {
+        self.policy.edge_admission_policy()
+    }
+
+    pub fn compare_fee_adjusted_exit_vs_hold(
+        &self,
+        hold_gross_value_per_unit: Decimal,
+        stored_entry_cost_per_unit: Decimal,
+        hysteresis_per_unit: Decimal,
+    ) -> Result<FeeAdjustedExitVsHoldComparison, EconomicsAdmissionError> {
+        if self.edge_admission_policy() != EconomicsEdgeAdmissionPolicy::AdmitRegardlessOfEdge {
+            return Err(EconomicsAdmissionError::ExitVsHoldComparisonRequiresRiskReduction);
+        }
+        let planned_quantity = self
+            .request
+            .planned_fill_legs
+            .iter()
+            .try_fold(Decimal::ZERO, |total, leg| total.checked_add(leg.quantity))
+            .ok_or(EconomicsError::ArithmeticOverflow)?;
+        if planned_quantity <= Decimal::ZERO {
+            return Err(EconomicsError::InvalidPlannedFill.into());
+        }
+        if stored_entry_cost_per_unit <= Decimal::ZERO {
+            return Err(EconomicsError::NonPositiveValue {
+                field: "stored_entry_cost_per_unit",
+            }
+            .into());
+        }
+        let exit_gross_value_per_unit = self
+            .net_edge
+            .gross_expected_value
+            .checked_div(planned_quantity)
+            .and_then(|gross_per_unit| stored_entry_cost_per_unit.checked_add(gross_per_unit))
+            .ok_or(EconomicsError::ArithmeticOverflow)?;
+        let exit_execution_economics = self
+            .quote
+            .components()
+            .iter()
+            .filter(|component| {
+                matches!(
+                    component.component().kind,
+                    crate::economics::EconomicKind::Execution(_)
+                )
+            })
+            .filter_map(|component| component.point_valuation())
+            .try_fold(Decimal::ZERO, |total, valuation| {
+                total.checked_add(valuation.normalized_amount)
+            })
+            .ok_or(EconomicsError::ArithmeticOverflow)?
+            .checked_div(planned_quantity)
+            .ok_or(EconomicsError::ArithmeticOverflow)?;
+        compare_fee_adjusted_exit_vs_hold(
+            FeeAdjustedLegValue::proven_zero_execution_economics(hold_gross_value_per_unit),
+            FeeAdjustedLegValue::new(exit_gross_value_per_unit, exit_execution_economics),
+            hysteresis_per_unit,
+        )
+        .map_err(Into::into)
     }
 
     pub fn quote(&self) -> &EconomicsQuote {
@@ -899,6 +978,19 @@ fn resting_admission_terms_match(
     prior: &EconomicsAdmission,
     refreshed: &EconomicsAdmission,
 ) -> bool {
+    #[derive(Clone, Copy)]
+    struct EffectComparisonBasis<'a> {
+        scope: &'a crate::economics::EconomicScope,
+        request: &'a EconomicsQuoteRequest,
+        order_quantity: Decimal,
+    }
+
+    #[derive(Clone, Copy)]
+    struct EffectComparisonBasisPair<'a> {
+        before: EffectComparisonBasis<'a>,
+        after: EffectComparisonBasis<'a>,
+    }
+
     fn ratio(amount: Decimal, basis: Decimal) -> Option<Decimal> {
         amount.checked_div(basis)
     }
@@ -906,10 +998,19 @@ fn resting_admission_terms_match(
     fn effect_terms_match(
         before: &crate::economics::SignedNativeEffect,
         after: &crate::economics::SignedNativeEffect,
-        before_quantity: Decimal,
-        after_quantity: Decimal,
+        bases: EffectComparisonBasisPair<'_>,
     ) -> bool {
         use crate::economics::SignedNativeEffect;
+
+        let comparison_basis = |basis: EffectComparisonBasis<'_>| match basis.scope {
+            crate::economics::EconomicScope::Decision { .. }
+            | crate::economics::EconomicScope::Action { .. } => Some(basis.order_quantity),
+            crate::economics::EconomicScope::PositionInterval { position_id, .. } => {
+                basis.request.position.as_ref().and_then(|position| {
+                    (position.position_id == *position_id).then_some(position.quantity)
+                })
+            }
+        };
 
         let same_shape = match (before, after) {
             (
@@ -935,20 +1036,22 @@ fn resting_admission_terms_match(
             ) => before_asset == after_asset && before_application == after_application,
             _ => false,
         };
-        same_shape
-            && ratio(before.amount(), before_quantity) == ratio(after.amount(), after_quantity)
+        let Some(before_basis) = comparison_basis(bases.before) else {
+            return false;
+        };
+        let Some(after_basis) = comparison_basis(bases.after) else {
+            return false;
+        };
+        same_shape && ratio(before.amount(), before_basis) == ratio(after.amount(), after_basis)
     }
 
     fn optional_effect_terms_match(
         before: Option<&crate::economics::SignedNativeEffect>,
         after: Option<&crate::economics::SignedNativeEffect>,
-        before_quantity: Decimal,
-        after_quantity: Decimal,
+        bases: EffectComparisonBasisPair<'_>,
     ) -> bool {
         match (before, after) {
-            (Some(before), Some(after)) => {
-                effect_terms_match(before, after, before_quantity, after_quantity)
-            }
+            (Some(before), Some(after)) => effect_terms_match(before, after, bases),
             (None, None) => true,
             _ => false,
         }
@@ -1033,16 +1136,27 @@ fn resting_admission_terms_match(
                 .all(|(before, after)| {
                     let before = before.component();
                     let after = after.component();
+                    let effect_comparison_bases = EffectComparisonBasisPair {
+                        before: EffectComparisonBasis {
+                            scope: &before.scope,
+                            request: &prior.request,
+                            order_quantity: prior_quantity,
+                        },
+                        after: EffectComparisonBasis {
+                            scope: &after.scope,
+                            request: &refreshed.request,
+                            order_quantity: refreshed_quantity,
+                        },
+                    };
                     let point_estimate_matches =
                         match (&before.point_estimate, &after.point_estimate) {
                             (
-                                crate::economics::PointEstimate::NonZero(before),
-                                crate::economics::PointEstimate::NonZero(after),
+                                crate::economics::PointEstimate::NonZero(before_effect),
+                                crate::economics::PointEstimate::NonZero(after_effect),
                             ) => effect_terms_match(
-                                before,
-                                after,
-                                prior_quantity,
-                                refreshed_quantity,
+                                before_effect,
+                                after_effect,
+                                effect_comparison_bases,
                             ),
                             (
                                 crate::economics::PointEstimate::ProvenZero { factor_id: before },
@@ -1062,8 +1176,7 @@ fn resting_admission_terms_match(
                         && optional_effect_terms_match(
                             before.debit_risk_bound.as_ref(),
                             after.debit_risk_bound.as_ref(),
-                            prior_quantity,
-                            refreshed_quantity,
+                            effect_comparison_bases,
                         )
                 })
     }
@@ -1081,20 +1194,12 @@ fn resting_admission_terms_match(
         && prior_basis.product_metadata_source == refreshed_basis.product_metadata_source
         && prior_basis.policy_version == refreshed_basis.policy_version
         && prior_basis.scope == refreshed_basis.scope;
-    let same_scaled_totals = [
-        (prior.quote.core_total(), refreshed.quote.core_total()),
+    let same_order_leg_terms = [
         (
             prior.net_edge.gross_expected_value,
             refreshed.net_edge.gross_expected_value,
         ),
-        (
-            prior.net_edge.core_net_edge,
-            refreshed.net_edge.core_net_edge,
-        ),
-        (
-            prior.full_reservation_liability,
-            refreshed.full_reservation_liability,
-        ),
+        (prior.reservation_basis, refreshed.reservation_basis),
         (
             prior_basis.normalized_amount.amount(),
             refreshed_basis.normalized_amount.amount(),
@@ -1102,8 +1207,25 @@ fn resting_admission_terms_match(
     ]
     .into_iter()
     .all(|(before, after)| {
-        ratio(before, prior.reservation_basis) == ratio(after, refreshed.reservation_basis)
+        ratio(before, prior_leg.quantity) == ratio(after, refreshed_leg.quantity)
     });
+    let derived_core_terms_are_valid = |admission: &EconomicsAdmission| {
+        let expected_net_edge = admission
+            .net_edge
+            .gross_expected_value
+            .checked_add(admission.quote.core_total());
+        let expected_edge_ratio = expected_net_edge
+            .and_then(|edge| edge.checked_div(admission.net_edge.basis.normalized_amount.amount()));
+        let guaranteed_debit = if admission.quote.core_total().is_sign_negative() {
+            Decimal::ZERO.checked_sub(admission.quote.core_total())
+        } else {
+            Some(Decimal::ZERO)
+        };
+        expected_net_edge == Some(admission.net_edge.core_net_edge)
+            && expected_edge_ratio == Some(admission.net_edge.core_edge_ratio)
+            && guaranteed_debit.and_then(|debit| admission.reservation_basis.checked_add(debit))
+                == Some(admission.full_reservation_liability)
+    };
     let same_request_authority = prior.request.execution_client_id
         == refreshed.request.execution_client_id
         && prior.request.account_id == refreshed.request.account_id
@@ -1124,9 +1246,10 @@ fn resting_admission_terms_match(
         && prior.order_binding == refreshed.order_binding
         && prior.policy == refreshed.policy
         && same_basis_authority
-        && same_scaled_totals
+        && same_order_leg_terms
+        && derived_core_terms_are_valid(prior)
+        && derived_core_terms_are_valid(refreshed)
         && prior.quote.reporting_currency() == refreshed.quote.reporting_currency()
-        && prior.net_edge.core_edge_ratio == refreshed.net_edge.core_edge_ratio
 }
 
 fn resting_forecast_terms_match(
@@ -1142,10 +1265,28 @@ fn resting_forecast_terms_match(
     let ratio = |amount: Decimal, basis: Decimal| amount.checked_div(basis);
     let effect_terms_match =
         |before: &crate::economics::SignedNativeEffect,
-         after: &crate::economics::SignedNativeEffect| {
+         after: &crate::economics::SignedNativeEffect,
+         before_scope: &crate::economics::EconomicScope,
+         after_scope: &crate::economics::EconomicScope| {
+            let comparison_basis =
+                |scope: &crate::economics::EconomicScope,
+                 admission: &EconomicsAdmission,
+                 order_quantity: Decimal| match scope {
+                    crate::economics::EconomicScope::Decision { .. }
+                    | crate::economics::EconomicScope::Action { .. } => Some(order_quantity),
+                    crate::economics::EconomicScope::PositionInterval { position_id, .. } => {
+                        admission.request.position.as_ref().and_then(|position| {
+                            (position.position_id == *position_id).then_some(position.quantity)
+                        })
+                    }
+                };
+            let before_basis = comparison_basis(before_scope, prior, prior_leg.quantity);
+            let after_basis = comparison_basis(after_scope, refreshed, refreshed_leg.quantity);
             before.unit() == after.unit()
-                && ratio(before.amount(), prior_leg.quantity)
-                    == ratio(after.amount(), refreshed_leg.quantity)
+                && before_basis.is_some()
+                && after_basis.is_some()
+                && ratio(before.amount(), before_basis.expect("checked above"))
+                    == ratio(after.amount(), after_basis.expect("checked above"))
         };
     let forecast_components_match = {
         let prior_components = prior
@@ -1175,9 +1316,14 @@ fn resting_forecast_terms_match(
                     let after = after.component();
                     let point_matches = match (&before.point_estimate, &after.point_estimate) {
                         (
-                            crate::economics::PointEstimate::NonZero(before),
-                            crate::economics::PointEstimate::NonZero(after),
-                        ) => effect_terms_match(before, after),
+                            crate::economics::PointEstimate::NonZero(before_effect),
+                            crate::economics::PointEstimate::NonZero(after_effect),
+                        ) => effect_terms_match(
+                            before_effect,
+                            after_effect,
+                            &before.scope,
+                            &after.scope,
+                        ),
                         (
                             crate::economics::PointEstimate::ProvenZero { factor_id: before },
                             crate::economics::PointEstimate::ProvenZero { factor_id: after },
@@ -1188,7 +1334,12 @@ fn resting_forecast_terms_match(
                         before.debit_risk_bound.as_ref(),
                         after.debit_risk_bound.as_ref(),
                     ) {
-                        (Some(before), Some(after)) => effect_terms_match(before, after),
+                        (Some(before_effect), Some(after_effect)) => effect_terms_match(
+                            before_effect,
+                            after_effect,
+                            &before.scope,
+                            &after.scope,
+                        ),
                         (None, None) => true,
                         _ => false,
                     };
@@ -1204,21 +1355,22 @@ fn resting_forecast_terms_match(
                         && bound_matches
                 })
     };
+    let derived_forecast_terms_are_valid = |admission: &EconomicsAdmission| {
+        let expected_net_edge = admission
+            .net_edge
+            .gross_expected_value
+            .checked_add(admission.quote.forecast_total());
+        let expected_edge_ratio = expected_net_edge
+            .and_then(|edge| edge.checked_div(admission.net_edge.basis.normalized_amount.amount()));
+        expected_net_edge == Some(admission.net_edge.forecast_net_edge)
+            && expected_edge_ratio == Some(admission.net_edge.forecast_edge_ratio)
+    };
     forecast_components_match
-        && ratio(prior.quote.forecast_total(), prior.reservation_basis)
-            == ratio(
-                refreshed.quote.forecast_total(),
-                refreshed.reservation_basis,
-            )
-        && ratio(prior.net_edge.forecast_net_edge, prior.reservation_basis)
-            == ratio(
-                refreshed.net_edge.forecast_net_edge,
-                refreshed.reservation_basis,
-            )
+        && derived_forecast_terms_are_valid(prior)
+        && derived_forecast_terms_are_valid(refreshed)
         && prior.quote.forecast_complete() == refreshed.quote.forecast_complete()
         && prior.quote.missing_forecast_component_ids()
             == refreshed.quote.missing_forecast_component_ids()
-        && prior.net_edge.forecast_edge_ratio == refreshed.net_edge.forecast_edge_ratio
 }
 
 #[cfg(test)]
@@ -1226,7 +1378,8 @@ mod resting_terms_tests {
     use super::*;
     use crate::economics::{
         AdmissionTreatment, EconomicClass, EconomicComponentId, EconomicKind, EconomicScope,
-        EstimatedEffect, ExecutionKind, FormulaId, PointEstimate, SignedNativeEffect, SnapshotId,
+        EstimatedEffect, ExecutionKind, FormulaId, PointEstimate, PositionContext, PositionId,
+        PositionSide, SignedNativeEffect, SnapshotId,
     };
 
     fn effect(
@@ -1234,6 +1387,24 @@ mod resting_terms_tests {
         component_id: &str,
         amount: Decimal,
         treatment: AdmissionTreatment,
+    ) -> EstimatedEffect {
+        effect_with_scope(
+            request,
+            component_id,
+            amount,
+            treatment,
+            EconomicScope::Decision {
+                decision_correlation_id: request.decision_correlation_id.clone(),
+            },
+        )
+    }
+
+    fn effect_with_scope(
+        request: &EconomicsQuoteRequest,
+        component_id: &str,
+        amount: Decimal,
+        treatment: AdmissionTreatment,
+        scope: EconomicScope,
     ) -> EstimatedEffect {
         EstimatedEffect {
             component_id: routing_test_id(component_id, EconomicComponentId::try_new),
@@ -1243,9 +1414,7 @@ mod resting_terms_tests {
                 EconomicClass::Credit
             },
             kind: EconomicKind::Execution(ExecutionKind::ProtocolTrading),
-            scope: EconomicScope::Decision {
-                decision_correlation_id: request.decision_correlation_id.clone(),
-            },
+            scope,
             point_estimate: PointEstimate::NonZero(
                 SignedNativeEffect::currency(amount, request.reporting_currency.clone())
                     .expect("test effect should be non-zero"),
@@ -1319,6 +1488,91 @@ mod resting_terms_tests {
         admission.quote = quote;
         admission.net_edge = net_edge;
         admission
+    }
+
+    fn position_interval_admission(
+        order_quantity: Decimal,
+        position_quantity: Decimal,
+        position_amount: Decimal,
+    ) -> EconomicsAdmission {
+        let full_reservation_liability = order_quantity
+            .checked_add(-position_amount)
+            .expect("test liability should fit");
+        let mut admission = EconomicsAdmission::for_routing_test_with_validity(
+            "resting-position-client",
+            "RESTING-POSITION.TEST",
+            crate::economics::OrderSide::Buy,
+            EconomicsOrderBinding::from_sha256([7; 32]),
+            EconomicsAdmissionPurpose::TradingEdge,
+            order_quantity,
+            full_reservation_liability,
+            100,
+        );
+        let position_id = routing_test_id("resting-position", PositionId::try_new);
+        admission.request.position = Some(PositionContext {
+            position_id: position_id.clone(),
+            side: PositionSide::Long,
+            quantity: position_quantity,
+            holding_horizon_ns: 10,
+        });
+        let quote = validate_and_aggregate_quote(
+            &admission.request,
+            VenueQuoteEstimate {
+                authority: SourceValidity {
+                    source: routing_test_id("resting-terms-source", SourceIdentity::try_new),
+                    snapshot_id: routing_test_id("resting-position-authority", SnapshotId::try_new),
+                    source_at_ns: 1,
+                    fetched_at_ns: 1,
+                    valid_until_ns: 100,
+                },
+                dependency_sources: Vec::new(),
+                components: vec![effect_with_scope(
+                    &admission.request,
+                    "resting-position-core",
+                    position_amount,
+                    AdmissionTreatment::GuaranteedConditionalOnAction,
+                    EconomicScope::PositionInterval {
+                        position_id,
+                        starts_at_ns: admission.request.requested_at_ns,
+                        ends_at_ns: admission.request.requested_at_ns + 10,
+                    },
+                )],
+            },
+            &[],
+        )
+        .expect("position-interval quote should aggregate");
+        let net_edge = fold_net_edge(
+            GrossExpectedValue::new(order_quantity, admission.request.reporting_currency.clone()),
+            &quote,
+            admission.net_edge.basis.clone(),
+        )
+        .expect("position-interval edge should fold");
+        admission.quote = quote;
+        admission.net_edge = net_edge;
+        admission
+    }
+
+    #[test]
+    fn position_interval_component_uses_position_basis_across_partial_fill() {
+        let prior = position_interval_admission(Decimal::TEN, Decimal::TEN, Decimal::NEGATIVE_ONE);
+        let partial_fill_same_position =
+            position_interval_admission(Decimal::from(5), Decimal::TEN, Decimal::NEGATIVE_ONE);
+        assert!(matches!(
+            finish_resting_economics_refresh(&prior, partial_fill_same_position),
+            RestingOrderEconomicsRefresh::Refreshed {
+                forecast_drift: None,
+                ..
+            }
+        ));
+
+        let changed_position =
+            position_interval_admission(Decimal::from(5), Decimal::from(8), Decimal::NEGATIVE_ONE);
+        assert_eq!(
+            finish_resting_economics_refresh(&prior, changed_position),
+            RestingOrderEconomicsRefresh::CancelRequired(
+                RestingOrderEconomicsCancelReason::TermsChanged
+            )
+        );
     }
 
     #[test]
@@ -1439,6 +1693,7 @@ pub enum EconomicsAdmissionError {
     EdgeBasisAuthorityMismatch,
     ReportingAuthorityMismatch,
     AmbiguousProductSurface,
+    ExitVsHoldComparisonRequiresRiskReduction,
     CoreEdgeBelowMinimum {
         minimum_core_edge_ratio: Decimal,
         actual_core_edge_ratio: Decimal,
@@ -1459,6 +1714,9 @@ impl std::fmt::Display for EconomicsAdmissionError {
             }
             Self::AmbiguousProductSurface => {
                 f.write_str("economics instrument matches more than one product surface")
+            }
+            Self::ExitVsHoldComparisonRequiresRiskReduction => {
+                f.write_str("economics exit-vs-hold comparison requires RiskReduction admission")
             }
             Self::CoreEdgeBelowMinimum {
                 minimum_core_edge_ratio,
@@ -1841,10 +2099,10 @@ fn build_valuation_routes(
         let route = ValuationRoute {
             route_id: ValuationRouteId::try_new(route_id.clone())
                 .map_err(|error| error.to_string())?,
-            from: NativeUnitId::Currency(
-                CurrencyId::try_new(configured.from_unit.clone())
-                    .map_err(|error| error.to_string())?,
-            ),
+            from: configured
+                .from_kind
+                .try_id(configured.from_unit.clone())
+                .map_err(|error| error.to_string())?,
             to: CurrencyId::try_new(configured.to_currency.clone())
                 .map_err(|error| error.to_string())?,
             legs,
@@ -1868,13 +2126,15 @@ fn build_valuation_leg(
 ) -> Result<ValuationLeg, String> {
     match configured {
         EconomicsValuationLegConfig::ProviderExactConversion {
+            from_kind,
             from_unit,
             to_unit,
             source_id,
             max_age_ms,
         } => {
-            let expected_from =
-                CurrencyId::try_new(from_unit.clone()).map_err(|error| error.to_string())?;
+            let expected_from = from_kind
+                .try_id(from_unit.clone())
+                .map_err(|error| error.to_string())?;
             let expected_to =
                 CurrencyId::try_new(to_unit.clone()).map_err(|error| error.to_string())?;
             let expected_source =
@@ -1891,7 +2151,7 @@ fn build_valuation_leg(
                         fetched_at_ns,
                         valid_until_ns,
                     } if source_id == &expected_source
-                        && from_unit == &expected_from
+                        && from_unit.as_str() == expected_from.as_str()
                         && to_unit == &expected_to =>
                     {
                         Some((
@@ -1910,7 +2170,7 @@ fn build_valuation_leg(
                 return Err(format!("duplicate exact valuation authority `{source_id}`"));
             }
             valuation_leg(
-                NativeUnitId::Currency(expected_from),
+                expected_from,
                 NativeUnitId::Currency(expected_to),
                 Decimal::ONE,
                 ResolvedValuationAuthority {
@@ -1924,6 +2184,7 @@ fn build_valuation_leg(
             )
         }
         EconomicsValuationLegConfig::MarketQuote {
+            from_kind,
             from_unit,
             source_currency,
             to_unit,
@@ -1939,7 +2200,8 @@ fn build_valuation_leg(
                     .exact_currency_identities
                     .values()
                     .any(|identity| {
-                        identity.from_unit == *from_unit
+                        identity.from_kind == *from_kind
+                            && identity.from_unit == *from_unit
                             && identity.source_currency == *source_currency
                     });
             if !identity_matches {
@@ -2007,9 +2269,9 @@ fn build_valuation_leg(
                     .ok_or_else(|| "market valuation inversion overflowed".to_string())?,
             };
             valuation_leg(
-                NativeUnitId::Currency(
-                    CurrencyId::try_new(from_unit.clone()).map_err(|error| error.to_string())?,
-                ),
+                from_kind
+                    .try_id(from_unit.clone())
+                    .map_err(|error| error.to_string())?,
                 NativeUnitId::Currency(expected_to),
                 rate,
                 ResolvedValuationAuthority {

@@ -453,6 +453,9 @@ pub(crate) struct ProviderEconomicsAdapterBuildContext<'a> {
 
 pub struct ProviderBinding {
     pub key: &'static str,
+    /// Declared exactly when this binding registers an execution client.
+    /// `None` means the provider is data-only in this build.
+    pub(crate) venue_position_identity: Option<bool>,
     pub(crate) nt_reconnect_budget: NtReconnectBudgetCapability,
     pub validate_client: fn(&str, &ClientBlock) -> Vec<String>,
     pub supported_market_families: &'static [&'static str],
@@ -634,6 +637,7 @@ fn validate_reference_live_probe_client(
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
+        venue_position_identity: Some(false),
         reconciliation_unmet: &[
             "the pinned Polymarket adapter omits venue orders and positions from the mass status \
 it returns -- those it cannot represent, and holdings it filters as dust -- and still reports \
@@ -701,6 +705,7 @@ still lose positions inside the engine",
     },
     ProviderBinding {
         key: binance::KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -725,6 +730,7 @@ still lose positions inside the engine",
     },
     ProviderBinding {
         key: hyperliquid::KEY,
+        venue_position_identity: Some(false),
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -756,6 +762,7 @@ still lose positions inside the engine",
     },
     ProviderBinding {
         key: market_data::BITMEX_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -780,6 +787,7 @@ still lose positions inside the engine",
     },
     ProviderBinding {
         key: market_data::BYBIT_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -804,6 +812,7 @@ still lose positions inside the engine",
     },
     ProviderBinding {
         key: market_data::COINBASE_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -828,6 +837,7 @@ still lose positions inside the engine",
     },
     ProviderBinding {
         key: market_data::DERIBIT_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -852,6 +862,7 @@ still lose positions inside the engine",
     },
     ProviderBinding {
         key: market_data::OKX_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -876,6 +887,7 @@ still lose positions inside the engine",
     },
     ProviderBinding {
         key: market_data::KRAKEN_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -900,6 +912,7 @@ still lose positions inside the engine",
     },
     ProviderBinding {
         key: chainlink::KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -924,6 +937,7 @@ still lose positions inside the engine",
     },
     ProviderBinding {
         key: chainlink_reference::KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -950,6 +964,7 @@ still lose positions inside the engine",
     },
     ProviderBinding {
         key: polyresearch::KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],

@@ -86,7 +86,8 @@ fn fill_arms_cooldown_for_filled_market_not_current_selection() {
     strategy.on_order_filled(&order_filled_event(
         entry_client_order_id,
         instrument_a,
-        position_id,
+        Some(position_id),
+        OrderSide::Buy,
     ));
 
     assert!(strategy.market_in_cooldown("MKT-1", 1_000));
@@ -107,6 +108,8 @@ fn exit_fill_arms_cooldown_for_position_market_not_current_selection() {
         position_id,
         Quantity::new(10.0, 2),
         0.450,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     set_exit_pending(
         &mut strategy,
@@ -119,7 +122,8 @@ fn exit_fill_arms_cooldown_for_position_market_not_current_selection() {
     strategy.on_order_filled(&order_filled_event(
         exit_client_order_id,
         tracked_instrument,
-        position_id,
+        Some(position_id),
+        OrderSide::Buy,
     ));
 
     assert!(strategy.market_in_cooldown("MKT-1", 1_000));
@@ -140,6 +144,8 @@ fn exit_fill_without_known_position_market_does_not_cool_down_active_selection()
         position_id,
         Quantity::new(10.0, 2),
         0.450,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     open_position.lifecycle = BoltV3PositionMarketLifecycle::missing();
     set_exit_pending(
@@ -153,7 +159,8 @@ fn exit_fill_without_known_position_market_does_not_cool_down_active_selection()
     strategy.on_order_filled(&order_filled_event(
         exit_client_order_id,
         tracked_instrument,
-        position_id,
+        Some(position_id),
+        OrderSide::Buy,
     ));
 
     assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
@@ -171,6 +178,8 @@ fn position_close_keeps_exit_fenced_until_delayed_fill_authority_converges() {
         position_id,
         Quantity::new(10.0, 2),
         0.450,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     set_exit_pending(
         &mut strategy,
@@ -188,7 +197,7 @@ fn position_close_keeps_exit_fenced_until_delayed_fill_authority_converges() {
     );
     assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
 
-    let mut delayed_fill = order_filled_event_with_details(
+    let mut delayed_fill = order_filled_event(
         exit_client_order_id,
         tracked_instrument,
         Some(position_id),

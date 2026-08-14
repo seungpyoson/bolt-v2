@@ -167,7 +167,7 @@ impl EconomicsQuote {
     }
 
     pub fn capability_health(&self) -> EconomicsCapabilityHealth {
-        EconomicsCapabilityHealth::quote_only(self.valid_until_ns, self.forecast_valid_until_ns)
+        EconomicsCapabilityHealth::quote_only(self.valid_until_ns)
     }
 
     pub fn cap_valid_until_ns(&mut self, valid_until_ns: u64) -> Result<(), EconomicsError> {
@@ -788,7 +788,6 @@ mod tests {
         assert_eq!(quote.valid_until_ns(), 1_100);
         assert_eq!(quote.forecast_valid_until_ns(), Some(1_050));
         assert!(quote.capability_health().allows_admission(1_075).is_ok());
-        assert!(!quote.capability_health().forecast_available(1_075));
     }
 
     #[test]

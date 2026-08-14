@@ -1497,6 +1497,8 @@ fn post_only_exit_submission_price_uses_passive_book_price() {
         PositionId::from("P-EXIT-001"),
         Quantity::new(10.0, 2),
         0.450,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let expected_passive_price = open_position.book.best_ask;
     set_managed_position(
@@ -1531,6 +1533,8 @@ fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used()
         PositionId::from("P-QUOTE-EXIT-001"),
         Quantity::new(10.0, 2),
         0.450,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     set_managed_position(
         &mut strategy,
@@ -1612,6 +1616,8 @@ fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
         PositionId::from("P-FORCED-EXIT-001"),
         Quantity::new(10.0, 2),
         0.450,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     set_managed_position(
         &mut strategy,
@@ -1649,6 +1655,8 @@ fn forced_flat_exit_order_object_uses_configured_ioc_market_shape() {
         PositionId::from("P-FORCED-EXIT-ORDER-001"),
         Quantity::new(10.0, 2),
         0.450,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     set_managed_position(
         &mut strategy,
@@ -1711,6 +1719,8 @@ fn forced_flat_exit_order_object_uses_configured_forced_exit_template() {
         PositionId::from("P-FORCED-EXIT-CONFIGURED-001"),
         Quantity::new(10.0, 2),
         0.450,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     set_managed_position(
         &mut strategy,
@@ -2243,6 +2253,8 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
         PositionId::from("P-STOP-EXIT"),
         quantity,
         0.450,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     set_managed_position(
         &mut strategy,
@@ -2608,6 +2620,8 @@ fn stop_market_exit_submission_uses_trigger_price_without_book_liquidity() {
         PositionId::from("P-STOP-EXIT"),
         Quantity::new(4.0, 2),
         0.450,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     position.book = book;
     set_managed_position(
@@ -2641,6 +2655,8 @@ fn stop_market_exit_ev_uses_trigger_price_instead_of_live_book() {
         PositionId::from("P-STOP-EV"),
         Quantity::new(4.0, 2),
         0.450,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     set_managed_position(
         &mut strategy,
@@ -2753,11 +2769,13 @@ fn strategy_exit_ev_uses_gross_entry_and_exit_prices() {
         position_id,
         Quantity::new(10.0, 2),
         0.450,
+        OrderSide::Buy,
     );
     strategy.on_order_filled(&order_filled_event(
         client_order_id,
         instrument_id,
-        position_id,
+        Some(position_id),
+        OrderSide::Buy,
     ));
 
     let order_config = strategy

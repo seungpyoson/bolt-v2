@@ -1148,7 +1148,7 @@ fn bolt_v3_strategy_oms_type_uses_nt_canonical_enum() {
 }
 
 #[test]
-fn bolt_v3_strategy_oms_type_accepts_nt_variants() {
+fn bolt_v3_strategy_oms_type_accepts_nt_unspecified_variant() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -1160,28 +1160,53 @@ fn bolt_v3_strategy_oms_type_accepts_nt_variants() {
     )
     .expect("stable root should parse");
 
-    for supported_oms_type in ["hedging", "unspecified"] {
-        let mutated_strategy = std::fs::read_to_string(support::repo_path(
-            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-        ))
-        .expect("strategy fixture should be readable")
-        .replace(
-            "oms_type = \"netting\"",
-            &format!("oms_type = \"{supported_oms_type}\""),
-        );
-        let strategy: BoltV3StrategyConfig =
-            toml::from_str(&mutated_strategy).expect("oms_type should parse via NT enum");
-        let loaded = vec![LoadedStrategy {
-            config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
-            relative_path: "strategies/binary_oracle.toml".to_string(),
-            config: strategy,
-        }];
-        let messages = validate_strategies(&stable_root, &loaded);
-        assert!(
-            messages.iter().all(|message| !message.contains("oms_type")),
-            "NT oms_type variant {supported_oms_type} should not be narrowed by bolt validation: {messages:#?}"
-        );
-    }
+    let mutated_strategy = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace("oms_type = \"netting\"", "oms_type = \"unspecified\"");
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&mutated_strategy).expect("oms_type should parse via NT enum");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().all(|message| !message.contains("oms_type")),
+        "NT oms_type variant unspecified should not be narrowed by bolt validation: {messages:#?}"
+    );
+}
+
+#[test]
+fn config_load_rejects_hedging_when_execution_capability_has_no_venue_position_identity() {
+    use bolt_v2::bolt_v3_config::{BoltV3ConfigError, load_bolt_v3_config};
+
+    let temp = tempfile::tempdir().expect("config-load tempdir should create");
+    let strategies_dir = temp.path().join("strategies");
+    fs::create_dir(&strategies_dir).expect("strategy fixture dir should create");
+    let strategy = support::repo_text("tests/fixtures/bolt_v3/strategies/binary_oracle.toml")
+        .replace("oms_type = \"netting\"", "oms_type = \"hedging\"");
+    fs::write(strategies_dir.join("binary_oracle.toml"), strategy)
+        .expect("mutated strategy fixture should write");
+    let root_path = temp.path().join("root.toml");
+    fs::copy(
+        support::repo_path("tests/fixtures/bolt_v3/root.toml"),
+        &root_path,
+    )
+    .expect("root fixture should copy");
+
+    let error = load_bolt_v3_config(&root_path)
+        .expect_err("Hedging must fail when an execution client cannot report position identity");
+    let BoltV3ConfigError::Validation(error) = error else {
+        panic!("Hedging incompatibility must be a typed validation error: {error}");
+    };
+    assert!(error.messages().iter().any(|message| {
+        message.contains("clients.polymarket_main.execution")
+            && message.contains("venue_position_identity=not_reported")
+            && message.contains("oms_type=Hedging")
+    }));
 }
 
 #[test]

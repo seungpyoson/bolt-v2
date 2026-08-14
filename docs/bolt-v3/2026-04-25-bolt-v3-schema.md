@@ -248,7 +248,6 @@ http_timeout_secs = 60 # NT: PolymarketExecClientConfig.http_timeout_secs
 max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
 retry_delay_initial_ms = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
 retry_delay_max_ms = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
-fee_cache_ttl_secs = 300 # NT: PolymarketExecClientConfig fee cache TTL
 transport_backend = "sockudo" # NT: PolymarketExecClientConfig.transport_backend
 
 [clients.polymarket_main.secrets]
@@ -982,10 +981,8 @@ The current schema also requires these pinned adapter fields to be explicit:
 - `base_url_ws`
 - `base_url_data_api`
 - `http_timeout_secs`
-- `fee_cache_ttl_secs`
 - `transport_backend`
 
-`fee_cache_ttl_secs` is a positive integer and controls the provider fee cache lifetime.
 `transport_backend` is a string enum with current allowed value `sockudo` and maps directly to the pinned NT adapter field.
 
 #### `[clients.<identifier>.execution.on_chain_collateral]`
@@ -1867,7 +1864,6 @@ http_timeout_secs = 60 # NT: PolymarketExecClientConfig.http_timeout_secs
 max_retries = 3 # NT: PolymarketExecClientConfig.max_retries
 retry_delay_initial_ms = 250 # NT: PolymarketExecClientConfig.retry_delay_initial_ms
 retry_delay_max_ms = 2000 # NT: PolymarketExecClientConfig.retry_delay_max_ms
-fee_cache_ttl_secs = 300 # NT: PolymarketExecClientConfig fee cache TTL
 transport_backend = "sockudo" # NT: PolymarketExecClientConfig.transport_backend
 
 [clients.polymarket_main.secrets]

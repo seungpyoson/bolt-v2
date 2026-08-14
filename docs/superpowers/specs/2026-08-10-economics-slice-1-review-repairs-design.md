@@ -875,8 +875,12 @@ health record — the locked lease-bounded feed contract is unchanged.
 document drops the deleted fee-cache field. The caller-less public
 `forecast_available` is deleted rather than fenced; the exhaustive
 evidence-domain census found no other dead public item, and its three
-feature-gated `_for_test` methods tighten to `pub(crate)` so no shippable-build
-surface remains public without a reachable caller. The duplicate
+feature-gated `_for_test` methods tighten to `pub(crate)`. Because integration
+tests are separate crates that cannot reach `pub(crate)`, they reach the
+recorder through one `#[doc(hidden)]` facade compiled only under
+`test-current-evidence-inspection`, which names the injectable faults as a
+closed enum rather than re-exporting the methods. No shippable build contains
+either the facade or a public item without a reachable caller. The duplicate
 nanoseconds-per-millisecond constant collapses to one definition. The
 shared-fixture seed helpers take the order side and position side they seed, so
 linkage assertions can no longer agree with production by construction; the

@@ -26,20 +26,25 @@ pub(crate) struct BoltV3PositionAuthorityKey {
     venue_position_id: Option<PositionId>,
 }
 
-impl BoltV3PositionAuthorityKey {
-    pub(crate) const fn new(
-        execution_client_id: ClientId,
-        account_id: AccountId,
-        instrument_id: InstrumentId,
-        venue_position_id: Option<PositionId>,
-    ) -> Self {
-        Self {
-            execution_client_id,
-            account_id,
-            instrument_id,
-            venue_position_id,
-        }
+fn normalize_position_authority_key(
+    execution_client_id: ClientId,
+    account_id: AccountId,
+    instrument_id: InstrumentId,
+    venue_position_id: Option<PositionId>,
+) -> BoltV3PositionAuthorityKey {
+    BoltV3PositionAuthorityKey {
+        execution_client_id,
+        account_id,
+        instrument_id,
+        venue_position_id,
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum BoltV3PositionAuthorityObservationOutcome {
+    Applied,
+    IgnoredOutsideRegisteredAccounts,
+    NoActiveLease(BoltV3PositionAuthorityKey),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -212,12 +217,12 @@ impl BoltV3PositionAuthorityCapability {
         position_id: PositionId,
         instrument_id: InstrumentId,
     ) -> Result<BoltV3PositionAuthorityLease> {
-        self.feed.acquire(BoltV3PositionAuthorityKey::new(
+        self.feed.acquire(
             self.execution_client_id,
             self.account_id,
             instrument_id,
             self.venue_position_id(position_id)?,
-        ))
+        )
     }
 
     pub(crate) fn canonical_position(
@@ -293,7 +298,10 @@ impl BoltV3PositionAuthorityCapability {
     }
 
     #[cfg(test)]
-    pub(crate) fn observe_for_test(&self, report: &PositionStatusReport) -> Result<()> {
+    pub(crate) fn observe_for_test(
+        &self,
+        report: &PositionStatusReport,
+    ) -> Result<BoltV3PositionAuthorityObservationOutcome> {
         self.feed.observe(report)
     }
 }
@@ -375,8 +383,17 @@ impl BoltV3PositionAuthorityFeed {
 
     pub(crate) fn acquire(
         &self,
-        key: BoltV3PositionAuthorityKey,
+        execution_client_id: ClientId,
+        account_id: AccountId,
+        instrument_id: InstrumentId,
+        venue_position_id: Option<PositionId>,
     ) -> Result<BoltV3PositionAuthorityLease> {
+        let key = normalize_position_authority_key(
+            execution_client_id,
+            account_id,
+            instrument_id,
+            venue_position_id,
+        );
         let mut state = self
             .inner
             .lock()
@@ -417,28 +434,52 @@ impl BoltV3PositionAuthorityFeed {
         })
     }
 
-    pub(crate) fn observe(&self, report: &PositionStatusReport) -> Result<()> {
+    pub(crate) fn observe(
+        &self,
+        report: &PositionStatusReport,
+    ) -> Result<BoltV3PositionAuthorityObservationOutcome> {
         let mut state = self
             .inner
             .lock()
             .map_err(|_| anyhow::anyhow!("position authority feed lock is poisoned"))?;
         let Some(binding) = state.client_by_account.get(&report.account_id).copied() else {
-            return Ok(());
+            return Ok(BoltV3PositionAuthorityObservationOutcome::IgnoredOutsideRegisteredAccounts);
         };
         if report.instrument_id.venue != binding.venue {
-            return Ok(());
+            return Ok(BoltV3PositionAuthorityObservationOutcome::IgnoredOutsideRegisteredAccounts);
         }
-        let key = BoltV3PositionAuthorityKey::new(
+        let key = normalize_position_authority_key(
             binding.execution_client_id,
             report.account_id,
             report.instrument_id,
             report.venue_position_id,
         );
         let Some(entry) = state.keys.get_mut(&key) else {
-            return Ok(());
+            return Ok(BoltV3PositionAuthorityObservationOutcome::NoActiveLease(
+                key,
+            ));
         };
         entry.observe(report);
-        Ok(())
+        Ok(BoltV3PositionAuthorityObservationOutcome::Applied)
+    }
+
+    fn observe_with_operator_telemetry(&self, report: &PositionStatusReport) {
+        match self.observe(report) {
+            Ok(BoltV3PositionAuthorityObservationOutcome::NoActiveLease(key)) => {
+                log::warn!(
+                    "position authority report dropped without an active lease: execution_client_id={} account_id={} instrument_id={} venue_position_id={:?}",
+                    key.execution_client_id,
+                    key.account_id,
+                    key.instrument_id,
+                    key.venue_position_id,
+                );
+            }
+            Ok(BoltV3PositionAuthorityObservationOutcome::Applied)
+            | Ok(BoltV3PositionAuthorityObservationOutcome::IgnoredOutsideRegisteredAccounts) => {}
+            Err(error) => {
+                log::error!("position authority report observation failed: {error:#}");
+            }
+        }
     }
 
     fn subscribe(&self) -> BoltV3PositionAuthorityFeedSubscription {
@@ -448,9 +489,7 @@ impl BoltV3PositionAuthorityFeed {
                 .into();
         let feed = self.clone();
         let handler = ShareableMessageHandler::from_typed(move |report: &PositionStatusReport| {
-            if let Err(error) = feed.observe(report) {
-                log::error!("position authority report observation failed: {error:#}");
-            }
+            feed.observe_with_operator_telemetry(report);
         });
         msgbus::subscribe_any(pattern, handler.clone(), None);
         BoltV3PositionAuthorityFeedSubscription {
@@ -658,12 +697,26 @@ mod tests {
     }
 
     fn key(instrument: &str, venue_position_id: Option<&str>) -> BoltV3PositionAuthorityKey {
-        BoltV3PositionAuthorityKey::new(
+        normalize_position_authority_key(
             ClientId::from("execution-client"),
             AccountId::from("ACCOUNT-001"),
             InstrumentId::from(instrument),
             venue_position_id.map(PositionId::from),
         )
+    }
+
+    fn acquire(
+        feed: &BoltV3PositionAuthorityFeed,
+        instrument: &str,
+        venue_position_id: Option<&str>,
+    ) -> BoltV3PositionAuthorityLease {
+        feed.acquire(
+            ClientId::from("execution-client"),
+            AccountId::from("ACCOUNT-001"),
+            InstrumentId::from(instrument),
+            venue_position_id.map(PositionId::from),
+        )
+        .expect("lease should acquire")
     }
 
     fn report(
@@ -689,19 +742,36 @@ mod tests {
     #[test]
     fn reports_without_a_lease_are_discarded_and_last_drop_deletes_authority() {
         let feed = feed();
-        feed.observe(&report("YES.POLYMARKET", "10", 1, None, None))
-            .expect("unleased report should be ignored");
+        let unmatched_key = key("YES.POLYMARKET", None);
+        assert_eq!(
+            feed.observe(&report("YES.POLYMARKET", "10", 1, None, None))
+                .expect("unleased report should produce typed health"),
+            BoltV3PositionAuthorityObservationOutcome::NoActiveLease(unmatched_key.clone())
+        );
         assert_eq!(feed.active_key_count(), 0);
 
-        let lease = feed
-            .acquire(key("YES.POLYMARKET", None))
-            .expect("lease should acquire");
-        feed.observe(&report("YES.POLYMARKET", "10", 1, None, None))
-            .expect("leased report should be observed");
+        let lease = acquire(&feed, "YES.POLYMARKET", None);
+        assert_eq!(
+            feed.observe(&report("YES.POLYMARKET", "10", 5, None, None))
+                .expect("leased report should be observed"),
+            BoltV3PositionAuthorityObservationOutcome::Applied
+        );
+        assert_eq!(
+            feed.observe(&report("YES.POLYMARKET", "9", 4, None, None))
+                .expect("stale report should be health only"),
+            BoltV3PositionAuthorityObservationOutcome::Applied
+        );
         assert!(matches!(
             lease.state().unwrap(),
             BoltV3PositionAuthorityLeaseState::Coherent(_)
         ));
+        assert!(lease.stale_health().unwrap().is_some());
+        assert_eq!(
+            feed.observe(&report("NO.POLYMARKET", "3", 6, None, None))
+                .expect("a different unleased key should be typed and transient"),
+            BoltV3PositionAuthorityObservationOutcome::NoActiveLease(key("NO.POLYMARKET", None))
+        );
+        assert_eq!(feed.active_key_count(), 1);
         drop(lease);
         assert_eq!(feed.active_key_count(), 0);
     }
@@ -709,12 +779,8 @@ mod tests {
     #[test]
     fn distinct_instruments_under_one_account_never_share_or_conflict() {
         let feed = feed();
-        let yes = feed
-            .acquire(key("YES.POLYMARKET", None))
-            .expect("YES lease should acquire");
-        let no = feed
-            .acquire(key("NO.POLYMARKET", None))
-            .expect("NO lease should acquire");
+        let yes = acquire(&feed, "YES.POLYMARKET", None);
+        let no = acquire(&feed, "NO.POLYMARKET", None);
 
         feed.observe(&report("YES.POLYMARKET", "10", 7, None, None))
             .unwrap();
@@ -734,9 +800,7 @@ mod tests {
     #[test]
     fn generated_report_ids_advance_but_reused_changed_identity_conflicts() {
         let feed = feed();
-        let lease = feed
-            .acquire(key("YES.POLYMARKET", None))
-            .expect("lease should acquire");
+        let lease = acquire(&feed, "YES.POLYMARKET", None);
         let first = report("YES.POLYMARKET", "10", 1, None, None);
         let second = report("YES.POLYMARKET", "9", 2, None, None);
         assert_ne!(first.report_id, second.report_id);
@@ -761,9 +825,7 @@ mod tests {
     fn stale_observation_is_health_only_and_generation_overflow_conflicts() {
         let feed = feed();
         let authority_key = key("YES.POLYMARKET", None);
-        let lease = feed
-            .acquire(authority_key.clone())
-            .expect("lease should acquire");
+        let lease = acquire(&feed, "YES.POLYMARKET", None);
         feed.observe(&report("YES.POLYMARKET", "10", 5, None, None))
             .unwrap();
         feed.observe(&report("YES.POLYMARKET", "9", 4, None, None))
@@ -795,12 +857,8 @@ mod tests {
     #[test]
     fn hedging_position_ids_are_exact_independent_keys() {
         let feed = feed();
-        let first = feed
-            .acquire(key("YES.POLYMARKET", Some("POSITION-A")))
-            .unwrap();
-        let second = feed
-            .acquire(key("YES.POLYMARKET", Some("POSITION-B")))
-            .unwrap();
+        let first = acquire(&feed, "YES.POLYMARKET", Some("POSITION-A"));
+        let second = acquire(&feed, "YES.POLYMARKET", Some("POSITION-B"));
         feed.observe(&report("YES.POLYMARKET", "4", 1, None, Some("POSITION-A")))
             .unwrap();
 
@@ -835,11 +893,38 @@ mod tests {
     }
 
     #[test]
+    fn subscription_surfaces_unmatched_lease_as_operator_telemetry() {
+        const CASE: &str = "position-authority-unmatched-lease-telemetry";
+        if !crate::bolt_v3_test_log_capture::enter_isolated_log_capture(
+            "bolt_v3_position_authority_feed::tests::subscription_surfaces_unmatched_lease_as_operator_telemetry",
+            CASE,
+        ) {
+            return;
+        }
+
+        let feed = feed();
+        let subscription = feed.subscribe();
+        let topic = MessagingSwitchboard::reconciliation_raw_position_status_report_topic();
+        let ((), records) = crate::bolt_v3_test_log_capture::with_captured_logs(|| {
+            msgbus::publish_any(
+                topic.as_str().into(),
+                &report("UNMATCHED.POLYMARKET", "2", 1, None, None),
+            );
+        });
+
+        assert!(records.iter().any(|(level, message)| {
+            *level == log::Level::Warn
+                && message.contains("position authority report dropped without an active lease")
+                && message.contains("instrument_id=UNMATCHED.POLYMARKET")
+        }));
+        assert_eq!(feed.active_key_count(), 0);
+        drop(subscription);
+    }
+
+    #[test]
     fn subscription_drop_and_restart_leave_one_active_report_handler() {
         let feed = feed();
-        let lease = feed
-            .acquire(key("RESTART.POLYMARKET", None))
-            .expect("restart lease should acquire");
+        let lease = acquire(&feed, "RESTART.POLYMARKET", None);
         let topic = MessagingSwitchboard::reconciliation_raw_position_status_report_topic();
 
         let first_subscription = feed.subscribe();

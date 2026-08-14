@@ -1315,23 +1315,6 @@ pub(super) fn seed_nt_open_position(
     position_id: PositionId,
     quantity: Quantity,
     avg_px_open: f64,
-) {
-    seed_nt_open_position_with_details(
-        strategy,
-        instrument_id,
-        position_id,
-        quantity,
-        avg_px_open,
-        OrderSide::Buy,
-    );
-}
-
-pub(super) fn seed_nt_open_position_with_details(
-    strategy: &mut BinaryOracleEdgeTaker,
-    instrument_id: InstrumentId,
-    position_id: PositionId,
-    quantity: Quantity,
-    avg_px_open: f64,
     entry_order_side: OrderSide,
 ) {
     let cache = register_test_strategy(strategy);
@@ -1364,7 +1347,7 @@ pub(super) fn seed_nt_open_position_with_details(
             || ClientOrderId::from(format!("ENTRY-{position_id}").as_str()),
             |pending| pending.client_order_id,
         );
-    let mut fill = order_filled_event_with_details(
+    let mut fill = order_filled_event(
         opening_order_id,
         instrument_id,
         Some(position_id),
@@ -1398,7 +1381,7 @@ pub(super) fn close_nt_position(strategy: &mut BinaryOracleEdgeTaker, position_i
             panic!("test position must be open before close")
         }
     };
-    let mut fill = order_filled_event_with_details(
+    let mut fill = order_filled_event(
         ClientOrderId::from("CLOSE-TEST"),
         position.instrument_id,
         Some(position_id),
@@ -1424,14 +1407,23 @@ pub(super) fn materialize_configured_position(
     position_id: PositionId,
     quantity: Quantity,
     avg_px_open: f64,
+    entry_order_side: OrderSide,
+    position_side: PositionSide,
 ) -> OpenPositionState {
-    seed_nt_open_position(strategy, instrument_id, position_id, quantity, avg_px_open);
+    seed_nt_open_position(
+        strategy,
+        instrument_id,
+        position_id,
+        quantity,
+        avg_px_open,
+        entry_order_side,
+    );
     strategy.materialize_position_from_event(
         PositionMaterializationSpec {
             instrument_id,
             position_id,
-            entry_order_side: OrderSide::Buy,
-            side: PositionSide::Long,
+            entry_order_side,
+            side: position_side,
             quantity,
             avg_px_open,
             opening_order_id: ClientOrderId::from(format!("ENTRY-{position_id}").as_str()),
@@ -1499,6 +1491,7 @@ pub(super) fn set_managed_position(
         position.position_id,
         position.quantity,
         position.avg_px_open,
+        OrderSide::Buy,
     );
     strategy
         .exposure
@@ -1521,6 +1514,7 @@ pub(super) fn set_managed_position_with_pending_entry(
         position.position_id,
         position.quantity,
         position.avg_px_open,
+        OrderSide::Buy,
     );
     strategy
         .exposure
@@ -1560,8 +1554,22 @@ pub(super) fn materialize_managed_position_with_resting_pending_entry(
         .best_ask
         .expect("ready-to-trade fixture should expose an ask");
     set_pending_entry(strategy, pending);
-    seed_nt_open_position(strategy, instrument_id, position_id, quantity, avg_px_open);
-    let mut opened = position_opened_event(instrument_id, position_id, quantity, avg_px_open);
+    seed_nt_open_position(
+        strategy,
+        instrument_id,
+        position_id,
+        quantity,
+        avg_px_open,
+        OrderSide::Buy,
+    );
+    let mut opened = position_opened_event(
+        instrument_id,
+        position_id,
+        quantity,
+        avg_px_open,
+        OrderSide::Buy,
+        PositionSide::Long,
+    );
     opened.opening_order_id = client_order_id;
     strategy.on_position_opened(opened);
     (instrument_id, client_order_id)
@@ -1579,6 +1587,7 @@ pub(super) fn set_exit_pending(
         position.position_id,
         position.quantity,
         position.avg_px_open,
+        OrderSide::Buy,
     );
     let lease = strategy
         .context
@@ -1810,7 +1819,7 @@ pub(super) fn set_unsupported_observed(
     observed: OpenPositionState,
     reason: UnsupportedObservedReason,
 ) {
-    seed_nt_open_position_with_details(
+    seed_nt_open_position(
         strategy,
         observed.instrument_id,
         observed.position_id,
@@ -2144,22 +2153,6 @@ pub(super) fn position_opened_event(
     position_id: PositionId,
     quantity: Quantity,
     avg_px_open: f64,
-) -> nautilus_model::events::PositionOpened {
-    position_opened_event_with_details(
-        instrument_id,
-        position_id,
-        quantity,
-        avg_px_open,
-        OrderSide::Buy,
-        PositionSide::Long,
-    )
-}
-
-pub(super) fn position_opened_event_with_details(
-    instrument_id: InstrumentId,
-    position_id: PositionId,
-    quantity: Quantity,
-    avg_px_open: f64,
     entry: OrderSide,
     side: PositionSide,
 ) -> nautilus_model::events::PositionOpened {
@@ -2185,19 +2178,6 @@ pub(super) fn position_opened_event_with_details(
 }
 
 pub(super) fn order_filled_event(
-    client_order_id: ClientOrderId,
-    instrument_id: InstrumentId,
-    position_id: PositionId,
-) -> nautilus_model::events::OrderFilled {
-    order_filled_event_with_details(
-        client_order_id,
-        instrument_id,
-        Some(position_id),
-        OrderSide::Buy,
-    )
-}
-
-pub(super) fn order_filled_event_with_details(
     client_order_id: ClientOrderId,
     instrument_id: InstrumentId,
     position_id: Option<PositionId>,
@@ -2259,6 +2239,7 @@ pub(super) fn order_fill_voided_event(
     trade_id: nautilus_model::identifiers::TradeId,
     voided_qty: Quantity,
     ts_event_ns: u64,
+    order_side: OrderSide,
 ) -> nautilus_model::events::OrderFillVoided {
     nautilus_model::events::order::spec::OrderFillVoidedSpec::builder()
         .trader_id(nautilus_model::identifiers::TraderId::from("TRADER-001"))
@@ -2275,7 +2256,7 @@ pub(super) fn order_fill_voided_event(
             0.0,
             nautilus_model::types::Currency::USDC(),
         ))
-        .order_side(OrderSide::Sell)
+        .order_side(order_side)
         .order_type(OrderType::Limit)
         .last_px(Price::new(0.45, 2))
         .currency(nautilus_model::types::Currency::USDC())

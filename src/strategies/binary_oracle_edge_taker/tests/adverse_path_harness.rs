@@ -174,6 +174,8 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
         position_id,
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     set_exit_pending(
         &mut strategy,
@@ -184,7 +186,7 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
     let sequence = partial_fill_then_expire_sequence(exit_client_order_id, instrument_id);
     assert_event_types(&sequence, &["Filled", "Expired"]);
 
-    let mut fill = order_filled_event_with_details(
+    let mut fill = order_filled_event(
         exit_client_order_id,
         instrument_id,
         Some(position_id),
@@ -200,6 +202,7 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
         position_id,
         Quantity::new(6.0, 2),
         open_position.avg_px_open,
+        OrderSide::Buy,
     );
     let expired = order_expired_event(exit_client_order_id, instrument_id);
     apply_exit_order_event_to_nt_cache(&mut strategy, OrderEventAny::Expired(expired.clone()));
@@ -254,7 +257,7 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
     );
     let position = Position::new(
         &instrument,
-        order_filled_event_with_details(
+        order_filled_event(
             ClientOrderId::from("ENTRY-BEFORE-RESTART"),
             instrument_id,
             Some(position_id),
@@ -318,7 +321,7 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
         "{RESTART_OPEN_EXIT_PINNED_FAILURE}: bootstrap must adopt the open exit order before a subsequent fill can be attributed"
     );
 
-    let mut terminal_fill = order_filled_event_with_details(
+    let mut terminal_fill = order_filled_event(
         exit_client_order_id,
         instrument_id,
         Some(position_id),
@@ -482,6 +485,8 @@ fn feed_outage_at_resolution_records_booking_error_after_close_fetch_retry_budge
         PositionId::from("P-HOLD-TO-RESOLUTION-FEED-OUTAGE"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
 
     let close_ms = strategy
@@ -557,6 +562,8 @@ fn position_market_lifecycle_books_settlement_at_its_own_interval_end() {
         PositionId::from("P-ROLLED-OWN-END-SETTLES"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let position_interval_end_ms = strategy
         .active
@@ -602,6 +609,8 @@ fn position_market_lifecycle_new_active_boundary_tick_does_not_settle_old_positi
         PositionId::from("P-ROLLED-NEW-END-NO-SETTLE"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let position_interval_end_ms = strategy
         .active
@@ -650,6 +659,8 @@ fn position_market_lifecycle_same_instrument_sync_preserves_captured_lifecycle()
         PositionId::from("P-SAME-INSTRUMENT-SYNC"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let position_interval_end_ms = strategy
         .active
@@ -754,6 +765,8 @@ fn position_market_lifecycle_same_instrument_sync_does_not_repair_missing_lifecy
         PositionId::from("P-SAME-INSTRUMENT-PARTIAL-LIFECYCLE"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let captured_lifecycle = managed_position_snapshot(&strategy)
         .expect("position should be managed after materialization")
@@ -842,6 +855,8 @@ fn position_market_lifecycle_expired_book_deltas_do_not_submit_exits_after_roll(
         PositionId::from("P-ROLLED-BOOK-DELTA-NO-EXIT"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let position_interval_end_ms = strategy
         .active
@@ -892,6 +907,8 @@ fn position_market_lifecycle_feed_outage_records_after_close_fetch_retry_budget_
         PositionId::from("P-ROLLED-FEED-OUTAGE"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let position_interval_end_ms = strategy
         .active
@@ -936,6 +953,8 @@ fn position_market_lifecycle_unroutable_close_fetch_records_terminal_booking_err
         PositionId::from("P-CLOSE-FETCH-NO-ROUTE"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let position_interval_end_ms = strategy
         .active
@@ -982,6 +1001,8 @@ fn position_market_lifecycle_close_fetch_retry_waits_for_retry_interval() {
         PositionId::from("P-CLOSE-FETCH-RETRY-PACING"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let position_interval_end_ms = strategy
         .active
@@ -1023,6 +1044,8 @@ fn position_market_lifecycle_close_fetch_exhaustion_waits_for_retry_interval() {
         PositionId::from("P-CLOSE-FETCH-TERMINAL-PACING"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let position_interval_end_ms = strategy
         .active
@@ -1063,6 +1086,8 @@ fn position_market_lifecycle_selection_blocked_issues_own_settlement_close_fetch
         PositionId::from("P-SELECTION-BLOCKED-CLOSE-FETCH"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let position_interval_end_ms = strategy
         .active
@@ -1109,6 +1134,8 @@ fn position_market_lifecycle_close_and_open_fetches_use_boundary_scoped_durable_
         PositionId::from("P-CLOSE-OPEN-BOUNDARY-SLOTS"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let position_interval_end_ms = strategy
         .active
@@ -1162,6 +1189,8 @@ fn position_market_lifecycle_late_matching_resolution_tick_after_watchdog_books_
         PositionId::from("P-ROLLED-LATE-RESOLUTION"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let position_interval_end_ms = strategy
         .active
@@ -1215,7 +1244,7 @@ fn position_market_lifecycle_recovered_expired_cache_position_records_terminal_b
         position_interval_end_ms,
     );
     let position_id = PositionId::from("P-RECOVERED-EXPIRED-CACHE");
-    let fill = order_filled_event_with_details(
+    let fill = order_filled_event(
         ClientOrderId::from("RECOVERED-EXPIRED-CACHE-ORDER"),
         instrument.id(),
         Some(position_id),
@@ -1302,7 +1331,7 @@ fn position_market_lifecycle_recovered_position_missing_instrument_records_termi
         position_interval_end_ms,
     );
     let position_id = PositionId::from("P-RECOVERED-MISSING-INSTRUMENT");
-    let fill = order_filled_event_with_details(
+    let fill = order_filled_event(
         ClientOrderId::from("RECOVERED-MISSING-INSTRUMENT-ORDER"),
         instrument.id(),
         Some(position_id),
@@ -1393,7 +1422,7 @@ fn position_market_lifecycle_recovered_missing_interval_book_delta_records_error
         0,
     );
     let position_id = PositionId::from("P-RECOVERED-MISSING-INTERVAL-BOOK-DELTA");
-    let fill = order_filled_event_with_details(
+    let fill = order_filled_event(
         ClientOrderId::from("RECOVERED-MISSING-INTERVAL-ORDER"),
         instrument.id(),
         Some(position_id),
@@ -1481,6 +1510,8 @@ fn settlement_preserves_live_exit_until_late_terminal_then_stays_flat_without_do
         PositionId::from("P-TERMINAL-AFTER-SETTLEMENT"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let exit_client_order_id = ClientOrderId::from("EXIT-TERMINAL-AFTER-SETTLEMENT");
     set_exit_pending(
@@ -1527,6 +1558,8 @@ fn settlement_during_sink_unknown_releases_only_on_correlated_denial_proof() {
         PositionId::from("P-SETTLED-SINK-UNKNOWN-DENIAL"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let exit_client_order_id = ClientOrderId::from("EXIT-SETTLED-SINK-UNKNOWN-DENIAL");
     set_exit_pending(
@@ -1635,6 +1668,8 @@ fn terminal_booking_error_during_sink_unknown_releases_on_correlated_denial_proo
         PositionId::from("P-TERMINAL-ERROR-SINK-UNKNOWN"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let exit_client_order_id = ClientOrderId::from("EXIT-TERMINAL-ERROR-SINK-UNKNOWN");
     set_exit_pending(
@@ -1754,6 +1789,8 @@ fn terminal_booking_error_retains_exit_evidence_until_late_terminal_release() {
         PositionId::from("P-TERMINAL-BOOKING-ERROR-LATE-EXIT"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let exit_client_order_id = ClientOrderId::from("EXIT-TERMINAL-BOOKING-ERROR-LATE");
     set_exit_pending(
@@ -1833,6 +1870,8 @@ fn terminal_before_settlement_remanages_residual_then_books_residual_settlement(
         PositionId::from("P-TERMINAL-BEFORE-SETTLEMENT"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let exit_client_order_id = ClientOrderId::from("EXIT-TERMINAL-BEFORE-SETTLEMENT");
     set_exit_pending(
@@ -1847,6 +1886,7 @@ fn terminal_before_settlement_remanages_residual_then_books_residual_settlement(
         position.position_id,
         Quantity::new(6.0, 2),
         position.avg_px_open,
+        OrderSide::Buy,
     );
 
     let expired = order_expired_event(exit_client_order_id, instrument_id);
@@ -1898,6 +1938,8 @@ fn booked_settlement_routes_to_runtime_sink_and_flattening() {
         PositionId::from("P-RUNTIME-WIN"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
 
     emit_resolution_update(&mut strategy, 3_101.0);
@@ -1960,6 +2002,8 @@ fn loss_reducer_failure_after_settled_key_insert_enters_blind_recovery() {
         PositionId::from("P-RUNTIME-SINK-FAIL"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let settlement_key = settlement_key_for_position(&position)
         .expect("fixture position should derive settlement key");
@@ -2034,6 +2078,8 @@ fn assert_settlement_evidence_failure_precedes_runtime_effects(
         PositionId::from("P-EVIDENCE-BEFORE-RUNTIME"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let settlement_key = settlement_key_for_position(&position)
         .expect("fixture position should derive settlement key");
@@ -2101,6 +2147,8 @@ fn losing_settlement_moves_durable_loss_governor() {
         PositionId::from("P-RUNTIME-LOSS"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let settlement_key = settlement_key_for_position(&position)
         .expect("fixture position should derive settlement key");
@@ -2151,6 +2199,8 @@ fn missing_settlement_currency_records_booking_error_from_config_derived_fixture
         PositionId::from("P-MISSING-SETTLEMENT-CURRENCY"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
 
     emit_resolution_update(&mut strategy, 3_101.0);
@@ -2197,6 +2247,8 @@ fn missing_settlement_account_records_booking_error_from_config_derived_fixture(
         PositionId::from("P-MISSING-SETTLEMENT-ACCOUNT"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
 
     emit_resolution_update(&mut strategy, 3_101.0);
@@ -2232,6 +2284,8 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
         PositionId::from("P-TERMINAL-BOOKING-ERROR-FIRST"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let first_key = settlement_key_for_position(&first_position)
         .expect("first fixture position should derive a settlement key");
@@ -2259,6 +2313,8 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
         PositionId::from("P-TERMINAL-BOOKING-ERROR-SECOND"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let second_key = settlement_key_for_position(&second_position)
         .expect("second fixture position should derive a settlement key");
@@ -2359,6 +2415,8 @@ fn terminal_settlement_uses_one_canonical_durable_event() {
         PositionId::from("P-ATOMIC-TERMINAL-SETTLEMENT"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let settlement_key = settlement_key_for_position(&position)
         .expect("fixture position should derive settlement key");
@@ -2421,6 +2479,8 @@ fn health_emitter_failure_cannot_park_exposure_or_duplicate_terminal_evidence() 
         PositionId::from("P-HEALTH-EMITTER-FAILURE"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let settlement_key = settlement_key_for_position(&position)
         .expect("fixture position should derive settlement key");
@@ -2507,6 +2567,8 @@ fn live_manageable_nonterminal_position_cannot_enter_terminal_settlement_transit
         PositionId::from("P-NONTERMINAL-SETTLEMENT-GUARD"),
         Quantity::new(10.0, 2),
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let settlement_key = settlement_key_for_position(&position)
         .expect("fixture position should derive a settlement key");
@@ -2569,7 +2631,7 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
         2_000,
     );
     let position_id = PositionId::from("P-TERMINAL-RESTART");
-    let fill = order_filled_event_with_details(
+    let fill = order_filled_event(
         ClientOrderId::from("TERMINAL-RESTART-ORDER"),
         instrument.id(),
         Some(position_id),
@@ -2720,7 +2782,7 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
         2_000,
     );
     let position_id = PositionId::from("P-SETTLEMENT-RECOVERY-CACHE");
-    let fill = order_filled_event_with_details(
+    let fill = order_filled_event(
         ClientOrderId::from("SETTLEMENT-RECOVERY-ORDER"),
         instrument.id(),
         Some(position_id),
@@ -2854,6 +2916,8 @@ fn hold_to_resolution_case(
         position_id,
         Quantity::new(10.0, 2),
         entry_price,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     let expected =
         expected_hold_to_resolution_settlement(held_leg, entry_price, reference_close_price);

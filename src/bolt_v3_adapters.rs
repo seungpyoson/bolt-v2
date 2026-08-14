@@ -502,6 +502,7 @@ mod tests {
 
     static FAKE_UPDOWN_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &["test fixture provider attests nothing"],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
@@ -525,6 +526,7 @@ mod tests {
 
     static FAKE_UNSUPPORTED_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &["test fixture provider attests nothing"],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
@@ -548,6 +550,7 @@ mod tests {
 
     static FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &["test fixture provider attests nothing"],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,

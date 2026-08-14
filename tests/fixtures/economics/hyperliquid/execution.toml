@@ -47,7 +47,6 @@ rate_factor_id = "hyperliquid-live-effective-rate"
 
 [economics.assets.settlement]
 currency = "hUSD"
-evidence_fixture_id = "hyperliquid-husd-settlement-v1"
 
 [economics.edge_basis.primary]
 resolver_id = "product-metadata"

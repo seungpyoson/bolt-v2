@@ -176,7 +176,7 @@ impl BoltV3RestingRegistrationCommitParticipant for MakerQuoteTransactionPartici
         if self.phase == MakerQuoteTransactionPhase::Proposed {
             anyhow::ensure!(
                 matches!(disposition, BoltV3RestingCommitDisposition::PreSinkAborted),
-                "unarmed maker quote transaction received a routed disposition"
+                "maker quote transaction received a routed disposition before provisional arming"
             );
             self.phase = MakerQuoteTransactionPhase::Settled;
             return Ok(());

@@ -626,7 +626,6 @@ pub struct EconomicsQuoteComponentConfig {
 #[serde(deny_unknown_fields)]
 pub struct EconomicsAssetIdentityConfig {
     pub currency: String,
-    pub evidence_fixture_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

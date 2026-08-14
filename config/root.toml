@@ -312,7 +312,6 @@ rate_factor_id = "polymarket-live-fee-rate"
 
 [clients.polymarket_main.execution.economics.assets.collateral]
 currency = "pUSD"
-evidence_fixture_id = "polymarket-v2-collateral-pusd"
 
 [clients.polymarket_main.execution.economics.edge_basis.primary]
 resolver_id = "product-metadata"

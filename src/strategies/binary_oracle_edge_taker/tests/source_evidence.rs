@@ -1875,6 +1875,8 @@ fn shadow_policy_exit_restores_managed_and_allows_a_later_attempt() {
         PositionId::from("P-SHADOW-EXIT-001"),
         position_quantity,
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     set_managed_position(
         &mut strategy,
@@ -2003,6 +2005,8 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
         PositionId::from(stringify!(P_SHADOW_EXIT_FUTURE_RV)),
         position_quantity,
         up_best_ask,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     set_managed_position(
         &mut strategy,
@@ -3130,6 +3134,8 @@ fn exit_evidence_strategy_with_open_position_using_writer(
         PositionId::from("P-EXIT-EVIDENCE-001"),
         position_quantity,
         0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     set_managed_position(
         &mut strategy,

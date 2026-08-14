@@ -4,6 +4,7 @@ use bolt_v2::{
     bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_current_evidence::{
         AdmissionDecisionOutcome, AdmissionDetails, CurrentEvidenceTestPurpose, CurrentFact,
+        DecisionEvidenceIntegrationTestControl, DecisionEvidenceIntegrationTestFault,
         DecisionEvidenceRecorder, DecisionEvidenceRuntime, EntrySkipFact, LossGovernorHaltFact,
         OrderIntentDetails, OrderRejectFact, PositiveFiniteEvidenceReadCap,
         ProviderCollateralAllowanceCaptureFailureFact, RequoteThrottleObservationFact,
@@ -106,13 +107,17 @@ impl RecordingDecisionEvidenceWriter {
     }
 
     pub fn fail_machine_writes(&self) {
-        self.runtime.recorder().fail_machine_writes_for_test();
+        DecisionEvidenceIntegrationTestControl::inject(
+            &self.runtime.recorder(),
+            DecisionEvidenceIntegrationTestFault::MachineWrites,
+        );
     }
 
     pub fn fail_purpose_on_attempt(&self, purpose: CurrentEvidenceTestPurpose, attempt: usize) {
-        self.runtime
-            .recorder()
-            .fail_purpose_on_attempt_for_test(purpose, attempt);
+        DecisionEvidenceIntegrationTestControl::inject(
+            &self.runtime.recorder(),
+            DecisionEvidenceIntegrationTestFault::PurposeOnAttempt { purpose, attempt },
+        );
     }
 
     pub fn facts(&self) -> Vec<CurrentFact> {
@@ -275,8 +280,8 @@ pub fn prepare_current_evidence_generation(loaded: &LoadedBoltV3Config) {
 }
 
 pub fn recording_evidence() -> Arc<DecisionEvidenceRecorder> {
-    Arc::new(DecisionEvidenceRecorder::recording_from_files_for_test(
-        tempfile::tempfile().expect("test machine evidence sink must open"),
-        tempfile::tempfile().expect("test observation evidence sink must open"),
-    ))
+    DecisionEvidenceIntegrationTestControl::recording(
+        tempfile::tempfile().expect("integration-test machine evidence sink must open"),
+        tempfile::tempfile().expect("integration-test observation evidence sink must open"),
+    )
 }

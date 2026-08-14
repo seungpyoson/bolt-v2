@@ -376,6 +376,51 @@ pub struct DecisionEvidenceRecorder {
     test_failure: Mutex<Option<(KnownPurpose, usize)>>,
 }
 
+#[cfg(feature = "test-current-evidence-inspection")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)]
+pub enum DecisionEvidenceIntegrationTestFault {
+    MachineWrites,
+    PurposeOnAttempt {
+        purpose: KnownPurpose,
+        attempt: usize,
+    },
+}
+
+#[cfg(feature = "test-current-evidence-inspection")]
+#[derive(Debug)]
+#[doc(hidden)]
+pub struct DecisionEvidenceIntegrationTestControl;
+
+#[cfg(feature = "test-current-evidence-inspection")]
+impl DecisionEvidenceIntegrationTestControl {
+    pub fn recording(machine: File, observation: File) -> Arc<DecisionEvidenceRecorder> {
+        Arc::new(DecisionEvidenceRecorder::from_files(
+            machine,
+            observation,
+            None,
+            None,
+            PositiveFiniteEvidenceReadCap::new(1_048_576)
+                .expect("integration-test record cap must be positive and finite"),
+            4096,
+        ))
+    }
+
+    pub fn inject(
+        recorder: &DecisionEvidenceRecorder,
+        fault: DecisionEvidenceIntegrationTestFault,
+    ) {
+        match fault {
+            DecisionEvidenceIntegrationTestFault::MachineWrites => {
+                recorder.fail_machine_writes_for_test();
+            }
+            DecisionEvidenceIntegrationTestFault::PurposeOnAttempt { purpose, attempt } => {
+                recorder.fail_purpose_on_attempt_for_test(purpose, attempt);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct DecisionEvidenceStatusView {
     recorder: Weak<DecisionEvidenceRecorder>,
@@ -447,9 +492,9 @@ impl DecisionEvidenceRecorder {
         }
     }
 
-    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[cfg(test)]
     #[doc(hidden)]
-    pub fn recording_from_files_for_test(machine: File, observation: File) -> Self {
+    pub(crate) fn recording_from_files_for_test(machine: File, observation: File) -> Self {
         Self::from_files(
             machine,
             observation,
@@ -628,7 +673,7 @@ impl DecisionEvidenceRecorder {
 
     #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     #[doc(hidden)]
-    pub fn fail_machine_writes_for_test(&self) {
+    pub(crate) fn fail_machine_writes_for_test(&self) {
         self.machine
             .lock()
             .expect("machine sink mutex must not be poisoned")
@@ -653,7 +698,7 @@ impl DecisionEvidenceRecorder {
 
     #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     #[doc(hidden)]
-    pub fn fail_purpose_on_attempt_for_test(&self, purpose: KnownPurpose, attempt: usize) {
+    pub(crate) fn fail_purpose_on_attempt_for_test(&self, purpose: KnownPurpose, attempt: usize) {
         *self
             .test_failure
             .lock()

@@ -11,6 +11,7 @@ use crate::{
         EconomicsReportingConfig, EconomicsValuationLegConfig, EconomicsValuationOrientation,
         ExecutionEconomicsConfig, LoadedBoltV3Config,
     },
+    bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_providers::{
         ProviderEconomicsAdapterBuildContext, ProviderEconomicsReplayAuthorityBuildContext,
         ProviderExecutionEconomicsBinding, binding_for_provider_key,
@@ -25,8 +26,6 @@ use crate::{
         compare_fee_adjusted_exit_vs_hold, fold_net_edge, validate_and_aggregate_quote,
     },
 };
-
-const NANOSECONDS_PER_MILLISECOND: u64 = 1_000_000;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct AuthoritativeEconomicsKey {
@@ -220,14 +219,14 @@ impl BoundExecutionEconomics {
     pub(crate) fn planned_exit_horizon_ns(&self) -> Result<u64, EconomicsAdmissionError> {
         self.config
             .quote_validity_ms
-            .checked_mul(NANOSECONDS_PER_MILLISECOND)
+            .checked_mul(NANOS_PER_MILLI_U64)
             .ok_or(EconomicsError::ArithmeticOverflow.into())
     }
 
     pub(crate) fn resting_order_refresh_margin_ns(&self) -> Result<u64, EconomicsAdmissionError> {
         self.config
             .resting_order_refresh_margin_ms
-            .checked_mul(NANOSECONDS_PER_MILLISECOND)
+            .checked_mul(NANOS_PER_MILLI_U64)
             .ok_or(EconomicsError::ArithmeticOverflow.into())
     }
 
@@ -235,7 +234,7 @@ impl BoundExecutionEconomics {
         self.config
             .cancel_retry_timeout_ms
             .get()
-            .checked_mul(NANOSECONDS_PER_MILLISECOND)
+            .checked_mul(NANOS_PER_MILLI_U64)
             .ok_or(EconomicsError::ArithmeticOverflow.into())
     }
 
@@ -2045,12 +2044,12 @@ fn configured_quote_deadline(
 ) -> Result<u64, EconomicsAdmissionError> {
     let validity_ns = config
         .quote_validity_ms
-        .checked_mul(NANOSECONDS_PER_MILLISECOND)
+        .checked_mul(NANOS_PER_MILLI_U64)
         .ok_or(EconomicsError::ArithmeticOverflow)?;
     let maximum_age_ns = config
         .quote_max_age_secs
         .checked_mul(1_000)
-        .and_then(|milliseconds| milliseconds.checked_mul(NANOSECONDS_PER_MILLISECOND))
+        .and_then(|milliseconds| milliseconds.checked_mul(NANOS_PER_MILLI_U64))
         .ok_or(EconomicsError::ArithmeticOverflow)?;
     let validity_deadline = request
         .requested_at_ns
@@ -2312,7 +2311,7 @@ fn valuation_leg(
         .observed_at_ns
         .checked_add(
             max_age_ms
-                .checked_mul(NANOSECONDS_PER_MILLISECOND)
+                .checked_mul(NANOS_PER_MILLI_U64)
                 .ok_or_else(|| "valuation maximum age overflows nanoseconds".to_string())?,
         )
         .ok_or_else(|| "valuation validity deadline overflows".to_string())?;

@@ -245,6 +245,8 @@ fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
         PositionId::from("P-EXIT-SUBMIT-ERROR"),
         Quantity::new(10.0, 2),
         0.450,
+        OrderSide::Buy,
+        PositionSide::Long,
     );
     set_managed_position(
         &mut strategy,

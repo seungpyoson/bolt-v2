@@ -110,11 +110,9 @@ fn drive_quote_set_leg(
         return blocked(QuoteSetBlockReason::InvalidQuantity);
     }
 
-    let mut candidate_market = *market;
-    let mut candidate_budget = budget.clone();
     let control = drive_quote_leg(
-        &mut candidate_market,
-        &mut candidate_budget,
+        market,
+        budget,
         QuoteControlInput {
             leg: input.leg,
             desired_price: input.target.price,
@@ -124,9 +122,6 @@ fn drive_quote_set_leg(
             now_ms: input.now_ms,
         },
     );
-
-    *market = candidate_market;
-    *budget = candidate_budget;
 
     QuoteSetLegDecision {
         control,
@@ -144,6 +139,7 @@ fn blocked(reason: QuoteSetBlockReason) -> QuoteSetLegDecision {
 fn no_control_action() -> QuoteControlDecision {
     QuoteControlDecision {
         action: None,
+        proposal: None,
         blocked_by: None,
         requote_needed: false,
     }
@@ -198,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn two_fresh_submits_charge_two_submit_commands_and_two_rest_calls() {
+    fn two_fresh_submit_plans_mint_independent_proposals_without_charging() {
         let mut market = MarketQuote::new(false);
         let mut budget = pair(4, 8);
         let decision = drive_binary_quote_set(&mut market, &mut budget, fresh_input());
@@ -216,8 +212,10 @@ mod tests {
                 action: LifecycleAction::Submit,
             })
         );
-        assert_eq!(budget.submit_commands_in_window(), 2);
-        assert_eq!(budget.rest_cost_in_window(), 2);
+        assert!(decision.yes.control.proposal.is_some());
+        assert!(decision.no.control.proposal.is_some());
+        assert_eq!(budget.submit_commands_in_window(), 0);
+        assert_eq!(budget.rest_cost_in_window(), 0);
     }
 
     #[test]
@@ -246,10 +244,10 @@ mod tests {
             }),
             "the second binary leg must not be throttled by the first leg's same-tick emit"
         );
-        assert_eq!(budget.submit_commands_in_window(), 2);
-        assert_eq!(budget.rest_cost_in_window(), 2);
-        assert_eq!(market.leg_state(Leg::Yes), LegState::SubmitPending);
-        assert_eq!(market.leg_state(Leg::No), LegState::SubmitPending);
+        assert_eq!(budget.submit_commands_in_window(), 0);
+        assert_eq!(budget.rest_cost_in_window(), 0);
+        assert_eq!(market.leg_state(Leg::Yes), LegState::Idle);
+        assert_eq!(market.leg_state(Leg::No), LegState::Idle);
     }
 
     #[test]
@@ -307,9 +305,9 @@ mod tests {
         );
         // 1 submit (reprice) + 1 submit (fresh) = 2 submit commands; 2 REST (reprice)
         // + 1 REST (fresh) = 3 REST calls, all charged at a single tick.
-        assert_eq!(budget.submit_commands_in_window(), 2);
-        assert_eq!(budget.rest_cost_in_window(), 3);
-        assert_eq!(market.leg_state(Leg::Yes), LegState::RequotePending);
-        assert_eq!(market.leg_state(Leg::No), LegState::SubmitPending);
+        assert_eq!(budget.submit_commands_in_window(), 0);
+        assert_eq!(budget.rest_cost_in_window(), 0);
+        assert_eq!(market.leg_state(Leg::Yes), LegState::Resting);
+        assert_eq!(market.leg_state(Leg::No), LegState::Idle);
     }
 }

@@ -77,6 +77,7 @@ pub fn dispatch_maker_runtime_order_plan(
                 MakerOrderDispatchInput {
                     command,
                     submit_order_prefix,
+                    quote_transaction: None,
                 },
                 sink,
             )

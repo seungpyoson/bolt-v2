@@ -7,6 +7,7 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use super::{BoltV3OrderEconomicsHandle, RestingRegistrationState, TrackedMakerOrderRecord};
+use crate::bolt_v3_numeric::NANOS_PER_MILLI_U64;
 use crate::bolt_v3_order_execution::{BoltV3NtVenueMutationSink, BoltV3OrderExecutionPolicy};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,7 +54,6 @@ enum CancelEvent<'a> {
         cached: Option<&'a OrderAny>,
         now_ns: u64,
         retry_timeout_ns: u64,
-        escalation_attempts: u32,
     },
     PassiveObserved {
         cached: Option<&'a OrderAny>,
@@ -69,6 +69,16 @@ enum CancelEvent<'a> {
     OperationUnobserved {
         generation: u64,
     },
+    ReservationGranted {
+        operation: CancelOperationKind,
+        now_ns: u64,
+        retry_timeout_ns: u64,
+        escalation_attempts: u32,
+    },
+    ReservationDenied {
+        now_ns: u64,
+        retry_timeout_ns: u64,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -82,6 +92,9 @@ enum CancelEffect {
         generation: u64,
         seed: Box<OrderAny>,
     },
+    ReservationRequired {
+        operation: CancelOperationKind,
+    },
 }
 
 enum CancelOperationCompletion<'a> {
@@ -90,6 +103,15 @@ enum CancelOperationCompletion<'a> {
         cached: Option<&'a OrderAny>,
         now_ns: u64,
     },
+}
+
+pub(super) struct CancelDriveInput<'a> {
+    pub(super) execution_client_id: &'a str,
+    pub(super) client_order_id: ClientOrderId,
+    pub(super) cached: Option<&'a OrderAny>,
+    pub(super) now_ns: u64,
+    pub(super) command_participant:
+        Option<Box<dyn super::BoltV3RestingRegistrationCommitParticipant>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -328,26 +350,13 @@ impl RestingOrderCancelRecord {
                 cached,
                 now_ns,
                 retry_timeout_ns,
-                escalation_attempts,
             } => {
                 let transition = self.reconcile(seed, cached, now_ns, retry_timeout_ns)?;
                 match transition {
                     CancelTransition::NoOperation => Ok(CancelEffect::None),
                     CancelTransition::Remove => Ok(CancelEffect::Remove),
-                    CancelTransition::Begin(kind) => {
-                        let generation = self.begin_operation(
-                            kind,
-                            now_ns,
-                            retry_timeout_ns,
-                            escalation_attempts,
-                        )?;
-                        Ok(match kind {
-                            CancelOperationKind::Cancel => CancelEffect::Cancel { generation },
-                            CancelOperationKind::Query => CancelEffect::Query {
-                                generation,
-                                seed: Box::new(seed.as_query_order().clone()),
-                            },
-                        })
+                    CancelTransition::Begin(operation) => {
+                        Ok(CancelEffect::ReservationRequired { operation })
                     }
                 }
             }
@@ -383,6 +392,32 @@ impl RestingOrderCancelRecord {
             }
             CancelEvent::OperationUnobserved { generation } => {
                 self.settle_unobserved_generation(generation);
+                Ok(CancelEffect::None)
+            }
+            CancelEvent::ReservationGranted {
+                operation,
+                now_ns,
+                retry_timeout_ns,
+                escalation_attempts,
+            } => {
+                let generation =
+                    self.begin_operation(operation, now_ns, retry_timeout_ns, escalation_attempts)?;
+                Ok(match operation {
+                    CancelOperationKind::Cancel => CancelEffect::Cancel { generation },
+                    CancelOperationKind::Query => CancelEffect::Query {
+                        generation,
+                        seed: Box::new(seed.as_query_order().clone()),
+                    },
+                })
+            }
+            CancelEvent::ReservationDenied {
+                now_ns,
+                retry_timeout_ns,
+            } => {
+                let not_before_ns = now_ns
+                    .checked_add(retry_timeout_ns)
+                    .ok_or_else(|| anyhow::anyhow!("cancel recovery deadline overflow"))?;
+                self.routing_state = CancelRoutingState::Backoff { not_before_ns };
                 Ok(CancelEffect::None)
             }
         }
@@ -658,17 +693,24 @@ impl BoltV3OrderEconomicsHandle {
             {
                 return Ok(());
             }
+            let strategy_id = order.strategy_id();
             let mut cancellation = TrackedOrderCancellation::new(order.clone());
             cancellation.request_intent(now_ns);
             let generation = registry
                 .allocate_generation()
                 .ok_or_else(|| anyhow::anyhow!("resting economics recovery generation overflow"))?;
+            let requote_budget = registry
+                .requote_budgets_by_strategy
+                .get(&strategy_id)
+                .cloned();
             registry.records.insert(
                 client_order_id,
                 TrackedMakerOrderRecord {
                     registration_generation: generation,
                     registration_state: RestingRegistrationState::Committed,
                     economics: None,
+                    requote_budget,
+                    maker_lifecycle: None,
                     cancellation,
                 },
             );
@@ -693,7 +735,9 @@ impl BoltV3OrderEconomicsHandle {
             if cached.as_ref().is_some_and(|order| {
                 order.is_closed() || order.leaves_qty().as_decimal() == Decimal::ZERO
             }) {
-                registry.remove_record(&client_order_id);
+                let removed = registry.remove_record(&client_order_id);
+                drop(registry);
+                super::settle_maker_terminal(removed);
             }
             return Ok(());
         };
@@ -707,11 +751,17 @@ impl BoltV3OrderEconomicsHandle {
         )?;
         match effect {
             CancelEffect::Remove => {
-                registry.remove_record(&client_order_id);
+                let removed = registry.remove_record(&client_order_id);
+                drop(registry);
+                super::settle_maker_terminal(removed);
+                return Ok(());
             }
             CancelEffect::None => {}
             CancelEffect::Cancel { .. } | CancelEffect::Query { .. } => {
                 anyhow::bail!("callback reconciliation produced an NT operation")
+            }
+            CancelEffect::ReservationRequired { .. } => {
+                anyhow::bail!("callback reconciliation requested a REST reservation")
             }
         }
         Ok(())
@@ -721,14 +771,18 @@ impl BoltV3OrderEconomicsHandle {
         &self,
         policy: BoltV3OrderExecutionPolicy,
         sink: &mut S,
-        execution_client_id: &str,
-        client_order_id: ClientOrderId,
-        cached: Option<&OrderAny>,
-        now_ns: u64,
+        input: CancelDriveInput<'_>,
     ) -> Result<()>
     where
         S: BoltV3NtVenueMutationSink + ?Sized,
     {
+        let CancelDriveInput {
+            execution_client_id,
+            client_order_id,
+            cached,
+            now_ns,
+            mut command_participant,
+        } = input;
         let retry_timeout_ns = self.economics.cancel_retry_timeout_ns()?;
         let escalation_attempts = self.economics.cancel_recovery_escalation_attempts();
         let effect = match self.reduce_cancel_drive(
@@ -737,35 +791,145 @@ impl BoltV3OrderEconomicsHandle {
             cached,
             now_ns,
             retry_timeout_ns,
-            escalation_attempts,
         ) {
             Ok(effect) => effect,
             Err(error) => {
                 return self.finish_cancel_drive(client_order_id, vec![error.to_string()]);
             }
         };
+        let effect = match effect {
+            CancelEffect::ReservationRequired { operation, .. } => {
+                if operation == CancelOperationKind::Cancel
+                    && let Some(participant) = command_participant.as_mut()
+                {
+                    let generation = self.next_cancel_operation_generation(client_order_id)?;
+                    if participant.arm_at_generation(generation).is_err() {
+                        self.settle_cancel_reservation(
+                            client_order_id,
+                            CancelEvent::ReservationDenied {
+                                now_ns,
+                                retry_timeout_ns,
+                            },
+                        )?;
+                        return self.finish_cancel_drive(client_order_id, Vec::new());
+                    }
+                    let armed = self.settle_cancel_reservation(
+                        client_order_id,
+                        CancelEvent::ReservationGranted {
+                            operation,
+                            now_ns,
+                            retry_timeout_ns,
+                            escalation_attempts,
+                        },
+                    )?;
+                    anyhow::ensure!(
+                        matches!(armed, CancelEffect::Cancel { generation: armed_generation } if armed_generation == generation),
+                        "cancel participant generation did not match the armed coordinator attempt"
+                    );
+                    (armed, None)
+                } else {
+                    if let Some(mut participant) = command_participant.take() {
+                        participant.settle_at_generation(
+                            0,
+                            super::BoltV3RestingCommitDisposition::PreSinkAborted,
+                        )?;
+                    }
+                    let now_ms = now_ns / NANOS_PER_MILLI_U64;
+                    let reservation =
+                        self.cancel_requote_budget(client_order_id)?
+                            .and_then(|budget| {
+                                budget
+                                    .propose_rest(now_ms)
+                                    .and_then(|proposal| budget.reserve(proposal))
+                                    .ok()
+                            });
+                    let Some(reservation) = reservation else {
+                        self.settle_cancel_reservation(
+                            client_order_id,
+                            CancelEvent::ReservationDenied {
+                                now_ns,
+                                retry_timeout_ns,
+                            },
+                        )?;
+                        return self.finish_cancel_drive(client_order_id, Vec::new());
+                    };
+                    let armed = self.settle_cancel_reservation(
+                        client_order_id,
+                        CancelEvent::ReservationGranted {
+                            operation,
+                            now_ns,
+                            retry_timeout_ns,
+                            escalation_attempts,
+                        },
+                    )?;
+                    (armed, Some(reservation))
+                }
+            }
+            other => {
+                if let Some(mut participant) = command_participant.take() {
+                    participant.settle_at_generation(
+                        0,
+                        super::BoltV3RestingCommitDisposition::PreSinkAborted,
+                    )?;
+                }
+                (other, None)
+            }
+        };
+        let (effect, mut reservation) = effect;
         let (generation, operation_result) = match effect {
             CancelEffect::None => {
                 return self.finish_cancel_drive(client_order_id, Vec::new());
             }
             CancelEffect::Remove => return Ok(()),
-            CancelEffect::Cancel { generation } => (
-                generation,
-                policy
-                    .route_cancel_with_sink(
-                        sink,
-                        client_order_id,
-                        Some(ClientId::from(execution_client_id)),
-                        None,
-                    )
-                    .map(|_| ()),
-            ),
-            CancelEffect::Query { generation, seed } => (
-                generation,
-                sink.query_order_via_nt(&seed, Some(ClientId::from(execution_client_id)), None),
-            ),
+            CancelEffect::Cancel { generation } => {
+                if let Some(participant) = command_participant.as_mut() {
+                    participant.mark_sink_invoked();
+                }
+                reservation.as_mut().map(
+                    crate::bolt_v3_requote_budget::RequoteBudgetReservation::mark_sink_invoked,
+                );
+                (
+                    generation,
+                    policy
+                        .route_cancel_with_sink(
+                            sink,
+                            client_order_id,
+                            Some(ClientId::from(execution_client_id)),
+                            None,
+                        )
+                        .map(|_| ()),
+                )
+            }
+            CancelEffect::Query { generation, seed } => {
+                debug_assert!(command_participant.is_none());
+                reservation
+                    .as_mut()
+                    .expect("query operation must own its REST reservation")
+                    .mark_sink_invoked();
+                (
+                    generation,
+                    sink.query_order_via_nt(&seed, Some(ClientId::from(execution_client_id)), None),
+                )
+            }
+            CancelEffect::ReservationRequired { .. } => {
+                anyhow::bail!("REST reservation settlement did not arm an operation")
+            }
         };
-        match operation_result {
+        let mut settlement_failures = Vec::new();
+        if let Some(mut participant) = command_participant
+            && let Err(error) = participant.settle_at_generation(
+                generation,
+                super::BoltV3RestingCommitDisposition::CommandIssuedRetainPrepaid,
+            )
+        {
+            settlement_failures.push(error.to_string());
+        }
+        if let Some(reservation) = reservation
+            && let Err(denial) = reservation.commit()
+        {
+            settlement_failures.push(format!("REST reservation settlement failed: {denial:?}"));
+        }
+        let operation_settlement = match operation_result {
             Err(error) => self.settle_cancel_operation(
                 client_order_id,
                 generation,
@@ -802,7 +966,11 @@ impl BoltV3OrderEconomicsHandle {
                     ),
                 }
             }
+        };
+        if let Err(error) = operation_settlement {
+            settlement_failures.push(error.to_string());
         }
+        finish_cancel_failures(settlement_failures)
     }
 
     fn settle_cancel_operation(
@@ -846,17 +1014,23 @@ impl BoltV3OrderEconomicsHandle {
                 },
             ),
         };
+        let mut removed = None;
         match effect {
             Ok(CancelEffect::Remove) => {
-                registry.remove_record(&client_order_id);
+                removed = registry.remove_record(&client_order_id);
             }
             Ok(CancelEffect::None) => {}
             Ok(CancelEffect::Cancel { .. } | CancelEffect::Query { .. }) => {
                 failures.push("operation settlement produced another NT operation".to_string());
             }
+            Ok(CancelEffect::ReservationRequired { .. }) => {
+                failures
+                    .push("operation settlement requested another REST reservation".to_string());
+            }
             Err(error) => failures.push(error.to_string()),
         }
         drop(registry);
+        super::settle_maker_terminal(removed);
         self.finish_cancel_drive(client_order_id, failures)
     }
 
@@ -867,7 +1041,6 @@ impl BoltV3OrderEconomicsHandle {
         cached: Option<&OrderAny>,
         now_ns: u64,
         retry_timeout_ns: u64,
-        escalation_attempts: u32,
     ) -> Result<CancelEffect> {
         let mut registry = self
             .tracked_orders
@@ -887,7 +1060,6 @@ impl BoltV3OrderEconomicsHandle {
                     cached,
                     now_ns,
                     retry_timeout_ns,
-                    escalation_attempts,
                 },
             )
         } else {
@@ -902,11 +1074,62 @@ impl BoltV3OrderEconomicsHandle {
         }?;
         match effect {
             CancelEffect::Remove => {
-                registry.remove_record(&client_order_id);
+                let removed = registry.remove_record(&client_order_id);
+                drop(registry);
+                super::settle_maker_terminal(removed);
                 Ok(CancelEffect::Remove)
             }
             other => Ok(other),
         }
+    }
+
+    fn cancel_requote_budget(
+        &self,
+        client_order_id: ClientOrderId,
+    ) -> Result<Option<crate::bolt_v3_requote_budget::RequoteBudgetPair>> {
+        let registry = self
+            .tracked_orders
+            .read()
+            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
+        Ok(registry
+            .records
+            .get(&client_order_id)
+            .and_then(|record| record.requote_budget.clone()))
+    }
+
+    fn next_cancel_operation_generation(&self, client_order_id: ClientOrderId) -> Result<u64> {
+        let registry = self
+            .tracked_orders
+            .read()
+            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
+        let cancellation = registry
+            .records
+            .get(&client_order_id)
+            .and_then(|record| record.cancellation.intent.as_ref())
+            .ok_or_else(|| anyhow::anyhow!("cancel participant lost its coordinator record"))?;
+        cancellation
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("cancel recovery generation overflow"))
+    }
+
+    fn settle_cancel_reservation(
+        &self,
+        client_order_id: ClientOrderId,
+        event: CancelEvent<'_>,
+    ) -> Result<CancelEffect> {
+        let mut registry = self
+            .tracked_orders
+            .write()
+            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
+        let Some(record) = registry.records.get_mut(&client_order_id) else {
+            return Ok(CancelEffect::None);
+        };
+        let TrackedOrderCancellation { query_seed, intent } = &mut record.cancellation;
+        let Some(cancellation) = intent.as_mut() else {
+            return Ok(CancelEffect::None);
+        };
+        cancellation.apply_event(query_seed, event)
     }
 
     fn finish_cancel_drive(
@@ -1062,12 +1285,104 @@ fn begin_when_due(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nautilus_core::Params;
     use nautilus_core::{UUID4, UnixNanos};
     use nautilus_model::{
         identifiers::{AccountId, InstrumentId, StrategyId, TraderId},
         orders::{LimitOrder, stubs::TestOrderEventStubs},
         types::{Price, Quantity},
     };
+
+    use crate::{
+        bolt_v3_order_execution::{BoltV3NtVenueMutationSink, BoltV3SubmitContext},
+        bolt_v3_requote_budget::{RequoteBudget, RequoteBudgetPair},
+    };
+
+    #[derive(Debug)]
+    struct CoordinatorSink {
+        now_ns: u64,
+        cached: Option<OrderAny>,
+        cancel_calls: usize,
+        query_calls: usize,
+    }
+
+    impl BoltV3NtVenueMutationSink for CoordinatorSink {
+        fn actor_time_ns(&mut self) -> Result<u64> {
+            Ok(self.now_ns)
+        }
+
+        fn cached_order(&mut self, _client_order_id: ClientOrderId) -> Result<Option<OrderAny>> {
+            Ok(self.cached.clone())
+        }
+
+        fn query_order_via_nt(
+            &mut self,
+            _seed: &OrderAny,
+            _client_id: Option<ClientId>,
+            _params: Option<Params>,
+        ) -> Result<()> {
+            self.query_calls += 1;
+            Ok(())
+        }
+
+        fn submit_order_via_nt(
+            &mut self,
+            _order: OrderAny,
+            _context: BoltV3SubmitContext,
+        ) -> Result<()> {
+            anyhow::bail!("coordinator test must not submit")
+        }
+
+        fn cancel_order_via_nt(
+            &mut self,
+            _client_order_id: ClientOrderId,
+            _client_id: Option<ClientId>,
+            _params: Option<Params>,
+        ) -> Result<()> {
+            self.cancel_calls += 1;
+            Ok(())
+        }
+
+        fn modify_order_via_nt(
+            &mut self,
+            _client_order_id: ClientOrderId,
+            _quantity: Quantity,
+            _price: Price,
+            _client_id: Option<ClientId>,
+            _params: Option<Params>,
+        ) -> Result<()> {
+            anyhow::bail!("coordinator test must not modify")
+        }
+    }
+
+    fn coordinator_handle_with_budget(
+        order: OrderAny,
+        rest_cap: u64,
+    ) -> BoltV3OrderEconomicsHandle {
+        let handle =
+            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
+        let client_order_id = order.client_order_id();
+        handle
+            .tracked_orders
+            .write()
+            .expect("registry should lock")
+            .records
+            .insert(
+                client_order_id,
+                TrackedMakerOrderRecord {
+                    registration_generation: 1,
+                    registration_state: RestingRegistrationState::Committed,
+                    economics: None,
+                    requote_budget: Some(RequoteBudgetPair::new(
+                        RequoteBudget::new(1, 60_000, 0),
+                        RequoteBudget::new(rest_cap, 60_000, 0),
+                    )),
+                    maker_lifecycle: None,
+                    cancellation: TrackedOrderCancellation::new(order),
+                },
+            );
+        handle
+    }
 
     fn initialized_order(client_order_id: &str) -> OrderAny {
         OrderAny::Limit(
@@ -1125,7 +1440,6 @@ mod tests {
                 cached,
                 now_ns,
                 retry_timeout_ns: 10,
-                escalation_attempts: 3,
             },
         )
     }
@@ -1320,7 +1634,7 @@ mod tests {
     }
 
     #[test]
-    fn event_reducer_owns_timer_and_unobserved_operation_transitions() {
+    fn reservation_denial_precedes_attempt_arming_and_preserves_counters() {
         let order = accepted_order("event-reducer", "VENUE-EVENT");
         let mut seed = NtOrderQuerySeed::new(order.clone());
         let mut record = RestingOrderCancelRecord::new(100);
@@ -1332,6 +1646,55 @@ mod tests {
                     cached: Some(&order),
                     now_ns: 10,
                     retry_timeout_ns: 20,
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            effect,
+            CancelEffect::ReservationRequired {
+                operation: CancelOperationKind::Cancel
+            }
+        ));
+        assert_eq!(record.routing_state, CancelRoutingState::Ready);
+        assert_eq!(record.generation, 0);
+        assert_eq!(record.total_recovery_attempts, 0);
+        assert_eq!(record.cancel_attempts, 0);
+        assert!(!record.health.retry_escalated);
+
+        assert!(matches!(
+            record
+                .apply_event(
+                    &mut seed,
+                    CancelEvent::ReservationDenied {
+                        now_ns: 10,
+                        retry_timeout_ns: 20,
+                    },
+                )
+                .unwrap(),
+            CancelEffect::None
+        ));
+        assert_eq!(
+            record.routing_state,
+            CancelRoutingState::Backoff { not_before_ns: 30 }
+        );
+        assert_eq!(record.generation, 0);
+        assert_eq!(record.total_recovery_attempts, 0);
+        assert_eq!(record.cancel_attempts, 0);
+        assert!(!record.health.retry_escalated);
+
+        assert!(matches!(
+            apply_timer(&mut record, &mut seed, Some(&order), 29).unwrap(),
+            CancelEffect::None
+        ));
+        let effect = apply_timer(&mut record, &mut seed, Some(&order), 30).unwrap();
+        assert!(matches!(effect, CancelEffect::ReservationRequired { .. }));
+        let effect = record
+            .apply_event(
+                &mut seed,
+                CancelEvent::ReservationGranted {
+                    operation: CancelOperationKind::Cancel,
+                    now_ns: 30,
+                    retry_timeout_ns: 20,
                     escalation_attempts: 3,
                 },
             )
@@ -1342,9 +1705,11 @@ mod tests {
             CancelRoutingState::Attempting {
                 generation: 1,
                 operation: CancelOperationKind::Cancel,
-                not_before_ns: 30,
+                not_before_ns: 50,
             }
         );
+        assert_eq!(record.total_recovery_attempts, 1);
+        assert_eq!(record.cancel_attempts, 1);
 
         assert!(matches!(
             record
@@ -1357,7 +1722,7 @@ mod tests {
         ));
         assert_eq!(
             record.routing_state,
-            CancelRoutingState::Backoff { not_before_ns: 30 }
+            CancelRoutingState::Backoff { not_before_ns: 50 }
         );
     }
 
@@ -1435,6 +1800,18 @@ mod tests {
         let mut seed = NtOrderQuerySeed::new(order.clone());
         let mut record = RestingOrderCancelRecord::new(100);
         let effect = apply_timer(&mut record, &mut seed, Some(&order), 10).unwrap();
+        assert!(matches!(effect, CancelEffect::ReservationRequired { .. }));
+        let effect = record
+            .apply_event(
+                &mut seed,
+                CancelEvent::ReservationGranted {
+                    operation: CancelOperationKind::Cancel,
+                    now_ns: 10,
+                    retry_timeout_ns: 10,
+                    escalation_attempts: 3,
+                },
+            )
+            .unwrap();
         let CancelEffect::Cancel { generation } = effect else {
             panic!("retryable order must emit one cancel effect");
         };
@@ -1460,6 +1837,173 @@ mod tests {
             CancelEffect::None
         ));
         assert_eq!(record.routing_state, settled);
+    }
+
+    #[test]
+    fn cancel_retry_cap_denial_makes_zero_calls_and_preserves_attempt_health_until_capacity_returns()
+     {
+        let order = accepted_order("cancel-cap", "VENUE-CANCEL-CAP");
+        let client_order_id = order.client_order_id();
+        let handle = coordinator_handle_with_budget(order.clone(), 1);
+        let retry_ns = handle.economics.cancel_retry_timeout_ns().unwrap();
+        let first_ns = NANOS_PER_MILLI_U64;
+        handle
+            .request_cancel_intent(client_order_id, first_ns)
+            .unwrap();
+        let mut sink = CoordinatorSink {
+            now_ns: first_ns,
+            cached: Some(order.clone()),
+            cancel_calls: 0,
+            query_calls: 0,
+        };
+
+        handle
+            .drive_cancel_intent(
+                BoltV3OrderExecutionPolicy::live(),
+                &mut sink,
+                CancelDriveInput {
+                    execution_client_id: "execution_client",
+                    client_order_id,
+                    cached: Some(&order),
+                    now_ns: first_ns,
+                    command_participant: None,
+                },
+            )
+            .expect_err("past-deadline cancellation remains loud after routing");
+        assert_eq!(sink.cancel_calls, 1);
+        let after_first = handle.resting_cancel_health().unwrap()[0].clone();
+        assert_eq!(after_first.total_recovery_attempts(), 1);
+
+        let denied_ns = first_ns + retry_ns;
+        sink.now_ns = denied_ns;
+        handle
+            .drive_cancel_intent(
+                BoltV3OrderExecutionPolicy::live(),
+                &mut sink,
+                CancelDriveInput {
+                    execution_client_id: "execution_client",
+                    client_order_id,
+                    cached: Some(&order),
+                    now_ns: denied_ns,
+                    command_participant: None,
+                },
+            )
+            .expect_err("reservation denial preserves the existing liveness failure");
+        assert_eq!(sink.cancel_calls, 1);
+        assert_eq!(handle.resting_cancel_health().unwrap()[0], after_first);
+
+        let second_denied_ns = denied_ns + retry_ns;
+        sink.now_ns = second_denied_ns;
+        handle
+            .drive_cancel_intent(
+                BoltV3OrderExecutionPolicy::live(),
+                &mut sink,
+                CancelDriveInput {
+                    execution_client_id: "execution_client",
+                    client_order_id,
+                    cached: Some(&order),
+                    now_ns: second_denied_ns,
+                    command_participant: None,
+                },
+            )
+            .expect_err("repeated denial preserves the existing liveness failure");
+        assert_eq!(sink.cancel_calls, 1);
+        assert_eq!(handle.resting_cancel_health().unwrap()[0], after_first);
+
+        let resumed_ns = (60_002 * NANOS_PER_MILLI_U64).max(second_denied_ns + retry_ns);
+        sink.now_ns = resumed_ns;
+        handle
+            .drive_cancel_intent(
+                BoltV3OrderExecutionPolicy::live(),
+                &mut sink,
+                CancelDriveInput {
+                    execution_client_id: "execution_client",
+                    client_order_id,
+                    cached: Some(&order),
+                    now_ns: resumed_ns,
+                    command_participant: None,
+                },
+            )
+            .expect_err("capacity recovery routes but does not erase liveness evidence");
+        assert_eq!(sink.cancel_calls, 2);
+        assert_eq!(
+            handle.resting_cancel_health().unwrap()[0].total_recovery_attempts(),
+            2
+        );
+    }
+
+    #[test]
+    fn query_retry_uses_the_same_reservation_before_arm_and_charges_each_routed_attempt() {
+        let order = accepted_order("query-cap", "VENUE-QUERY-CAP");
+        let client_order_id = order.client_order_id();
+        let handle = coordinator_handle_with_budget(order, 1);
+        let retry_ns = handle.economics.cancel_retry_timeout_ns().unwrap();
+        let first_ns = NANOS_PER_MILLI_U64;
+        handle
+            .request_cancel_intent(client_order_id, first_ns)
+            .unwrap();
+        let mut sink = CoordinatorSink {
+            now_ns: first_ns,
+            cached: None,
+            cancel_calls: 0,
+            query_calls: 0,
+        };
+
+        handle
+            .drive_cancel_intent(
+                BoltV3OrderExecutionPolicy::live(),
+                &mut sink,
+                CancelDriveInput {
+                    execution_client_id: "execution_client",
+                    client_order_id,
+                    cached: None,
+                    now_ns: first_ns,
+                    command_participant: None,
+                },
+            )
+            .expect_err("past-deadline query recovery remains loud after routing");
+        assert_eq!(sink.query_calls, 1);
+        assert_eq!(sink.cancel_calls, 0);
+        let after_first = handle.resting_cancel_health().unwrap()[0].clone();
+
+        let denied_ns = first_ns + retry_ns;
+        sink.now_ns = denied_ns;
+        handle
+            .drive_cancel_intent(
+                BoltV3OrderExecutionPolicy::live(),
+                &mut sink,
+                CancelDriveInput {
+                    execution_client_id: "execution_client",
+                    client_order_id,
+                    cached: None,
+                    now_ns: denied_ns,
+                    command_participant: None,
+                },
+            )
+            .expect_err("query reservation denial preserves liveness evidence");
+        assert_eq!(sink.query_calls, 1);
+        assert_eq!(handle.resting_cancel_health().unwrap()[0], after_first);
+
+        let resumed_ns = (60_002 * NANOS_PER_MILLI_U64).max(denied_ns + retry_ns);
+        sink.now_ns = resumed_ns;
+        handle
+            .drive_cancel_intent(
+                BoltV3OrderExecutionPolicy::live(),
+                &mut sink,
+                CancelDriveInput {
+                    execution_client_id: "execution_client",
+                    client_order_id,
+                    cached: None,
+                    now_ns: resumed_ns,
+                    command_participant: None,
+                },
+            )
+            .expect_err("capacity recovery routes query but retains liveness evidence");
+        assert_eq!(sink.query_calls, 2);
+        assert_eq!(
+            handle.resting_cancel_health().unwrap()[0].total_recovery_attempts(),
+            2
+        );
     }
 
     #[test]

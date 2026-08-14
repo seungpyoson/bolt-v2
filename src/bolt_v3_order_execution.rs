@@ -67,6 +67,9 @@ pub use tracked_order_economics::{
     BoltV3RestingSubmitTransactionOutcome, BoltV3RoutedNonSubmittedOutcome,
     build_order_economics_submit_admission,
 };
+pub(crate) use tracked_order_economics::{
+    BoltV3RestingCommitDisposition, BoltV3RestingRegistrationCommitParticipant,
+};
 
 pub struct BoltV3FinalOrderEconomicsInput<'a> {
     pub execution_client_id: &'a str,
@@ -2811,6 +2814,7 @@ where
     fn submit_maker_order(
         &mut self,
         prepared: Self::PreparedSubmit,
+        participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
     ) -> BoltV3RestingSubmitTransactionOutcome {
         let PreparedMakerOrderSubmission {
             order,
@@ -2821,22 +2825,27 @@ where
         let submit_context =
             BoltV3SubmitContext::with_client_id(ClientId::from(self.context.execution_client_id));
         let order_to_route = order.clone();
-        let route = || {
+        let route = |attempt_participant| {
             self.policy.route_submit_with_sink(
                 BoltV3SubmitRoutingRequest::with_economics(
                     self.decision_evidence,
                     self.submit_admission,
                     intent,
                     sealed,
-                ),
+                )
+                .with_attempt_participant(attempt_participant),
                 self.runtime,
                 order_to_route,
                 submit_context,
             )
         };
-        self.context
-            .order_economics
-            .route_resting_submit(self.policy, order, admission, route)
+        self.context.order_economics.route_resting_submit(
+            self.policy,
+            order,
+            admission,
+            participant,
+            route,
+        )
     }
 
     fn cancel_maker_order(
@@ -2844,12 +2853,14 @@ where
         _leg: Leg,
         _instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
+        participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
     ) -> Result<()> {
         self.context.order_economics.route_tracked_cancel(
             self.policy,
             self.runtime,
             self.context.execution_client_id,
             client_order_id,
+            participant,
         )
     }
 
@@ -2876,6 +2887,7 @@ where
         client_order_id: ClientOrderId,
         price: Price,
         quantity: Quantity,
+        _participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
     ) -> Result<()> {
         // Routes the in-place amend through the execution-policy boundary. Under
         // Option A (#835) the Live arm is FAIL-CLOSED: an in-place modify does not
@@ -3150,12 +3162,16 @@ mod tests {
         },
         bolt_v3_kill_switch::KillSwitchState,
         bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
-        bolt_v3_maker_order_dispatch::{MakerOrderDispatchInput, MakerOrderDispatchOutcome},
+        bolt_v3_maker_order_dispatch::{
+            MakerOrderDispatchInput, MakerOrderDispatchOutcome, MakerQuoteTransactionContext,
+        },
+        bolt_v3_maker_quote_control::{QuoteControlInput, drive_quote_leg},
         bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
         bolt_v3_position_authority_feed::{
             BoltV3PositionAuthorityCapability, BoltV3PositionAuthorityFeed,
         },
-        bolt_v3_quote_lifecycle::Leg,
+        bolt_v3_quote_lifecycle::{Leg, MarketQuote},
+        bolt_v3_requote_budget::{RequoteBudget, RequoteBudgetPair},
         bolt_v3_submit_admission::{
             BoltV3CompiledOrderAdmissionEvidence, BoltV3CompiledOrderKind,
             BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide, BoltV3CompiledProductKind,
@@ -3297,6 +3313,123 @@ mod tests {
         }
     }
 
+    fn quote_transaction_for_submit(
+        command: &MakerCompiledOrderCommand,
+    ) -> MakerQuoteTransactionContext {
+        let MakerCompiledOrderCommand::Submit { leg, .. } = command else {
+            panic!("quote transaction test helper requires a submit command");
+        };
+        let mut market = MarketQuote::new(false);
+        let mut budget = RequoteBudgetPair::new(
+            RequoteBudget::new(100, 60_000, 0),
+            RequoteBudget::new(100, 60_000, 0),
+        );
+        let decision = drive_quote_leg(
+            &mut market,
+            &mut budget,
+            QuoteControlInput {
+                leg: *leg,
+                desired_price: 0.5,
+                resting_price: None,
+                requote_threshold: 0.01,
+                eps: 1e-9,
+                now_ms: 0,
+            },
+        );
+        MakerQuoteTransactionContext {
+            market,
+            budget,
+            proposal: decision
+                .proposal
+                .expect("fresh submit should mint a quote transaction proposal"),
+        }
+    }
+
+    fn coordinator_budget_for_test() -> RequoteBudgetPair {
+        RequoteBudgetPair::new(
+            RequoteBudget::new(100, 60_000, 0),
+            RequoteBudget::new(100, 60_000, 0),
+        )
+    }
+
+    fn quote_transaction_for_cancel(
+        command: &MakerCompiledOrderCommand,
+    ) -> MakerQuoteTransactionContext {
+        let MakerCompiledOrderCommand::Cancel { leg, .. } = command else {
+            panic!("quote transaction test helper requires a cancel command");
+        };
+        let mut market = MarketQuote::new(false);
+        market.on_leg_event(
+            *leg,
+            crate::bolt_v3_quote_lifecycle::LegEvent::QuoteTrigger {
+                requote_needed: true,
+            },
+        );
+        market.on_leg_event(*leg, crate::bolt_v3_quote_lifecycle::LegEvent::Accepted);
+        let mut budget = RequoteBudgetPair::new(
+            RequoteBudget::new(100, 60_000, 0),
+            RequoteBudget::new(100, 60_000, 0),
+        );
+        let decision = drive_quote_leg(
+            &mut market,
+            &mut budget,
+            QuoteControlInput {
+                leg: *leg,
+                desired_price: 0.6,
+                resting_price: Some(0.5),
+                requote_threshold: 0.01,
+                eps: 1e-9,
+                now_ms: 2,
+            },
+        );
+        MakerQuoteTransactionContext {
+            market,
+            budget,
+            proposal: decision
+                .proposal
+                .expect("requote cancel should mint a quote transaction proposal"),
+        }
+    }
+
+    fn quote_transaction_for_modify(
+        command: &MakerCompiledOrderCommand,
+    ) -> MakerQuoteTransactionContext {
+        let MakerCompiledOrderCommand::Modify { leg, .. } = command else {
+            panic!("quote transaction test helper requires a modify command");
+        };
+        let mut market = MarketQuote::new(true);
+        market.on_leg_event(
+            *leg,
+            crate::bolt_v3_quote_lifecycle::LegEvent::QuoteTrigger {
+                requote_needed: true,
+            },
+        );
+        market.on_leg_event(*leg, crate::bolt_v3_quote_lifecycle::LegEvent::Accepted);
+        let mut budget = RequoteBudgetPair::new(
+            RequoteBudget::new(100, 60_000, 0),
+            RequoteBudget::new(100, 60_000, 0),
+        );
+        let decision = drive_quote_leg(
+            &mut market,
+            &mut budget,
+            QuoteControlInput {
+                leg: *leg,
+                desired_price: 0.6,
+                resting_price: Some(0.5),
+                requote_threshold: 0.01,
+                eps: 1e-9,
+                now_ms: 2,
+            },
+        );
+        MakerQuoteTransactionContext {
+            market,
+            budget,
+            proposal: decision
+                .proposal
+                .expect("modify should mint a quote transaction proposal"),
+        }
+    }
+
     #[test]
     fn maker_submit_routes_through_shared_execution_policy_and_admission() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
@@ -3330,6 +3463,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: Some(quote_transaction_for_submit(&command)),
             },
         )
         .expect("maker submit should route through shared execution policy");
@@ -3422,6 +3556,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: Some(quote_transaction_for_submit(&command)),
             },
         )
         .unwrap();
@@ -3478,6 +3613,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &submit,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: Some(quote_transaction_for_submit(&submit)),
             },
         )
         .expect("maker submit should establish tracked cancellation identity");
@@ -3496,6 +3632,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: Some(quote_transaction_for_cancel(&command)),
             },
         )
         .expect("maker cancel should route through shared execution policy");
@@ -3546,6 +3683,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &submit,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: Some(quote_transaction_for_submit(&submit)),
             },
         )
         .unwrap();
@@ -3564,6 +3702,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &cancel,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: Some(quote_transaction_for_cancel(&cancel)),
             },
         )
         .expect_err("the first synchronous cancel failure must remain retryable");
@@ -3631,6 +3770,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &submit,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: Some(quote_transaction_for_submit(&submit)),
             },
         )
         .unwrap();
@@ -3771,6 +3911,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &submit,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: Some(quote_transaction_for_submit(&submit)),
             },
         )
         .unwrap();
@@ -3806,6 +3947,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &cancel,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: Some(quote_transaction_for_cancel(&cancel)),
             },
         )
         .unwrap();
@@ -3896,6 +4038,7 @@ mod tests {
                 MakerOrderDispatchInput {
                     command: &submit,
                     submit_order_prefix: "maker_submit",
+                    quote_transaction: Some(quote_transaction_for_submit(&submit)),
                 },
             )
             .unwrap();
@@ -3944,8 +4087,11 @@ mod tests {
             .reconcile_fill_void_at(conflicted_id, Some(conflicted_a.clone()), 100)
             .unwrap();
         order_economics
+            .attach_requote_budget_for_test(conflicted_id, coordinator_budget_for_test());
+        order_economics
             .reconcile_fill_void_at(sibling_id, Some(sibling.clone()), 100)
             .unwrap();
+        order_economics.attach_requote_budget_for_test(sibling_id, coordinator_budget_for_test());
         let mut sink = RecordingVenueMutationSink::default();
         sink.cached_orders
             .insert(conflicted_id, conflicted_a.clone());
@@ -3984,6 +4130,8 @@ mod tests {
         order_economics
             .reconcile_fill_void_at(client_order_id, Some(order.clone()), 100)
             .unwrap();
+        order_economics
+            .attach_requote_budget_for_test(client_order_id, coordinator_budget_for_test());
         let mut sink = RecordingVenueMutationSink {
             fail_actor_time: true,
             ..RecordingVenueMutationSink::default()
@@ -4017,6 +4165,8 @@ mod tests {
         order_economics
             .reconcile_fill_void_at(client_order_id, Some(order.clone()), 100)
             .unwrap();
+        order_economics
+            .attach_requote_budget_for_test(client_order_id, coordinator_budget_for_test());
         let mut sink = RecordingVenueMutationSink {
             fail_actor_time: true,
             ..RecordingVenueMutationSink::default()
@@ -4072,6 +4222,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &submit,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: Some(quote_transaction_for_submit(&submit)),
             },
         )
         .expect("maker submit should establish an unrelated tracked order");
@@ -4091,6 +4242,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &mismatched_scope,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: None,
             },
         )
         .expect("an empty cancel-all scope must remain an exact no-op");
@@ -4148,6 +4300,7 @@ mod tests {
                 MakerOrderDispatchInput {
                     command: &submit,
                     submit_order_prefix: "maker_submit",
+                    quote_transaction: Some(quote_transaction_for_submit(&submit)),
                 },
             )
             .expect("maker submit should establish tracked cancel-all records");
@@ -4172,6 +4325,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &selected_scope,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: None,
             },
         )
         .expect_err("the selected cache-read failure must remain scoped");
@@ -4222,6 +4376,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &submit,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: Some(quote_transaction_for_submit(&submit)),
             },
         )
         .expect("maker submit should establish tracked cancel-all scope");
@@ -4239,6 +4394,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &mismatched_side,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: None,
             },
         )
         .expect("a side-mismatched cancel-all should be a scoped no-op");
@@ -4267,6 +4423,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: None,
             },
         )
         .expect("maker cancel-all should route through shared execution policy");
@@ -4296,6 +4453,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: None,
             },
         )
         .expect("repeated cancel-all origin should merge into the existing backoff");
@@ -4703,6 +4861,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: Some(quote_transaction_for_submit(&command)),
             },
         )
         .expect("pre-sink rejection is a typed submit outcome");
@@ -6215,6 +6374,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: Some(quote_transaction_for_modify(&command)),
             },
         );
 
@@ -6257,6 +6417,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
+                quote_transaction: Some(quote_transaction_for_modify(&command)),
             },
         )
         .expect("maker modify should route in shadow without bailing");

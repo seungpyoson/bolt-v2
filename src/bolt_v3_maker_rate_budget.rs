@@ -93,20 +93,42 @@ mod tests {
 
     const MIN_INTERVAL_MS: u64 = 500;
 
+    fn reserve_proposal(
+        pair: &RequoteBudgetPair,
+        proposal: Result<
+            crate::bolt_v3_requote_budget::RequoteBudgetReservationProposal,
+            crate::bolt_v3_requote_budget::RequoteBudgetReservationDenied,
+        >,
+    ) -> bool {
+        proposal
+            .and_then(|proposal| pair.reserve(proposal))
+            .and_then(crate::bolt_v3_requote_budget::RequoteBudgetReservation::commit)
+            .is_ok()
+    }
+
+    fn reserve_fresh(pair: &RequoteBudgetPair, now_ms: u64) -> bool {
+        reserve_proposal(pair, pair.propose_fresh_submit(now_ms))
+    }
+
+    fn reserve_cancel_resubmit(pair: &RequoteBudgetPair, now_ms: u64) -> bool {
+        reserve_proposal(pair, pair.propose_cancel_resubmit(now_ms))
+    }
+
+    fn reserve_rest(pair: &RequoteBudgetPair, now_ms: u64) -> bool {
+        reserve_proposal(pair, pair.propose_rest(now_ms))
+    }
+
     #[test]
     fn submit_cap_is_sourced_from_the_rate_string_limit() {
         // cap=2 from "2/00:01:00"; REST cap (100) is slack so the submit limit is
         // the binding constraint. Reservations are spaced past the anti-flicker
         // floor so only the window cap — not the min-interval — can refuse them.
-        let mut pair = build_requote_budget_pair("2/00:01:00", 100, MIN_INTERVAL_MS)
+        let pair = build_requote_budget_pair("2/00:01:00", 100, MIN_INTERVAL_MS)
             .expect("a well-formed rate string and non-zero caps build a budget pair");
-        assert!(pair.try_reserve_fresh_submit(1_000), "first submit fits");
+        assert!(reserve_fresh(&pair, 1_000), "first submit fits");
+        assert!(reserve_fresh(&pair, 2_000), "second submit fills the cap");
         assert!(
-            pair.try_reserve_fresh_submit(2_000),
-            "second submit fills the cap"
-        );
-        assert!(
-            !pair.try_reserve_fresh_submit(3_000),
+            !reserve_fresh(&pair, 3_000),
             "third submit must be refused by the submit cap of 2 parsed from the rate string"
         );
         assert_eq!(pair.submit_commands_in_window(), 2);
@@ -117,15 +139,15 @@ mod tests {
         // REST cap=2 from the egress argument; submit cap (100) is slack so the
         // REST ceiling is the binding constraint. A fresh submit costs one REST
         // call, so the third is refused on the REST budget, not the submit budget.
-        let mut pair = build_requote_budget_pair("100/00:01:00", 2, MIN_INTERVAL_MS)
+        let pair = build_requote_budget_pair("100/00:01:00", 2, MIN_INTERVAL_MS)
             .expect("a well-formed rate string and non-zero caps build a budget pair");
-        assert!(pair.try_reserve_fresh_submit(1_000), "first submit fits");
+        assert!(reserve_fresh(&pair, 1_000), "first submit fits");
         assert!(
-            pair.try_reserve_fresh_submit(2_000),
+            reserve_fresh(&pair, 2_000),
             "second submit fills the REST cap"
         );
         assert!(
-            !pair.try_reserve_fresh_submit(3_000),
+            !reserve_fresh(&pair, 3_000),
             "third submit must be refused by the REST egress cap of 2"
         );
         assert_eq!(pair.rest_cost_in_window(), 2);
@@ -139,15 +161,15 @@ mod tests {
         // succeed. If the window were hardcoded to 60_000 ms, the +31s reservation
         // would still see the first entry and fail — so this fails on a hardcoded
         // minute and passes only when the window tracks the parsed 30s interval.
-        let mut pair = build_requote_budget_pair("1/00:00:30", 10, MIN_INTERVAL_MS)
+        let pair = build_requote_budget_pair("1/00:00:30", 10, MIN_INTERVAL_MS)
             .expect("a 30-second rate string builds a budget pair");
-        assert!(pair.try_reserve_fresh_submit(1_000), "first submit fits");
+        assert!(reserve_fresh(&pair, 1_000), "first submit fits");
         assert!(
-            !pair.try_reserve_fresh_submit(29_000),
+            !reserve_fresh(&pair, 29_000),
             "a submit 28s later is inside the 30s window and refused by the cap of 1"
         );
         assert!(
-            pair.try_reserve_fresh_submit(32_000),
+            reserve_fresh(&pair, 32_000),
             "a submit 31s later is past the 30s window, so the first entry evicted and it fits"
         );
     }
@@ -162,10 +184,10 @@ mod tests {
         // budget admits the 2 calls, so it is granted. If the two budgets were
         // swapped, the 2-REST charge would hit the cap-1 budget and be refused — so
         // this grant FAILS on a swap, which a symmetric reservation could not detect.
-        let mut pair = build_requote_budget_pair("1/00:01:00", 100, MIN_INTERVAL_MS)
+        let pair = build_requote_budget_pair("1/00:01:00", 100, MIN_INTERVAL_MS)
             .expect("a well-formed config builds a pair");
         assert!(
-            pair.try_reserve_cancel_resubmit(1_000),
+            reserve_cancel_resubmit(&pair, 1_000),
             "a single reprice (1 submit + 2 REST) is granted; a swapped pair refuses the 2-REST charge on the cap-1 submit budget"
         );
         assert_eq!(pair.submit_commands_in_window(), 1);
@@ -221,18 +243,15 @@ mod tests {
         // reproducing the behavior it wrongly rejected — the first quote is granted,
         // a quote inside the interval is throttled, and a quote past the window is
         // granted again. "1/00:00:30" => 30_000 ms submit window; min-interval 30_000.
-        let mut pair = build_requote_budget_pair("1/00:00:30", 100, 30_000)
+        let pair = build_requote_budget_pair("1/00:00:30", 100, 30_000)
             .expect("a min-interval equal to the submit window is a valid cadence");
+        assert!(reserve_fresh(&pair, 1_000), "first quote is granted");
         assert!(
-            pair.try_reserve_fresh_submit(1_000),
-            "first quote is granted"
-        );
-        assert!(
-            !pair.try_reserve_fresh_submit(2_000),
+            !reserve_fresh(&pair, 2_000),
             "a quote 1s later is throttled by the 30s anti-flicker floor"
         );
         assert!(
-            pair.try_reserve_fresh_submit(31_001),
+            reserve_fresh(&pair, 31_001),
             "a quote past the 30s window/floor is granted again — not permanently closed"
         );
     }
@@ -243,18 +262,15 @@ mod tests {
         // REST window is also valid, pinning removal of the old `min_interval >=
         // MILLIS_PER_MINUTE_U64` guard. A 10/2h submit rate keeps the submit cap slack
         // so the REST-window min-interval is the only thing under test.
-        let mut pair = build_requote_budget_pair("10/02:00:00", 100, 60_000)
+        let pair = build_requote_budget_pair("10/02:00:00", 100, 60_000)
             .expect("a min-interval equal to the REST window is a valid cadence");
+        assert!(reserve_fresh(&pair, 1_000), "first quote is granted");
         assert!(
-            pair.try_reserve_fresh_submit(1_000),
-            "first quote is granted"
-        );
-        assert!(
-            !pair.try_reserve_fresh_submit(2_000),
+            !reserve_fresh(&pair, 2_000),
             "a quote 1s later is throttled by the 60s anti-flicker floor"
         );
         assert!(
-            pair.try_reserve_fresh_submit(61_001),
+            reserve_fresh(&pair, 61_001),
             "a quote past the 60s REST window/floor is granted again — not permanently closed"
         );
     }
@@ -267,18 +283,15 @@ mod tests {
         // guard would ACCEPT the equality config and that test would not flip). This
         // case flips under BOTH a `>=` and a `>` re-addition, pinning the whole
         // removal. "1/00:00:30" => 30_000 ms submit window; min-interval 45_000 (> it).
-        let mut pair = build_requote_budget_pair("1/00:00:30", 100, 45_000)
+        let pair = build_requote_budget_pair("1/00:00:30", 100, 45_000)
             .expect("a min-interval above the submit window is a valid cadence");
+        assert!(reserve_fresh(&pair, 1_000), "first quote is granted");
         assert!(
-            pair.try_reserve_fresh_submit(1_000),
-            "first quote is granted"
-        );
-        assert!(
-            !pair.try_reserve_fresh_submit(2_000),
+            !reserve_fresh(&pair, 2_000),
             "a quote 1s later is throttled by the 45s anti-flicker floor"
         );
         assert!(
-            pair.try_reserve_fresh_submit(46_001),
+            reserve_fresh(&pair, 46_001),
             "a quote past the 45s floor is granted again — the submit window evicted the first emit"
         );
     }
@@ -289,18 +302,15 @@ mod tests {
         // `min_interval >= MILLIS_PER_MINUTE_U64` guard against both `>=` and `>`
         // re-additions. A 10/2h submit rate keeps the submit cap and window slack so
         // the 90_000 ms min-interval (> the 60s REST window) is the only thing tested.
-        let mut pair = build_requote_budget_pair("10/02:00:00", 100, 90_000)
+        let pair = build_requote_budget_pair("10/02:00:00", 100, 90_000)
             .expect("a min-interval above the REST window is a valid cadence");
+        assert!(reserve_fresh(&pair, 1_000), "first quote is granted");
         assert!(
-            pair.try_reserve_fresh_submit(1_000),
-            "first quote is granted"
-        );
-        assert!(
-            !pair.try_reserve_fresh_submit(2_000),
+            !reserve_fresh(&pair, 2_000),
             "a quote 1s later is throttled by the 90s anti-flicker floor"
         );
         assert!(
-            pair.try_reserve_fresh_submit(91_001),
+            reserve_fresh(&pair, 91_001),
             "a quote past the 90s floor is granted again — the REST window evicted the first emit"
         );
     }
@@ -317,36 +327,36 @@ mod tests {
         // would be granted. (There is no submit-only reservation through the pair API,
         // so the submit budget's floor cannot be isolated the same way; the builder
         // passes the one `min_interval_ms` value to BOTH RequoteBudget::new calls.)
-        let mut rest_floor = build_requote_budget_pair("40/00:01:00", 100, MIN_INTERVAL_MS)
+        let rest_floor = build_requote_budget_pair("40/00:01:00", 100, MIN_INTERVAL_MS)
             .expect("a well-formed config builds a pair");
         assert!(
-            rest_floor.try_reserve_cancel(1_000),
+            reserve_rest(&rest_floor, 1_000),
             "a standalone cancel is granted"
         );
         assert!(
-            !rest_floor.try_reserve_fresh_submit(1_100),
+            !reserve_fresh(&rest_floor, 1_100),
             "a submit 100ms after the cancel is refused on the REST min-interval floor"
         );
         assert!(
-            rest_floor.try_reserve_fresh_submit(1_500),
+            reserve_fresh(&rest_floor, 1_500),
             "once the 500ms REST floor clears the submit is granted"
         );
 
         // And the floor is live (and is exactly the configured value, not 0) on the
         // fresh-submit path: two distinct-tick submits inside 500ms are throttled, and
         // a submit at the 500ms boundary is admitted.
-        let mut submit_floor = build_requote_budget_pair("40/00:01:00", 100, MIN_INTERVAL_MS)
+        let submit_floor = build_requote_budget_pair("40/00:01:00", 100, MIN_INTERVAL_MS)
             .expect("a well-formed config builds a pair");
         assert!(
-            submit_floor.try_reserve_fresh_submit(1_000),
+            reserve_fresh(&submit_floor, 1_000),
             "first submit is granted"
         );
         assert!(
-            !submit_floor.try_reserve_fresh_submit(1_100),
+            !reserve_fresh(&submit_floor, 1_100),
             "a second submit 100ms later is throttled by the 500ms floor"
         );
         assert!(
-            submit_floor.try_reserve_fresh_submit(1_500),
+            reserve_fresh(&submit_floor, 1_500),
             "a submit at the 500ms boundary is admitted"
         );
     }
@@ -356,12 +366,12 @@ mod tests {
         // The canonical deploy shape: 40/min submit governor, 100/min CLOB REST
         // egress, 500 ms anti-flicker. Both budgets start empty and admit a fresh
         // co-quote.
-        let mut pair = build_requote_budget_pair("40/00:01:00", 100, MIN_INTERVAL_MS)
+        let pair = build_requote_budget_pair("40/00:01:00", 100, MIN_INTERVAL_MS)
             .expect("the canonical configuration builds a budget pair");
         assert_eq!(pair.submit_commands_in_window(), 0);
         assert_eq!(pair.rest_cost_in_window(), 0);
         assert!(
-            pair.try_reserve_fresh_submit(1_000),
+            reserve_fresh(&pair, 1_000),
             "a fresh submit fits the canonical caps"
         );
         assert_eq!(pair.submit_commands_in_window(), 1);

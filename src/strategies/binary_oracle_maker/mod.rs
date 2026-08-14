@@ -45,7 +45,7 @@ use crate::{
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
     bolt_v3_maker_order_dispatch::{
         MakerOrderCommandFailure, MakerOrderCommandFailureKind, MakerOrderDispatchInput,
-        MakerOrderDispatchOutcome,
+        MakerOrderDispatchOutcome, MakerQuoteTransactionContext,
     },
     bolt_v3_maker_order_plan::{
         MakerLegBinding, MakerMarketActionOrderInput, maker_order_plan_from_market_action,
@@ -548,6 +548,7 @@ impl BinaryOracleMaker {
         command: &MakerCompiledOrderCommand,
         submit_order_prefix: &str,
         terminal_value_entry: Option<BoltV3TerminalValueEntry>,
+        quote_transaction: Option<MakerQuoteTransactionContext>,
     ) -> std::result::Result<MakerOrderDispatchOutcome, MakerOrderCommandFailure> {
         if matches!(
             command,
@@ -580,6 +581,7 @@ impl BinaryOracleMaker {
             MakerOrderDispatchInput {
                 command,
                 submit_order_prefix,
+                quote_transaction,
             },
         )
     }
@@ -743,10 +745,25 @@ impl BinaryOracleMaker {
                                 )
                             },
                         )?;
+                    let leg = match command {
+                        MakerCompiledOrderCommand::Submit { leg, .. }
+                        | MakerCompiledOrderCommand::Cancel { leg, .. }
+                        | MakerCompiledOrderCommand::Modify { leg, .. } => Some(*leg),
+                        MakerCompiledOrderCommand::CancelAll { leg, .. } => *leg,
+                    };
+                    let proposal = leg.and_then(|leg| match leg {
+                        Leg::Yes => planned.and_then(|set| set.yes.control.proposal),
+                        Leg::No => planned.and_then(|set| set.no.control.proposal),
+                    });
                     self.route_maker_order_command(
                         command,
                         submit_order_prefix,
                         terminal_value_entry,
+                        proposal.map(|proposal| MakerQuoteTransactionContext {
+                            market: market.clone(),
+                            budget: budget.clone(),
+                            proposal,
+                        }),
                     )
                 };
             Some(dispatch_maker_runtime_order_plan_with_command_router(
@@ -935,6 +952,7 @@ impl BinaryOracleMaker {
                 command,
                 submit_order_prefix,
                 terminal_value_entry.clone(),
+                None,
             )
         };
         let orders = dispatch_maker_runtime_order_plan_with_command_router(
@@ -1051,10 +1069,12 @@ fn requote_action_cost_class(market: &MarketQuote, leg: Leg) -> Option<RequoteAc
             Some(RequoteActionCostClass::Cancel)
         }
         LegState::Resting => Some(RequoteActionCostClass::CancelResubmit),
+        LegState::ReplacementPendingBackoff => Some(RequoteActionCostClass::FreshSubmit),
         LegState::SubmitPending
         | LegState::RequotePending
         | LegState::ModifyPending
-        | LegState::CancelPending => None,
+        | LegState::CancelPending
+        | LegState::PoisonedReconciliationHold => None,
     }
 }
 
@@ -1474,6 +1494,14 @@ mod tests {
         bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     };
     use nautilus_core::{Params, UnixNanos};
+
+    fn reserve_fresh(budget: &RequoteBudgetPair, now_ms: u64) -> bool {
+        budget
+            .propose_fresh_submit(now_ms)
+            .and_then(|proposal| budget.reserve(proposal))
+            .and_then(crate::bolt_v3_requote_budget::RequoteBudgetReservation::commit)
+            .is_ok()
+    }
     use nautilus_model::{
         enums::{AggressorSide, AssetClass},
         identifiers::{InstrumentId, Symbol, TradeId, Venue},
@@ -1745,11 +1773,11 @@ mod tests {
     fn requote_throttle_bound_throttles_same_millisecond_reemit() {
         use crate::bolt_v3_requote_budget::RequoteBudget;
 
-        let mut remaining_budget = RequoteBudgetPair::new(
+        let remaining_budget = RequoteBudgetPair::new(
             RequoteBudget::new(40, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
             RequoteBudget::new(100, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
         );
-        assert!(remaining_budget.try_reserve_fresh_submit(1_000));
+        assert!(reserve_fresh(&remaining_budget, 1_000));
         assert_eq!(remaining_budget.last_emit_ms(), Some(1_000));
 
         // Same-millisecond emits are exempt from the min-interval floor and must
@@ -1765,11 +1793,11 @@ mod tests {
             "same-millisecond emits with budget remaining must not be labeled MinInterval"
         );
 
-        let mut exhausted_budget = RequoteBudgetPair::new(
+        let exhausted_budget = RequoteBudgetPair::new(
             RequoteBudget::new(1, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
             RequoteBudget::new(100, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
         );
-        assert!(exhausted_budget.try_reserve_fresh_submit(1_000));
+        assert!(reserve_fresh(&exhausted_budget, 1_000));
         assert_eq!(exhausted_budget.last_emit_ms(), Some(1_000));
 
         // Same millisecond, exhausted submit-command budget: the live gate would

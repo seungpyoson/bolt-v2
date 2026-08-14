@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
 };
 
 use anyhow::Result;
@@ -9,7 +9,7 @@ use nautilus_common::actor::DataActorNative;
 use nautilus_model::types::{Price, Quantity};
 use nautilus_model::{
     enums::{OrderSide, PositionSide as NtPositionSide},
-    identifiers::{ClientOrderId, InstrumentId, PositionId},
+    identifiers::{ClientOrderId, InstrumentId, PositionId, StrategyId},
     orders::{Order, OrderAny},
 };
 use nautilus_trading::{Strategy, StrategyNative};
@@ -21,6 +21,8 @@ use crate::{
         EconomicsAdmissionPolicy, EconomicsSizingIntent, EconomicsSizingQuote,
         RestingOrderEconomicsRefresh, refresh_resting_order_economics,
     },
+    bolt_v3_quote_lifecycle::MakerQuoteLifecycleHandle,
+    bolt_v3_requote_budget::RequoteBudgetPair,
     bolt_v3_submit_admission::{
         build_submit_admission_request_from_economics, order_admission_facts,
     },
@@ -33,18 +35,18 @@ use crate::{
 
 use super::{
     BoltV3FinalOrderEconomicsInput, BoltV3FinalOrderEconomicsScenario, BoltV3NtVenueMutationSink,
-    BoltV3OrderExecutionPolicy, BoltV3SubmitAttemptKind, BoltV3SubmitAttemptOutcome,
-    BoltV3TakerEconomicsSizingInput, NtStrategyVenueMutationSink,
-    economics_basis::seal_final_order_economics_basis,
+    BoltV3OrderExecutionPolicy, BoltV3RouteAttemptCompletion, BoltV3RouteAttemptParticipant,
+    BoltV3SubmitAttemptKind, BoltV3SubmitAttemptOutcome, BoltV3TakerEconomicsSizingInput,
+    NtStrategyVenueMutationSink, economics_basis::seal_final_order_economics_basis,
 };
 
 mod cancel_coordinator;
 
-use cancel_coordinator::TrackedOrderCancellation;
 pub use cancel_coordinator::{
     BoltV3CancellationLivenessFailure, BoltV3RecoveryIdentityConflict,
     BoltV3RestingOrderCancelHealthSnapshot,
 };
+use cancel_coordinator::{CancelDriveInput, TrackedOrderCancellation};
 
 #[derive(Clone)]
 pub struct BoltV3OrderEconomicsHandle {
@@ -56,6 +58,7 @@ pub struct BoltV3OrderEconomicsHandle {
 struct TrackedMakerOrderRegistry {
     records: BTreeMap<ClientOrderId, TrackedMakerOrderRecord>,
     retired_provisional: BTreeMap<ClientOrderId, u64>,
+    requote_budgets_by_strategy: BTreeMap<StrategyId, RequoteBudgetPair>,
     next_generation: u64,
     health: RestingRegistryHealth,
 }
@@ -98,6 +101,8 @@ struct TrackedMakerOrderRecord {
     registration_generation: u64,
     registration_state: RestingRegistrationState,
     economics: Option<RestingOrderEconomicsRecord>,
+    requote_budget: Option<RequoteBudgetPair>,
+    maker_lifecycle: Option<MakerQuoteLifecycleHandle>,
     cancellation: TrackedOrderCancellation,
 }
 
@@ -148,6 +153,7 @@ impl BoltV3RestingRegistrationRejection {
 pub enum BoltV3RestingRollbackInvariantFailure {
     RegistryUnavailable,
     RegistrationGenerationReplaced,
+    ParticipantSettlementFailed,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -229,27 +235,163 @@ impl BoltV3RestingSubmitTransactionOutcome {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoltV3RestingCommitDisposition {
+    Submitted,
+    CommandIssued,
+    CommandIssuedRetainPrepaid,
+    SinkRejected,
+    PreSinkAborted,
+    CallbackRetired,
+    RollbackInvariantFailed,
+    PostSinkUnwind,
+}
+
+pub trait BoltV3RestingRegistrationCommitParticipant: std::fmt::Debug {
+    fn requote_budget(&self) -> Option<RequoteBudgetPair>;
+    fn maker_lifecycle(&self) -> Option<MakerQuoteLifecycleHandle> {
+        None
+    }
+    fn arm_at_generation(&mut self, generation: u64) -> Result<()>;
+    fn mark_sink_invoked(&mut self);
+    fn settle_at_generation(
+        &mut self,
+        generation: u64,
+        disposition: BoltV3RestingCommitDisposition,
+    ) -> Result<()>;
+}
+
+#[derive(Debug)]
 struct RestingRegistrationTransaction {
     registry: Arc<RwLock<TrackedMakerOrderRegistry>>,
     client_order_id: ClientOrderId,
     generation: u64,
+    participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
+    maker_lifecycle: Option<MakerQuoteLifecycleHandle>,
+    rollback_failure: Arc<Mutex<Option<BoltV3RestingRollbackInvariantFailure>>>,
     state: RestingRegistrationTransactionState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RestingRegistrationTransactionState {
     Active,
+    Armed,
+    SinkInvoked,
     Settled,
 }
 
 impl RestingRegistrationTransaction {
-    fn commit(mut self) {
-        let mut registry = match self.registry.write() {
-            Ok(registry) => registry,
+    fn settle_route(&mut self, completion: BoltV3RouteAttemptCompletion) {
+        let (mut registry, lock_was_poisoned) = match self.registry.write() {
+            Ok(registry) => (registry, false),
+            Err(poisoned) => (poisoned.into_inner(), true),
+        };
+        if lock_was_poisoned {
+            registry.health = RestingRegistryHealth::Poisoned;
+        }
+
+        let ownership = (
+            registry
+                .records
+                .get(&self.client_order_id)
+                .map(|record| record.registration_generation),
+            registry
+                .retired_provisional
+                .get(&self.client_order_id)
+                .copied(),
+        );
+        let (disposition, failure) = match ownership {
+            (Some(generation), _) if generation == self.generation => match completion {
+                BoltV3RouteAttemptCompletion::Submitted => {
+                    let record = registry
+                        .records
+                        .get_mut(&self.client_order_id)
+                        .expect("owned resting registration must remain present");
+                    record.registration_state = RestingRegistrationState::Committed;
+                    record.maker_lifecycle = self.maker_lifecycle.clone();
+                    (BoltV3RestingCommitDisposition::Submitted, None)
+                }
+                BoltV3RouteAttemptCompletion::SinkRejected => {
+                    registry.records.remove(&self.client_order_id);
+                    (BoltV3RestingCommitDisposition::SinkRejected, None)
+                }
+            },
+            (None, Some(generation)) if generation == self.generation => {
+                registry.retired_provisional.remove(&self.client_order_id);
+                (BoltV3RestingCommitDisposition::CallbackRetired, None)
+            }
+            (Some(_), _) => {
+                registry.health = RestingRegistryHealth::Poisoned;
+                (
+                    BoltV3RestingCommitDisposition::RollbackInvariantFailed,
+                    Some(BoltV3RestingRollbackInvariantFailure::RegistrationGenerationReplaced),
+                )
+            }
+            (None, _) => {
+                registry.health = RestingRegistryHealth::Poisoned;
+                (
+                    BoltV3RestingCommitDisposition::RollbackInvariantFailed,
+                    Some(BoltV3RestingRollbackInvariantFailure::RegistryUnavailable),
+                )
+            }
+        };
+        self.state = RestingRegistrationTransactionState::Settled;
+        drop(registry);
+        if self
+            .participant
+            .settle_at_generation(self.generation, disposition)
+            .is_err()
+            && failure.is_none()
+        {
+            self.record_failure(BoltV3RestingRollbackInvariantFailure::ParticipantSettlementFailed);
+        } else if let Some(reason) = failure {
+            self.record_failure(reason);
+        }
+    }
+
+    fn record_failure(&self, reason: BoltV3RestingRollbackInvariantFailure) {
+        match self.registry.write() {
+            Ok(mut registry) => registry.health = RestingRegistryHealth::Poisoned,
+            Err(poisoned) => poisoned.into_inner().health = RestingRegistryHealth::Poisoned,
+        }
+        *self
+            .rollback_failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
+    }
+}
+
+impl BoltV3RouteAttemptParticipant for RestingRegistrationTransaction {
+    fn consume_at_pre_sink(&mut self) -> Result<()> {
+        self.participant.arm_at_generation(self.generation)?;
+        self.state = RestingRegistrationTransactionState::Armed;
+        Ok(())
+    }
+
+    fn mark_sink_invoked(&mut self) {
+        self.participant.mark_sink_invoked();
+        self.state = RestingRegistrationTransactionState::SinkInvoked;
+    }
+
+    fn complete(&mut self, completion: BoltV3RouteAttemptCompletion) {
+        self.settle_route(completion);
+    }
+}
+
+impl Drop for RestingRegistrationTransaction {
+    fn drop(&mut self) {
+        match self.state {
+            RestingRegistrationTransactionState::Settled => return,
+            RestingRegistrationTransactionState::Active
+            | RestingRegistrationTransactionState::Armed
+            | RestingRegistrationTransactionState::SinkInvoked => {}
+        }
+        let (mut registry, lock_was_poisoned) = match self.registry.write() {
+            Ok(registry) => (registry, false),
             Err(poisoned) => {
                 let mut registry = poisoned.into_inner();
                 registry.health = RestingRegistryHealth::Poisoned;
-                registry
+                (registry, true)
             }
         };
         let ownership = (
@@ -262,114 +404,72 @@ impl RestingRegistrationTransaction {
                 .get(&self.client_order_id)
                 .copied(),
         );
-        match ownership {
+        let (disposition, failure) = match ownership {
             (Some(generation), _) if generation == self.generation => {
-                registry
-                    .records
-                    .get_mut(&self.client_order_id)
-                    .expect("owned resting registration must remain present")
-                    .registration_state = RestingRegistrationState::Committed;
+                if self.state == RestingRegistrationTransactionState::SinkInvoked {
+                    registry.health = RestingRegistryHealth::Poisoned;
+                    (BoltV3RestingCommitDisposition::PostSinkUnwind, None)
+                } else {
+                    registry.records.remove(&self.client_order_id);
+                    (BoltV3RestingCommitDisposition::PreSinkAborted, None)
+                }
             }
             (None, Some(generation)) if generation == self.generation => {
-                // A synchronous authoritative terminal callback retired this exact
-                // provisional generation before the NT submit call returned.
+                registry.retired_provisional.remove(&self.client_order_id);
+                (BoltV3RestingCommitDisposition::CallbackRetired, None)
             }
-            _ => {
+            (Some(_), _) => {
                 registry.health = RestingRegistryHealth::Poisoned;
-                log::error!(
-                    "resting registration commit lost generation ownership: client_order_id={} generation={}",
-                    self.client_order_id,
-                    self.generation
-                );
+                (
+                    BoltV3RestingCommitDisposition::RollbackInvariantFailed,
+                    Some(BoltV3RestingRollbackInvariantFailure::RegistrationGenerationReplaced),
+                )
             }
-        }
-        if registry
-            .retired_provisional
-            .get(&self.client_order_id)
-            .is_some_and(|generation| *generation == self.generation)
-        {
-            registry.retired_provisional.remove(&self.client_order_id);
-        }
-        self.state = RestingRegistrationTransactionState::Settled;
-    }
-
-    fn abort(
-        mut self,
-        original: BoltV3RoutedNonSubmittedOutcome,
-    ) -> BoltV3RestingSubmitTransactionOutcome {
-        let (mut registry, lock_was_poisoned) = match self.registry.write() {
-            Ok(registry) => (registry, false),
-            Err(poisoned) => (poisoned.into_inner(), true),
+            (None, _) => (
+                BoltV3RestingCommitDisposition::RollbackInvariantFailed,
+                Some(BoltV3RestingRollbackInvariantFailure::RegistryUnavailable),
+            ),
         };
         if lock_was_poisoned {
             registry.health = RestingRegistryHealth::Poisoned;
         }
-
-        let rollback = match registry.records.get(&self.client_order_id) {
-            Some(record) if record.registration_generation == self.generation => {
-                registry.records.remove(&self.client_order_id);
-                registry.retired_provisional.remove(&self.client_order_id);
-                Ok(())
-            }
-            Some(_) => Err(BoltV3RestingRollbackInvariantFailure::RegistrationGenerationReplaced),
-            None if registry
-                .retired_provisional
-                .get(&self.client_order_id)
-                .is_some_and(|generation| *generation == self.generation) =>
-            {
-                registry.retired_provisional.remove(&self.client_order_id);
-                Ok(())
-            }
-            None => Err(BoltV3RestingRollbackInvariantFailure::RegistryUnavailable),
-        };
-        self.state = RestingRegistrationTransactionState::Settled;
         drop(registry);
-
-        match rollback {
-            Ok(()) => BoltV3RestingSubmitTransactionOutcome::Attempt(original.0),
-            Err(reason) => {
-                BoltV3RestingSubmitTransactionOutcome::RollbackInvariantFailed { original, reason }
-            }
+        if self
+            .participant
+            .settle_at_generation(self.generation, disposition)
+            .is_err()
+            && failure.is_none()
+        {
+            self.record_failure(BoltV3RestingRollbackInvariantFailure::ParticipantSettlementFailed);
+        } else if let Some(reason) = failure {
+            self.record_failure(reason);
         }
+        self.state = RestingRegistrationTransactionState::Settled;
     }
 }
 
-impl Drop for RestingRegistrationTransaction {
-    fn drop(&mut self) {
-        match self.state {
-            RestingRegistrationTransactionState::Settled => return,
-            RestingRegistrationTransactionState::Active => {}
-        }
-        let mut registry = match self.registry.write() {
-            Ok(registry) => registry,
-            Err(poisoned) => {
-                let mut registry = poisoned.into_inner();
-                registry.health = RestingRegistryHealth::Poisoned;
-                registry
+#[derive(Debug)]
+struct RegistrationlessAttemptParticipant {
+    participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
+}
+
+impl BoltV3RouteAttemptParticipant for RegistrationlessAttemptParticipant {
+    fn consume_at_pre_sink(&mut self) -> Result<()> {
+        self.participant.arm_at_generation(0)
+    }
+
+    fn mark_sink_invoked(&mut self) {
+        self.participant.mark_sink_invoked();
+    }
+
+    fn complete(&mut self, completion: BoltV3RouteAttemptCompletion) {
+        let disposition = match completion {
+            BoltV3RouteAttemptCompletion::Submitted => BoltV3RestingCommitDisposition::Submitted,
+            BoltV3RouteAttemptCompletion::SinkRejected => {
+                BoltV3RestingCommitDisposition::SinkRejected
             }
         };
-        let record_ownership = registry
-            .records
-            .get(&self.client_order_id)
-            .map(|record| record.registration_generation);
-        match record_ownership {
-            Some(generation) if generation == self.generation => {
-                registry.records.remove(&self.client_order_id);
-            }
-            Some(_) => registry.health = RestingRegistryHealth::Poisoned,
-            None => {}
-        }
-        let retired_ownership = registry
-            .retired_provisional
-            .get(&self.client_order_id)
-            .copied();
-        match retired_ownership {
-            Some(generation) if generation == self.generation => {
-                registry.retired_provisional.remove(&self.client_order_id);
-            }
-            Some(_) => registry.health = RestingRegistryHealth::Poisoned,
-            None => {}
-        }
+        let _ = self.participant.settle_at_generation(0, disposition);
     }
 }
 
@@ -450,6 +550,21 @@ impl BoltV3OrderEconomicsHandle {
             .collect())
     }
 
+    #[cfg(test)]
+    pub(super) fn attach_requote_budget_for_test(
+        &self,
+        client_order_id: ClientOrderId,
+        budget: RequoteBudgetPair,
+    ) {
+        self.tracked_orders
+            .write()
+            .expect("test registry should lock")
+            .records
+            .get_mut(&client_order_id)
+            .expect("test resting record should exist")
+            .requote_budget = Some(budget);
+    }
+
     fn refresh_tracked_economics(
         &self,
         client_order_id: ClientOrderId,
@@ -466,7 +581,9 @@ impl BoltV3OrderEconomicsHandle {
         if cached.is_some_and(|order| {
             order.is_closed() || order.leaves_qty().as_decimal() == Decimal::ZERO
         }) {
-            registry.remove_record(&client_order_id);
+            let removed = registry.remove_record(&client_order_id);
+            drop(registry);
+            settle_maker_terminal(removed);
             return Ok(());
         }
         if record.cancellation.is_requested() {
@@ -490,7 +607,10 @@ impl BoltV3OrderEconomicsHandle {
         ) {
             RestingOrderEconomicsRefresh::NotDue => {}
             RestingOrderEconomicsRefresh::Complete => {
-                registry.remove_record(&client_order_id);
+                let removed = registry.remove_record(&client_order_id);
+                drop(registry);
+                settle_maker_terminal(removed);
+                return Ok(());
             }
             RestingOrderEconomicsRefresh::Refreshed {
                 admission,
@@ -519,27 +639,42 @@ impl BoltV3OrderEconomicsHandle {
         policy: BoltV3OrderExecutionPolicy,
         order: OrderAny,
         admission: EconomicsAdmission,
+        participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
         route: F,
     ) -> BoltV3RestingSubmitTransactionOutcome
     where
-        F: FnOnce() -> BoltV3SubmitAttemptOutcome,
+        F: FnOnce(Box<dyn BoltV3RouteAttemptParticipant>) -> BoltV3SubmitAttemptOutcome,
     {
         if !policy.allows_venue_mutation() {
-            return BoltV3RestingSubmitTransactionOutcome::Attempt(route());
+            return BoltV3RestingSubmitTransactionOutcome::Attempt(route(Box::new(
+                RegistrationlessAttemptParticipant { participant },
+            )));
         }
-        let transaction = match self.begin_resting_registration(order, admission) {
+        let rollback_failure = Arc::new(Mutex::new(None));
+        let transaction = match self.begin_resting_registration(
+            order,
+            admission,
+            participant,
+            rollback_failure.clone(),
+        ) {
             Ok(transaction) => transaction,
             Err(rejection) => {
                 return BoltV3RestingSubmitTransactionOutcome::RegistrationRejected(rejection);
             }
         };
-        let outcome = route();
+        let outcome = route(Box::new(transaction));
         match BoltV3RoutedNonSubmittedOutcome::try_new(outcome) {
-            Err(submitted) => {
-                transaction.commit();
-                BoltV3RestingSubmitTransactionOutcome::Attempt(submitted)
-            }
-            Ok(non_submitted) => transaction.abort(non_submitted),
+            Err(submitted) => BoltV3RestingSubmitTransactionOutcome::Attempt(submitted),
+            Ok(non_submitted) => match *rollback_failure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+            {
+                Some(reason) => BoltV3RestingSubmitTransactionOutcome::RollbackInvariantFailed {
+                    original: non_submitted,
+                    reason,
+                },
+                None => BoltV3RestingSubmitTransactionOutcome::Attempt(non_submitted.0),
+            },
         }
     }
 
@@ -547,6 +682,8 @@ impl BoltV3OrderEconomicsHandle {
         &self,
         order: OrderAny,
         admission: EconomicsAdmission,
+        participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
+        rollback_failure: Arc<Mutex<Option<BoltV3RestingRollbackInvariantFailure>>>,
     ) -> std::result::Result<RestingRegistrationTransaction, BoltV3RestingRegistrationRejection>
     {
         let client_order_id = order.client_order_id();
@@ -563,6 +700,8 @@ impl BoltV3OrderEconomicsHandle {
             ));
         }
         let authorized_quantity_ceiling = leg.quantity;
+        let requote_budget = participant.requote_budget();
+        let maker_lifecycle = participant.maker_lifecycle();
         let mut registry = match self.tracked_orders.write() {
             Ok(registry) => registry,
             Err(poisoned) => {
@@ -593,6 +732,12 @@ impl BoltV3OrderEconomicsHandle {
                 "resting economics registration generation overflow",
             ));
         };
+        let strategy_id = order.strategy_id();
+        if let Some(requote_budget) = requote_budget.as_ref() {
+            registry
+                .requote_budgets_by_strategy
+                .insert(strategy_id, requote_budget.clone());
+        }
         registry.records.insert(
             client_order_id,
             TrackedMakerOrderRecord {
@@ -602,6 +747,8 @@ impl BoltV3OrderEconomicsHandle {
                     admission,
                     authorized_quantity_ceiling,
                 }),
+                requote_budget,
+                maker_lifecycle: None,
                 cancellation: TrackedOrderCancellation::new(order),
             },
         );
@@ -610,6 +757,9 @@ impl BoltV3OrderEconomicsHandle {
             registry: self.tracked_orders.clone(),
             client_order_id,
             generation,
+            participant,
+            maker_lifecycle,
+            rollback_failure,
             state: RestingRegistrationTransactionState::Active,
         })
     }
@@ -620,6 +770,7 @@ impl BoltV3OrderEconomicsHandle {
         sink: &mut S,
         execution_client_id: &str,
         client_order_id: ClientOrderId,
+        participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
     ) -> Result<()>
     where
         S: BoltV3NtVenueMutationSink + ?Sized,
@@ -634,13 +785,17 @@ impl BoltV3OrderEconomicsHandle {
             return Ok(());
         }
         let cached = sink.cached_order(client_order_id)?;
-        drive_observed_resting_order_economics(
-            self,
+        self.refresh_tracked_economics(client_order_id, cached.as_ref(), now_ns)?;
+        self.drive_cancel_intent(
             policy,
             sink,
-            execution_client_id,
-            vec![(client_order_id, cached)],
-            now_ns,
+            CancelDriveInput {
+                execution_client_id,
+                client_order_id,
+                cached: cached.as_ref(),
+                now_ns,
+                command_participant: Some(participant),
+            },
         )
     }
 
@@ -820,6 +975,12 @@ pub fn build_order_economics_submit_admission(
     )
 }
 
+fn settle_maker_terminal(record: Option<TrackedMakerOrderRecord>) {
+    if let Some(lifecycle) = record.and_then(|record| record.maker_lifecycle) {
+        lifecycle.terminal_callback();
+    }
+}
+
 pub(super) fn drive_observed_resting_order_economics<S>(
     order_economics: &BoltV3OrderEconomicsHandle,
     policy: BoltV3OrderExecutionPolicy,
@@ -842,10 +1003,13 @@ where
         if let Err(error) = order_economics.drive_cancel_intent(
             policy,
             sink,
-            execution_client_id,
-            client_order_id,
-            cached.as_ref(),
-            now_ns,
+            CancelDriveInput {
+                execution_client_id,
+                client_order_id,
+                cached: cached.as_ref(),
+                now_ns,
+                command_participant: None,
+            },
         ) {
             failures.push(error.to_string());
         }
@@ -909,6 +1073,7 @@ mod tests {
     use std::{
         cell::Cell,
         panic::{AssertUnwindSafe, catch_unwind},
+        sync::{Arc, Mutex, RwLock},
     };
 
     use nautilus_core::{UUID4, UnixNanos};
@@ -922,11 +1087,103 @@ mod tests {
 
     use super::{
         BoltV3FinalOrderEconomicsInput, BoltV3FinalOrderEconomicsScenario,
-        BoltV3OrderExecutionPolicy, BoltV3RestingRegistrationRejectionKind,
+        BoltV3OrderExecutionPolicy, BoltV3RestingCommitDisposition,
+        BoltV3RestingRegistrationCommitParticipant, BoltV3RestingRegistrationRejectionKind,
         BoltV3RestingRollbackInvariantFailure, BoltV3RestingSubmitTransactionOutcome,
-        BoltV3SubmitAttemptKind, BoltV3SubmitAttemptOutcome, RestingRegistryHealth,
+        BoltV3RouteAttemptCompletion, BoltV3RouteAttemptParticipant, BoltV3SubmitAttemptKind,
+        BoltV3SubmitAttemptOutcome, RestingRegistryHealth, TrackedMakerOrderRegistry,
         build_order_economics_submit_admission,
     };
+
+    #[derive(Debug)]
+    struct TestRegistrationParticipant;
+
+    impl BoltV3RestingRegistrationCommitParticipant for TestRegistrationParticipant {
+        fn requote_budget(&self) -> Option<crate::bolt_v3_requote_budget::RequoteBudgetPair> {
+            None
+        }
+
+        fn arm_at_generation(&mut self, _generation: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn mark_sink_invoked(&mut self) {}
+
+        fn settle_at_generation(
+            &mut self,
+            _generation: u64,
+            _disposition: BoltV3RestingCommitDisposition,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_participant() -> Box<dyn BoltV3RestingRegistrationCommitParticipant> {
+        Box::new(TestRegistrationParticipant)
+    }
+
+    #[derive(Debug)]
+    struct ReentrantSettlementParticipant {
+        registry: Arc<RwLock<TrackedMakerOrderRegistry>>,
+        settled_without_registry_lock: Arc<Mutex<bool>>,
+    }
+
+    impl BoltV3RestingRegistrationCommitParticipant for ReentrantSettlementParticipant {
+        fn requote_budget(&self) -> Option<crate::bolt_v3_requote_budget::RequoteBudgetPair> {
+            None
+        }
+
+        fn arm_at_generation(&mut self, _generation: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn mark_sink_invoked(&mut self) {}
+
+        fn settle_at_generation(
+            &mut self,
+            _generation: u64,
+            _disposition: BoltV3RestingCommitDisposition,
+        ) -> anyhow::Result<()> {
+            let unlocked = self.registry.try_read().is_ok();
+            *self
+                .settled_without_registry_lock
+                .lock()
+                .expect("settlement observation should lock") = unlocked;
+            anyhow::ensure!(
+                unlocked,
+                "participant settled while the registry lock was held"
+            );
+            Ok(())
+        }
+    }
+
+    fn finish_route_attempt(
+        mut participant: Box<dyn BoltV3RouteAttemptParticipant>,
+        outcome: BoltV3SubmitAttemptOutcome,
+    ) -> BoltV3SubmitAttemptOutcome {
+        match outcome.kind() {
+            BoltV3SubmitAttemptKind::Submitted | BoltV3SubmitAttemptKind::SinkRejected => {
+                participant
+                    .consume_at_pre_sink()
+                    .expect("test participant should arm");
+                participant.mark_sink_invoked();
+                let completion = match outcome.kind() {
+                    BoltV3SubmitAttemptKind::Submitted => BoltV3RouteAttemptCompletion::Submitted,
+                    BoltV3SubmitAttemptKind::SinkRejected => {
+                        BoltV3RouteAttemptCompletion::SinkRejected
+                    }
+                    _ => unreachable!(),
+                };
+                participant.complete(completion);
+            }
+            BoltV3SubmitAttemptKind::RouteValidationRejected
+            | BoltV3SubmitAttemptKind::IntentEvidenceRejected
+            | BoltV3SubmitAttemptKind::AdmissionRejected
+            | BoltV3SubmitAttemptKind::PolicySkipped
+            | BoltV3SubmitAttemptKind::PreSinkRejected => {}
+        }
+        outcome
+    }
     use crate::{
         bolt_v3_order_execution::{
             BoltV3PlannedFillLeg, BoltV3TerminalValueEntry, BoltV3TerminalValueEntryPolicy,
@@ -948,11 +1205,15 @@ mod tests {
             BoltV3OrderExecutionPolicy::live(),
             order,
             admission,
-            || {
+            test_participant(),
+            |participant| {
                 economics
                     .reconcile_tracked_order_at(client_order_id, Some(callback_order), 1)
                     .expect("the re-entrant callback should reconcile");
-                BoltV3SubmitAttemptOutcome::submitted_for_test()
+                finish_route_attempt(
+                    participant,
+                    BoltV3SubmitAttemptOutcome::submitted_for_test(),
+                )
             },
         );
 
@@ -969,6 +1230,31 @@ mod tests {
     }
 
     #[test]
+    fn participant_settlement_runs_outside_the_registry_lock() {
+        let economics =
+            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
+        let order = post_only_limit_order("MAKER-REENTRANT-PARTICIPANT");
+        let observed = Arc::new(Mutex::new(false));
+        let outcome = economics.route_resting_submit(
+            BoltV3OrderExecutionPolicy::live(),
+            order.clone(),
+            sealed_admission(&economics, &order),
+            Box::new(ReentrantSettlementParticipant {
+                registry: economics.tracked_orders.clone(),
+                settled_without_registry_lock: observed.clone(),
+            }),
+            |participant| {
+                finish_route_attempt(
+                    participant,
+                    BoltV3SubmitAttemptOutcome::submitted_for_test(),
+                )
+            },
+        );
+        assert!(outcome.is_submitted());
+        assert!(*observed.lock().expect("settlement observation should lock"));
+    }
+
+    #[test]
     fn resting_registration_rejects_invalid_shape_and_quantity_before_routing() {
         let economics =
             crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
@@ -981,7 +1267,8 @@ mod tests {
             BoltV3OrderExecutionPolicy::live(),
             shape_order,
             shape_admission,
-            || {
+            test_participant(),
+            |_participant| {
                 route_calls.set(route_calls.get() + 1);
                 BoltV3SubmitAttemptOutcome::submitted_for_test()
             },
@@ -1003,7 +1290,8 @@ mod tests {
             BoltV3OrderExecutionPolicy::live(),
             quantity_order,
             quantity_admission,
-            || {
+            test_participant(),
+            |_participant| {
                 route_calls.set(route_calls.get() + 1);
                 BoltV3SubmitAttemptOutcome::submitted_for_test()
             },
@@ -1027,7 +1315,13 @@ mod tests {
             BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
-            BoltV3SubmitAttemptOutcome::submitted_for_test,
+            test_participant(),
+            |participant| {
+                finish_route_attempt(
+                    participant,
+                    BoltV3SubmitAttemptOutcome::submitted_for_test(),
+                )
+            },
         );
         assert!(first.is_submitted());
 
@@ -1036,7 +1330,8 @@ mod tests {
             BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
-            || {
+            test_participant(),
+            |_participant| {
                 route_calls.set(route_calls.get() + 1);
                 BoltV3SubmitAttemptOutcome::submitted_for_test()
             },
@@ -1061,7 +1356,8 @@ mod tests {
             BoltV3OrderExecutionPolicy::live(),
             overflow_order.clone(),
             sealed_admission(&overflow, &overflow_order),
-            || {
+            test_participant(),
+            |_participant| {
                 route_calls.set(route_calls.get() + 1);
                 BoltV3SubmitAttemptOutcome::submitted_for_test()
             },
@@ -1092,7 +1388,8 @@ mod tests {
             BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
-            || {
+            test_participant(),
+            |_participant| {
                 route_calls.set(route_calls.get() + 1);
                 BoltV3SubmitAttemptOutcome::submitted_for_test()
             },
@@ -1138,7 +1435,8 @@ mod tests {
                 BoltV3OrderExecutionPolicy::live(),
                 order.clone(),
                 sealed_admission(&economics, &order),
-                || routed,
+                test_participant(),
+                |participant| finish_route_attempt(participant, routed),
             );
             assert!(matches!(
                 outcome,
@@ -1159,7 +1457,8 @@ mod tests {
             BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
-            || {
+            test_participant(),
+            |_participant| {
                 economics
                     .reconcile_tracked_order_at(client_order_id, None, 1)
                     .expect("terminal callback should retire the provisional generation");
@@ -1184,7 +1483,8 @@ mod tests {
             BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
-            || {
+            test_participant(),
+            |_participant| {
                 let mut registry = economics
                     .tracked_orders
                     .write()
@@ -1218,7 +1518,12 @@ mod tests {
         let order = post_only_limit_order("MAKER-DROP-BACKSTOP-CONFLICT");
         let client_order_id = order.client_order_id();
         let transaction = economics
-            .begin_resting_registration(order.clone(), sealed_admission(&economics, &order))
+            .begin_resting_registration(
+                order.clone(),
+                sealed_admission(&economics, &order),
+                test_participant(),
+                Arc::new(Mutex::new(None)),
+            )
             .expect("provisional registration should begin");
         let replacement_generation = transaction
             .generation
@@ -1269,7 +1574,8 @@ mod tests {
             BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
-            || {
+            test_participant(),
+            |participant| {
                 economics
                     .tracked_orders
                     .write()
@@ -1278,7 +1584,10 @@ mod tests {
                     .get_mut(&client_order_id)
                     .expect("provisional generation should exist")
                     .registration_generation += 1;
-                BoltV3SubmitAttemptOutcome::submitted_for_test()
+                finish_route_attempt(
+                    participant,
+                    BoltV3SubmitAttemptOutcome::submitted_for_test(),
+                )
             },
         );
         assert!(matches!(
@@ -1292,7 +1601,13 @@ mod tests {
             BoltV3OrderExecutionPolicy::live(),
             next.clone(),
             sealed_admission(&economics, &next),
-            BoltV3SubmitAttemptOutcome::submitted_for_test,
+            test_participant(),
+            |participant| {
+                finish_route_attempt(
+                    participant,
+                    BoltV3SubmitAttemptOutcome::submitted_for_test(),
+                )
+            },
         );
         assert!(matches!(
             next_outcome,
@@ -1312,7 +1627,8 @@ mod tests {
             BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
-            || {
+            test_participant(),
+            |_participant| {
                 let poisoned = catch_unwind(AssertUnwindSafe(|| {
                     let _guard = registry.write().expect("registry should lock");
                     panic!("poison registry after provisional registration");

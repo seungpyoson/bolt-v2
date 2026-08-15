@@ -58,8 +58,8 @@ use crate::{
         maker_risk_mode_for_loss_decision,
     },
     bolt_v3_maker_runtime_order::{
-        MakerRuntimeLegOrderDispatchOutcome, MakerRuntimeOrderDispatchInput,
-        MakerRuntimeOrderDispatchOutcome, dispatch_maker_runtime_order_plan_with_command_router,
+        MakerRuntimeOrderDispatchInput, MakerRuntimeOrderDispatchOutcome,
+        dispatch_maker_runtime_order_plan_with_command_router,
     },
     bolt_v3_maker_runtime_quote::{
         MakerRuntimeQuoteBlockReason, MakerRuntimeQuoteDecision, MakerRuntimeQuoteInput,
@@ -349,24 +349,6 @@ pub struct BinaryOracleMakerRuntimeReferenceQuoteRouteOutcome {
 pub enum BinaryOracleMakerRuntimeReferenceQuoteBlockReason {
     FairValue(MakerRuntimeReferenceFairValueBlockReason),
     Quote(MakerRuntimeQuoteBlockReason),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BinaryOracleMakerMarketActionRouteInput<'a> {
-    pub action: MakerMarketActionOrderInput,
-    pub submit_template: &'a NtOrderTemplate,
-    pub price_precision: u8,
-    pub quantity_precision: u8,
-    pub submit_order_prefix: &'a str,
-    /// Strategy-owned terminal value for a submit action. Cancel-only actions
-    /// do not consume it.
-    pub terminal_value_entry: Option<BoltV3TerminalValueEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BinaryOracleMakerMarketActionRouteOutcome {
-    pub order: MakerRuntimeLegOrderDispatchOutcome,
-    pub orders: MakerRuntimeOrderDispatchOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -931,58 +913,6 @@ impl BinaryOracleMaker {
         })
     }
 
-    pub fn route_maker_market_action(
-        &mut self,
-        input: BinaryOracleMakerMarketActionRouteInput<'_>,
-    ) -> Result<BinaryOracleMakerMarketActionRouteOutcome> {
-        let BinaryOracleMakerMarketActionRouteInput {
-            action,
-            submit_template,
-            price_precision,
-            quantity_precision,
-            submit_order_prefix,
-            terminal_value_entry,
-        } = input;
-
-        let action_kind = action.action;
-        let order_plan = maker_order_plan_from_market_action(action);
-
-        let mut route_command = |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
-            self.route_maker_order_command(
-                command,
-                submit_order_prefix,
-                terminal_value_entry.clone(),
-                None,
-            )
-        };
-        let orders = dispatch_maker_runtime_order_plan_with_command_router(
-            MakerRuntimeOrderDispatchInput {
-                order_plan: &order_plan,
-                submit_template,
-                price_precision,
-                quantity_precision,
-                submit_order_prefix,
-            },
-            &mut route_command,
-        )?;
-        // A command failure is now per-leg data, not a `?` abort; fail loud here to
-        // preserve this market-action route's prior fail-closed behavior.
-        if let Some(error) = orders.command_failure() {
-            anyhow::bail!(
-                "binary_oracle_maker market-action leg order routing failed: error={error}"
-            );
-        }
-        let order = match action_kind {
-            MarketAction::Leg { leg: Leg::No, .. }
-            | MarketAction::CancelAllOneSide { leg: Leg::No } => orders.no.clone(),
-            MarketAction::Leg { leg: Leg::Yes, .. }
-            | MarketAction::CancelAllOneSide { leg: Leg::Yes }
-            | MarketAction::CancelAllBothLegs => orders.yes.clone(),
-        };
-
-        Ok(BinaryOracleMakerMarketActionRouteOutcome { order, orders })
-    }
-
     pub fn route_maker_loss_risk(
         &mut self,
         market: &mut MarketQuote,
@@ -1003,27 +933,43 @@ impl BinaryOracleMaker {
         } = input;
         let mode = maker_risk_mode_for_loss_decision(&policy, loss_decision);
         let risk = apply_maker_risk_mode(market, mode);
-        let orders = if let Some(action) = risk.action {
+        let orders = match risk.action {
+            None => None,
             Some(
-                self.route_maker_market_action(BinaryOracleMakerMarketActionRouteInput {
-                    action: MakerMarketActionOrderInput {
-                        action,
-                        targets,
-                        yes_quantity,
-                        no_quantity,
-                        yes,
-                        no,
+                action @ (MarketAction::CancelAllBothLegs | MarketAction::CancelAllOneSide { .. }),
+            ) => {
+                let order_plan = maker_order_plan_from_market_action(MakerMarketActionOrderInput {
+                    action,
+                    targets,
+                    yes_quantity,
+                    no_quantity,
+                    yes,
+                    no,
+                });
+                let mut route_command =
+                    |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
+                        self.route_maker_order_command(command, submit_order_prefix, None, None)
+                    };
+                let routed = dispatch_maker_runtime_order_plan_with_command_router(
+                    MakerRuntimeOrderDispatchInput {
+                        order_plan: &order_plan,
+                        submit_template,
+                        price_precision,
+                        quantity_precision,
+                        submit_order_prefix,
                     },
-                    submit_template,
-                    price_precision,
-                    quantity_precision,
-                    submit_order_prefix,
-                    terminal_value_entry: None,
-                })?
-                .orders,
-            )
-        } else {
-            None
+                    &mut route_command,
+                )?;
+                if let Some(error) = routed.command_failure() {
+                    anyhow::bail!("binary_oracle_maker risk cancellation failed: error={error}");
+                }
+                Some(routed)
+            }
+            Some(MarketAction::Leg { .. }) => {
+                anyhow::bail!(
+                    "binary_oracle_maker risk policy emitted a per-leg mutation outside the cancel-only authority boundary"
+                )
+            }
         };
 
         Ok(BinaryOracleMakerRiskRouteOutcome { risk, orders })

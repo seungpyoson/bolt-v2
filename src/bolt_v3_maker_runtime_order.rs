@@ -12,10 +12,7 @@ use crate::{
         MakerCompiledOrderCommand, MakerOrderCompileBlockReason, MakerOrderCompileInput,
         compile_maker_order_intent,
     },
-    bolt_v3_maker_order_dispatch::{
-        MakerOrderCommandFailure, MakerOrderCommandSink, MakerOrderDispatchInput,
-        MakerOrderDispatchOutcome, dispatch_maker_order_command,
-    },
+    bolt_v3_maker_order_dispatch::{MakerOrderCommandFailure, MakerOrderDispatchOutcome},
     bolt_v3_maker_order_plan::{MakerLegOrderPlan, MakerOrderPlan, MakerOrderPlanBlockReason},
     bolt_v3_order_intent::NtOrderTemplate,
 };
@@ -64,25 +61,6 @@ pub struct MakerRuntimeLegOrderDispatchOutcome {
 pub enum MakerRuntimeOrderDispatchBlockReason {
     OrderPlanBlocked(MakerOrderPlanBlockReason),
     CompileBlocked(MakerOrderCompileBlockReason),
-}
-
-pub fn dispatch_maker_runtime_order_plan(
-    input: MakerRuntimeOrderDispatchInput<'_>,
-    sink: &mut impl MakerOrderCommandSink,
-) -> Result<MakerRuntimeOrderDispatchOutcome> {
-    dispatch_maker_runtime_order_plan_with_command_router(
-        input,
-        &mut |command, submit_order_prefix| {
-            dispatch_maker_order_command(
-                MakerOrderDispatchInput {
-                    command,
-                    submit_order_prefix,
-                    quote_transaction: None,
-                },
-                sink,
-            )
-        },
-    )
 }
 
 pub fn dispatch_maker_runtime_order_plan_with_command_router(

@@ -230,7 +230,7 @@ fn authoritative_input_with_valuation_deadline(
     authoritative_input_without_valuation().with_valuation_observations([
         AuthoritativeValuationObservation::ProviderExactConversion {
             source_id: id("fixture-collateral", SourceIdentity::try_new),
-            from_unit: id("pUSD", CurrencyId::try_new),
+            from_unit: NativeUnitId::Currency(id("pUSD", CurrencyId::try_new)),
             to_unit: id("USD", CurrencyId::try_new),
             snapshot_id: id("collateral-conversion-1", SnapshotId::try_new),
             observed_at_ns: 900,
@@ -290,7 +290,7 @@ fn fee_free_authoritative_input() -> AuthoritativeVenueEconomicsInput {
     .with_valuation_observations([
         AuthoritativeValuationObservation::ProviderExactConversion {
             source_id: id("fixture-collateral", SourceIdentity::try_new),
-            from_unit: id("pUSD", CurrencyId::try_new),
+            from_unit: NativeUnitId::Currency(id("pUSD", CurrencyId::try_new)),
             to_unit: id("USD", CurrencyId::try_new),
             snapshot_id: id("collateral-fee-free", SnapshotId::try_new),
             observed_at_ns: 900,
@@ -326,7 +326,7 @@ fn authoritative_refresh_input(
     .with_valuation_observations([
         AuthoritativeValuationObservation::ProviderExactConversion {
             source_id: id("fixture-collateral", SourceIdentity::try_new),
-            from_unit: id("pUSD", CurrencyId::try_new),
+            from_unit: NativeUnitId::Currency(id("pUSD", CurrencyId::try_new)),
             to_unit: id("USD", CurrencyId::try_new),
             snapshot_id: id("collateral-refresh", SnapshotId::try_new),
             observed_at_ns: 900,
@@ -441,7 +441,7 @@ fn hyperliquid_input_for(
     .with_valuation_observations([
         AuthoritativeValuationObservation::ProviderExactConversion {
             source_id: id("fixture-settlement", SourceIdentity::try_new),
-            from_unit: id("hUSD", CurrencyId::try_new),
+            from_unit: NativeUnitId::Currency(id("hUSD", CurrencyId::try_new)),
             to_unit: id("USD", CurrencyId::try_new),
             snapshot_id: id("settlement-conversion-1", SnapshotId::try_new),
             observed_at_ns: 900,
@@ -501,7 +501,7 @@ fn hyperliquid_refresh_input(
     .with_valuation_observations([
         AuthoritativeValuationObservation::ProviderExactConversion {
             source_id: id("fixture-settlement", SourceIdentity::try_new),
-            from_unit: id("hUSD", CurrencyId::try_new),
+            from_unit: NativeUnitId::Currency(id("hUSD", CurrencyId::try_new)),
             to_unit: id("USD", CurrencyId::try_new),
             snapshot_id: id(
                 &format!("settlement-{snapshot_suffix}"),
@@ -658,7 +658,7 @@ fn hyperliquid_spot_input() -> AuthoritativeVenueEconomicsInput {
         },
         AuthoritativeValuationObservation::ProviderExactConversion {
             source_id: id("fixture-settlement", SourceIdentity::try_new),
-            from_unit: id("hUSD", CurrencyId::try_new),
+            from_unit: NativeUnitId::Currency(id("hUSD", CurrencyId::try_new)),
             to_unit: id("USD", CurrencyId::try_new),
             snapshot_id: id("spot-settlement-1", SnapshotId::try_new),
             observed_at_ns: 900,
@@ -1080,7 +1080,7 @@ fn execution_economics_rotates_authoritative_scopes_without_rebinding() {
         .with_valuation_observations([
             AuthoritativeValuationObservation::ProviderExactConversion {
                 source_id: id("fixture-collateral", SourceIdentity::try_new),
-                from_unit: id("pUSD", CurrencyId::try_new),
+                from_unit: NativeUnitId::Currency(id("pUSD", CurrencyId::try_new)),
                 to_unit: id("USD", CurrencyId::try_new),
                 snapshot_id: id("collateral-conversion-2", SnapshotId::try_new),
                 observed_at_ns: 900,
@@ -1383,6 +1383,68 @@ fn hyperliquid_spot_buy_admits_through_runtime_built_asset_origin_route() {
             .is_some()
     );
     assert!(admission.net_edge().core_net_edge.is_sign_positive());
+}
+
+#[test]
+fn exact_conversion_rejects_same_spelling_currency_for_asset_origin() {
+    let mut loaded = hyperliquid_spot_loaded();
+    let execution = loaded
+        .root
+        .clients
+        .get_mut("hyperliquid_offline")
+        .expect("offline Hyperliquid client should exist")
+        .execution
+        .as_mut()
+        .expect("offline Hyperliquid execution should exist");
+    execution["economics"]["valuation"]["routes"]
+        .as_table_mut()
+        .expect("valuation routes should be a table")
+        .insert(
+            "hype_usd".to_string(),
+            toml::from_str::<toml::Value>(
+                r#"from_kind = "asset"
+from_unit = "HYPE"
+to_currency = "USD"
+legs = [
+  { authority = "provider_exact_conversion", from_kind = "asset", from_unit = "HYPE", to_unit = "USD", source_id = "fixture-asset-parity", max_age_ms = 60000 },
+]
+"#,
+            )
+            .expect("asset exact-conversion route should parse"),
+        );
+    let input = hyperliquid_spot_input().with_valuation_observations([
+        AuthoritativeValuationObservation::ProviderExactConversion {
+            source_id: id("fixture-asset-parity", SourceIdentity::try_new),
+            from_unit: NativeUnitId::Currency(id("HYPE", CurrencyId::try_new)),
+            to_unit: id("USD", CurrencyId::try_new),
+            snapshot_id: id("same-spelling-currency", SnapshotId::try_new),
+            observed_at_ns: 900,
+            fetched_at_ns: 950,
+            valid_until_ns: 2_000,
+        },
+    ]);
+    let inputs = AuthoritativeEconomicsInputStore::try_new([input])
+        .expect("one Hyperliquid spot input should construct");
+    let bound = bind_execution_economics(&loaded, "hyperliquid_offline", &inputs)
+        .expect("kind-tagged exact-conversion TOML should bind");
+
+    let error = bound
+        .quote_admission(economics_admission_intent! {
+            request: hyperliquid_spot_quote_request(),
+            order_binding: order_binding(),
+            policy: EconomicsAdmissionPolicy::TradingEdge {
+                minimum_core_edge_ratio: Decimal::ZERO,
+            },
+            gross_expected_value: Decimal::ONE,
+            reservation_basis: Decimal::from(20),
+        })
+        .expect_err("Currency(HYPE) must not authorize Asset(HYPE)");
+
+    assert!(
+        error
+            .to_string()
+            .contains("missing exact valuation authority")
+    );
 }
 
 #[test]

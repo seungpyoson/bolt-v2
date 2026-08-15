@@ -5,17 +5,17 @@ use bolt_v2::{
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig, UsableMu},
     bolt_v3_maker_order_dispatch::{
         MakerOrderCommandFailure, MakerOrderCommandFailureKind, MakerOrderCommandSink,
-        MakerOrderDispatchOutcome,
+        MakerOrderDispatchInput, MakerOrderDispatchOutcome, MakerQuoteTransactionContext,
+        dispatch_maker_order_command,
     },
     bolt_v3_maker_order_plan::{
         MakerLegBinding, MakerMarketActionOrderInput, MakerOrderIntent,
-        maker_order_intent_from_market_action, maker_order_plan_from_market_action,
+        maker_order_plan_from_market_action,
     },
     bolt_v3_maker_quote_plan::MakerQuotePlanInputs,
     bolt_v3_maker_rate_budget::build_requote_budget_pair,
     bolt_v3_maker_runtime_order::{
-        MakerRuntimeOrderDispatchInput, dispatch_maker_runtime_order_plan,
-        dispatch_maker_runtime_order_plan_with_command_router,
+        MakerRuntimeOrderDispatchInput, dispatch_maker_runtime_order_plan_with_command_router,
     },
     bolt_v3_maker_runtime_quote::{
         MakerRuntimeOrderPlanInput, MakerRuntimeQuoteBlockReason, MakerRuntimeQuoteInput,
@@ -24,7 +24,10 @@ use bolt_v2::{
         maker_reference_current_price_fair_value_decision, plan_maker_runtime_quote,
     },
     bolt_v3_market_families::{FairProbabilityInputs, static_binary_event, updown},
-    bolt_v3_order_execution::BoltV3RestingSubmitTransactionOutcome,
+    bolt_v3_order_execution::{
+        BoltV3RestingCommitDisposition, BoltV3RestingRegistrationCommitParticipant,
+        BoltV3RestingSubmitTransactionOutcome,
+    },
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketState},
     bolt_v3_realized_volatility::{
@@ -151,9 +154,9 @@ fn runtime_quote_tick_uses_family_quote_plan_and_produces_order_intents() {
         other => panic!("expected no submit intent, got {other:?}"),
     }
 
-    assert_eq!(market.market_state(), MarketState::Quoting);
-    assert_eq!(budget.submit_commands_in_window(), 2);
-    assert_eq!(budget.rest_cost_in_window(), 2);
+    assert_eq!(market.market_state(), MarketState::Idle);
+    assert_eq!(budget.submit_commands_in_window(), 0);
+    assert_eq!(budget.rest_cost_in_window(), 0);
 }
 
 #[test]
@@ -584,15 +587,48 @@ fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
         .expect("quote tick should produce maker order intents");
 
     let mut sink = RecordingMakerOrderSink::new();
-    let dispatched = dispatch_maker_runtime_order_plan(
+    let quote_set = decision
+        .quote_set
+        .as_ref()
+        .expect("quote tick should produce transaction proposals");
+    let mut route_command =
+        |command: &bolt_v2::bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
+         submit_order_prefix: &str| {
+            let proposal = match command {
+                bolt_v2::bolt_v3_maker_order_compile::MakerCompiledOrderCommand::Submit {
+                    leg: Leg::Yes,
+                    ..
+                } => quote_set.yes.control.proposal,
+                bolt_v2::bolt_v3_maker_order_compile::MakerCompiledOrderCommand::Submit {
+                    leg: Leg::No,
+                    ..
+                } => quote_set.no.control.proposal,
+                other => panic!("fresh quote plan emitted non-submit command: {other:?}"),
+            }
+            .expect("submit command must carry its quote transaction proposal");
+            dispatch_maker_order_command(
+                MakerOrderDispatchInput {
+                    command,
+                    submit_order_prefix,
+                    quote_transaction: Some(MakerQuoteTransactionContext {
+                        market: market.clone(),
+                        budget: budget.clone(),
+                        proposal,
+                    }),
+                },
+                &mut sink,
+            )
+        };
+    let template = maker_limit_post_only_template();
+    let dispatched = dispatch_maker_runtime_order_plan_with_command_router(
         MakerRuntimeOrderDispatchInput {
             order_plan,
-            submit_template: &maker_limit_post_only_template(),
+            submit_template: &template,
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
         },
-        &mut sink,
+        &mut route_command,
     )
     .expect("runtime order plan should dispatch");
 
@@ -792,7 +828,7 @@ fn runtime_quote_order_plan_short_circuits_no_leg_when_yes_leg_command_fails() {
 }
 
 #[test]
-fn canceled_requote_action_maps_to_prepaid_replacement_submit_without_budget_charge() {
+fn canceled_callback_cannot_consume_an_uncommitted_requote_proposal() {
     let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
     assert_eq!(
         market.on_leg_event(
@@ -843,9 +879,7 @@ fn canceled_requote_action_maps_to_prepaid_replacement_submit_without_budget_cha
     let submit_commands_before_cancel_confirm = budget.submit_commands_in_window();
     let rest_cost_before_cancel_confirm = budget.rest_cost_in_window();
 
-    let action = market
-        .on_leg_event(Leg::Yes, LegEvent::Canceled)
-        .expect("cancel confirmation should drive prepaid replacement submit");
+    assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Canceled), None);
     assert_eq!(
         budget.submit_commands_in_window(),
         submit_commands_before_cancel_confirm
@@ -855,54 +889,7 @@ fn canceled_requote_action_maps_to_prepaid_replacement_submit_without_budget_cha
         rest_cost_before_cancel_confirm
     );
 
-    let replacement = maker_order_intent_from_market_action(MakerMarketActionOrderInput {
-        action,
-        targets: decision
-            .quote_plan
-            .as_ref()
-            .expect("quote plan should exist")
-            .targets,
-        yes_quantity: quote_set.yes_quantity,
-        no_quantity: quote_set.no_quantity,
-        yes: MakerLegBinding {
-            instrument_id: InstrumentId::from("YES.RUNTIME"),
-            active_order: None,
-            next_order: Some(order_identity("MAKER-YES-2", 2)),
-        },
-        no: MakerLegBinding {
-            instrument_id: InstrumentId::from("NO.RUNTIME"),
-            active_order: None,
-            next_order: Some(order_identity("MAKER-NO-1", 1)),
-        },
-    });
-
-    match replacement.intent {
-        Some(MakerOrderIntent::Submit {
-            leg,
-            instrument_id,
-            order_identity: submitted_identity,
-            price,
-            quantity,
-            ..
-        }) => {
-            assert_eq!(leg, Leg::Yes);
-            assert_eq!(instrument_id, InstrumentId::from("YES.RUNTIME"));
-            assert_eq!(submitted_identity, order_identity("MAKER-YES-2", 2));
-            assert_eq!(
-                price,
-                decision
-                    .quote_plan
-                    .as_ref()
-                    .expect("quote plan should exist")
-                    .targets
-                    .leg_a
-                    .price
-            );
-            assert_eq!(quantity, quote_set.yes_quantity);
-        }
-        other => panic!("expected prepaid replacement submit intent, got {other:?}"),
-    }
-    assert_eq!(replacement.blocked_by, None);
+    assert_eq!(market.market_state(), MarketState::Idle);
 }
 
 #[test]
@@ -999,15 +986,28 @@ fn cancel_all_runtime_order_plan_dispatches_both_leg_instruments() {
     });
 
     let mut sink = RecordingMakerOrderSink::new();
-    let dispatched = dispatch_maker_runtime_order_plan(
+    let mut route_command =
+        |command: &bolt_v2::bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
+         submit_order_prefix: &str| {
+            dispatch_maker_order_command(
+                MakerOrderDispatchInput {
+                    command,
+                    submit_order_prefix,
+                    quote_transaction: None,
+                },
+                &mut sink,
+            )
+        };
+    let template = maker_limit_post_only_template();
+    let dispatched = dispatch_maker_runtime_order_plan_with_command_router(
         MakerRuntimeOrderDispatchInput {
             order_plan: &order_plan,
-            submit_template: &maker_limit_post_only_template(),
+            submit_template: &template,
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
         },
-        &mut sink,
+        &mut route_command,
     )
     .expect("cancel-all order plan should dispatch");
 
@@ -1207,24 +1207,32 @@ fn order_identity(client_order_id: &str, generation: u64) -> OrderIdentity {
 }
 
 struct RecordingMakerOrderSink {
+    clock: Rc<RefCell<dyn Clock>>,
     order_factory: RefCell<OrderFactory>,
+    next_generation: u64,
     submitted: Vec<OrderAny>,
     canceled_all: Vec<(Option<Leg>, InstrumentId, Option<OrderSide>)>,
 }
 
 impl RecordingMakerOrderSink {
     fn new() -> Self {
-        let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+        let test_clock = Rc::new(RefCell::new(TestClock::new()));
+        test_clock
+            .borrow_mut()
+            .set_time(UnixNanos::from(1_000_000_000_u64));
+        let clock: Rc<RefCell<dyn Clock>> = test_clock;
         Self {
             order_factory: RefCell::new(OrderFactory::new(
                 TraderId::new("MAKER-TRADER-001"),
                 StrategyId::new("MAKER-RUNTIME-001"),
                 None,
                 None,
-                clock,
+                clock.clone(),
                 false,
                 true,
             )),
+            clock,
+            next_generation: 1,
             submitted: Vec::new(),
             canceled_all: Vec::new(),
         }
@@ -1235,6 +1243,12 @@ impl RecordingMakerOrderSink {
             .iter()
             .map(|order| order.client_order_id())
             .collect()
+    }
+
+    fn begin_generation(&mut self) -> u64 {
+        let generation = self.next_generation;
+        self.next_generation += 1;
+        generation
     }
 }
 
@@ -1252,6 +1266,7 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
     fn submit_maker_order(
         &mut self,
         order: Self::PreparedSubmit,
+        mut participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
     ) -> BoltV3RestingSubmitTransactionOutcome {
         let instrument_id = order.instrument_id();
         let order_side = order.order_side();
@@ -1260,7 +1275,18 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
             .expect("maker runtime quotes must be priced limit orders");
         let quantity = order.quantity();
         let client_order_id = order.client_order_id();
+        let generation = self.begin_generation();
+        let actor_now_ns = self.clock.borrow().timestamp_ns().as_u64();
+        participant
+            .arm_at_generation(generation)
+            .expect("test submit participant must arm");
+        participant
+            .mark_sink_invoked(actor_now_ns)
+            .expect("test submit participant must reach the sink");
         self.submitted.push(order);
+        participant
+            .settle_at_generation(generation, BoltV3RestingCommitDisposition::Submitted)
+            .expect("test submit participant must commit");
         BoltV3RestingSubmitTransactionOutcome::submitted_with_linkage_for_test(
             instrument_id,
             order_side,
@@ -1275,7 +1301,16 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
         _leg: Leg,
         _instrument_id: InstrumentId,
         _client_order_id: ClientOrderId,
+        mut participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
     ) -> Result<()> {
+        let generation = self.begin_generation();
+        let actor_now_ns = self.clock.borrow().timestamp_ns().as_u64();
+        participant.arm_at_generation(generation)?;
+        participant.mark_sink_invoked(actor_now_ns)?;
+        participant.settle_at_generation(
+            generation,
+            BoltV3RestingCommitDisposition::CommandIssuedRetainPrepaid,
+        )?;
         anyhow::bail!("test sink should not receive cancel commands")
     }
 
@@ -1296,6 +1331,7 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
         _client_order_id: ClientOrderId,
         _price: Price,
         _quantity: Quantity,
+        _participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
     ) -> Result<()> {
         anyhow::bail!("test sink should not receive modify commands")
     }

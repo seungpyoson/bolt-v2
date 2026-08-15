@@ -1593,7 +1593,9 @@ fn settlement_during_sink_unknown_releases_only_on_correlated_denial_proof() {
     participant
         .consume_at_pre_sink()
         .expect("exit route should consume before the sink");
-    participant.mark_sink_invoked();
+    participant
+        .mark_sink_invoked(0)
+        .expect("test participant should reach the sink");
     drop(participant);
     assert!(matches!(
         strategy.exposure.state(),
@@ -1703,7 +1705,9 @@ fn terminal_booking_error_during_sink_unknown_releases_on_correlated_denial_proo
     participant
         .consume_at_pre_sink()
         .expect("exit route should consume before the sink");
-    participant.mark_sink_invoked();
+    participant
+        .mark_sink_invoked(0)
+        .expect("test participant should reach the sink");
     drop(participant);
 
     let settlement_key = settlement_key_for_position(&position)

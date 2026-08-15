@@ -155,7 +155,6 @@ pub struct RequoteBudgetReservationProposal {
     submit_cost: u64,
     rest_cost: u64,
     kind: RequoteBudgetReservationKind,
-    config_generation: u64,
 }
 
 impl RequoteBudgetReservationProposal {
@@ -173,7 +172,6 @@ impl RequoteBudgetReservationProposal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequoteBudgetReservationDenied {
     Capacity,
-    ConfigurationChanged,
     GenerationOverflow,
     StaleReservation,
 }
@@ -183,7 +181,7 @@ struct OutstandingLiability {
     now_ms: u64,
     submit_cost: u64,
     rest_cost: u64,
-    config_generation: u64,
+    kind: RequoteBudgetReservationKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,7 +189,6 @@ struct RequoteBudgetPairState {
     submit_commands: RequoteBudget,
     rest_calls: RequoteBudget,
     next_reservation_generation: u64,
-    config_generation: u64,
     outstanding: BTreeMap<u64, OutstandingLiability>,
 }
 
@@ -245,7 +242,8 @@ pub struct RequoteBudgetReservation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RequoteBudgetReservationState {
-    Outstanding,
+    Reserved,
+    ReplacementReserved,
     SinkInvoked,
     Settled,
 }
@@ -264,7 +262,6 @@ impl RequoteBudgetPair {
                 submit_commands,
                 rest_calls,
                 next_reservation_generation: 0,
-                config_generation: 1,
                 outstanding: BTreeMap::new(),
             })),
         }
@@ -311,9 +308,6 @@ impl RequoteBudgetPair {
         proposal: RequoteBudgetReservationProposal,
     ) -> Result<RequoteBudgetReservation, RequoteBudgetReservationDenied> {
         let mut state = self.lock();
-        if proposal.config_generation != state.config_generation {
-            return Err(RequoteBudgetReservationDenied::ConfigurationChanged);
-        }
         if !Self::has_capacity(
             &state,
             proposal.now_ms,
@@ -333,13 +327,13 @@ impl RequoteBudgetPair {
                 now_ms: proposal.now_ms,
                 submit_cost: proposal.submit_cost,
                 rest_cost: proposal.rest_cost,
-                config_generation: proposal.config_generation,
+                kind: proposal.kind,
             },
         );
         Ok(RequoteBudgetReservation {
             budget: self.clone(),
             generation,
-            state: RequoteBudgetReservationState::Outstanding,
+            state: RequoteBudgetReservationState::Reserved,
         })
     }
 
@@ -401,15 +395,6 @@ impl RequoteBudgetPair {
             .max(state.rest_calls.last_emit_ms())
     }
 
-    #[cfg(test)]
-    pub(crate) fn advance_config_generation_for_test(&self) {
-        let mut state = self.lock();
-        state.config_generation = state
-            .config_generation
-            .checked_add(1)
-            .expect("test configuration generation should advance");
-    }
-
     fn propose(
         &self,
         now_ms: u64,
@@ -426,7 +411,6 @@ impl RequoteBudgetPair {
             submit_cost,
             rest_cost,
             kind,
-            config_generation: state.config_generation,
         })
     }
 
@@ -479,26 +463,47 @@ impl RequoteBudgetReservation {
         self.generation
     }
 
-    pub fn validate_for_sink_at(
+    pub fn mark_sink_invoked_at(
         &mut self,
         now_ms: u64,
     ) -> Result<(), RequoteBudgetReservationDenied> {
-        let mut state = self.budget.lock();
-        let current_generation = state.config_generation;
-        let liability = state
-            .outstanding
-            .get_mut(&self.generation)
-            .ok_or(RequoteBudgetReservationDenied::StaleReservation)?;
-        if liability.config_generation != current_generation {
-            return Err(RequoteBudgetReservationDenied::ConfigurationChanged);
-        }
-        liability.now_ms = now_ms;
-        Ok(())
-    }
-
-    pub fn mark_sink_invoked(&mut self) {
-        if self.state == RequoteBudgetReservationState::Outstanding {
-            self.state = RequoteBudgetReservationState::SinkInvoked;
+        match self.state {
+            RequoteBudgetReservationState::Reserved => {
+                let mut state = self.budget.lock();
+                let liability = state
+                    .outstanding
+                    .get(&self.generation)
+                    .copied()
+                    .ok_or(RequoteBudgetReservationDenied::StaleReservation)?;
+                if liability.kind == RequoteBudgetReservationKind::CancelResubmit {
+                    let replacement_rest_cost = liability
+                        .rest_cost
+                        .checked_sub(REST_CALL_COST)
+                        .ok_or(RequoteBudgetReservationDenied::StaleReservation)?;
+                    let replacement = state
+                        .outstanding
+                        .get_mut(&self.generation)
+                        .ok_or(RequoteBudgetReservationDenied::StaleReservation)?;
+                    replacement.now_ms = now_ms;
+                    replacement.rest_cost = replacement_rest_cost;
+                    state.rest_calls.record_reserved(now_ms, REST_CALL_COST);
+                    self.state = RequoteBudgetReservationState::ReplacementReserved;
+                    return Ok(());
+                }
+                Self::record_remaining_liability(&mut state, self.generation, now_ms)?;
+                self.state = RequoteBudgetReservationState::SinkInvoked;
+                Ok(())
+            }
+            RequoteBudgetReservationState::ReplacementReserved => {
+                let mut state = self.budget.lock();
+                Self::record_remaining_liability(&mut state, self.generation, now_ms)?;
+                self.state = RequoteBudgetReservationState::SinkInvoked;
+                Ok(())
+            }
+            RequoteBudgetReservationState::SinkInvoked => Ok(()),
+            RequoteBudgetReservationState::Settled => {
+                Err(RequoteBudgetReservationDenied::StaleReservation)
+            }
         }
     }
 
@@ -512,23 +517,21 @@ impl RequoteBudgetReservation {
 
     fn settle_committed(&mut self) -> Result<(), RequoteBudgetReservationDenied> {
         let mut state = self.budget.lock();
-        let liability = state
-            .outstanding
-            .get(&self.generation)
-            .copied()
-            .ok_or(RequoteBudgetReservationDenied::StaleReservation)?;
-        if liability.config_generation != state.config_generation {
-            return Err(RequoteBudgetReservationDenied::ConfigurationChanged);
+        match self.state {
+            RequoteBudgetReservationState::Reserved
+            | RequoteBudgetReservationState::ReplacementReserved => {
+                let now_ms = state
+                    .outstanding
+                    .get(&self.generation)
+                    .map(|liability| liability.now_ms)
+                    .ok_or(RequoteBudgetReservationDenied::StaleReservation)?;
+                Self::record_remaining_liability(&mut state, self.generation, now_ms)?;
+            }
+            RequoteBudgetReservationState::SinkInvoked => {}
+            RequoteBudgetReservationState::Settled => {
+                return Err(RequoteBudgetReservationDenied::StaleReservation);
+            }
         }
-        state.outstanding.remove(&self.generation);
-        if liability.submit_cost > 0 {
-            state
-                .submit_commands
-                .record_reserved(liability.now_ms, liability.submit_cost);
-        }
-        state
-            .rest_calls
-            .record_reserved(liability.now_ms, liability.rest_cost);
         self.state = RequoteBudgetReservationState::Settled;
         Ok(())
     }
@@ -541,17 +544,36 @@ impl RequoteBudgetReservation {
         self.state = RequoteBudgetReservationState::Settled;
         Ok(())
     }
+
+    fn record_remaining_liability(
+        state: &mut RequoteBudgetPairState,
+        generation: u64,
+        now_ms: u64,
+    ) -> Result<(), RequoteBudgetReservationDenied> {
+        let liability = state
+            .outstanding
+            .remove(&generation)
+            .ok_or(RequoteBudgetReservationDenied::StaleReservation)?;
+        if liability.submit_cost > 0 {
+            state
+                .submit_commands
+                .record_reserved(now_ms, liability.submit_cost);
+        }
+        state
+            .rest_calls
+            .record_reserved(now_ms, liability.rest_cost);
+        Ok(())
+    }
 }
 
 impl Drop for RequoteBudgetReservation {
     fn drop(&mut self) {
         match self.state {
-            RequoteBudgetReservationState::Outstanding => {
+            RequoteBudgetReservationState::Reserved
+            | RequoteBudgetReservationState::ReplacementReserved => {
                 let _ = self.settle_aborted();
             }
-            RequoteBudgetReservationState::SinkInvoked => {
-                let _ = self.settle_committed();
-            }
+            RequoteBudgetReservationState::SinkInvoked => {}
             RequoteBudgetReservationState::Settled => {}
         }
     }
@@ -986,7 +1008,9 @@ mod tests {
         let pair = fresh_pair(1, 1);
         let proposal = pair.propose_fresh_submit(1_000).expect("proposal fits");
         let mut reservation = pair.reserve(proposal).expect("reservation arms");
-        reservation.mark_sink_invoked();
+        reservation
+            .mark_sink_invoked_at(1_000)
+            .expect("sink invocation records the emitted command");
         reservation
             .commit()
             .expect("unchanged configuration commits");
@@ -1008,9 +1032,8 @@ mod tests {
             .expect("prepaid reservation arms");
         assert!(reserve_fresh(&pair, 61_001));
         prepaid
-            .validate_for_sink_at(61_001)
-            .expect("unchanged configuration validates");
-        prepaid.mark_sink_invoked();
+            .mark_sink_invoked_at(61_001)
+            .expect("delayed sink invocation records at actor time");
         prepaid
             .commit()
             .expect("liability conversion cannot fail on window capacity");
@@ -1046,23 +1069,5 @@ mod tests {
             )
             .expect("next reservation arms");
         assert!(next.generation() > generation);
-    }
-
-    #[test]
-    fn configuration_generation_change_is_the_only_consumption_revalidation() {
-        let pair = fresh_pair(1, 1);
-        let reservation = pair
-            .reserve(pair.propose_fresh_submit(1_000).expect("proposal fits"))
-            .expect("reservation arms");
-        pair.lock().config_generation += 1;
-
-        assert_eq!(
-            reservation.commit(),
-            Err(RequoteBudgetReservationDenied::ConfigurationChanged)
-        );
-        assert_eq!(pair.submit_commands_in_window(), 0);
-        assert_eq!(pair.rest_cost_in_window(), 0);
-        assert_eq!(pair.outstanding_submit_cost(), 0);
-        assert_eq!(pair.outstanding_rest_cost(), 0);
     }
 }

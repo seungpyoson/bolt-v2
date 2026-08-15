@@ -86,7 +86,7 @@ pub enum AuthoritativeValuationObservation {
     },
     ProviderExactConversion {
         source_id: SourceIdentity,
-        from_unit: CurrencyId,
+        from_unit: NativeUnitId,
         to_unit: CurrencyId,
         snapshot_id: SnapshotId,
         observed_at_ns: u64,
@@ -2150,7 +2150,7 @@ fn build_valuation_leg(
                         fetched_at_ns,
                         valid_until_ns,
                     } if source_id == &expected_source
-                        && from_unit.as_str() == expected_from.as_str()
+                        && from_unit == &expected_from
                         && to_unit == &expected_to =>
                     {
                         Some((

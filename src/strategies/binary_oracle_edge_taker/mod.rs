@@ -329,24 +329,27 @@ use self::config::{BinaryOracleEdgeTakerConfig, BinaryOracleEdgeTakerFieldType};
 
 mod exposure;
 
-use self::exposure::{
-    BlindRecoveryProvenance, BlindRecoveryReason, BlindRecoveryState, BootstrapAdoptionEvent,
-    CanonicalPositionProjection, ConfiguredPositionContract, EntryLifecycleEvent,
-    EntryReconcileReason, ExitAttemptingState, ExitAuthorityFlatRecovery,
-    ExitAuthorityRecoveryHoldState, ExitAuthorityRecoveryPlan, ExitLifecycleEvent,
-    ExitLifecyclePhase, ExitPendingState, ExitRecoveryObservation, ExposureEvent,
-    ExposureOccupancy, ExposureOperationBlockedReason, ExposureOperationKind, ExposureState,
-    ExposureStateKind, ExposureTransitionOutcome, GovernedExposure, HistoricalExitCorrection,
-    HistoricalExitObservation, HistoricalExitObservationKey, ManagedPositionContext,
-    ManagedPositionOrigin, ManagedPositionState, OpenPositionState, PendingEntryState,
-    PendingExitState, PositionClosedEvent, PositionEpisodeFingerprint, PositionTruthEvent,
-    ReplacementAdoptionCause, RouteOperationPayload, SettlementEffectEvent, SinkUnknownResolution,
-    TimerReconciliationEvent, UnsupportedObservedReason, UnsupportedObservedState,
-    UntrackedOrderEvent, infer_strategy_position_side_from_entry_fill,
-    managed_position_effective_entry_cost, supports_strategy_managed_position,
-};
 #[cfg(test)]
-use self::exposure::{ObligationSaturatedState, OperationSinkUnknownState};
+use self::exposure::{
+    BlindRecoveryProvenance, ObligationSaturatedState, OperationSinkUnknownState,
+};
+use self::exposure::{
+    BlindRecoveryReason, BlindRecoveryState, BootstrapAdoptionEvent, CanonicalPositionProjection,
+    ClassifiedOpenPosition, ConfiguredPositionContract, EntryLifecycleEvent, EntryReconcileReason,
+    ExitAttemptingState, ExitAuthorityFlatRecovery, ExitAuthorityRecoveryHoldState,
+    ExitAuthorityRecoveryPlan, ExitLifecycleEvent, ExitLifecyclePhase, ExitPendingState,
+    ExitRecoveryObservation, ExitWorkingObservation, ExposureEvent, ExposureOccupancy,
+    ExposureOperationBlockedReason, ExposureOperationKind, ExposureState, ExposureStateKind,
+    ExposureTransitionOutcome, FreshCanonicalPositionProjection, GovernedExposure,
+    HistoricalExitCorrection, HistoricalExitObservation, HistoricalExitObservationKey,
+    ManagedPositionContext, ManagedPositionOrigin, ManagedPositionState, OpenPositionState,
+    PendingEntryState, PendingExitState, PositionClosedEvent, PositionEpisodeFingerprint,
+    PositionReplayFragmentIdentity, PositionTruthEvent, ReplacementAdoptionCause,
+    RouteOperationPayload, SettlementEffectEvent, SinkUnknownResolution, TimerReconciliationEvent,
+    UnsupportedObservedReason, UnsupportedObservedState, UntrackedOrderEvent,
+    infer_strategy_position_side_from_entry_fill, managed_position_effective_entry_cost,
+    supports_strategy_managed_position,
+};
 use crate::bolt_v3_feed_health::{
     ForcedFlatInputs, ForcedFlatReason, evaluate_forced_flat_predicates,
 };
@@ -1269,7 +1272,7 @@ impl BinaryOracleEdgeTaker {
         self.reclassify_unreachable_pending_entry_at_selection_boundary(now_ms);
         self.prune_market_lifecycle(now_ms);
         self.refresh_book_subscriptions_for_current_state();
-        if self.managed_position().is_some()
+        if self.exposure_occupancy().is_some()
             && let Err(error) = self.try_submit_exit_order_for_trigger(
                 now_ms,
                 ExitEvaluationTriggerContext::from_local_selection_handler(LocalReceiveMs::new(
@@ -1827,7 +1830,7 @@ impl BinaryOracleEdgeTaker {
     ) {
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
         self.sync_exposure_context_from_active();
-        if self.managed_position().is_some()
+        if self.exposure_occupancy().is_some()
             && let Err(error) = self.try_submit_exit_order_for_trigger(
                 lifecycle_now_ms,
                 ExitEvaluationTriggerContext::from_market_data(
@@ -1861,7 +1864,7 @@ impl BinaryOracleEdgeTaker {
         );
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
         self.sync_exposure_context_from_active();
-        if self.managed_position().is_some()
+        if self.exposure_occupancy().is_some()
             && let Err(error) = self.try_submit_exit_order_for_trigger(
                 receive_ms.value(),
                 ExitEvaluationTriggerContext::from_market_data(
@@ -2638,7 +2641,9 @@ impl BinaryOracleEdgeTaker {
                     self.enter_blind_settlement_recovery(anyhow::anyhow!(detail));
                     return;
                 }
-                let exposure = self.bootstrapped_exposure_for(open_position, execution_venue);
+                let exposure = self
+                    .bootstrapped_exposure_for(open_position, execution_venue)
+                    .into();
                 self.apply_bootstrap_adoption(exposure);
                 self.adopt_restart_open_exit_order_from_cache(execution_venue, strategy_id);
                 return;
@@ -2676,7 +2681,9 @@ impl BinaryOracleEdgeTaker {
             }
             return;
         }
-        let exposure = self.bootstrapped_exposure_for(open_position, execution_venue);
+        let exposure = self
+            .bootstrapped_exposure_for(open_position, execution_venue)
+            .into();
         self.apply_bootstrap_adoption(exposure);
         self.adopt_restart_open_exit_order_from_cache(execution_venue, strategy_id);
     }
@@ -3073,7 +3080,7 @@ impl BinaryOracleEdgeTaker {
         &self,
         open_position: OpenPositionState,
         execution_venue: Venue,
-    ) -> BootstrapAdoptionEvent {
+    ) -> ClassifiedOpenPosition {
         if open_position.instrument_id.venue != execution_venue {
             log::error!(
                 "binary_oracle_edge_taker recovery bootstrap quarantined foreign-venue cached position: strategy_id={} position_id={} instrument_id={} instrument_venue={} execution_venue={}",
@@ -3083,7 +3090,7 @@ impl BinaryOracleEdgeTaker {
                 open_position.instrument_id.venue,
                 execution_venue,
             );
-            return BootstrapAdoptionEvent::BlindRecovery(BlindRecoveryState::authority_free(
+            return ClassifiedOpenPosition::BlindRecovery(BlindRecoveryState::authority_free(
                 BlindRecoveryReason::ForeignVenuePosition {
                     instrument_id: open_position.instrument_id,
                     instrument_venue: open_position.instrument_id.venue,
@@ -3112,7 +3119,7 @@ impl BinaryOracleEdgeTaker {
                 open_position.quantity,
                 open_position.avg_px_open,
             );
-            BootstrapAdoptionEvent::Managed(self.managed_position_context_from_cache(
+            ClassifiedOpenPosition::Managed(self.managed_position_context_from_cache(
                 open_position,
                 ManagedPositionOrigin::RecoveryBootstrap,
                 None,
@@ -3128,7 +3135,7 @@ impl BinaryOracleEdgeTaker {
                 open_position.quantity,
                 open_position.avg_px_open,
             );
-            BootstrapAdoptionEvent::Unsupported(UnsupportedObservedState {
+            ClassifiedOpenPosition::Unsupported(UnsupportedObservedState {
                 context: self.managed_position_context_from_cache(
                     open_position,
                     ManagedPositionOrigin::RecoveryBootstrap,
@@ -3145,7 +3152,7 @@ impl BinaryOracleEdgeTaker {
                 open_position.entry_order_side,
                 open_position.side,
             );
-            BootstrapAdoptionEvent::BlindRecovery(BlindRecoveryState::with_recorded_episode(
+            ClassifiedOpenPosition::BlindRecovery(BlindRecoveryState::with_recorded_episode(
                 BlindRecoveryReason::InvalidBootstrappedPosition {
                     entry_order_side: open_position.entry_order_side,
                     side: open_position.side,
@@ -3336,17 +3343,20 @@ impl BinaryOracleEdgeTaker {
         source: OrderLifecycleSource,
         ts_event_ns: u64,
     ) {
-        let awaiting_state = self.exposure.state();
-        let awaiting_context = self.exposure.tracked_position_context();
-        let awaiting_entry = self.exposure.pending_entry();
         self.exposure
             .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
                 CanonicalPositionProjection::None,
             )));
+        self.record_canonical_awaiting_evidence(source, ts_event_ns);
+    }
+
+    fn record_canonical_awaiting_evidence(&self, source: OrderLifecycleSource, ts_event_ns: u64) {
         let retained_state = self.exposure.state();
         if matches!(retained_state, ExposureState::Flat) {
             return;
         }
+        let awaiting_context = self.exposure.tracked_position_context();
+        let awaiting_entry = self.exposure.pending_entry();
         self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
             transition: OrderLifecycleTransition::CanonicalPositionAwaiting,
             outcome: Self::lifecycle_outcome_for_exposure(&retained_state),
@@ -3375,7 +3385,7 @@ impl BinaryOracleEdgeTaker {
             prior_client_order_id: None,
             raw_reason_text: Some(format!(
                 "fresh canonical projection is empty while exposure is {:?}",
-                awaiting_state.kind()
+                retained_state.kind()
             )),
             order_side: None,
             filled_quantity: None,
@@ -4881,6 +4891,19 @@ impl BinaryOracleEdgeTaker {
             context
                 .episode_fill_ids
                 .extend(cached.trade_ids.iter().copied());
+            context
+                .replay_segment
+                .extend(
+                    cached
+                        .events
+                        .iter()
+                        .map(|fill| PositionReplayFragmentIdentity {
+                            event_id: fill.event_id,
+                            causation_id: fill.causation_id,
+                            client_order_id: fill.client_order_id,
+                            trade_id: fill.trade_id,
+                        }),
+                );
         }
         context
     }
@@ -5108,49 +5131,35 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn reconcile_blind_recovery_from_fresh_probe(&mut self) {
-        let restart_adoption = matches!(
-            self.exposure.state(),
-            ExposureState::BlindRecovery(BlindRecoveryState {
-                provenance: BlindRecoveryProvenance::RestartAdoption { .. },
-                ..
-            })
-        );
-        if !matches!(self.exposure.state(), ExposureState::BlindRecovery(_)) {
+        let generation = self.exposure.generation();
+        let Ok(grant) = self.exposure.request_recovery_operation(generation) else {
             return;
-        }
+        };
         let projection = match self.nt_canonical_open_position_projection() {
-            NtCanonicalPositionProjection::None => CanonicalPositionProjection::None,
+            NtCanonicalPositionProjection::None => FreshCanonicalPositionProjection::None,
             NtCanonicalPositionProjection::ExactlyOne(spec) => {
                 let position = self.build_open_position_state(None, None, spec, false);
-                CanonicalPositionProjection::ExactlyOne(Box::new(
-                    self.managed_position_context_from_cache(
-                        position,
-                        ManagedPositionOrigin::RecoveryBootstrap,
-                        None,
-                    ),
+                FreshCanonicalPositionProjection::ExactlyOne(Box::new(
+                    self.bootstrapped_exposure_for(position, self.context.execution_venue()),
                 ))
             }
             NtCanonicalPositionProjection::Multiple { count } => {
-                CanonicalPositionProjection::Multiple {
-                    count,
-                    recovery: BlindRecoveryState::authority_free(
-                        BlindRecoveryReason::MultipleOpenPositions { count },
-                    ),
-                }
+                FreshCanonicalPositionProjection::Multiple { count }
             }
             NtCanonicalPositionProjection::ProbeFailed { diagnostic } => {
-                CanonicalPositionProjection::ProbeFailed {
-                    diagnostic,
-                    recovery: BlindRecoveryState::authority_free(
-                        BlindRecoveryReason::CacheProbeFailed,
-                    ),
-                }
+                FreshCanonicalPositionProjection::ProbeFailed { diagnostic }
             }
         };
-        self.exposure.reduce(ExposureEvent::PositionTruth(
-            PositionTruthEvent::AuthorizedRecovery(projection),
-        ));
-        if restart_adoption && matches!(self.exposure.state(), ExposureState::Managed(_)) {
+        let (outcome, restart_adoption) = grant.commit(projection);
+        if restart_adoption
+            && matches!(
+                outcome,
+                ExposureTransitionOutcome::Applied {
+                    to: ExposureStateKind::Managed,
+                    ..
+                }
+            )
+        {
             self.adopt_restart_open_exit_order_from_cache(
                 self.context.execution_venue(),
                 StrategyId::from(self.config.strategy_id.as_str()),
@@ -5600,6 +5609,7 @@ impl BinaryOracleEdgeTaker {
                 order.instrument_id() == event_instrument_id
                     && order.order_side() == contract.exit_order_side
             });
+        let observation_generation = self.exposure.generation();
         let Some(mut exit_pending) = self.exposure.exit_pending_snapshot() else {
             if self
                 .exposure
@@ -5700,15 +5710,16 @@ impl BinaryOracleEdgeTaker {
         };
         match lifecycle {
             BoltV3ExitOrderLifecycleReduction::Working => {
-                if observation.is_correction() {
-                    self.exposure.reduce(ExposureEvent::ExitLifecycle(
-                        ExitLifecycleEvent::Pending(exit_pending),
-                    ));
-                } else {
-                    self.exposure.reduce(ExposureEvent::ExitLifecycle(
-                        ExitLifecycleEvent::RefreshAuthority(exit_pending.authority),
-                    ));
-                }
+                self.exposure
+                    .reduce(ExposureEvent::ExitLifecycle(ExitLifecycleEvent::Working {
+                        expected_generation: observation_generation,
+                        observation: if observation.is_correction() {
+                            ExitWorkingObservation::Correction
+                        } else {
+                            ExitWorkingObservation::Lifecycle
+                        },
+                        pending: exit_pending,
+                    }));
                 return;
             }
             BoltV3ExitOrderLifecycleReduction::TerminalAwaitingPosition => {
@@ -9724,7 +9735,7 @@ impl DataActor for BinaryOracleEdgeTaker {
         }
 
         let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
-        if matches!(self.exposure.state(), ExposureState::Managed(_))
+        if self.exposure_occupancy().is_some()
             && let Err(error) = self.try_submit_exit_order_for_trigger(
                 now_ms,
                 ExitEvaluationTriggerContext::from_market_data(
@@ -9781,43 +9792,40 @@ impl BinaryOracleEdgeTaker {
         else {
             return false;
         };
-        let (rebased, replay_segment_continuous) =
-            match self.nt_canonical_open_position_projection() {
-                NtCanonicalPositionProjection::None => (None, false),
-                NtCanonicalPositionProjection::ExactlyOne(spec) => {
-                    let preserved = self
-                        .exposure
-                        .tracked_position_context()
-                        .filter(|context| context.episode == before);
-                    let origin = preserved
-                        .as_ref()
-                        .map_or(ManagedPositionOrigin::RecoveryBootstrap, |context| {
-                            context.origin
-                        });
-                    let pending_entry = preserved
-                        .as_ref()
-                        .and_then(|context| context.pending_entry.clone());
-                    let position = self.build_open_position_state(
-                        preserved.as_ref(),
-                        pending_entry.as_ref(),
-                        spec,
-                        false,
-                    );
-                    let rebased =
-                        self.managed_position_context_from_cache(position, origin, pending_entry);
-                    let continuous = self.exposure.replay_segment_continuous(&before, &rebased);
-                    (Some(rebased), continuous)
-                }
-                NtCanonicalPositionProjection::Multiple { .. }
-                | NtCanonicalPositionProjection::ProbeFailed { .. } => return false,
-            };
+        let rebased = match self.nt_canonical_open_position_projection() {
+            NtCanonicalPositionProjection::None => None,
+            NtCanonicalPositionProjection::ExactlyOne(spec) => {
+                let preserved = self
+                    .exposure
+                    .tracked_position_context()
+                    .filter(|context| context.episode == before);
+                let origin = preserved
+                    .as_ref()
+                    .map_or(ManagedPositionOrigin::RecoveryBootstrap, |context| {
+                        context.origin
+                    });
+                let pending_entry = preserved
+                    .as_ref()
+                    .and_then(|context| context.pending_entry.clone());
+                let position = self.build_open_position_state(
+                    preserved.as_ref(),
+                    pending_entry.as_ref(),
+                    spec,
+                    false,
+                );
+                let rebased =
+                    self.managed_position_context_from_cache(position, origin, pending_entry);
+                Some(rebased)
+            }
+            NtCanonicalPositionProjection::Multiple { .. }
+            | NtCanonicalPositionProjection::ProbeFailed { .. } => return false,
+        };
         self.exposure.reduce(ExposureEvent::PositionTruth(
             PositionTruthEvent::AuthenticatedEpisodeRebase {
                 before,
                 authenticated_order_id: event.client_order_id,
                 authenticated_fill_id: event.trade_id,
                 rebased,
-                replay_segment_continuous,
             },
         ));
         if let Some(adoption) = self.exposure.replacement_adoption() {
@@ -10475,12 +10483,50 @@ nautilus_trading::nautilus_strategy!(BinaryOracleEdgeTaker, {
             .exposure
             .exit_authority_recovery_hold()
             .filter(|hold| hold.episode() == closed_episode);
+        let expected_generation = self.exposure.generation();
+        let fresh_projection = match self.nt_canonical_open_position_projection() {
+            NtCanonicalPositionProjection::None => FreshCanonicalPositionProjection::None,
+            NtCanonicalPositionProjection::ExactlyOne(spec) => {
+                let position = self.build_open_position_state(None, None, spec, false);
+                FreshCanonicalPositionProjection::ExactlyOne(Box::new(
+                    self.bootstrapped_exposure_for(position, self.context.execution_venue()),
+                ))
+            }
+            NtCanonicalPositionProjection::Multiple { count } => {
+                FreshCanonicalPositionProjection::Multiple { count }
+            }
+            NtCanonicalPositionProjection::ProbeFailed { diagnostic } => {
+                FreshCanonicalPositionProjection::ProbeFailed { diagnostic }
+            }
+        };
+        let canonical_none_observed =
+            matches!(&fresh_projection, FreshCanonicalPositionProjection::None);
         let close_outcome = self.exposure.reduce(ExposureEvent::PositionClosed(
-            PositionClosedEvent::Observed {
+            PositionClosedEvent::ObservedWithFreshProjection {
+                expected_generation,
                 episode: closed_episode.clone(),
+                projection: fresh_projection,
             },
         ));
         if let Some(adoption) = self.exposure.replacement_adoption() {
+            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+                transition: OrderLifecycleTransition::PositionIdentityConflict,
+                outcome: OrderLifecycleOutcome::Managed,
+                source: OrderLifecycleSource::PositionClosed,
+                market_id: adoption.adopted.lifecycle.market_id_owned(),
+                instrument_id: Some(adoption.adopted.instrument_id),
+                position_id: Some(adoption.adopted.position_id),
+                client_order_id: Some(adoption.adopted.episode.opening_order_id),
+                prior_client_order_id: Some(adoption.retained_episode.opening_order_id),
+                raw_reason_text: Some(
+                    "fresh close projection atomically replaced the retained position episode"
+                        .to_string(),
+                ),
+                order_side: None,
+                filled_quantity: None,
+                residual_quantity: None,
+                ts_event_ns: Some(event.ts_event.as_u64()),
+            });
             self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
                 transition: OrderLifecycleTransition::ReplacementAdopted,
                 outcome: OrderLifecycleOutcome::Managed,
@@ -10497,69 +10543,11 @@ nautilus_trading::nautilus_strategy!(BinaryOracleEdgeTaker, {
                 ts_event_ns: Some(event.ts_event.as_u64()),
             });
         }
-        match self.nt_canonical_open_position_projection() {
-            NtCanonicalPositionProjection::ExactlyOne(position) => {
-                self.materialize_position_from_truth(
-                    position,
-                    event.ts_event.as_u64(),
-                    ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
-                );
-            }
-            NtCanonicalPositionProjection::None => {
-                self.reduce_canonical_none_with_awaiting_evidence(
-                    ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
-                    event.ts_event.as_u64(),
-                );
-            }
-            NtCanonicalPositionProjection::Multiple { count } => {
-                let outcome = self.exposure.reduce(ExposureEvent::PositionTruth(
-                    PositionTruthEvent::Canonical(CanonicalPositionProjection::Multiple {
-                        count,
-                        recovery: BlindRecoveryState::authority_free(
-                            BlindRecoveryReason::MultipleOpenPositions { count },
-                        ),
-                    }),
-                ));
-                if matches!(
-                    outcome,
-                    ExposureTransitionOutcome::Applied {
-                        to: ExposureStateKind::BlindRecovery,
-                        ..
-                    }
-                ) {
-                    self.record_canonical_recovery_blocked(
-                        OrderLifecycleTransition::CanonicalPositionMultiplicity,
-                        format!("canonical projection contains {count} open positions"),
-                        ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
-                        event.ts_event.as_u64(),
-                    );
-                }
-            }
-            NtCanonicalPositionProjection::ProbeFailed { diagnostic } => {
-                let raw_reason_text = diagnostic.clone();
-                let outcome = self.exposure.reduce(ExposureEvent::PositionTruth(
-                    PositionTruthEvent::Canonical(CanonicalPositionProjection::ProbeFailed {
-                        diagnostic,
-                        recovery: BlindRecoveryState::authority_free(
-                            BlindRecoveryReason::CacheProbeFailed,
-                        ),
-                    }),
-                ));
-                if matches!(
-                    outcome,
-                    ExposureTransitionOutcome::Applied {
-                        to: ExposureStateKind::BlindRecovery,
-                        ..
-                    }
-                ) {
-                    self.record_canonical_recovery_blocked(
-                        OrderLifecycleTransition::ReconcileQueryFailed,
-                        raw_reason_text,
-                        ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
-                        event.ts_event.as_u64(),
-                    );
-                }
-            }
+        if canonical_none_observed {
+            self.record_canonical_awaiting_evidence(
+                OrderLifecycleSource::PositionClosed,
+                event.ts_event.as_u64(),
+            );
         }
         if let Some(exit_pending) = terminal_exit.as_ref() {
             self.try_release_terminal_exit(
@@ -10905,6 +10893,7 @@ fn managed_position_context(
     ManagedPositionContext {
         episode: position.episode,
         episode_fill_ids: BTreeSet::new(),
+        replay_segment: Vec::new(),
         lifecycle: position.lifecycle,
         instrument_id: position.instrument_id,
         position_id: position.position_id,

@@ -7,6 +7,20 @@ use nautilus_model::identifiers::TradeId;
 use nautilus_trading::Strategy;
 use std::{collections::BTreeSet, sync::Arc};
 
+fn reduce_position_close_with_projection(
+    strategy: &BinaryOracleEdgeTaker,
+    episode: PositionEpisodeFingerprint,
+    projection: FreshCanonicalPositionProjection,
+) -> ExposureTransitionOutcome {
+    strategy.exposure.reduce(ExposureEvent::PositionClosed(
+        PositionClosedEvent::ObservedWithFreshProjection {
+            expected_generation: strategy.exposure.generation(),
+            episode,
+            projection,
+        },
+    ))
+}
+
 #[test]
 fn position_events_update_live_position_state() {
     let mut strategy = ready_to_trade_strategy();
@@ -3153,18 +3167,18 @@ fn pending_entry_short_position_event_stays_fail_closed_without_materializing_po
 
     assert!(strategy.exposure.is_recovering());
     assert!(strategy.managed_position().is_none());
-    let quarantined = match strategy.exposure.state() {
-        ExposureState::UnsupportedObserved(state) => state,
-        other => panic!("expected unsupported observed exposure, got {other:?}"),
-    };
-    assert_eq!(quarantined.context.instrument_id, instrument_id);
-    assert_eq!(quarantined.context.position_id, position_id);
-    let observed = strategy
-        .tracked_observed_position()
-        .expect("unsupported context should project NT position truth");
-    assert_eq!(observed.entry_order_side, OrderSide::Sell);
-    assert_eq!(observed.side, PositionSide::Short);
-    assert!(strategy.pending_entry().is_none());
+    assert!(matches!(
+        strategy.exposure.state(),
+        ExposureState::BlindRecovery(BlindRecoveryState {
+            reason: BlindRecoveryReason::DivergentUnsupportedPosition,
+            ..
+        })
+    ));
+    assert!(strategy.tracked_observed_position().is_none());
+    assert_eq!(
+        strategy.pending_entry().map(|entry| entry.client_order_id),
+        Some(entry_client_order_id)
+    );
 }
 
 #[test]
@@ -3388,7 +3402,7 @@ fn recovery_bootstrap_quarantines_foreign_venue_position() {
     // Control: an execution-venue, supported-side position is adopted into Managed.
     let managed = strategy.bootstrapped_exposure_for(supported.clone(), execution_venue);
     assert!(
-        matches!(managed, BootstrapAdoptionEvent::Managed(_)),
+        matches!(managed, ClassifiedOpenPosition::Managed(_)),
         "execution-venue supported position must be managed, got {managed:?}",
     );
 
@@ -3404,13 +3418,72 @@ fn recovery_bootstrap_quarantines_foreign_venue_position() {
     assert!(
         matches!(
             quarantined,
-            BootstrapAdoptionEvent::BlindRecovery(BlindRecoveryState {
+            ClassifiedOpenPosition::BlindRecovery(BlindRecoveryState {
                 reason: BlindRecoveryReason::ForeignVenuePosition { .. },
                 ..
             })
         ),
         "foreign-venue position must be quarantined to blind recovery, got {quarantined:?}",
     );
+}
+
+#[test]
+fn fresh_blind_recovery_classifies_an_unsupported_contract_before_adoption() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    seed_nt_open_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-RECOVERY-UNSUPPORTED-CONTRACT"),
+        Quantity::new(1.0, 2),
+        0.45,
+        OrderSide::Sell,
+    );
+    strategy.exposure.reduce(ExposureEvent::PositionTruth(
+        PositionTruthEvent::BlindRecovery(BlindRecoveryState::authority_free(
+            BlindRecoveryReason::CacheProbeFailed,
+        )),
+    ));
+
+    strategy.reconcile_blind_recovery_from_fresh_probe();
+
+    assert!(matches!(
+        strategy.exposure.state(),
+        ExposureState::UnsupportedObserved(UnsupportedObservedState {
+            reason: UnsupportedObservedReason::BootstrappedUnsupportedContract,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn typed_blind_recovery_rejects_an_invalid_position_side() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let mut invalid = configured_position_probe(&mut strategy, instrument_id);
+    invalid.side = PositionSide::Flat;
+    let classified =
+        strategy.bootstrapped_exposure_for(invalid, strategy.context.execution_venue());
+    strategy.exposure.reduce(ExposureEvent::PositionTruth(
+        PositionTruthEvent::BlindRecovery(BlindRecoveryState::authority_free(
+            BlindRecoveryReason::CacheProbeFailed,
+        )),
+    ));
+    let grant = strategy
+        .exposure
+        .request_recovery_operation(strategy.exposure.generation())
+        .expect("blind recovery should grant only the typed recovery operation");
+    let _ = grant.commit(FreshCanonicalPositionProjection::ExactlyOne(Box::new(
+        classified,
+    )));
+
+    assert!(matches!(
+        strategy.exposure.state(),
+        ExposureState::BlindRecovery(BlindRecoveryState {
+            reason: BlindRecoveryReason::InvalidBootstrappedPosition { .. },
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -4080,6 +4153,83 @@ fn stale_exit_route_return_cannot_overwrite_a_synchronous_terminal_transition() 
 }
 
 #[test]
+fn synchronous_partial_fill_working_callback_retires_the_exit_route_arm() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-EXIT-PARTIAL-CALLBACK");
+    let client_order_id = ClientOrderId::from("EXIT-PARTIAL-CALLBACK");
+    let position = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(10.0, 2),
+        0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
+    );
+    set_exit_pending(
+        &mut strategy,
+        position,
+        client_order_id,
+        ManagedPositionOrigin::StrategyEntry,
+    );
+    let exit = strategy
+        .exposure
+        .exit_pending_snapshot()
+        .expect("fixture should create exit authority");
+    strategy
+        .exposure
+        .reduce(ExposureEvent::ExitLifecycle(ExitLifecycleEvent::Residual(
+            exit.position.clone(),
+        )));
+    let grant = strategy
+        .exposure
+        .request_exit_operation(strategy.exposure.generation())
+        .expect("managed exposure should grant one exit operation");
+    let generation = grant.generation();
+    let mut participant = grant
+        .bind(ExitAttemptingState {
+            generation,
+            managed: exit.position,
+            pending_exit: exit.pending_exit,
+            authority: exit.authority,
+        })
+        .expect("exit grant should bind its attempt");
+    participant.consume_at_pre_sink().unwrap();
+    participant.mark_sink_invoked(1_500).unwrap();
+
+    let trade_id = TradeId::from("TRADE-EXIT-PARTIAL-CALLBACK");
+    let mut partial_fill = order_filled_event(
+        client_order_id,
+        instrument_id,
+        Some(position_id),
+        OrderSide::Sell,
+    );
+    partial_fill.last_qty = Quantity::new(3.0, 2);
+    partial_fill.trade_id = trade_id;
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::Filled(partial_fill),
+    );
+    strategy.reconcile_exit_order_lifecycle(ExitOrderLifecycleObservationInput {
+        client_order_id,
+        instrument_id,
+        transition: OrderLifecycleTransition::OrderFilled,
+        source: ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
+        raw_reason_text: None,
+        ts_event_ns: 2_000,
+        authority: ExitOrderAuthorityObservation::Lifecycle,
+    });
+
+    participant.complete(BoltV3RouteAttemptCompletion::Submitted);
+    let retained = strategy
+        .exposure
+        .exit_pending_snapshot()
+        .expect("the working callback should own the submitted exit state");
+    assert!(retained.authority.observed_fill_ids().contains(&trade_id));
+}
+
+#[test]
 fn overlapping_exit_operation_requests_mint_only_one_grant() {
     let evidence = recording_decision_evidence();
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
@@ -4163,7 +4313,9 @@ fn overlapping_exit_operation_requests_mint_only_one_grant() {
     participant
         .consume_at_pre_sink()
         .expect("the sole minted exit grant should reach pre-sink");
-    participant.mark_sink_invoked();
+    participant
+        .mark_sink_invoked(0)
+        .expect("test participant should reach the sink");
     participant.complete(BoltV3RouteAttemptCompletion::Submitted);
     assert!(matches!(
         strategy.exposure.state(),
@@ -4186,11 +4338,16 @@ fn same_episode_refresh_preserves_fingerprint_and_close_floor() {
         PositionSide::Long,
     );
     let episode = position.episode.clone();
-    strategy.exposure.reduce(ExposureEvent::PositionClosed(
-        PositionClosedEvent::Observed {
-            episode: episode.clone(),
-        },
-    ));
+    reduce_position_close_with_projection(
+        &strategy,
+        episode.clone(),
+        FreshCanonicalPositionProjection::ExactlyOne(Box::new(ClassifiedOpenPosition::Managed(
+            strategy
+                .exposure
+                .managed_position_context()
+                .expect("fixture position should be managed"),
+        ))),
+    );
     let mut refreshed = strategy
         .exposure
         .managed_position_context()
@@ -4250,16 +4407,18 @@ fn delayed_close_for_reused_position_id_cannot_release_new_episode() {
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(episode_b.clone())),
         )));
-    strategy.exposure.reduce(ExposureEvent::PositionClosed(
-        PositionClosedEvent::Observed {
-            episode: PositionEpisodeFingerprint {
-                instrument_id,
-                position_id,
-                opening_order_id: ClientOrderId::from(format!("ENTRY-{position_id}").as_str()),
-                ts_opened_ns: 1_000,
-            },
+    reduce_position_close_with_projection(
+        &strategy,
+        PositionEpisodeFingerprint {
+            instrument_id,
+            position_id,
+            opening_order_id: ClientOrderId::from(format!("ENTRY-{position_id}").as_str()),
+            ts_opened_ns: 1_000,
         },
-    ));
+        FreshCanonicalPositionProjection::ExactlyOne(Box::new(ClassifiedOpenPosition::Managed(
+            episode_b.clone(),
+        ))),
+    );
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
@@ -4312,11 +4471,11 @@ fn replacement_conflict_requires_retained_episode_close_and_matching_candidate()
         strategy.exposure.state(),
         ExposureState::ReplacementConflict(_)
     ));
-    strategy.exposure.reduce(ExposureEvent::PositionClosed(
-        PositionClosedEvent::Observed {
-            episode: position_a.episode,
-        },
-    ));
+    reduce_position_close_with_projection(
+        &strategy,
+        position_a.episode,
+        FreshCanonicalPositionProjection::None,
+    );
     assert!(matches!(strategy.exposure.state(), ExposureState::Flat));
     strategy
         .exposure
@@ -4359,27 +4518,37 @@ fn replacement_conflict_never_adopts_a_candidate_that_is_no_longer_canonical() {
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(Box::new(candidate_b)),
+            CanonicalPositionProjection::ExactlyOne(Box::new(candidate_b.clone())),
         )));
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(candidate_c.clone())),
         )));
-    strategy.exposure.reduce(ExposureEvent::PositionClosed(
-        PositionClosedEvent::Observed {
-            episode: position_a.episode,
-        },
-    ));
+    let retained_episode = position_a.episode.clone();
+    reduce_position_close_with_projection(
+        &strategy,
+        retained_episode.clone(),
+        FreshCanonicalPositionProjection::ExactlyOne(Box::new(ClassifiedOpenPosition::Managed(
+            candidate_c.clone(),
+        ))),
+    );
     assert!(matches!(
         strategy.exposure.state(),
-        ExposureState::Managed(context) if context.episode == candidate_c.episode
+        ExposureState::ReplacementConflict(_)
     ));
-
+    reduce_position_close_with_projection(
+        &strategy,
+        retained_episode,
+        FreshCanonicalPositionProjection::ExactlyOne(Box::new(ClassifiedOpenPosition::Managed(
+            candidate_b.clone(),
+        ))),
+    );
     let retained = strategy
         .exposure
         .managed_position_context()
-        .expect("replacement C should remain managed");
+        .expect("the original candidate should be adopted by the atomic conjunction");
+    assert_eq!(retained.episode, candidate_b.episode);
     let mut stale_candidate = retained.clone();
     stale_candidate.position_id = PositionId::from("P-REPLACEMENT-DISAPPEARING-D");
     stale_candidate.episode.position_id = stale_candidate.position_id;
@@ -4399,6 +4568,310 @@ fn replacement_conflict_never_adopts_a_candidate_that_is_no_longer_canonical() {
     assert!(matches!(
         strategy.exposure.state(),
         ExposureState::Managed(context) if context.episode == retained.episode
+    ));
+}
+
+#[test]
+fn replacement_conflict_keeps_the_original_candidate_across_unrelated_exactly_one() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-REPLACEMENT-STABLE-RETAINED"),
+        Quantity::new(10.0, 2),
+        0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
+    );
+    let mut candidate_b = strategy
+        .exposure
+        .managed_position_context()
+        .expect("fixture position should be managed");
+    candidate_b.position_id = PositionId::from("P-REPLACEMENT-STABLE-CANDIDATE");
+    candidate_b.episode.position_id = candidate_b.position_id;
+    candidate_b.episode.opening_order_id =
+        ClientOrderId::from("ENTRY-REPLACEMENT-STABLE-CANDIDATE");
+    candidate_b.episode.ts_opened_ns = 2_000;
+    let mut unrelated_c = candidate_b.clone();
+    unrelated_c.position_id = PositionId::from("P-REPLACEMENT-UNRELATED");
+    unrelated_c.episode.position_id = unrelated_c.position_id;
+    unrelated_c.episode.opening_order_id = ClientOrderId::from("ENTRY-REPLACEMENT-UNRELATED");
+    unrelated_c.episode.ts_opened_ns = 3_000;
+
+    strategy
+        .exposure
+        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+            CanonicalPositionProjection::ExactlyOne(Box::new(candidate_b.clone())),
+        )));
+    strategy
+        .exposure
+        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+            CanonicalPositionProjection::ExactlyOne(Box::new(unrelated_c)),
+        )));
+
+    assert!(matches!(
+        strategy.exposure.state(),
+        ExposureState::ReplacementConflict(conflict)
+            if conflict.candidate.episode == candidate_b.episode
+    ));
+}
+
+#[test]
+fn stale_close_projection_cannot_discharge_a_replacement_conflict() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let retained = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-REPLACEMENT-STALE-GENERATION-A"),
+        Quantity::new(10.0, 2),
+        0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
+    );
+    let mut candidate = strategy
+        .exposure
+        .managed_position_context()
+        .expect("fixture position should be managed");
+    candidate.position_id = PositionId::from("P-REPLACEMENT-STALE-GENERATION-B");
+    candidate.episode.position_id = candidate.position_id;
+    candidate.episode.opening_order_id =
+        ClientOrderId::from("ENTRY-REPLACEMENT-STALE-GENERATION-B");
+    candidate.episode.ts_opened_ns = 2_000;
+    strategy
+        .exposure
+        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+            CanonicalPositionProjection::ExactlyOne(Box::new(candidate.clone())),
+        )));
+    let stale_generation = strategy.exposure.generation();
+    strategy
+        .exposure
+        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+            CanonicalPositionProjection::None,
+        )));
+
+    strategy.exposure.reduce(ExposureEvent::PositionClosed(
+        PositionClosedEvent::ObservedWithFreshProjection {
+            expected_generation: stale_generation,
+            episode: retained.episode,
+            projection: FreshCanonicalPositionProjection::ExactlyOne(Box::new(
+                ClassifiedOpenPosition::Managed(candidate),
+            )),
+        },
+    ));
+
+    assert!(matches!(
+        strategy.exposure.state(),
+        ExposureState::ReplacementConflict(_)
+    ));
+    assert!(strategy.exposure.replacement_adoption().is_none());
+}
+
+#[test]
+fn occupied_replacement_conflict_recovers_after_multiple_with_close_and_matching_candidate() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let retained = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-REPLACEMENT-MULTIPLE-RETAINED"),
+        Quantity::new(10.0, 2),
+        0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
+    );
+    let mut candidate = strategy
+        .exposure
+        .managed_position_context()
+        .expect("fixture position should be managed");
+    candidate.position_id = PositionId::from("P-REPLACEMENT-MULTIPLE-CANDIDATE");
+    candidate.episode.position_id = candidate.position_id;
+    candidate.episode.opening_order_id =
+        ClientOrderId::from("ENTRY-REPLACEMENT-MULTIPLE-CANDIDATE");
+    candidate.episode.ts_opened_ns = 2_000;
+
+    strategy
+        .exposure
+        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+            CanonicalPositionProjection::ExactlyOne(Box::new(candidate.clone())),
+        )));
+    strategy
+        .exposure
+        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+            CanonicalPositionProjection::Multiple {
+                count: 2,
+                recovery: BlindRecoveryState::authority_free(
+                    BlindRecoveryReason::MultipleOpenPositions { count: 2 },
+                ),
+            },
+        )));
+    reduce_position_close_with_projection(
+        &strategy,
+        retained.episode,
+        FreshCanonicalPositionProjection::Multiple { count: 2 },
+    );
+    strategy.exposure.reduce(ExposureEvent::PositionTruth(
+        PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::ExactlyOne(
+            Box::new(ClassifiedOpenPosition::Managed(candidate.clone())),
+        )),
+    ));
+
+    assert!(matches!(
+        strategy.exposure.state(),
+        ExposureState::Managed(managed) if managed.episode == candidate.episode
+    ));
+}
+
+#[test]
+fn occupied_replacement_conflict_recovers_after_probe_failure_with_close_and_none() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let retained = materialize_configured_position(
+        &mut strategy,
+        instrument_id,
+        PositionId::from("P-REPLACEMENT-PROBE-RETAINED"),
+        Quantity::new(10.0, 2),
+        0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
+    );
+    let mut candidate = strategy
+        .exposure
+        .managed_position_context()
+        .expect("fixture position should be managed");
+    candidate.position_id = PositionId::from("P-REPLACEMENT-PROBE-CANDIDATE");
+    candidate.episode.position_id = candidate.position_id;
+    candidate.episode.opening_order_id = ClientOrderId::from("ENTRY-REPLACEMENT-PROBE-CANDIDATE");
+    candidate.episode.ts_opened_ns = 2_000;
+
+    strategy
+        .exposure
+        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+            CanonicalPositionProjection::ExactlyOne(Box::new(candidate)),
+        )));
+    strategy
+        .exposure
+        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+            CanonicalPositionProjection::None,
+        )));
+    strategy
+        .exposure
+        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+            CanonicalPositionProjection::ProbeFailed {
+                diagnostic: "replacement probe failed".to_string(),
+                recovery: BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
+            },
+        )));
+    reduce_position_close_with_projection(
+        &strategy,
+        retained.episode,
+        FreshCanonicalPositionProjection::ProbeFailed {
+            diagnostic: "replacement probe failed after close".to_string(),
+        },
+    );
+    strategy.exposure.reduce(ExposureEvent::PositionTruth(
+        PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::None),
+    ));
+
+    assert!(matches!(strategy.exposure.state(), ExposureState::Flat));
+}
+
+#[test]
+fn unsupported_position_cannot_displace_a_working_entry_before_terminal_proof() {
+    let mut strategy = ready_to_trade_strategy();
+    let pending = pending_entry_state(
+        &mut strategy,
+        ClientOrderId::from("ENTRY-UNSUPPORTED-RETAINED-A"),
+    );
+    let instrument_id = pending.instrument_id;
+    set_pending_entry(&mut strategy, pending.clone());
+    let unsupported_episode = PositionEpisodeFingerprint {
+        instrument_id,
+        position_id: PositionId::from("P-UNSUPPORTED-DIVERGENT-B"),
+        opening_order_id: ClientOrderId::from("ENTRY-UNSUPPORTED-DIVERGENT-B"),
+        ts_opened_ns: 2_000,
+    };
+    let unsupported = UnsupportedObservedState {
+        context: managed_position_context(
+            OpenPositionState {
+                episode: unsupported_episode.clone(),
+                lifecycle: BoltV3PositionMarketLifecycle::missing(),
+                instrument_id,
+                position_id: unsupported_episode.position_id,
+                entry_order_side: OrderSide::Sell,
+                side: PositionSide::Long,
+                quantity: Quantity::new(1.0, 2),
+                avg_px_open: 0.55,
+                book: pending.book.clone(),
+            },
+            ManagedPositionOrigin::RecoveryBootstrap,
+            None,
+        ),
+        reason: UnsupportedObservedReason::LiveUnsupportedContract,
+    };
+
+    strategy.exposure.reduce(ExposureEvent::PositionTruth(
+        PositionTruthEvent::Unsupported(unsupported),
+    ));
+    reduce_position_close_with_projection(
+        &strategy,
+        unsupported_episode,
+        FreshCanonicalPositionProjection::None,
+    );
+    strategy
+        .exposure
+        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+            CanonicalPositionProjection::None,
+        )));
+
+    assert!(matches!(
+        strategy.exposure.pending_entry(),
+        Some(retained) if retained.client_order_id == pending.client_order_id
+    ));
+    assert_eq!(
+        strategy
+            .exposure
+            .request_entry_operation(strategy.exposure.generation())
+            .expect_err("retained entry A must block entry C")
+            .reason,
+        ExposureOperationBlockedReason::BlindRecoveryOccupied
+    );
+
+    let managed_a = managed_position_context(
+        OpenPositionState {
+            episode: PositionEpisodeFingerprint {
+                instrument_id,
+                position_id: PositionId::from("P-UNSUPPORTED-LATE-FILL-A"),
+                opening_order_id: pending.client_order_id,
+                ts_opened_ns: 3_000,
+            },
+            lifecycle: pending.lifecycle.clone(),
+            instrument_id,
+            position_id: PositionId::from("P-UNSUPPORTED-LATE-FILL-A"),
+            entry_order_side: OrderSide::Buy,
+            side: PositionSide::Long,
+            quantity: Quantity::new(1.0, 2),
+            avg_px_open: 0.45,
+            book: pending.book,
+        },
+        ManagedPositionOrigin::StrategyEntry,
+        None,
+    );
+    strategy.exposure.reduce(ExposureEvent::PositionTruth(
+        PositionTruthEvent::EntryTerminalMaterialization {
+            client_order_id: pending.client_order_id,
+            managed: managed_a.clone(),
+        },
+    ));
+    strategy.exposure.reduce(ExposureEvent::PositionTruth(
+        PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::ExactlyOne(
+            Box::new(ClassifiedOpenPosition::Managed(managed_a.clone())),
+        )),
+    ));
+    assert!(matches!(
+        strategy.exposure.state(),
+        ExposureState::Managed(managed) if managed.episode == managed_a.episode
     ));
 }
 
@@ -4609,7 +5082,7 @@ fn blind_recovery_raw_truth_never_clears_quarantine_but_fresh_probe_can() {
         ExposureState::BlindRecovery(_)
     ));
     strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthorizedRecovery(CanonicalPositionProjection::None),
+        PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::None),
     ));
     assert!(matches!(strategy.exposure.state(), ExposureState::Flat));
 }
@@ -4636,7 +5109,7 @@ fn occupied_source_blind_recovery_rejects_transient_fresh_none() {
             },
         )));
     strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthorizedRecovery(CanonicalPositionProjection::None),
+        PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::None),
     ));
     assert!(matches!(
         strategy.exposure.state(),
@@ -4701,6 +5174,10 @@ fn every_blind_recovery_reason_rejects_raw_truth_and_uses_its_authorized_class()
             },
             episode.clone(),
         ),
+        BlindRecoveryState::with_recorded_episode(
+            BlindRecoveryReason::DivergentUnsupportedPosition,
+            episode.clone(),
+        ),
         BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
         BlindRecoveryState::authority_free(BlindRecoveryReason::MultipleOpenPositions { count: 2 }),
         BlindRecoveryState::authority_free(BlindRecoveryReason::SettlementEvidenceRecoveryFailed),
@@ -4732,10 +5209,14 @@ fn every_blind_recovery_reason_rejects_raw_truth_and_uses_its_authorized_class()
         let authorized_projection = match recovery.provenance {
             BlindRecoveryProvenance::IdentityBearing { .. }
             | BlindRecoveryProvenance::RestartAdoption { .. } => {
-                CanonicalPositionProjection::ExactlyOne(Box::new(managed.clone()))
+                FreshCanonicalPositionProjection::ExactlyOne(Box::new(
+                    ClassifiedOpenPosition::Managed(managed.clone()),
+                ))
             }
             BlindRecoveryProvenance::ProbeClass { .. }
-            | BlindRecoveryProvenance::ForeignVenue { .. } => CanonicalPositionProjection::None,
+            | BlindRecoveryProvenance::ForeignVenue { .. } => {
+                FreshCanonicalPositionProjection::None
+            }
         };
         strategy.exposure.reduce(ExposureEvent::PositionTruth(
             PositionTruthEvent::BlindRecovery(recovery),
@@ -4796,7 +5277,7 @@ fn occupied_blind_recovery_accumulates_matching_entry_and_exit_terminal_proofs()
         }) if matches!(**retained, ExposureState::Flat)
     ));
     entry_strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthorizedRecovery(CanonicalPositionProjection::None),
+        PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::None),
     ));
     assert!(matches!(
         entry_strategy.exposure.state(),
@@ -4852,7 +5333,7 @@ fn occupied_blind_recovery_accumulates_matching_entry_and_exit_terminal_proofs()
         ExposureState::BlindRecovery(_)
     ));
     exit_strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthorizedRecovery(CanonicalPositionProjection::None),
+        PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::None),
     ));
     assert!(matches!(
         exit_strategy.exposure.state(),
@@ -4896,7 +5377,9 @@ fn entry_route_grant_unwinds_each_phase_and_sink_unknown_discharge_is_typed() {
     participant
         .consume_at_pre_sink()
         .expect("entry participant should consume successfully");
-    participant.mark_sink_invoked();
+    participant
+        .mark_sink_invoked(0)
+        .expect("test participant should reach the sink");
     participant.complete(BoltV3RouteAttemptCompletion::Submitted);
     assert!(matches!(
         strategy.exposure.state(),
@@ -4916,7 +5399,9 @@ fn entry_route_grant_unwinds_each_phase_and_sink_unknown_discharge_is_typed() {
     participant
         .consume_at_pre_sink()
         .expect("entry participant should consume");
-    participant.mark_sink_invoked();
+    participant
+        .mark_sink_invoked(0)
+        .expect("test participant should reach the sink");
     drop(participant);
     assert!(matches!(
         strategy.exposure.state(),
@@ -4959,7 +5444,9 @@ fn sink_unknown_requires_proof_and_discharges_terminal_and_filled_outcomes() {
     participant
         .consume_at_pre_sink()
         .expect("entry participant should consume");
-    participant.mark_sink_invoked();
+    participant
+        .mark_sink_invoked(0)
+        .expect("test participant should reach the sink");
     drop(participant);
     assert!(matches!(
         terminal_strategy.exposure.state(),
@@ -4995,7 +5482,9 @@ fn sink_unknown_requires_proof_and_discharges_terminal_and_filled_outcomes() {
     participant
         .consume_at_pre_sink()
         .expect("entry participant should consume");
-    participant.mark_sink_invoked();
+    participant
+        .mark_sink_invoked(0)
+        .expect("test participant should reach the sink");
     drop(participant);
     let position_id = PositionId::from("P-SINK-UNKNOWN-FILLED");
     let filled = managed_position_context(
@@ -5040,7 +5529,9 @@ fn sink_unknown_requires_proof_and_discharges_terminal_and_filled_outcomes() {
     participant
         .consume_at_pre_sink()
         .expect("entry participant should consume");
-    participant.mark_sink_invoked();
+    participant
+        .mark_sink_invoked(0)
+        .expect("test participant should reach the sink");
     drop(participant);
     quarantined_strategy
         .exposure
@@ -5067,7 +5558,7 @@ fn sink_unknown_requires_proof_and_discharges_terminal_and_filled_outcomes() {
     quarantined_strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(
-            PositionTruthEvent::AuthorizedRecovery(CanonicalPositionProjection::None),
+            PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::None),
         ));
     assert!(matches!(
         quarantined_strategy.exposure.state(),
@@ -5095,7 +5586,9 @@ fn sink_unknown_denial_proof_discharges_through_production_reconciliation_with_t
     participant
         .consume_at_pre_sink()
         .expect("entry participant should consume");
-    participant.mark_sink_invoked();
+    participant
+        .mark_sink_invoked(0)
+        .expect("test participant should reach the sink");
     drop(participant);
 
     strategy.reconcile_operation_sink_unknown_on_timer();
@@ -5453,7 +5946,9 @@ fn exit_route_grant_unwinds_pre_sink_and_enters_exit_tagged_sink_unknown() {
     participant
         .consume_at_pre_sink()
         .expect("exit participant should consume successfully");
-    participant.mark_sink_invoked();
+    participant
+        .mark_sink_invoked(0)
+        .expect("test participant should reach the sink");
     participant.complete(BoltV3RouteAttemptCompletion::Submitted);
     assert!(matches!(
         strategy.exposure.state(),
@@ -5479,7 +5974,9 @@ fn exit_route_grant_unwinds_pre_sink_and_enters_exit_tagged_sink_unknown() {
     participant
         .consume_at_pre_sink()
         .expect("exit participant should consume");
-    participant.mark_sink_invoked();
+    participant
+        .mark_sink_invoked(0)
+        .expect("test participant should reach the sink");
     drop(participant);
     assert!(matches!(
         strategy.exposure.state(),
@@ -5551,7 +6048,9 @@ fn exit_sink_unknown_terminal_callbacks_use_sealed_fill_authority_before_remanag
         participant
             .consume_at_pre_sink()
             .expect("exit attempt should consume");
-        participant.mark_sink_invoked();
+        participant
+            .mark_sink_invoked(0)
+            .expect("test participant should reach the sink");
         drop(participant);
         assert!(matches!(
             strategy.exposure.state(),
@@ -5681,9 +6180,18 @@ fn bootstrap_and_correction_grants_commit_atomically_and_unwind_exactly() {
         .exposure
         .request_correction_operation(generation)
         .expect("correction unwind should restore exact generation");
+    let close_generation = strategy.exposure.generation();
+    let close_projection = strategy
+        .exposure
+        .managed_position_context()
+        .expect("provisional correction retains managed authority");
     correction.commit(ExposureEvent::PositionClosed(
-        PositionClosedEvent::Observed {
+        PositionClosedEvent::ObservedWithFreshProjection {
+            expected_generation: close_generation,
             episode: position.episode,
+            projection: FreshCanonicalPositionProjection::ExactlyOne(Box::new(
+                ClassifiedOpenPosition::Managed(close_projection),
+            )),
         },
     ));
     assert!(
@@ -5879,6 +6387,77 @@ fn recovery_hold_rejects_exit_with_exact_typed_cause_while_managed_control_grant
             .reason,
         ExposureOperationBlockedReason::RecoveryHoldOccupied
     );
+}
+
+#[test]
+fn book_delta_trigger_records_runtime_and_startup_recovery_holds_without_nt_projection() {
+    fn assert_trigger(cause: BoltV3RecoveredExitCause, suffix: &str) {
+        let evidence = recording_decision_evidence();
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            evidence.clone(),
+            Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+            ),
+        );
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            PositionId::from(format!("P-TRIGGER-HOLD-{suffix}").as_str()),
+            Quantity::new(10.0, 2),
+            0.45,
+            OrderSide::Buy,
+            PositionSide::Long,
+        );
+        let client_order_id = ClientOrderId::from(format!("EXIT-TRIGGER-HOLD-{suffix}").as_str());
+        set_exit_pending(
+            &mut strategy,
+            position,
+            client_order_id,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+        let exit = strategy
+            .exposure
+            .exit_pending_snapshot()
+            .expect("fixture should retain exit authority");
+        register_test_strategy(&mut strategy).borrow_mut().reset();
+        strategy.enter_exit_authority_recovery_hold(
+            exit.position,
+            exit.pending_exit,
+            ExitAuthorityRecoveryPlan::Reconstruct {
+                cause,
+                client_order_id,
+            },
+            1_000,
+        );
+        assert!(strategy.managed_position().is_none());
+
+        strategy
+            .on_book_deltas(&book_deltas(
+                instrument_id,
+                &[(BookAction::Update, OrderSide::Sell, 0.44, 500.0)],
+            ))
+            .expect("book-delta trigger should contain the typed exit hold");
+
+        assert!(
+            evidence
+                .recorded_facts()
+                .expect("book-delta hold evidence should decode")
+                .into_iter()
+                .any(|fact| matches!(
+                    fact,
+                    CurrentFact::ExitHoldDecision(record)
+                        if record.blocked_reason
+                            == Some(EvidenceExitBlockedReason::RecoveryHoldOccupied)
+                            && record.outcome == ExitHoldOutcome::Blocked
+                            && record.details.exit_trigger_source
+                                == EvidenceExitTriggerSource::BookDelta
+                ))
+        );
+    }
+
+    assert_trigger(BoltV3RecoveredExitCause::FillVoidReopen, "RUNTIME");
+    assert_trigger(BoltV3RecoveredExitCause::StartupAdoption, "STARTUP");
 }
 
 #[test]
@@ -6509,11 +7088,13 @@ fn authenticated_opening_fill_void_rebases_a_continuous_episode_and_refloors_clo
     strategy.exposure.reduce(ExposureEvent::PositionTruth(
         PositionTruthEvent::RefreshContext(before.clone()),
     ));
-    strategy.exposure.reduce(ExposureEvent::PositionClosed(
-        PositionClosedEvent::Observed {
-            episode: before.episode.clone(),
-        },
-    ));
+    reduce_position_close_with_projection(
+        &strategy,
+        before.episode.clone(),
+        FreshCanonicalPositionProjection::ExactlyOne(Box::new(ClassifiedOpenPosition::Managed(
+            before.clone(),
+        ))),
+    );
 
     let mut rebased = before.clone();
     rebased.episode.opening_order_id = ClientOrderId::from("ENTRY-REBASE-SURVIVOR");
@@ -6525,7 +7106,6 @@ fn authenticated_opening_fill_void_rebases_a_continuous_episode_and_refloors_clo
             authenticated_order_id: before.episode.opening_order_id,
             authenticated_fill_id: opening_fill_id,
             rebased: Some(rebased.clone()),
-            replay_segment_continuous: true,
         },
     ));
 
@@ -6545,6 +7125,153 @@ fn authenticated_opening_fill_void_rebases_a_continuous_episode_and_refloors_clo
         strategy.exposure.state(),
         ExposureState::Managed(_)
     ));
+}
+
+fn split_flip_fill_void_fixture(
+    voided_qty: Quantity,
+) -> (
+    BinaryOracleEdgeTaker,
+    PositionEpisodeFingerprint,
+    PositionEpisodeFingerprint,
+) {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let position_id = PositionId::from("P-SPLIT-FLIP-VOID");
+    register_test_strategy_with_instrument(&mut strategy, &instrument_id);
+    let cache = register_test_strategy(&mut strategy);
+    let instrument = cache
+        .borrow()
+        .instrument(&instrument_id)
+        .cloned()
+        .expect("selected instrument should be cached");
+
+    let mut opening = order_filled_event(
+        ClientOrderId::from("O-SPLIT-FLIP-OPEN"),
+        instrument_id,
+        Some(position_id),
+        OrderSide::Sell,
+    );
+    opening.trade_id = TradeId::from("T-SPLIT-FLIP-OPEN");
+    opening.last_qty = Quantity::new(10.0, 2);
+    opening.ts_event = nautilus_core::UnixNanos::from(1_000_u64);
+    let mut position = nautilus_model::position::Position::new(&instrument, opening);
+
+    let mut closing = order_filled_event(
+        ClientOrderId::from("O-SPLIT-FLIP"),
+        instrument_id,
+        Some(position_id),
+        OrderSide::Buy,
+    );
+    closing.trade_id = TradeId::from("T-SPLIT-FLIP");
+    closing.last_qty = Quantity::new(10.0, 2);
+    closing.ts_event = nautilus_core::UnixNanos::from(2_000_u64);
+    let mut reopening = closing.clone();
+    reopening.last_qty = Quantity::new(5.0, 2);
+    reopening.event_id = nautilus_core::UUID4::new();
+    reopening.causation_id = Some(closing.event_id);
+    position.apply(&closing);
+    position.apply(&reopening);
+    assert_eq!(position.side, PositionSide::Long);
+    assert_eq!(position.opening_order_id, reopening.client_order_id);
+    cache
+        .borrow_mut()
+        .add_position(&position, nautilus_model::enums::OmsType::Netting)
+        .expect("split-flip position should enter the authoritative cache");
+
+    assert!(strategy.materialize_position_from_event(
+        PositionMaterializationSpec {
+            instrument_id,
+            position_id,
+            entry_order_side: position.entry,
+            side: position.side,
+            quantity: position.quantity,
+            avg_px_open: position.avg_px_open,
+            opening_order_id: position.opening_order_id,
+            ts_opened_ns: position.ts_opened.as_u64(),
+        },
+        position.ts_last.as_u64(),
+    ));
+    strategy.sync_exposure_context_from_active();
+    let context_b = strategy
+        .exposure
+        .managed_position_context()
+        .expect("reopened split fragment should materialize episode B");
+    let episode_b = context_b.episode.clone();
+    let governed = managed_position_snapshot(&strategy).expect("episode B should be governed");
+    set_exit_pending(
+        &mut strategy,
+        governed,
+        ClientOrderId::from("EXIT-SPLIT-FLIP-B"),
+        ManagedPositionOrigin::RecoveryBootstrap,
+    );
+    strategy.exposure.reduce(ExposureEvent::PositionTruth(
+        PositionTruthEvent::RefreshContext(context_b),
+    ));
+    cache
+        .borrow_mut()
+        .update_position(&position)
+        .expect("split replay truth should replace the generic exit fixture position");
+
+    let correction = order_fill_voided_event(
+        closing.client_order_id,
+        instrument_id,
+        position_id,
+        closing.trade_id,
+        voided_qty,
+        3_000,
+        closing.order_side,
+    );
+    position
+        .apply_fill_void(correction.clone(), voided_qty, correction.commission_voided)
+        .expect("pinned NT replay should accept the split-flip correction");
+    cache
+        .borrow_mut()
+        .update_position(&position)
+        .expect("corrected split-flip position should replace the cache snapshot");
+    assert!(strategy.apply_authenticated_episode_rebase_for_fill_void(&correction));
+    let corrected_episode = PositionEpisodeFingerprint {
+        instrument_id,
+        position_id,
+        opening_order_id: position.opening_order_id,
+        ts_opened_ns: position.ts_opened.as_u64(),
+    };
+    (strategy, episode_b, corrected_episode)
+}
+
+#[test]
+fn pinned_nt_split_flip_void_cannot_transfer_exit_authority_across_flat_segment() {
+    let (strategy, episode_b, corrected_episode_a) =
+        split_flip_fill_void_fixture(Quantity::new(12.0, 2));
+
+    assert_ne!(episode_b, corrected_episode_a);
+    assert!(strategy.exposure.exit_pending_snapshot().is_none());
+    assert!(matches!(
+        strategy.exposure.state(),
+        ExposureState::Managed(current) if current.episode == corrected_episode_a
+    ));
+    let adoption = strategy
+        .exposure
+        .replacement_adoption()
+        .expect("flat-crossing replay must adopt the later authoritative segment explicitly");
+    assert_eq!(adoption.retained_episode, episode_b);
+    assert_eq!(adoption.adopted.episode, corrected_episode_a);
+    assert_eq!(
+        adoption.cause,
+        ReplacementAdoptionCause::AuthenticatedCorrection
+    );
+}
+
+#[test]
+fn pinned_nt_partial_split_fragment_void_preserves_same_segment_exit_authority() {
+    let (strategy, episode_b, corrected_episode) =
+        split_flip_fill_void_fixture(Quantity::new(2.0, 2));
+
+    assert_eq!(episode_b, corrected_episode);
+    assert!(matches!(
+        strategy.exposure.exit_pending_snapshot(),
+        Some(exit) if exit.episode() == episode_b
+    ));
+    assert!(strategy.exposure.replacement_adoption().is_none());
 }
 
 #[test]
@@ -6576,7 +7303,6 @@ fn authenticated_sole_opening_fill_void_uses_correction_specific_release_proof()
             authenticated_order_id: before.episode.opening_order_id,
             authenticated_fill_id: TradeId::from("TRADE-NOT-IN-EPISODE"),
             rebased: None,
-            replay_segment_continuous: false,
         },
     ));
     assert!(matches!(
@@ -6590,7 +7316,6 @@ fn authenticated_sole_opening_fill_void_uses_correction_specific_release_proof()
             authenticated_order_id: before.episode.opening_order_id,
             authenticated_fill_id: opening_fill_id,
             rebased: None,
-            replay_segment_continuous: false,
         },
     ));
     assert!(matches!(strategy.exposure.state(), ExposureState::Flat));
@@ -6640,7 +7365,6 @@ fn authenticated_rebase_updates_the_sealed_exit_authority_and_position_atomicall
             authenticated_order_id: before.episode.opening_order_id,
             authenticated_fill_id: opening_fill_id,
             rebased: Some(rebased.clone()),
-            replay_segment_continuous: true,
         },
     ));
     let exit = strategy
@@ -6692,6 +7416,7 @@ fn correction_closing_episode_a_never_rebases_reopened_episode_b_with_the_same_p
     context_b.episode.opening_order_id = ClientOrderId::from("ENTRY-REBASE-EPISODE-B");
     context_b.episode.ts_opened_ns = 4_000;
     context_b.episode_fill_ids = BTreeSet::from([TradeId::from("TRADE-REBASE-B")]);
+    context_b.replay_segment.clear();
     strategy
         .exposure
         .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
@@ -6703,7 +7428,6 @@ fn correction_closing_episode_a_never_rebases_reopened_episode_b_with_the_same_p
             authenticated_order_id: context_a.episode.opening_order_id,
             authenticated_fill_id: opening_fill_a,
             rebased: Some(context_b.clone()),
-            replay_segment_continuous: false,
         },
     ));
 

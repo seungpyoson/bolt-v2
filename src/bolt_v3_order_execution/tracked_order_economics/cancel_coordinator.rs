@@ -79,6 +79,7 @@ enum CancelEvent<'a> {
         now_ns: u64,
         retry_timeout_ns: u64,
     },
+    RequoteReservationDenied,
 }
 
 #[derive(Clone, Debug)]
@@ -95,6 +96,7 @@ enum CancelEffect {
     ReservationRequired {
         operation: CancelOperationKind,
     },
+    RetireIntent,
 }
 
 enum CancelOperationCompletion<'a> {
@@ -420,6 +422,7 @@ impl RestingOrderCancelRecord {
                 self.routing_state = CancelRoutingState::Backoff { not_before_ns };
                 Ok(CancelEffect::None)
             }
+            CancelEvent::RequoteReservationDenied => Ok(CancelEffect::RetireIntent),
         }
     }
 
@@ -763,6 +766,9 @@ impl BoltV3OrderEconomicsHandle {
             CancelEffect::ReservationRequired { .. } => {
                 anyhow::bail!("callback reconciliation requested a REST reservation")
             }
+            CancelEffect::RetireIntent => {
+                anyhow::bail!("callback reconciliation retired a requote intent")
+            }
         }
         Ok(())
     }
@@ -804,13 +810,14 @@ impl BoltV3OrderEconomicsHandle {
                 {
                     let generation = self.next_cancel_operation_generation(client_order_id)?;
                     if participant.arm_at_generation(generation).is_err() {
-                        self.settle_cancel_reservation(
+                        let retired = self.settle_cancel_reservation(
                             client_order_id,
-                            CancelEvent::ReservationDenied {
-                                now_ns,
-                                retry_timeout_ns,
-                            },
+                            CancelEvent::RequoteReservationDenied,
                         )?;
+                        anyhow::ensure!(
+                            matches!(retired, CancelEffect::RetireIntent),
+                            "requote reservation denial did not retire its cancel intent"
+                        );
                         return self.finish_cancel_drive(client_order_id, Vec::new());
                     }
                     let armed = self.settle_cancel_reservation(
@@ -876,40 +883,75 @@ impl BoltV3OrderEconomicsHandle {
             }
         };
         let (effect, mut reservation) = effect;
-        let (generation, operation_result) = match effect {
+        let (generation, operation_result, sink_invoked) = match effect {
             CancelEffect::None => {
                 return self.finish_cancel_drive(client_order_id, Vec::new());
             }
             CancelEffect::Remove => return Ok(()),
+            CancelEffect::RetireIntent => {
+                return self.finish_cancel_drive(client_order_id, Vec::new());
+            }
             CancelEffect::Cancel { generation } => {
-                if let Some(participant) = command_participant.as_mut() {
-                    participant.mark_sink_invoked();
+                let pre_sink = (|| -> Result<()> {
+                    let pre_sink_now_ns = sink.actor_time_ns()?;
+                    if let Some(participant) = command_participant.as_mut() {
+                        participant.mark_sink_invoked(pre_sink_now_ns)?;
+                    }
+                    if let Some(reservation) = reservation.as_mut() {
+                        reservation
+                            .mark_sink_invoked_at(pre_sink_now_ns / NANOS_PER_MILLI_U64)
+                            .map_err(|error| {
+                                anyhow::anyhow!(
+                                    "cancel REST reservation sink accounting failed: {error:?}"
+                                )
+                            })?;
+                    }
+                    Ok(())
+                })();
+                match pre_sink {
+                    Ok(()) => (
+                        generation,
+                        policy
+                            .route_cancel_with_sink(
+                                sink,
+                                client_order_id,
+                                Some(ClientId::from(execution_client_id)),
+                                None,
+                            )
+                            .map(|_| ()),
+                        true,
+                    ),
+                    Err(error) => (generation, Err(error), false),
                 }
-                reservation.as_mut().map(
-                    crate::bolt_v3_requote_budget::RequoteBudgetReservation::mark_sink_invoked,
-                );
-                (
-                    generation,
-                    policy
-                        .route_cancel_with_sink(
-                            sink,
-                            client_order_id,
-                            Some(ClientId::from(execution_client_id)),
-                            None,
-                        )
-                        .map(|_| ()),
-                )
             }
             CancelEffect::Query { generation, seed } => {
                 debug_assert!(command_participant.is_none());
-                reservation
-                    .as_mut()
-                    .expect("query operation must own its REST reservation")
-                    .mark_sink_invoked();
-                (
-                    generation,
-                    sink.query_order_via_nt(&seed, Some(ClientId::from(execution_client_id)), None),
-                )
+                let pre_sink = (|| -> Result<()> {
+                    let pre_sink_now_ns = sink.actor_time_ns()?;
+                    let reservation = reservation
+                        .as_mut()
+                        .expect("query operation must own its REST reservation");
+                    reservation
+                        .mark_sink_invoked_at(pre_sink_now_ns / NANOS_PER_MILLI_U64)
+                        .map_err(|error| {
+                            anyhow::anyhow!(
+                                "query REST reservation sink accounting failed: {error:?}"
+                            )
+                        })?;
+                    Ok(())
+                })();
+                match pre_sink {
+                    Ok(()) => (
+                        generation,
+                        sink.query_order_via_nt(
+                            &seed,
+                            Some(ClientId::from(execution_client_id)),
+                            None,
+                        ),
+                        true,
+                    ),
+                    Err(error) => (generation, Err(error), false),
+                }
             }
             CancelEffect::ReservationRequired { .. } => {
                 anyhow::bail!("REST reservation settlement did not arm an operation")
@@ -919,12 +961,16 @@ impl BoltV3OrderEconomicsHandle {
         if let Some(mut participant) = command_participant
             && let Err(error) = participant.settle_at_generation(
                 generation,
-                super::BoltV3RestingCommitDisposition::CommandIssuedRetainPrepaid,
+                match sink_invoked {
+                    true => super::BoltV3RestingCommitDisposition::CommandIssuedRetainPrepaid,
+                    false => super::BoltV3RestingCommitDisposition::PreSinkAborted,
+                },
             )
         {
             settlement_failures.push(error.to_string());
         }
-        if let Some(reservation) = reservation
+        if sink_invoked
+            && let Some(reservation) = reservation
             && let Err(denial) = reservation.commit()
         {
             settlement_failures.push(format!("REST reservation settlement failed: {denial:?}"));
@@ -1026,6 +1072,9 @@ impl BoltV3OrderEconomicsHandle {
             Ok(CancelEffect::ReservationRequired { .. }) => {
                 failures
                     .push("operation settlement requested another REST reservation".to_string());
+            }
+            Ok(CancelEffect::RetireIntent) => {
+                failures.push("operation settlement retired a requote intent".to_string());
             }
             Err(error) => failures.push(error.to_string()),
         }
@@ -1129,7 +1178,11 @@ impl BoltV3OrderEconomicsHandle {
         let Some(cancellation) = intent.as_mut() else {
             return Ok(CancelEffect::None);
         };
-        cancellation.apply_event(query_seed, event)
+        let effect = cancellation.apply_event(query_seed, event)?;
+        if matches!(effect, CancelEffect::RetireIntent) {
+            *intent = None;
+        }
+        Ok(effect)
     }
 
     fn finish_cancel_drive(

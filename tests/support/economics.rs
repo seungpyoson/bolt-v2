@@ -8,7 +8,7 @@ use bolt_v2::{
     bolt_v3_providers::polymarket::{
         PolymarketMarketInfoSnapshot, PolymarketSnapshotMetadata, authoritative_economics_input,
     },
-    economics::{CurrencyId, SnapshotId, SourceIdentity},
+    economics::{CurrencyId, NativeUnitId, SnapshotId, SourceIdentity},
 };
 
 pub fn polymarket_inputs(loaded: &LoadedBoltV3Config) -> AuthoritativeEconomicsInputStore {
@@ -44,7 +44,9 @@ pub fn polymarket_inputs(loaded: &LoadedBoltV3Config) -> AuthoritativeEconomicsI
         AuthoritativeValuationObservation::ProviderExactConversion {
             source_id: SourceIdentity::try_new("fixture-collateral")
                 .expect("fixture source should be valid"),
-            from_unit: CurrencyId::try_new("pUSD").expect("fixture currency should be valid"),
+            from_unit: NativeUnitId::Currency(
+                CurrencyId::try_new("pUSD").expect("fixture currency should be valid"),
+            ),
             to_unit: CurrencyId::try_new("USD").expect("fixture currency should be valid"),
             snapshot_id: SnapshotId::try_new("fixture-collateral-conversion")
                 .expect("fixture snapshot should be valid"),
@@ -99,7 +101,9 @@ pub fn polymarket_order_economics_for(
             AuthoritativeValuationObservation::ProviderExactConversion {
                 source_id: SourceIdentity::try_new("fixture-collateral")
                     .expect("fixture source should be valid"),
-                from_unit: CurrencyId::try_new("pUSD").expect("fixture currency should be valid"),
+                from_unit: NativeUnitId::Currency(
+                    CurrencyId::try_new("pUSD").expect("fixture currency should be valid"),
+                ),
                 to_unit: CurrencyId::try_new("USD").expect("fixture currency should be valid"),
                 snapshot_id: SnapshotId::try_new("fixture-collateral-conversion")
                     .expect("fixture snapshot should be valid"),

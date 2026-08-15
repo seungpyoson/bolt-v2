@@ -253,7 +253,7 @@ pub trait BoltV3RestingRegistrationCommitParticipant: std::fmt::Debug {
         None
     }
     fn arm_at_generation(&mut self, generation: u64) -> Result<()>;
-    fn mark_sink_invoked(&mut self);
+    fn mark_sink_invoked(&mut self, actor_now_ns: u64) -> Result<()>;
     fn settle_at_generation(
         &mut self,
         generation: u64,
@@ -368,9 +368,10 @@ impl BoltV3RouteAttemptParticipant for RestingRegistrationTransaction {
         Ok(())
     }
 
-    fn mark_sink_invoked(&mut self) {
-        self.participant.mark_sink_invoked();
+    fn mark_sink_invoked(&mut self, actor_now_ns: u64) -> Result<()> {
+        self.participant.mark_sink_invoked(actor_now_ns)?;
         self.state = RestingRegistrationTransactionState::SinkInvoked;
+        Ok(())
     }
 
     fn complete(&mut self, completion: BoltV3RouteAttemptCompletion) {
@@ -445,31 +446,6 @@ impl Drop for RestingRegistrationTransaction {
             self.record_failure(reason);
         }
         self.state = RestingRegistrationTransactionState::Settled;
-    }
-}
-
-#[derive(Debug)]
-struct RegistrationlessAttemptParticipant {
-    participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
-}
-
-impl BoltV3RouteAttemptParticipant for RegistrationlessAttemptParticipant {
-    fn consume_at_pre_sink(&mut self) -> Result<()> {
-        self.participant.arm_at_generation(0)
-    }
-
-    fn mark_sink_invoked(&mut self) {
-        self.participant.mark_sink_invoked();
-    }
-
-    fn complete(&mut self, completion: BoltV3RouteAttemptCompletion) {
-        let disposition = match completion {
-            BoltV3RouteAttemptCompletion::Submitted => BoltV3RestingCommitDisposition::Submitted,
-            BoltV3RouteAttemptCompletion::SinkRejected => {
-                BoltV3RestingCommitDisposition::SinkRejected
-            }
-        };
-        let _ = self.participant.settle_at_generation(0, disposition);
     }
 }
 
@@ -636,7 +612,6 @@ impl BoltV3OrderEconomicsHandle {
 
     pub(super) fn route_resting_submit<F>(
         &self,
-        policy: BoltV3OrderExecutionPolicy,
         order: OrderAny,
         admission: EconomicsAdmission,
         participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
@@ -645,11 +620,6 @@ impl BoltV3OrderEconomicsHandle {
     where
         F: FnOnce(Box<dyn BoltV3RouteAttemptParticipant>) -> BoltV3SubmitAttemptOutcome,
     {
-        if !policy.allows_venue_mutation() {
-            return BoltV3RestingSubmitTransactionOutcome::Attempt(route(Box::new(
-                RegistrationlessAttemptParticipant { participant },
-            )));
-        }
         let rollback_failure = Arc::new(Mutex::new(None));
         let transaction = match self.begin_resting_registration(
             order,
@@ -1087,12 +1057,11 @@ mod tests {
 
     use super::{
         BoltV3FinalOrderEconomicsInput, BoltV3FinalOrderEconomicsScenario,
-        BoltV3OrderExecutionPolicy, BoltV3RestingCommitDisposition,
-        BoltV3RestingRegistrationCommitParticipant, BoltV3RestingRegistrationRejectionKind,
-        BoltV3RestingRollbackInvariantFailure, BoltV3RestingSubmitTransactionOutcome,
-        BoltV3RouteAttemptCompletion, BoltV3RouteAttemptParticipant, BoltV3SubmitAttemptKind,
-        BoltV3SubmitAttemptOutcome, RestingRegistryHealth, TrackedMakerOrderRegistry,
-        build_order_economics_submit_admission,
+        BoltV3RestingCommitDisposition, BoltV3RestingRegistrationCommitParticipant,
+        BoltV3RestingRegistrationRejectionKind, BoltV3RestingRollbackInvariantFailure,
+        BoltV3RestingSubmitTransactionOutcome, BoltV3RouteAttemptCompletion,
+        BoltV3RouteAttemptParticipant, BoltV3SubmitAttemptKind, BoltV3SubmitAttemptOutcome,
+        RestingRegistryHealth, TrackedMakerOrderRegistry, build_order_economics_submit_admission,
     };
 
     #[derive(Debug)]
@@ -1107,7 +1076,9 @@ mod tests {
             Ok(())
         }
 
-        fn mark_sink_invoked(&mut self) {}
+        fn mark_sink_invoked(&mut self, _actor_now_ns: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
 
         fn settle_at_generation(
             &mut self,
@@ -1137,7 +1108,9 @@ mod tests {
             Ok(())
         }
 
-        fn mark_sink_invoked(&mut self) {}
+        fn mark_sink_invoked(&mut self, _actor_now_ns: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
 
         fn settle_at_generation(
             &mut self,
@@ -1166,7 +1139,9 @@ mod tests {
                 participant
                     .consume_at_pre_sink()
                     .expect("test participant should arm");
-                participant.mark_sink_invoked();
+                participant
+                    .mark_sink_invoked(0)
+                    .expect("test participant should reach the sink");
                 let completion = match outcome.kind() {
                     BoltV3SubmitAttemptKind::Submitted => BoltV3RouteAttemptCompletion::Submitted,
                     BoltV3SubmitAttemptKind::SinkRejected => {
@@ -1201,12 +1176,8 @@ mod tests {
         let admission = sealed_admission(&economics, &order);
         let callback_order = order.clone();
 
-        let outcome = economics.route_resting_submit(
-            BoltV3OrderExecutionPolicy::live(),
-            order,
-            admission,
-            test_participant(),
-            |participant| {
+        let outcome =
+            economics.route_resting_submit(order, admission, test_participant(), |participant| {
                 economics
                     .reconcile_tracked_order_at(client_order_id, Some(callback_order), 1)
                     .expect("the re-entrant callback should reconcile");
@@ -1214,8 +1185,7 @@ mod tests {
                     participant,
                     BoltV3SubmitAttemptOutcome::submitted_for_test(),
                 )
-            },
-        );
+            });
 
         assert!(matches!(
             outcome,
@@ -1236,7 +1206,6 @@ mod tests {
         let order = post_only_limit_order("MAKER-REENTRANT-PARTICIPANT");
         let observed = Arc::new(Mutex::new(false));
         let outcome = economics.route_resting_submit(
-            BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
             Box::new(ReentrantSettlementParticipant {
@@ -1264,7 +1233,6 @@ mod tests {
         let shape_admission =
             sealed_admission(&economics, &shape_order).with_planned_fill_legs_for_test(Vec::new());
         let shape = economics.route_resting_submit(
-            BoltV3OrderExecutionPolicy::live(),
             shape_order,
             shape_admission,
             test_participant(),
@@ -1287,7 +1255,6 @@ mod tests {
                 quantity: Decimal::ZERO,
             }]);
         let quantity = economics.route_resting_submit(
-            BoltV3OrderExecutionPolicy::live(),
             quantity_order,
             quantity_admission,
             test_participant(),
@@ -1312,7 +1279,6 @@ mod tests {
             crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
         let order = post_only_limit_order("MAKER-DUPLICATE");
         let first = economics.route_resting_submit(
-            BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
             test_participant(),
@@ -1327,7 +1293,6 @@ mod tests {
 
         let route_calls = Cell::new(0_u32);
         let duplicate = economics.route_resting_submit(
-            BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
             test_participant(),
@@ -1353,7 +1318,6 @@ mod tests {
             .next_generation = u64::MAX;
         let overflow_order = post_only_limit_order("MAKER-GENERATION-OVERFLOW");
         let overflow_outcome = overflow.route_resting_submit(
-            BoltV3OrderExecutionPolicy::live(),
             overflow_order.clone(),
             sealed_admission(&overflow, &overflow_order),
             test_participant(),
@@ -1385,7 +1349,6 @@ mod tests {
         let route_calls = Cell::new(0_u32);
         let order = post_only_limit_order("MAKER-POISONED-REGISTRY");
         let outcome = economics.route_resting_submit(
-            BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
             test_participant(),
@@ -1432,7 +1395,6 @@ mod tests {
                 BoltV3SubmitAttemptKind::Submitted => unreachable!(),
             };
             let outcome = economics.route_resting_submit(
-                BoltV3OrderExecutionPolicy::live(),
                 order.clone(),
                 sealed_admission(&economics, &order),
                 test_participant(),
@@ -1454,7 +1416,6 @@ mod tests {
         let order = post_only_limit_order("MAKER-CALLBACK-RETIRED");
         let client_order_id = order.client_order_id();
         let outcome = economics.route_resting_submit(
-            BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
             test_participant(),
@@ -1480,7 +1441,6 @@ mod tests {
         let order = post_only_limit_order("MAKER-ROLLBACK-CONFLICT");
         let client_order_id = order.client_order_id();
         let outcome = economics.route_resting_submit(
-            BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
             test_participant(),
@@ -1571,7 +1531,6 @@ mod tests {
         let order = post_only_limit_order("MAKER-COMMIT-CONFLICT");
         let client_order_id = order.client_order_id();
         let outcome = economics.route_resting_submit(
-            BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
             test_participant(),
@@ -1598,7 +1557,6 @@ mod tests {
 
         let next = post_only_limit_order("MAKER-AFTER-COMMIT-CONFLICT");
         let next_outcome = economics.route_resting_submit(
-            BoltV3OrderExecutionPolicy::live(),
             next.clone(),
             sealed_admission(&economics, &next),
             test_participant(),
@@ -1624,7 +1582,6 @@ mod tests {
         let order = post_only_limit_order("MAKER-POISONED-ROLLBACK");
         let registry = economics.tracked_orders.clone();
         let outcome = economics.route_resting_submit(
-            BoltV3OrderExecutionPolicy::live(),
             order.clone(),
             sealed_admission(&economics, &order),
             test_participant(),

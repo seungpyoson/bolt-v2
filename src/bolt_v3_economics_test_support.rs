@@ -7,7 +7,7 @@ use crate::{
     bolt_v3_providers::polymarket::{
         PolymarketMarketInfoSnapshot, PolymarketSnapshotMetadata, authoritative_economics_input,
     },
-    economics::{CurrencyId, SnapshotId, SourceIdentity},
+    economics::{CurrencyId, NativeUnitId, SnapshotId, SourceIdentity},
 };
 
 pub(crate) fn fixture_order_economics() -> BoltV3OrderEconomicsHandle {
@@ -116,8 +116,10 @@ fn fixture_order_economics_with_platform_fee(
     let valuation = || AuthoritativeValuationObservation::ProviderExactConversion {
         source_id: SourceIdentity::try_new("fixture-collateral".to_string())
             .expect("fixture valuation source should be canonical"),
-        from_unit: CurrencyId::try_new("pUSD".to_string())
-            .expect("fixture collateral currency should be canonical"),
+        from_unit: NativeUnitId::Currency(
+            CurrencyId::try_new("pUSD".to_string())
+                .expect("fixture collateral currency should be canonical"),
+        ),
         to_unit: CurrencyId::try_new("USD".to_string())
             .expect("fixture reporting currency should be canonical"),
         snapshot_id: SnapshotId::try_new("edge-taker-fixture-collateral-conversion".to_string())

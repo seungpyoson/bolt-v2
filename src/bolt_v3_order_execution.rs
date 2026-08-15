@@ -62,13 +62,11 @@ pub use economics_basis::{
 use tracked_order_economics::route_tracked_cancel_all;
 pub use tracked_order_economics::{
     BoltV3CancellationLivenessFailure, BoltV3OrderEconomicsHandle, BoltV3RecoveryIdentityConflict,
-    BoltV3RestingOrderCancelHealthSnapshot, BoltV3RestingRegistrationRejection,
+    BoltV3RestingCommitDisposition, BoltV3RestingOrderCancelHealthSnapshot,
+    BoltV3RestingRegistrationCommitParticipant, BoltV3RestingRegistrationRejection,
     BoltV3RestingRegistrationRejectionKind, BoltV3RestingRollbackInvariantFailure,
     BoltV3RestingSubmitTransactionOutcome, BoltV3RoutedNonSubmittedOutcome,
     build_order_economics_submit_admission,
-};
-pub(crate) use tracked_order_economics::{
-    BoltV3RestingCommitDisposition, BoltV3RestingRegistrationCommitParticipant,
 };
 
 pub struct BoltV3FinalOrderEconomicsInput<'a> {
@@ -1796,7 +1794,14 @@ impl BoltV3OrderExecutionPolicy {
                             error,
                         )
                     })?;
-                    participant.mark_sink_invoked();
+                    participant
+                        .mark_sink_invoked(pre_sink_now_ns)
+                        .map_err(|error| {
+                            BoltV3SubmitAttemptOutcome::rejected(
+                                BoltV3SubmitRejectionKind::PreSink,
+                                error,
+                            )
+                        })?;
                 }
                 if let Err(error) = sink.submit_order_via_nt(order, context) {
                     if let Some(participant) = attempt_participant.as_mut() {
@@ -2134,7 +2139,7 @@ pub(crate) enum BoltV3RouteAttemptCompletion {
 /// unwind behavior for every phase.
 pub(crate) trait BoltV3RouteAttemptParticipant: std::fmt::Debug {
     fn consume_at_pre_sink(&mut self) -> Result<()>;
-    fn mark_sink_invoked(&mut self);
+    fn mark_sink_invoked(&mut self, actor_now_ns: u64) -> Result<()>;
     fn complete(&mut self, completion: BoltV3RouteAttemptCompletion);
 }
 
@@ -2839,13 +2844,9 @@ where
                 submit_context,
             )
         };
-        self.context.order_economics.route_resting_submit(
-            self.policy,
-            order,
-            admission,
-            participant,
-            route,
-        )
+        self.context
+            .order_economics
+            .route_resting_submit(order, admission, participant, route)
     }
 
     fn cancel_maker_order(
@@ -3651,6 +3652,159 @@ mod tests {
     }
 
     #[test]
+    fn requote_pair_denial_retires_coordinator_intent_before_rest_only_retry() {
+        let writer = Arc::new(DecisionEvidenceRecorder::recording());
+        let mut runtime = RecordingMakerRuntime::new();
+        let yes_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
+            "maker_execution_client",
+        );
+        let no_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
+            "maker_execution_client",
+        );
+        let instrument_id = InstrumentId::from("YES.INSTRUMENT");
+        let yes_id = ClientOrderId::from("MAKER-CONTENTION-YES");
+        let no_id = ClientOrderId::from("MAKER-CONTENTION-NO");
+        for (leg, client_order_id, economics) in [
+            (Leg::Yes, yes_id, &yes_economics),
+            (Leg::No, no_id, &no_economics),
+        ] {
+            let submit_admission = BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+                writer.clone(),
+                live_submit_cap_for_client("maker_execution_client"),
+            );
+            let submit = MakerCompiledOrderCommand::Submit {
+                leg,
+                template: Box::new(maker_limit_post_only_template()),
+                inputs: NtOrderBuildInputs {
+                    instrument_id,
+                    order_side: OrderSide::Buy,
+                    quantity: Quantity::new(2.0, 2),
+                    price: Some(Price::new(0.40, 2)),
+                    client_order_id,
+                },
+                fallback_price: Price::new(0.40, 2),
+            };
+            route_maker_order_command_with_runtime(
+                BoltV3OrderExecutionPolicy::live(),
+                &mut runtime,
+                writer.as_ref(),
+                &submit_admission,
+                maker_routing_context(economics),
+                MakerOrderDispatchInput {
+                    command: &submit,
+                    submit_order_prefix: "maker_submit",
+                    quote_transaction: Some(quote_transaction_for_submit(&submit)),
+                },
+            )
+            .expect("both real coordinators should register one resting leg");
+        }
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
+            writer.clone(),
+            live_submit_cap_for_client("maker_execution_client"),
+        ));
+
+        let shared_budget = RequoteBudgetPair::new(
+            RequoteBudget::new(1, 60_000, 0),
+            RequoteBudget::new(3, 60_000, 0),
+        );
+        yes_economics.attach_requote_budget_for_test(yes_id, shared_budget.clone());
+        no_economics.attach_requote_budget_for_test(no_id, shared_budget.clone());
+
+        let market = MarketQuote::new(false);
+        let mut market_setup = market.clone();
+        for leg in [Leg::Yes, Leg::No] {
+            market_setup.on_leg_event(
+                leg,
+                crate::bolt_v3_quote_lifecycle::LegEvent::QuoteTrigger {
+                    requote_needed: true,
+                },
+            );
+            market_setup.on_leg_event(leg, crate::bolt_v3_quote_lifecycle::LegEvent::Accepted);
+        }
+        let cancel_context = |leg| {
+            let mut market_handle = market.clone();
+            let mut budget_handle = shared_budget.clone();
+            let decision = drive_quote_leg(
+                &mut market_handle,
+                &mut budget_handle,
+                QuoteControlInput {
+                    leg,
+                    desired_price: 0.60,
+                    resting_price: Some(0.40),
+                    requote_threshold: 0.01,
+                    eps: 1e-9,
+                    now_ms: 1,
+                },
+            );
+            MakerQuoteTransactionContext {
+                market: market.clone(),
+                budget: shared_budget.clone(),
+                proposal: decision
+                    .proposal
+                    .expect("both legs should propose before either reservation arms"),
+            }
+        };
+        let yes_context = cancel_context(Leg::Yes);
+        let no_context = cancel_context(Leg::No);
+
+        for (leg, client_order_id, context, economics) in [
+            (Leg::Yes, yes_id, yes_context, &yes_economics),
+            (Leg::No, no_id, no_context, &no_economics),
+        ] {
+            let cancel = MakerCompiledOrderCommand::Cancel {
+                leg,
+                instrument_id,
+                client_order_id,
+            };
+            route_maker_order_command_with_runtime(
+                BoltV3OrderExecutionPolicy::live(),
+                &mut runtime,
+                writer.as_ref(),
+                admission.as_ref(),
+                maker_routing_context(economics),
+                MakerOrderDispatchInput {
+                    command: &cancel,
+                    submit_order_prefix: "maker_submit",
+                    quote_transaction: Some(context),
+                },
+            )
+            .expect("capacity denial is a coordinator transition, not a routing error");
+        }
+
+        assert_eq!(runtime.venue_sink.cancel_calls, 1);
+        assert_eq!(
+            market.leg_state(Leg::Yes),
+            crate::bolt_v3_quote_lifecycle::LegState::RequotePending
+        );
+        assert_eq!(
+            market.leg_state(Leg::No),
+            crate::bolt_v3_quote_lifecycle::LegState::Resting
+        );
+        assert_eq!(shared_budget.outstanding_submit_cost(), 1);
+
+        let retry_ns = FIXTURE_CANCEL_RETRY_TIMEOUT_NS + 1;
+        runtime.venue_sink.actor_times_ns.push_back(retry_ns);
+        let cached_no = runtime.venue_sink.cached_order(no_id).unwrap();
+        let _ = super::tracked_order_economics::drive_observed_resting_order_economics(
+            &no_economics,
+            BoltV3OrderExecutionPolicy::live(),
+            &mut runtime,
+            "maker_execution_client",
+            vec![(no_id, cached_no)],
+            retry_ns,
+        );
+
+        assert_eq!(
+            runtime.venue_sink.cancel_calls, 1,
+            "the denied requote must not survive as a rest-only cancellation intent"
+        );
+        assert_eq!(
+            market.leg_state(Leg::No),
+            crate::bolt_v3_quote_lifecycle::LegState::Resting
+        );
+    }
+
+    #[test]
     fn repeated_cancel_origins_merge_without_resetting_exact_retry_boundary() {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let admission = Arc::new(BoltV3SubmitAdmissionState::new_with_live_submit_limits(
@@ -3958,7 +4112,7 @@ mod tests {
         runtime
             .venue_sink
             .actor_times_ns
-            .push_back(retry_timeout_ns + 1);
+            .extend([retry_timeout_ns + 1, retry_timeout_ns + 2]);
         super::tracked_order_economics::drive_observed_resting_order_economics(
             &order_economics,
             BoltV3OrderExecutionPolicy::live(),
@@ -4133,9 +4287,10 @@ mod tests {
         order_economics
             .attach_requote_budget_for_test(client_order_id, coordinator_budget_for_test());
         let mut sink = RecordingVenueMutationSink {
-            fail_actor_time: true,
+            fail_actor_time_on_call: Some(1),
             ..RecordingVenueMutationSink::default()
         };
+        sink.actor_times_ns.push_back(100);
         sink.cached_orders.insert(client_order_id, order.clone());
         sink.fail_cancel_ids.insert(client_order_id);
 
@@ -4168,9 +4323,10 @@ mod tests {
         order_economics
             .attach_requote_budget_for_test(client_order_id, coordinator_budget_for_test());
         let mut sink = RecordingVenueMutationSink {
-            fail_actor_time: true,
+            fail_actor_time_on_call: Some(1),
             ..RecordingVenueMutationSink::default()
         };
+        sink.actor_times_ns.push_back(100);
         sink.cached_orders.insert(client_order_id, order.clone());
 
         let error = super::tracked_order_economics::drive_observed_resting_order_economics(
@@ -4475,7 +4631,8 @@ mod tests {
         modify_calls: usize,
         modify_requests: Vec<(ClientOrderId, Quantity, Price, Option<ClientId>)>,
         fail_submits: bool,
-        fail_actor_time: bool,
+        actor_time_calls: usize,
+        fail_actor_time_on_call: Option<usize>,
         fail_cached_order_once: BTreeSet<ClientOrderId>,
         fail_cancel_ids: BTreeSet<ClientOrderId>,
         cancel_replacement_orders: BTreeMap<ClientOrderId, OrderAny>,
@@ -4483,7 +4640,9 @@ mod tests {
 
     impl BoltV3NtVenueMutationSink for RecordingVenueMutationSink {
         fn actor_time_ns(&mut self) -> Result<u64> {
-            if self.fail_actor_time {
+            let call = self.actor_time_calls;
+            self.actor_time_calls += 1;
+            if self.fail_actor_time_on_call == Some(call) {
                 anyhow::bail!("synthetic actor-time failure");
             }
             Ok(self.actor_times_ns.pop_front().unwrap_or(1))
@@ -4568,8 +4727,9 @@ mod tests {
             Ok(())
         }
 
-        fn mark_sink_invoked(&mut self) {
+        fn mark_sink_invoked(&mut self, _actor_now_ns: u64) -> Result<()> {
             self.events.borrow_mut().push("sink_invoked");
+            Ok(())
         }
 
         fn complete(&mut self, completion: BoltV3RouteAttemptCompletion) {
@@ -4683,7 +4843,7 @@ mod tests {
             live_submit_cap(),
         ));
         let mut sink = RecordingVenueMutationSink {
-            fail_actor_time: true,
+            fail_actor_time_on_call: Some(0),
             ..RecordingVenueMutationSink::default()
         };
         let order = limit_order("O-19700101-000000-001-PARTICIPANT-PRE-SINK");

@@ -1261,6 +1261,48 @@ mod tests {
     }
 
     #[test]
+    fn post_sink_rollback_cannot_reuse_an_exhausted_prepaid_token() {
+        let (market, budget) = issued_cancel_with_prepaid(8, 8);
+        let mut replacement =
+            MakerQuoteTransactionParticipant::new(replacement_context(&market, &budget));
+        replacement.arm_at_generation(2).unwrap();
+        replacement
+            .mark_sink_invoked((NOW_MS + 1) * NANOS_PER_MILLI_U64)
+            .expect("replacement should reach the sink");
+        replacement
+            .settle_at_generation(2, BoltV3RestingCommitDisposition::RollbackInvariantFailed)
+            .unwrap();
+
+        assert_eq!(
+            market.leg_state(Leg::Yes),
+            LegState::PoisonedReconciliationHold
+        );
+        assert_eq!(budget.outstanding_submit_cost(), 0);
+        assert_eq!(budget.outstanding_rest_cost(), 0);
+        assert_eq!(budget.submit_commands_in_window(), 1);
+        assert_eq!(budget.rest_cost_in_window(), 2);
+
+        let mut market_handle = market.clone();
+        let mut budget_handle = budget.clone();
+        let decision = drive_quote_leg(
+            &mut market_handle,
+            &mut budget_handle,
+            QuoteControlInput {
+                leg: Leg::Yes,
+                desired_price: 0.6,
+                resting_price: None,
+                requote_threshold: 0.01,
+                eps: 1e-9,
+                now_ms: NOW_MS + 2,
+            },
+        );
+        assert_eq!(decision.action, None);
+        assert_eq!(decision.proposal, None);
+        assert_eq!(budget.submit_commands_in_window(), 1);
+        assert_eq!(budget.rest_cost_in_window(), 2);
+    }
+
+    #[test]
     fn delayed_prepaid_replacement_charges_the_actor_sink_timestamp() {
         let market = MarketQuote::new(false);
         let budget = short_window_budget_pair(1, 2);

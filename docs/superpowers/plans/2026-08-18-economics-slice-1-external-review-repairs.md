@@ -684,11 +684,11 @@ git commit -m "refactor(maker): name NT mutation invocation boundary"
 - Produces: phase-shaped `OutstandingLiability` variants.
 - Preserves: public `RequoteBudgetReservation` API and numeric accounting.
 
-- [ ] **Step 1: Add a two-stage cancel/resubmit accounting test**
+- [x] **Step 1: Add a two-stage cancel/resubmit accounting test**
 
 Reserve cancel/resubmit, call `mark_sink_invoked_at` once, and assert only the replacement submit/REST liability remains outstanding. Call it a second time, commit, and assert exactly one submit plus two REST calls were charged.
 
-- [ ] **Step 2: Run the behavior test as a baseline**
+- [x] **Step 2: Run the behavior test as a baseline**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib cancel_resubmit_liability_advances_by_phase -- --test-threads=1
@@ -696,33 +696,20 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: current behavior may pass; retain it as characterization evidence for the structural refactor.
 
-- [ ] **Step 3: Replace the correlated fields**
+- [x] **Step 3: Replace the correlated fields**
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutstandingLiability {
-    OneShot {
-        now_ms: u64,
-        submit_cost: u64,
-        rest_cost: u64,
-    },
-    CancelResubmitBothOutstanding {
-        now_ms: u64,
-        submit_cost: u64,
-        cancel_rest_cost: u64,
-        replacement_rest_cost: u64,
-    },
-    CancelResubmitReplacementOutstanding {
-        now_ms: u64,
-        submit_cost: u64,
-        replacement_rest_cost: u64,
-    },
+    OneShot(LiabilityBalance),
+    CancelResubmitBothOutstanding { now_ms: u64 },
+    CancelResubmitReplacementOutstanding { now_ms: u64 },
 }
 ```
 
-Give the enum exhaustive `submit_cost()`, `rest_cost()`, `retimestamp()`, and settlement methods. The first cancel/resubmit sink call charges `cancel_rest_cost` and replaces the map entry with `CancelResubmitReplacementOutstanding`. Never compare a cost value to `CANCEL_RESUBMIT_REST_COST` to infer phase.
+Give the enum one exhaustive `balance()` projection used by `submit_cost()`, `rest_cost()`, and `now_ms()`. Cancel/resubmit variants carry only time; their submit and REST costs are structural constants, so invalid phase/cost pairs are unrepresentable. The sink settlement match retimestamps each consumed variant directly. The first cancel/resubmit sink call charges one cancel REST call and replaces the map entry with `CancelResubmitReplacementOutstanding`. Never compare a cost value to `CANCEL_RESUBMIT_REST_COST` to infer phase.
 
-- [ ] **Step 4: Run all requote-budget tests**
+- [x] **Step 4: Run all requote-budget tests**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib bolt_v3_requote_budget::tests -- --test-threads=1
@@ -730,7 +717,7 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: PASS with unchanged public accounting.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/bolt_v3_requote_budget.rs

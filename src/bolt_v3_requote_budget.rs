@@ -143,23 +143,58 @@ const REST_CALL_COST: u64 = 1;
 pub(crate) const CANCEL_RESUBMIT_REST_COST: u64 = REST_CALL_COST + REST_CALL_COST;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RequoteBudgetSinkAccounting {
-    Standard,
-    CancelResubmit,
+struct LiabilityBalance {
+    now_ms: u64,
+    submit_cost: u64,
+    rest_cost: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutstandingLiability {
+    OneShot(LiabilityBalance),
+    CancelResubmitBothOutstanding { now_ms: u64 },
+    CancelResubmitReplacementOutstanding { now_ms: u64 },
+}
+
+impl OutstandingLiability {
+    const fn balance(self) -> LiabilityBalance {
+        match self {
+            Self::OneShot(balance) => balance,
+            Self::CancelResubmitBothOutstanding { now_ms } => LiabilityBalance {
+                now_ms,
+                submit_cost: SUBMIT_COMMAND_COST,
+                rest_cost: CANCEL_RESUBMIT_REST_COST,
+            },
+            Self::CancelResubmitReplacementOutstanding { now_ms } => LiabilityBalance {
+                now_ms,
+                submit_cost: SUBMIT_COMMAND_COST,
+                rest_cost: REST_CALL_COST,
+            },
+        }
+    }
+
+    const fn submit_cost(self) -> u64 {
+        self.balance().submit_cost
+    }
+
+    const fn rest_cost(self) -> u64 {
+        self.balance().rest_cost
+    }
+
+    const fn now_ms(self) -> u64 {
+        self.balance().now_ms
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RequoteBudgetReservationProposal {
-    now_ms: u64,
-    submit_cost: u64,
-    rest_cost: u64,
-    sink_accounting: RequoteBudgetSinkAccounting,
+    liability: OutstandingLiability,
 }
 
 impl RequoteBudgetReservationProposal {
     #[must_use]
     pub const fn now_ms(self) -> u64 {
-        self.now_ms
+        self.liability.now_ms()
     }
 }
 
@@ -168,14 +203,6 @@ pub enum RequoteBudgetReservationDenied {
     Capacity,
     GenerationOverflow,
     StaleReservation,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OutstandingLiability {
-    now_ms: u64,
-    submit_cost: u64,
-    rest_cost: u64,
-    sink_accounting: RequoteBudgetSinkAccounting,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,36 +283,29 @@ impl RequoteBudgetPair {
         &self,
         now_ms: u64,
     ) -> Result<RequoteBudgetReservationProposal, RequoteBudgetReservationDenied> {
-        self.propose(
+        self.propose(OutstandingLiability::OneShot(LiabilityBalance {
             now_ms,
-            SUBMIT_COMMAND_COST,
-            REST_CALL_COST,
-            RequoteBudgetSinkAccounting::Standard,
-        )
+            submit_cost: SUBMIT_COMMAND_COST,
+            rest_cost: REST_CALL_COST,
+        }))
     }
 
     pub fn propose_cancel_resubmit(
         &self,
         now_ms: u64,
     ) -> Result<RequoteBudgetReservationProposal, RequoteBudgetReservationDenied> {
-        self.propose(
-            now_ms,
-            SUBMIT_COMMAND_COST,
-            CANCEL_RESUBMIT_REST_COST,
-            RequoteBudgetSinkAccounting::CancelResubmit,
-        )
+        self.propose(OutstandingLiability::CancelResubmitBothOutstanding { now_ms })
     }
 
     pub fn propose_rest(
         &self,
         now_ms: u64,
     ) -> Result<RequoteBudgetReservationProposal, RequoteBudgetReservationDenied> {
-        self.propose(
+        self.propose(OutstandingLiability::OneShot(LiabilityBalance {
             now_ms,
-            0,
-            REST_CALL_COST,
-            RequoteBudgetSinkAccounting::Standard,
-        )
+            submit_cost: 0,
+            rest_cost: REST_CALL_COST,
+        }))
     }
 
     pub fn reserve(
@@ -293,11 +313,12 @@ impl RequoteBudgetPair {
         proposal: RequoteBudgetReservationProposal,
     ) -> Result<RequoteBudgetReservation, RequoteBudgetReservationDenied> {
         let mut state = self.lock();
+        let balance = proposal.liability.balance();
         if !Self::has_capacity(
             &state,
-            proposal.now_ms,
-            proposal.submit_cost,
-            proposal.rest_cost,
+            balance.now_ms,
+            balance.submit_cost,
+            balance.rest_cost,
         ) {
             return Err(RequoteBudgetReservationDenied::Capacity);
         }
@@ -306,15 +327,7 @@ impl RequoteBudgetPair {
             .checked_add(1)
             .ok_or(RequoteBudgetReservationDenied::GenerationOverflow)?;
         state.next_reservation_generation = generation;
-        state.outstanding.insert(
-            generation,
-            OutstandingLiability {
-                now_ms: proposal.now_ms,
-                submit_cost: proposal.submit_cost,
-                rest_cost: proposal.rest_cost,
-                sink_accounting: proposal.sink_accounting,
-            },
-        );
+        state.outstanding.insert(generation, proposal.liability);
         Ok(RequoteBudgetReservation {
             budget: self.clone(),
             generation,
@@ -336,7 +349,7 @@ impl RequoteBudgetPair {
         self.lock()
             .outstanding
             .values()
-            .map(|liability| liability.submit_cost)
+            .map(|liability| liability.submit_cost())
             .sum()
     }
 
@@ -345,7 +358,7 @@ impl RequoteBudgetPair {
         self.lock()
             .outstanding
             .values()
-            .map(|liability| liability.rest_cost)
+            .map(|liability| liability.rest_cost())
             .sum()
     }
 
@@ -383,21 +396,19 @@ impl RequoteBudgetPair {
 
     fn propose(
         &self,
-        now_ms: u64,
-        submit_cost: u64,
-        rest_cost: u64,
-        sink_accounting: RequoteBudgetSinkAccounting,
+        liability: OutstandingLiability,
     ) -> Result<RequoteBudgetReservationProposal, RequoteBudgetReservationDenied> {
         let state = self.lock();
-        if !Self::has_capacity(&state, now_ms, submit_cost, rest_cost) {
+        let balance = liability.balance();
+        if !Self::has_capacity(
+            &state,
+            balance.now_ms,
+            balance.submit_cost,
+            balance.rest_cost,
+        ) {
             return Err(RequoteBudgetReservationDenied::Capacity);
         }
-        Ok(RequoteBudgetReservationProposal {
-            now_ms,
-            submit_cost,
-            rest_cost,
-            sink_accounting,
-        })
+        Ok(RequoteBudgetReservationProposal { liability })
     }
 
     fn has_capacity(
@@ -410,13 +421,13 @@ impl RequoteBudgetPair {
             .outstanding
             .values()
             .try_fold(0_u64, |total, liability| {
-                total.checked_add(liability.submit_cost)
+                total.checked_add(liability.submit_cost())
             });
         let outstanding_rest = state
             .outstanding
             .values()
             .try_fold(0_u64, |total, liability| {
-                total.checked_add(liability.rest_cost)
+                total.checked_add(liability.rest_cost())
             });
         let (Some(outstanding_submit), Some(outstanding_rest)) =
             (outstanding_submit, outstanding_rest)
@@ -454,25 +465,35 @@ impl RequoteBudgetReservation {
         now_ms: u64,
     ) -> Result<(), RequoteBudgetReservationDenied> {
         let mut state = self.budget.lock();
-        let liability = state.outstanding.get(&self.generation).copied();
-        let Some(liability) = liability else {
+        let Some(liability) = state.outstanding.remove(&self.generation) else {
             // Once the sink has consumed the complete liability, the token is an
             // inert receipt. Re-observing the same sink boundary is idempotent.
             return Ok(());
         };
-        if liability.sink_accounting == RequoteBudgetSinkAccounting::CancelResubmit
-            && liability.rest_cost == CANCEL_RESUBMIT_REST_COST
-        {
-            let replacement = state
-                .outstanding
-                .get_mut(&self.generation)
-                .ok_or(RequoteBudgetReservationDenied::StaleReservation)?;
-            replacement.now_ms = now_ms;
-            replacement.rest_cost = REST_CALL_COST;
-            state.rest_calls.record_reserved(now_ms, REST_CALL_COST);
-            return Ok(());
+        match liability {
+            OutstandingLiability::CancelResubmitBothOutstanding { .. } => {
+                state.outstanding.insert(
+                    self.generation,
+                    OutstandingLiability::CancelResubmitReplacementOutstanding { now_ms },
+                );
+                state.rest_calls.record_reserved(now_ms, REST_CALL_COST);
+            }
+            OutstandingLiability::OneShot(mut balance) => {
+                balance.now_ms = now_ms;
+                Self::record_balance(&mut state, balance);
+            }
+            OutstandingLiability::CancelResubmitReplacementOutstanding { .. } => {
+                Self::record_balance(
+                    &mut state,
+                    LiabilityBalance {
+                        now_ms,
+                        submit_cost: SUBMIT_COMMAND_COST,
+                        rest_cost: REST_CALL_COST,
+                    },
+                );
+            }
         }
-        Self::record_remaining_liability(&mut state, self.generation, now_ms)
+        Ok(())
     }
 
     pub fn commit(mut self) -> Result<(), RequoteBudgetReservationDenied> {
@@ -485,42 +506,31 @@ impl RequoteBudgetReservation {
 
     fn settle_committed(&mut self) -> Result<(), RequoteBudgetReservationDenied> {
         let mut state = self.budget.lock();
-        let Some(now_ms) = state
-            .outstanding
-            .get(&self.generation)
-            .map(|liability| liability.now_ms)
-        else {
+        let Some(liability) = state.outstanding.remove(&self.generation) else {
             return Ok(());
         };
-        Self::record_remaining_liability(&mut state, self.generation, now_ms)
+        Self::record_balance(&mut state, liability.balance());
+        Ok(())
     }
 
     fn settle_aborted(&mut self) -> Result<(), RequoteBudgetReservationDenied> {
-        let removed = self.budget.lock().outstanding.remove(&self.generation);
-        if removed.is_none() {
-            return Err(RequoteBudgetReservationDenied::StaleReservation);
-        }
-        Ok(())
+        self.budget
+            .lock()
+            .outstanding
+            .remove(&self.generation)
+            .ok_or(RequoteBudgetReservationDenied::StaleReservation)
+            .map(drop)
     }
 
-    fn record_remaining_liability(
-        state: &mut RequoteBudgetPairState,
-        generation: u64,
-        now_ms: u64,
-    ) -> Result<(), RequoteBudgetReservationDenied> {
-        let liability = state
-            .outstanding
-            .remove(&generation)
-            .ok_or(RequoteBudgetReservationDenied::StaleReservation)?;
-        if liability.submit_cost > 0 {
+    fn record_balance(state: &mut RequoteBudgetPairState, balance: LiabilityBalance) {
+        if balance.submit_cost > 0 {
             state
                 .submit_commands
-                .record_reserved(now_ms, liability.submit_cost);
+                .record_reserved(balance.now_ms, balance.submit_cost);
         }
         state
             .rest_calls
-            .record_reserved(now_ms, liability.rest_cost);
-        Ok(())
+            .record_reserved(balance.now_ms, balance.rest_cost);
     }
 }
 
@@ -970,6 +980,38 @@ mod tests {
         assert_eq!(pair.outstanding_rest_cost(), 0);
         assert_eq!(pair.submit_commands_in_window(), 1);
         assert_eq!(pair.rest_cost_in_window(), 1);
+    }
+
+    #[test]
+    fn cancel_resubmit_liability_advances_by_phase() {
+        let pair = fresh_pair(1, 2);
+        let mut reservation = pair
+            .reserve(
+                pair.propose_cancel_resubmit(1_000)
+                    .expect("cancel/resubmit proposal fits"),
+            )
+            .expect("cancel/resubmit reservation arms");
+
+        assert_eq!(pair.outstanding_submit_cost(), 1);
+        assert_eq!(pair.outstanding_rest_cost(), 2);
+        reservation
+            .mark_sink_invoked_at(1_000)
+            .expect("cancel invocation consumes only the cancel REST liability");
+        assert_eq!(pair.submit_commands_in_window(), 0);
+        assert_eq!(pair.rest_cost_in_window(), 1);
+        assert_eq!(pair.outstanding_submit_cost(), 1);
+        assert_eq!(pair.outstanding_rest_cost(), 1);
+
+        reservation
+            .mark_sink_invoked_at(1_001)
+            .expect("replacement invocation consumes the remaining liability");
+        reservation
+            .commit()
+            .expect("a fully consumed reservation is an inert receipt");
+        assert_eq!(pair.outstanding_submit_cost(), 0);
+        assert_eq!(pair.outstanding_rest_cost(), 0);
+        assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 2);
     }
 
     #[test]

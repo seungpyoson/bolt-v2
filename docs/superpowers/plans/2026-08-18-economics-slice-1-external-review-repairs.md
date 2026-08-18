@@ -985,6 +985,34 @@ git add config docs src tests
 git commit -m "refactor(admission): delete dormant forced reduction authority"
 ```
 
+### Task 10A: Type replacement-conflict outcomes
+
+**Files:**
+- Modify: `src/strategies/binary_oracle_edge_taker/exposure.rs`
+
+**Interfaces:**
+- Replaces: correlated `ExposureState` plus optional adoption result.
+- Produces: exhaustive unresolved, retained, adopted, and released outcomes with an explicit direct-or-recovery container.
+
+- [x] **Step 1: Replace the correlated result pair with typed outcomes**
+
+An unresolved conflict retains its conflict state in the named container. Resolved outcomes cannot carry an invalid optional adoption payload.
+
+- [x] **Step 2: Consolidate changed-transition effects**
+
+Generation advance and operation-arm retirement share the single changed branch.
+
+- [x] **Step 3: Verify behavior and complexity**
+
+The full exposure module passed 136/136 before the layout-only boxing refinement; every replacement-related library regression passed 30/30 after it. The repository advisory Clippy command passed with `-D warnings`. Production conditional-bearing lines for `e01083eb4..HEAD` are +2/-4, net -2 (`if` net -3, `match` net +1).
+
+- [x] **Step 4: Commit**
+
+```bash
+git add docs/superpowers/plans/2026-08-18-economics-slice-1-external-review-repairs.md src/strategies/binary_oracle_edge_taker/exposure.rs
+git commit -m "refactor(exposure): type replacement conflict outcomes"
+```
+
 ### Task 11: Correct lasting scope evidence and verify the exact head
 
 **Files:**

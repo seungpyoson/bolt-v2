@@ -1450,7 +1450,7 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
             generation,
         ))?;
         participant.mark_sink_invoked(actor_now_ns)?;
-        participant.settle_command_issued(generation)?;
+        participant.settle_nt_mutation_invoked(generation)?;
         anyhow::bail!("test sink should not receive cancel commands")
     }
 

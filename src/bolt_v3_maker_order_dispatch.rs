@@ -148,7 +148,7 @@ impl BoltV3RestingRegistrationCommitParticipant for MakerQuoteTransactionPartici
         )
     }
 
-    fn settle_command_issued(&mut self, generation: u64) -> Result<()> {
+    fn settle_nt_mutation_invoked(&mut self, generation: u64) -> Result<()> {
         Self::require_settled(
             self.market
                 .commit_leg_transaction(self.lifecycle(), generation),
@@ -959,7 +959,7 @@ mod tests {
         }
     }
 
-    fn issued_cancel_with_prepaid(
+    fn invoked_cancel_with_prepaid(
         submit_cap: u64,
         rest_cap: u64,
     ) -> (MarketQuote, RequoteBudgetPair) {
@@ -972,7 +972,7 @@ mod tests {
         participant
             .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
             .expect("participant should reach the sink");
-        participant.settle_command_issued(1).unwrap();
+        participant.settle_nt_mutation_invoked(1).unwrap();
         assert_eq!(market.leg_state(Leg::Yes), LegState::RequotePending);
         assert!(market.prepaid_generation(Leg::Yes).is_some());
         let _ = MakerQuoteLifecycleHandle::new(market.clone(), lifecycle.leg())
@@ -980,7 +980,7 @@ mod tests {
         (market, budget)
     }
 
-    fn issued_cancel_before_terminal() -> (
+    fn invoked_cancel_before_terminal() -> (
         MarketQuote,
         RequoteBudgetPair,
         MakerQuoteLifecycleHandle,
@@ -996,14 +996,14 @@ mod tests {
         participant
             .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
             .expect("participant should reach the sink");
-        participant.settle_command_issued(1).unwrap();
+        participant.settle_nt_mutation_invoked(1).unwrap();
         (market, budget, lifecycle, participant)
     }
 
     #[test]
     fn typed_terminal_disposition_distinguishes_cancel_from_fill() {
         let (canceled_market, _canceled_budget, canceled_lifecycle, canceled_participant) =
-            issued_cancel_before_terminal();
+            invoked_cancel_before_terminal();
         let _ =
             canceled_lifecycle.refine(terminal_event(1, MakerQuoteTerminalDisposition::Canceled));
         assert_eq!(
@@ -1014,7 +1014,7 @@ mod tests {
         drop(canceled_participant);
 
         let (filled_market, _filled_budget, filled_lifecycle, filled_participant) =
-            issued_cancel_before_terminal();
+            invoked_cancel_before_terminal();
         let _ = filled_lifecycle.refine(terminal_event(1, MakerQuoteTerminalDisposition::Filled));
         assert_eq!(filled_market.leg_state(Leg::Yes), LegState::Idle);
         assert_eq!(filled_market.prepaid_generation(Leg::Yes), None);
@@ -1023,7 +1023,7 @@ mod tests {
 
     #[test]
     fn canceled_terminal_refines_to_filled_and_retires_prepaid_replacement() {
-        let (market, budget, lifecycle, participant) = issued_cancel_before_terminal();
+        let (market, budget, lifecycle, participant) = invoked_cancel_before_terminal();
 
         let _ = lifecycle.refine(terminal_event(1, MakerQuoteTerminalDisposition::Canceled));
         assert_eq!(
@@ -1045,7 +1045,7 @@ mod tests {
 
     #[test]
     fn filled_terminal_releases_the_owned_prepaid_capacity() {
-        let (market, budget, lifecycle, participant) = issued_cancel_before_terminal();
+        let (market, budget, lifecycle, participant) = invoked_cancel_before_terminal();
         assert_eq!(budget.outstanding_submit_cost(), 1);
         assert_eq!(budget.outstanding_rest_cost(), 1);
 
@@ -1104,7 +1104,7 @@ mod tests {
 
     #[test]
     fn cancel_one_side_after_requote_confirmation_charges_cancel_and_releases_replacement() {
-        let (mut market, budget) = issued_cancel_with_prepaid(8, 8);
+        let (mut market, budget) = invoked_cancel_with_prepaid(8, 8);
 
         assert_eq!(market.cancel_one_side(Leg::Yes), None);
         assert_eq!(market.leg_state(Leg::Yes), LegState::Idle);
@@ -1113,7 +1113,7 @@ mod tests {
 
     #[test]
     fn drain_after_requote_confirmation_charges_cancel_and_releases_replacement() {
-        let (mut market, budget) = issued_cancel_with_prepaid(8, 8);
+        let (mut market, budget) = invoked_cancel_with_prepaid(8, 8);
 
         assert_eq!(market.drain(), None);
         assert_eq!(
@@ -1163,7 +1163,7 @@ mod tests {
             participant
                 .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
                 .expect("participant should reach the sink");
-            participant.settle_command_issued(generation).unwrap();
+            participant.settle_nt_mutation_invoked(generation).unwrap();
             let _ = MakerQuoteLifecycleHandle::new(market.clone(), leg).refine(terminal_event(
                 generation,
                 MakerQuoteTerminalDisposition::Canceled,
@@ -1185,7 +1185,7 @@ mod tests {
     }
 
     #[test]
-    fn cancel_failure_before_issuance_restores_resting_state_and_releases_prepaid_capacity() {
+    fn cancel_failure_before_invocation_restores_resting_state_and_releases_prepaid_capacity() {
         let market = MarketQuote::new_for_test(false);
         let budget = budget_pair(1, 2);
         let mut participant =
@@ -1233,7 +1233,7 @@ mod tests {
     }
 
     #[test]
-    fn modify_rolls_back_before_issuance_and_commits_pending_state_at_issuance() {
+    fn modify_rolls_back_before_invocation_and_commits_pending_state_at_invocation() {
         let aborted_market = MarketQuote::new_for_test(true);
         let aborted_budget = budget_pair(1, 1);
         let mut aborted =
@@ -1243,18 +1243,18 @@ mod tests {
         assert_eq!(aborted_market.leg_state(Leg::Yes), LegState::Resting);
         assert_eq!(aborted_budget.rest_cost_in_window(), 0);
 
-        let issued_market = MarketQuote::new_for_test(true);
-        let issued_budget = budget_pair(1, 1);
-        let mut issued =
-            MakerQuoteTransactionParticipant::new(modify_context(&issued_market, &issued_budget));
-        issued.arm_at_identity(lifecycle_identity(2)).unwrap();
-        issued
+        let invoked_market = MarketQuote::new_for_test(true);
+        let invoked_budget = budget_pair(1, 1);
+        let mut invoked =
+            MakerQuoteTransactionParticipant::new(modify_context(&invoked_market, &invoked_budget));
+        invoked.arm_at_identity(lifecycle_identity(2)).unwrap();
+        invoked
             .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
             .expect("participant should reach the sink");
-        issued.settle_command_issued(2).unwrap();
-        assert_eq!(issued_market.leg_state(Leg::Yes), LegState::ModifyPending);
-        assert_eq!(issued_budget.submit_commands_in_window(), 0);
-        assert_eq!(issued_budget.rest_cost_in_window(), 1);
+        invoked.settle_nt_mutation_invoked(2).unwrap();
+        assert_eq!(invoked_market.leg_state(Leg::Yes), LegState::ModifyPending);
+        assert_eq!(invoked_budget.submit_commands_in_window(), 0);
+        assert_eq!(invoked_budget.rest_cost_in_window(), 1);
     }
 
     #[test]
@@ -1282,7 +1282,7 @@ mod tests {
         participant
             .mark_sink_invoked(1_900 * NANOS_PER_MILLI_U64)
             .unwrap();
-        participant.settle_command_issued(1).unwrap();
+        participant.settle_nt_mutation_invoked(1).unwrap();
 
         assert!(budget.propose_rest(2_001).is_err());
     }
@@ -1313,8 +1313,8 @@ mod tests {
     }
 
     #[test]
-    fn cancel_issuance_retains_one_prepaid_token_and_pre_sink_replacement_reuses_it() {
-        let (market, budget) = issued_cancel_with_prepaid(8, 8);
+    fn cancel_invocation_retains_one_prepaid_token_and_pre_sink_replacement_reuses_it() {
+        let (market, budget) = invoked_cancel_with_prepaid(8, 8);
         assert_eq!(
             market.leg_state(Leg::Yes),
             LegState::ReplacementPendingBackoff
@@ -1353,7 +1353,7 @@ mod tests {
             .expect("participant should reach the sink");
         let _ = MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes)
             .refine(terminal_event(1, MakerQuoteTerminalDisposition::Canceled));
-        participant.settle_command_issued(1).unwrap();
+        participant.settle_nt_mutation_invoked(1).unwrap();
 
         assert_eq!(
             market.leg_state(Leg::Yes),
@@ -1367,7 +1367,7 @@ mod tests {
 
     #[test]
     fn sink_rejected_replacement_consumes_prepaid_and_next_retry_reserves_fresh() {
-        let (market, budget) = issued_cancel_with_prepaid(8, 8);
+        let (market, budget) = invoked_cancel_with_prepaid(8, 8);
         let mut replacement =
             MakerQuoteTransactionParticipant::new(replacement_context(&market, &budget));
         replacement.arm_at_identity(lifecycle_identity(2)).unwrap();
@@ -1391,7 +1391,7 @@ mod tests {
 
     #[test]
     fn repeated_sink_rejected_replacements_take_fresh_tokens_until_the_cap_blocks_routing() {
-        let (market, budget) = issued_cancel_with_prepaid(2, 3);
+        let (market, budget) = invoked_cancel_with_prepaid(2, 3);
         let mut first =
             MakerQuoteTransactionParticipant::new(replacement_context(&market, &budget));
         first.arm_at_identity(lifecycle_identity(2)).unwrap();
@@ -1440,7 +1440,7 @@ mod tests {
 
     #[test]
     fn authoritative_terminal_recovers_poisoned_replacement_with_its_prepaid_token() {
-        let (market, budget) = issued_cancel_with_prepaid(8, 8);
+        let (market, budget) = invoked_cancel_with_prepaid(8, 8);
         let mut replacement =
             MakerQuoteTransactionParticipant::new(replacement_context(&market, &budget));
         replacement.arm_at_identity(lifecycle_identity(2)).unwrap();
@@ -1513,7 +1513,7 @@ mod tests {
 
     #[test]
     fn post_sink_rollback_cannot_reuse_an_exhausted_prepaid_token() {
-        let (market, budget) = issued_cancel_with_prepaid(8, 8);
+        let (market, budget) = invoked_cancel_with_prepaid(8, 8);
         let mut replacement =
             MakerQuoteTransactionParticipant::new(replacement_context(&market, &budget));
         replacement.arm_at_identity(lifecycle_identity(2)).unwrap();
@@ -1562,7 +1562,7 @@ mod tests {
         cancel
             .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
             .unwrap();
-        cancel.settle_command_issued(1).unwrap();
+        cancel.settle_nt_mutation_invoked(1).unwrap();
         let _ = MakerQuoteLifecycleHandle::new(market.clone(), lifecycle.leg())
             .refine(terminal_event(1, MakerQuoteTerminalDisposition::Canceled));
 

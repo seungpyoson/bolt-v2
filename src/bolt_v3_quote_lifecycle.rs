@@ -115,7 +115,7 @@ impl QuoteLegTransactionObligation {
         match self {
             Self::FreshSubmit | Self::ReplacementSubmit => QuoteRouteSuccess::Submitted,
             Self::RequoteCancel | Self::PlainCancel | Self::Modify => {
-                QuoteRouteSuccess::CommandIssued
+                QuoteRouteSuccess::NtMutationInvoked
             }
         }
     }
@@ -328,7 +328,7 @@ struct QuoteTransactionArm {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QuoteRouteSettlement {
     Submitted,
-    CommandIssued,
+    NtMutationInvoked,
     SinkRejected,
     CallbackRetired,
     PreSinkAbort,
@@ -339,21 +339,23 @@ enum QuoteRouteSettlement {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QuoteRouteSuccess {
     Submitted,
-    CommandIssued,
+    NtMutationInvoked,
 }
 
 impl QuoteRouteSuccess {
     const fn settlement(self) -> QuoteRouteSettlement {
         match self {
             Self::Submitted => QuoteRouteSettlement::Submitted,
-            Self::CommandIssued => QuoteRouteSettlement::CommandIssued,
+            Self::NtMutationInvoked => QuoteRouteSettlement::NtMutationInvoked,
         }
     }
 
     const fn illegal_outcome_message(self) -> &'static str {
         match self {
             Self::Submitted => "submitted outcome is not legal for this quote transaction",
-            Self::CommandIssued => "command-issued outcome is not legal for this quote transaction",
+            Self::NtMutationInvoked => {
+                "NT-mutation-invoked outcome is not legal for this quote transaction"
+            }
         }
     }
 }
@@ -801,7 +803,7 @@ enum QuoteTransactionEvent {
 enum SinkCapableQuoteTransactionEvent {
     SinkInvoked { generation: u64, actor_now_ms: u64 },
     Submitted { generation: u64 },
-    CommandIssued { generation: u64 },
+    NtMutationInvoked { generation: u64 },
     SinkRejected { generation: u64 },
     CallbackRetired { generation: u64 },
     PostSinkUnwind { generation: u64 },
@@ -853,7 +855,7 @@ impl QuoteTransactionReductionRequest {
         let (settled_owner, poison_only) = match &self.event {
             QuoteTransactionReductionEvent::SinkCapable(
                 SinkCapableQuoteTransactionEvent::Submitted { .. }
-                | SinkCapableQuoteTransactionEvent::CommandIssued { .. }
+                | SinkCapableQuoteTransactionEvent::NtMutationInvoked { .. }
                 | SinkCapableQuoteTransactionEvent::PostSinkUnwind { .. },
             ) => (prior.armed_identity().cloned(), false),
             QuoteTransactionReductionEvent::PreSink(
@@ -1105,8 +1107,8 @@ impl GovernedQuoteTransactionInner {
             SinkCapableQuoteTransactionEvent::Submitted { generation } => {
                 Self::reduce_route_success(state, generation, QuoteRouteSuccess::Submitted)
             }
-            SinkCapableQuoteTransactionEvent::CommandIssued { generation } => {
-                Self::reduce_route_success(state, generation, QuoteRouteSuccess::CommandIssued)
+            SinkCapableQuoteTransactionEvent::NtMutationInvoked { generation } => {
+                Self::reduce_route_success(state, generation, QuoteRouteSuccess::NtMutationInvoked)
             }
             SinkCapableQuoteTransactionEvent::SinkRejected { generation } => {
                 Self::reduce_sink_rejected(state, generation)
@@ -2120,18 +2122,23 @@ impl GovernedQuoteTransactionInner {
             ClassifiedSinkInvokedState::Invoked { mode, arm, budget } => {
                 match (arm.obligation.route_success(), success) {
                     (QuoteRouteSuccess::Submitted, QuoteRouteSuccess::Submitted)
-                    | (QuoteRouteSuccess::CommandIssued, QuoteRouteSuccess::CommandIssued) => {
+                    | (
+                        QuoteRouteSuccess::NtMutationInvoked,
+                        QuoteRouteSuccess::NtMutationInvoked,
+                    ) => {
                         let stable = Self::route_success_state(mode, arm, budget);
                         Ok((
                             Self::settled(generation, success.settlement(), stable),
                             GovernedQuoteTransactionCommit::no_action(),
                         ))
                     }
-                    (QuoteRouteSuccess::Submitted, QuoteRouteSuccess::CommandIssued)
-                    | (QuoteRouteSuccess::CommandIssued, QuoteRouteSuccess::Submitted) => Err((
-                        mode.sink_invoked_state(arm, budget),
-                        anyhow::anyhow!(success.illegal_outcome_message()),
-                    )),
+                    (QuoteRouteSuccess::Submitted, QuoteRouteSuccess::NtMutationInvoked)
+                    | (QuoteRouteSuccess::NtMutationInvoked, QuoteRouteSuccess::Submitted) => {
+                        Err((
+                            mode.sink_invoked_state(arm, budget),
+                            anyhow::anyhow!(success.illegal_outcome_message()),
+                        ))
+                    }
                 }
             }
             ClassifiedSinkInvokedState::Settled(state) => {
@@ -3038,7 +3045,7 @@ impl MarketQuote {
         let event = match proposal.action {
             LifecycleAction::Submit => SinkCapableQuoteTransactionEvent::Submitted { generation },
             LifecycleAction::Cancel | LifecycleAction::Modify => {
-                SinkCapableQuoteTransactionEvent::CommandIssued { generation }
+                SinkCapableQuoteTransactionEvent::NtMutationInvoked { generation }
             }
         };
         self.transaction(proposal.leg).reduce(event).is_ok()
@@ -3961,7 +3968,7 @@ mod tests {
             assert_eq!(inner.state.leg_state(), LegState::Idle);
             assert!(
                 QuoteTransactionReductionRequest::from(
-                    SinkCapableQuoteTransactionEvent::CommandIssued { generation }
+                    SinkCapableQuoteTransactionEvent::NtMutationInvoked { generation }
                 )
                 .apply(&mut inner)
                 .is_ok()
@@ -3969,7 +3976,7 @@ mod tests {
             assert!(matches!(
                 inner.state,
                 QuoteTransactionState::Settled {
-                    route: Some(QuoteRouteSettlement::CommandIssued),
+                    route: Some(QuoteRouteSettlement::NtMutationInvoked),
                     reopened: false,
                     ..
                 }

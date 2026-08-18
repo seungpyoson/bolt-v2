@@ -1234,7 +1234,9 @@ impl BoltV3OrderEconomicsHandle {
             }
         };
         let (effect, mut reservation) = effect;
-        let (generation, operation_result, sink_invoked) = match effect {
+        // True means the NT mutation method was invoked. It does not prove that a
+        // network request left the process, so the reservation remains charged.
+        let (generation, operation_result, nt_mutation_invoked) = match effect {
             CancelEffect::None => {
                 return self.finish_cancel_drive(client_order_id, Vec::new());
             }
@@ -1310,14 +1312,14 @@ impl BoltV3OrderEconomicsHandle {
         };
         let mut settlement_failures = Vec::new();
         if let Some(mut participant) = command_participant
-            && let Err(error) = match sink_invoked {
-                true => participant.settle_command_issued(generation),
+            && let Err(error) = match nt_mutation_invoked {
+                true => participant.settle_nt_mutation_invoked(generation),
                 false => participant.abort_pre_sink(generation),
             }
         {
             settlement_failures.push(error.to_string());
         }
-        if sink_invoked
+        if nt_mutation_invoked
             && let Some(reservation) = reservation
             && let Err(denial) = reservation.commit()
         {
@@ -1784,9 +1786,14 @@ mod tests {
     };
 
     use crate::{
+        bolt_v3_maker_order_dispatch::{
+            MakerQuoteTransactionContext, maker_quote_transaction_participant_for_test,
+        },
+        bolt_v3_maker_quote_control::{QuoteControlInput, drive_quote_leg},
         bolt_v3_order_execution::{
-            BoltV3NtVenueMutationSink, BoltV3RestingRegistrationRejectionKind,
-            BoltV3RestingSubmitTransactionOutcome, BoltV3SubmitContext,
+            BoltV3NtVenueMutationSink, BoltV3RestingRegistrationCommitParticipant,
+            BoltV3RestingRegistrationRejectionKind, BoltV3RestingSubmitTransactionOutcome,
+            BoltV3SubmitContext,
         },
         bolt_v3_quote_lifecycle::{
             Leg, LegEvent, LegState, LifecycleAction, MakerOrderLifecycleScopeIdentity,
@@ -1802,6 +1809,7 @@ mod tests {
         cached: Option<OrderAny>,
         cancel_calls: usize,
         query_calls: usize,
+        cancel_error: Option<&'static str>,
     }
 
     impl BoltV3NtVenueMutationSink for CoordinatorSink {
@@ -1838,7 +1846,10 @@ mod tests {
             _params: Option<Params>,
         ) -> Result<()> {
             self.cancel_calls += 1;
-            Ok(())
+            match self.cancel_error {
+                Some(error) => anyhow::bail!(error),
+                None => Ok(()),
+            }
         }
 
         fn modify_order_via_nt(
@@ -1887,6 +1898,44 @@ mod tests {
         );
         drop(registry);
         handle
+    }
+
+    fn requote_cancel_participant() -> (
+        Box<dyn BoltV3RestingRegistrationCommitParticipant>,
+        MarketQuote,
+        RequoteBudgetPair,
+    ) {
+        let mut market = MarketQuote::new_for_test(false);
+        market.on_leg_event(
+            Leg::Yes,
+            LegEvent::QuoteTrigger {
+                requote_needed: true,
+            },
+        );
+        market.on_leg_event(Leg::Yes, LegEvent::Accepted);
+        let mut budget = RequoteBudgetPair::new(
+            RequoteBudget::new(1, 60_000, 0),
+            RequoteBudget::new(2, 60_000, 0),
+        );
+        let decision = drive_quote_leg(
+            &mut market,
+            &mut budget,
+            QuoteControlInput {
+                leg: Leg::Yes,
+                desired_price: 0.6,
+                resting_price: Some(0.5),
+                requote_threshold: 0.01,
+                eps: 1e-9,
+                now_ms: 1,
+            },
+        );
+        let participant =
+            maker_quote_transaction_participant_for_test(MakerQuoteTransactionContext::new(
+                market.clone(),
+                budget.clone(),
+                decision.proposal.expect("requote cancel must be proposed"),
+            ));
+        (participant, market, budget)
     }
 
     fn initialized_order(client_order_id: &str) -> OrderAny {
@@ -2364,6 +2413,7 @@ mod tests {
             cached: Some(order_a.clone()),
             cancel_calls: 0,
             query_calls: 0,
+            cancel_error: None,
         };
         let _ = handle.drive_cancel_intent(
             BoltV3OrderExecutionPolicy::live(),
@@ -3694,6 +3744,71 @@ mod tests {
     }
 
     #[test]
+    fn nt_cancel_error_after_invocation_retains_charge_and_enters_backoff() {
+        let order = accepted_order("cancel-nt-error", "VENUE-CANCEL-NT-ERROR");
+        let client_order_id = order.client_order_id();
+        let handle = coordinator_handle_with_budget(order.clone(), 8);
+        let (participant, market, budget) = requote_cancel_participant();
+        handle
+            .tracked_orders
+            .write()
+            .expect("registry should lock")
+            .records
+            .get_mut(&client_order_id)
+            .expect("tracked record should exist")
+            .governed_mut()
+            .expect("tracked record should retain exact authority")
+            .maker_lifecycle = MakerQuoteOrderAuthority::new(
+            &order,
+            1,
+            MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes),
+        );
+        let now_ns = NANOS_PER_MILLI_U64;
+        handle
+            .request_cancel_intent(client_order_id, now_ns)
+            .expect("cancel intent should register");
+        let mut sink = CoordinatorSink {
+            now_ns,
+            cached: Some(order.clone()),
+            cancel_calls: 0,
+            query_calls: 0,
+            cancel_error: Some("configured NT cancel error"),
+        };
+
+        let error = handle
+            .drive_cancel_intent(
+                BoltV3OrderExecutionPolicy::live(),
+                &mut sink,
+                CancelDriveInput {
+                    execution_client_id: "execution_client",
+                    client_order_id,
+                    cached: Some(&order),
+                    now_ns,
+                    command_participant: Some(participant),
+                },
+            )
+            .expect_err("an NT cancel error must remain loud and retryable");
+
+        assert!(error.to_string().contains("configured NT cancel error"));
+        assert_eq!(sink.cancel_calls, 1);
+        assert_eq!(budget.rest_cost_in_window(), 1);
+        assert_eq!(budget.outstanding_submit_cost(), 1);
+        assert_eq!(budget.outstanding_rest_cost(), 1);
+        assert_eq!(market.leg_state(Leg::Yes), LegState::RequotePending);
+        let registry = handle.tracked_orders.read().expect("registry should lock");
+        let routing_state = registry
+            .records
+            .get(&client_order_id)
+            .expect("tracked record should remain retryable")
+            .cancellation
+            .intent
+            .as_ref()
+            .expect("cancel intent should remain armed")
+            .routing_state;
+        assert!(matches!(routing_state, CancelRoutingState::Backoff { .. }));
+    }
+
+    #[test]
     fn cancel_retry_cap_denial_makes_zero_calls_and_preserves_attempt_health_until_capacity_returns()
      {
         let order = accepted_order("cancel-cap", "VENUE-CANCEL-CAP");
@@ -3709,6 +3824,7 @@ mod tests {
             cached: Some(order.clone()),
             cancel_calls: 0,
             query_calls: 0,
+            cancel_error: None,
         };
 
         handle
@@ -3801,6 +3917,7 @@ mod tests {
             cached: None,
             cancel_calls: 0,
             query_calls: 0,
+            cancel_error: None,
         };
 
         handle

@@ -629,24 +629,25 @@ git commit -m "fix(maker): seal quote leg instrument authority"
 - Modify: `src/bolt_v3_order_execution/tracked_order_economics.rs`
 - Modify: `src/bolt_v3_order_execution/tracked_order_economics/cancel_coordinator.rs`
 - Test: cancellation coordinator unit tests and maker transaction tests
+- Test: `tests/bolt_v3_maker_runtime_quote.rs`
 
 **Interfaces:**
 - Renames: `CommandIssued` to `NtMutationInvoked` and `settle_command_issued` to `settle_nt_mutation_invoked`.
 - Preserves: charging and lifecycle settlement after NT method invocation, regardless of synchronous `Result<()>`.
 
-- [ ] **Step 1: Add an NT-error accounting test**
+- [x] **Step 1: Add an NT-error accounting test**
 
-Extend `CoordinatorSink` with a configured cancel error. Add `nt_cancel_error_after_invocation_retains_charge_and_enters_backoff`: assert one NT method call, one REST charge, no outstanding reservation, `Backoff`, and quote settlement through `NtMutationInvoked`.
+Extend `CoordinatorSink` with a configured cancel error. Add `nt_cancel_error_after_invocation_retains_charge_and_enters_backoff`: assert one NT method call, one REST charge, retained prepaid replacement authority, `Backoff`, and quote settlement through `NtMutationInvoked`.
 
-- [ ] **Step 2: Run the test before renaming**
+- [x] **Step 2: Run the test before renaming**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib nt_cancel_error_after_invocation_retains_charge_and_enters_backoff -- --test-threads=1
 ```
 
-Expected: compile failure until the new names exist; the final behavior must retain the conservative charge.
+Expected: PASS as characterization evidence under the old name; the final behavior must retain the conservative charge while the boundary is renamed truthfully.
 
-- [ ] **Step 3: Rename the boundary exhaustively**
+- [x] **Step 3: Rename the boundary exhaustively**
 
 Rename the quote settlement/success/event variants, participant trait method, implementations, coordinator local `sink_invoked` flag, diagnostics, and tests. Use `nt_mutation_invoked` for the boolean and document:
 
@@ -657,7 +658,7 @@ Rename the quote settlement/success/event variants, participant trait method, im
 
 Do not add a cancel `SinkRejected` refund path.
 
-- [ ] **Step 4: Run cancellation and quote settlement tests**
+- [x] **Step 4: Run cancellation and quote settlement tests**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib cancel_coordinator::tests -- --test-threads=1
@@ -666,10 +667,10 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: PASS and no production `CommandIssued` symbol remains.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
-git add src/bolt_v3_quote_lifecycle.rs src/bolt_v3_maker_order_dispatch.rs src/bolt_v3_order_execution/tracked_order_economics.rs src/bolt_v3_order_execution/tracked_order_economics/cancel_coordinator.rs
+git add src/bolt_v3_quote_lifecycle.rs src/bolt_v3_maker_order_dispatch.rs src/bolt_v3_order_execution/tracked_order_economics.rs src/bolt_v3_order_execution/tracked_order_economics/cancel_coordinator.rs tests/bolt_v3_maker_runtime_quote.rs
 git commit -m "refactor(maker): name NT mutation invocation boundary"
 ```
 

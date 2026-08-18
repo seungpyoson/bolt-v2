@@ -584,7 +584,7 @@ pub trait BoltV3RestingRegistrationCommitParticipant: std::fmt::Debug {
     fn mark_sink_invoked(&mut self, actor_now_ns: u64) -> Result<()>;
     fn registration_capability(&self, generation: u64) -> BoltV3RestingRegistrationCapability;
     fn settle_submitted(&mut self, generation: u64) -> Result<()>;
-    fn settle_command_issued(&mut self, generation: u64) -> Result<()>;
+    fn settle_nt_mutation_invoked(&mut self, generation: u64) -> Result<()>;
     fn settle_sink_rejected(&mut self, generation: u64) -> Result<()>;
     fn settle_callback_retired(&mut self, generation: u64) -> Result<()>;
     fn abort_pre_sink(&mut self, generation: u64) -> Result<()>;
@@ -1832,7 +1832,7 @@ mod tests {
             Ok(())
         }
 
-        fn settle_command_issued(&mut self, _generation: u64) -> anyhow::Result<()> {
+        fn settle_nt_mutation_invoked(&mut self, _generation: u64) -> anyhow::Result<()> {
             self.settle();
             Ok(())
         }
@@ -1925,7 +1925,7 @@ mod tests {
             self.settle()
         }
 
-        fn settle_command_issued(&mut self, _generation: u64) -> anyhow::Result<()> {
+        fn settle_nt_mutation_invoked(&mut self, _generation: u64) -> anyhow::Result<()> {
             self.settle()
         }
 

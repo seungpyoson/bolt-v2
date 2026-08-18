@@ -203,7 +203,7 @@ Use the same lexical production-Rust scanner and the exact range `623801311..HEA
 
 Evidence: production Rust moved from `if=4604, match=1612, combined=6216` at `623801311` to `if=4627, match=1737, combined=6364` in the final worktree: net `if=+23`, `match=+125`, combined `+148`. The rejected takeover head was combined `+424`, so this cleanup removes 276 conditional-bearing production lines; the edge-taker module contributes only `+3` at the final worktree.
 
-- [ ] **Step 5: Commit and push**
+- [x] **Step 5: Commit and push**
 
 ```bash
 git add <the reviewed cleanup paths>

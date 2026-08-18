@@ -4285,7 +4285,7 @@ fn overlapping_exit_operation_requests_mint_only_one_grant() {
         .expect_err("overlapping exit operation must be rejected");
     assert_eq!(
         second.reason,
-        ExposureOperationBlockedReason::StaleGeneration
+        ExposureOperationBlockedReason::OperationAlreadyArmed
     );
     let decision = strategy.exit_intent_decision_at(1_200);
     assert_eq!(
@@ -5416,7 +5416,7 @@ fn blind_recovery_causes_derive_evidence_and_retain_authority() {
         ),
         (
             BlindRecoveryState::identity_bearing(
-                BlindRecoveryIdentityReason::DivergentUnsupportedPosition,
+                BlindRecoveryIdentityReason::DivergentUnsupported,
                 episode,
             ),
             BlindRecoveryReason::DivergentUnsupportedPosition,
@@ -5469,21 +5469,21 @@ fn every_blind_recovery_reason_rejects_raw_truth_and_uses_its_authorized_class()
     );
     let recoveries = vec![
         BlindRecoveryState::identity_bearing(
-            BlindRecoveryIdentityReason::InvalidBootstrappedPosition {
+            BlindRecoveryIdentityReason::InvalidBootstrap {
                 entry_order_side: OrderSide::Buy,
                 side: PositionSide::Flat,
             },
             episode.clone(),
         ),
         BlindRecoveryState::identity_bearing(
-            BlindRecoveryIdentityReason::InvalidLivePosition {
+            BlindRecoveryIdentityReason::InvalidLive {
                 entry_order_side: OrderSide::Buy,
                 side: Some(PositionSide::Flat),
             },
             episode.clone(),
         ),
         BlindRecoveryState::identity_bearing(
-            BlindRecoveryIdentityReason::DivergentUnsupportedPosition,
+            BlindRecoveryIdentityReason::DivergentUnsupported,
             episode.clone(),
         ),
         BlindRecoveryState::probe(BlindRecoveryProbeReason::CacheProbeFailed),
@@ -8014,6 +8014,97 @@ fn new_entry_submit_clears_stale_flat_terminal_override() {
         strategy.last_flat_terminal_entry_override.is_none(),
         "new entry submit must clear stale terminal-entry override state"
     );
+}
+
+fn admitted_entry_operation_fixture() -> (
+    BinaryOracleEdgeTaker,
+    Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
+    Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
+    EntrySubmissionDecision,
+) {
+    let evidence = recording_decision_evidence();
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission.clone(),
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy.config.order_notional_target = 25.0;
+    strategy.config.maximum_position_notional = 25.0;
+    strategy.config.risk_lambda = 0.0001;
+    let decision = strategy.entry_submission_decision_at(1_200);
+    assert!(
+        decision.instrument_id.is_some()
+            && decision.order_side.is_some()
+            && decision.price.is_some()
+            && decision.quantity_value.is_some()
+            && decision.blocked_reason.is_none(),
+        "entry operation fixture must produce an admitted decision; got {decision:#?}",
+    );
+    (strategy, evidence, submit_admission, decision)
+}
+
+fn sole_entry_operation_skip_reason(
+    evidence: &crate::bolt_v3_current_evidence::DecisionEvidenceRecorder,
+) -> EvidenceEntrySkipReason {
+    evidence
+        .recorded_facts()
+        .expect("entry operation evidence should decode")
+        .into_iter()
+        .find_map(|fact| match fact {
+            CurrentFact::EntrySkipObservation(skip) => Some(skip.reason_category),
+            _ => None,
+        })
+        .expect("entry operation rejection should record one skip")
+}
+
+#[test]
+fn entry_operation_stale_generation_does_not_route_an_old_decision() {
+    let (mut strategy, evidence, submit_admission, decision) = admitted_entry_operation_fixture();
+    let pending = pending_entry_state(
+        &mut strategy,
+        ClientOrderId::from("ENTRY-OPERATION-STALE-GENERATION"),
+    );
+    set_pending_entry(&mut strategy, pending);
+    strategy.exposure.reduce(ExposureEvent::EntryLifecycle(
+        EntryLifecycleEvent::ReleaseFlat,
+    ));
+
+    let routed = strategy
+        .submit_admitted_entry_decision(1_201, decision)
+        .expect("a stale decision should fail closed without a strategy error");
+
+    assert_eq!(routed, None);
+    assert_eq!(submit_admission.admitted_order_count(), 0);
+    assert!(matches!(strategy.exposure.state(), ExposureState::Flat));
+    assert_eq!(
+        sole_entry_operation_skip_reason(&evidence),
+        EvidenceEntrySkipReason::EntryOperationStaleGeneration,
+    );
+}
+
+#[test]
+fn entry_operation_already_armed_does_not_route_a_second_decision() {
+    let (mut strategy, evidence, submit_admission, decision) = admitted_entry_operation_fixture();
+    let grant = strategy
+        .exposure
+        .request_entry_operation(decision.operation_generation)
+        .expect("fixture should hold the sole entry operation arm");
+
+    let routed = strategy
+        .submit_admitted_entry_decision(1_201, decision)
+        .expect("an already-armed decision should fail closed without a strategy error");
+
+    assert_eq!(routed, None);
+    assert_eq!(submit_admission.admitted_order_count(), 0);
+    assert!(matches!(strategy.exposure.state(), ExposureState::Flat));
+    assert_eq!(
+        sole_entry_operation_skip_reason(&evidence),
+        EvidenceEntrySkipReason::EntryOperationAlreadyArmed,
+    );
+    drop(grant);
 }
 
 #[test]

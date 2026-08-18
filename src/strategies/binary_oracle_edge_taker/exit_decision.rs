@@ -31,6 +31,7 @@ use super::{
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ExitEvaluation {
     pub(super) realized_volatility_receipt: ExitRealizedVolatilityGateReceipt,
+    pub(super) operation_generation: u64,
     pub(super) position_outcome_side: Option<OutcomeSide>,
     pub(super) forced_flat_reasons: Vec<ForcedFlatReason>,
     pub(super) hold_ev_bps: Option<f64>,

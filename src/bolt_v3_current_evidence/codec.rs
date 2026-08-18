@@ -1117,6 +1117,8 @@ mod tests {
             PositionContractInvalid => "position_contract_invalid",
             EntryPositionContractUnsupported => "entry_position_contract_unsupported",
             OnePositionInvariantViolation => "one_position_invariant_violation",
+            EntryOperationStaleGeneration => "entry_operation_stale_generation",
+            EntryOperationAlreadyArmed => "entry_operation_already_armed",
             EntryMalformedRejected => "entry_malformed_rejected",
             EntryBalanceRejected => "entry_balance_rejected",
             EntryUnfillableRejectedUnchangedBook =>

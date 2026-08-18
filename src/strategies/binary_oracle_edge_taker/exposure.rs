@@ -92,6 +92,12 @@ pub(super) struct ExposureOperationRejection {
     pub(super) current_generation: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ExposureOperationDecision {
+    pub(super) generation: u64,
+    pub(super) rejection: Option<ExposureOperationBlockedReason>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum EntryLifecycleEvent {
     #[cfg(test)]
@@ -520,6 +526,7 @@ pub(super) enum UnsupportedObservedReason {
     LiveUnsupportedContract,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BlindRecoveryReason {
     CacheProbeFailed,
@@ -565,15 +572,15 @@ pub(super) enum BlindRecoveryProbeReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BlindRecoveryIdentityReason {
-    InvalidBootstrappedPosition {
+    InvalidBootstrap {
         entry_order_side: OrderSide,
         side: PositionSide,
     },
-    InvalidLivePosition {
+    InvalidLive {
         entry_order_side: OrderSide,
         side: Option<PositionSide>,
     },
-    DivergentUnsupportedPosition,
+    DivergentUnsupported,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -709,6 +716,7 @@ impl BlindRecoveryState {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn reason(&self) -> BlindRecoveryReason {
         match &self.cause {
             BlindRecoveryCause::Probe(BlindRecoveryProbeReason::CacheProbeFailed) => {
@@ -722,7 +730,7 @@ impl BlindRecoveryState {
             ) => BlindRecoveryReason::SettlementEvidenceRecoveryFailed,
             BlindRecoveryCause::IdentityBearing {
                 reason:
-                    BlindRecoveryIdentityReason::InvalidBootstrappedPosition {
+                    BlindRecoveryIdentityReason::InvalidBootstrap {
                         entry_order_side,
                         side,
                     },
@@ -733,7 +741,7 @@ impl BlindRecoveryState {
             },
             BlindRecoveryCause::IdentityBearing {
                 reason:
-                    BlindRecoveryIdentityReason::InvalidLivePosition {
+                    BlindRecoveryIdentityReason::InvalidLive {
                         entry_order_side,
                         side,
                     },
@@ -743,7 +751,7 @@ impl BlindRecoveryState {
                 side: *side,
             },
             BlindRecoveryCause::IdentityBearing {
-                reason: BlindRecoveryIdentityReason::DivergentUnsupportedPosition,
+                reason: BlindRecoveryIdentityReason::DivergentUnsupported,
                 ..
             } => BlindRecoveryReason::DivergentUnsupportedPosition,
             BlindRecoveryCause::RestartAdoption {
@@ -956,7 +964,7 @@ pub(super) enum ReplacementCandidateProjection {
 
 enum ReplacementProjectionObservation {
     None,
-    Managed(ManagedPositionContext),
+    Managed(Box<ManagedPositionContext>),
     Divergent(PositionEpisodeFingerprint),
     Multiple(usize),
     ProbeFailed(String),
@@ -976,7 +984,7 @@ impl From<FreshCanonicalPositionProjection> for ReplacementProjectionObservation
         match projection {
             FreshCanonicalPositionProjection::None => Self::None,
             FreshCanonicalPositionProjection::ExactlyOne(classified) => match *classified {
-                ClassifiedOpenPosition::Managed(managed) => Self::Managed(managed),
+                ClassifiedOpenPosition::Managed(managed) => Self::Managed(Box::new(managed)),
                 ClassifiedOpenPosition::Unsupported(unsupported) => {
                     Self::Divergent(unsupported.context.episode)
                 }
@@ -1041,13 +1049,13 @@ impl ReplacementConflictState {
                     return ReplacementConflictResolution {
                         state: ExposureState::Managed(refresh_replacement_candidate(
                             self.retained,
-                            managed,
+                            *managed,
                         )),
                         adoption: None,
                     };
                 }
                 (false, true) => {
-                    self.candidate = refresh_replacement_candidate(self.candidate, managed);
+                    self.candidate = refresh_replacement_candidate(self.candidate, *managed);
                     self.observe_projection(ReplacementCandidateProjection::Matching);
                 }
                 (false, false) => {
@@ -1931,7 +1939,7 @@ impl GovernedExposureInner {
                         .map(|context| context.episode.clone());
                     let retained = self.state.clone();
                     let mut recovery = BlindRecoveryState::identity_bearing(
-                        BlindRecoveryIdentityReason::DivergentUnsupportedPosition,
+                        BlindRecoveryIdentityReason::DivergentUnsupported,
                         candidate.episode.clone(),
                     );
                     recovery.retain_authority(retained);
@@ -2029,7 +2037,7 @@ impl GovernedExposureInner {
                             (**conflict)
                                 .clone()
                                 .transition(ReplacementConflictEvent::Canonical(
-                                    ReplacementProjectionObservation::Managed(managed),
+                                    ReplacementProjectionObservation::Managed(Box::new(managed)),
                                 ));
                         self.state = resolution.state;
                         *replacement_adoption = resolution.adoption;
@@ -3106,12 +3114,20 @@ impl GovernedExposure {
             .map(EntryOperationGrant)
     }
 
+    pub(super) fn inspect_entry_operation(&self) -> ExposureOperationDecision {
+        self.inspect_operation(ExposureOperationKind::EntryRoute)
+    }
+
     pub(super) fn request_exit_operation(
         &self,
         expected_generation: u64,
     ) -> Result<ExitOperationGrant, ExposureOperationRejection> {
         self.request_operation(ExposureOperationKind::ExitRoute, expected_generation)
             .map(ExitOperationGrant)
+    }
+
+    pub(super) fn inspect_exit_operation(&self) -> ExposureOperationDecision {
+        self.inspect_operation(ExposureOperationKind::ExitRoute)
     }
 
     pub(super) fn request_bootstrap_operation(
@@ -3145,6 +3161,11 @@ impl GovernedExposure {
             .map(CorrectionOperationGrant)
     }
 
+    fn inspect_operation(&self, operation: ExposureOperationKind) -> ExposureOperationDecision {
+        let inner = self.inner.borrow();
+        classify_operation(&inner, operation, inner.generation)
+    }
+
     fn request_operation(
         &self,
         operation: ExposureOperationKind,
@@ -3159,43 +3180,8 @@ impl GovernedExposure {
             requested_generation: expected_generation,
             current_generation,
         };
-        if expected_generation != inner.generation {
-            return Err(rejection(
-                ExposureOperationBlockedReason::StaleGeneration,
-                inner.generation,
-            ));
-        }
-        if inner.operation_arm.is_some() {
-            return Err(rejection(
-                ExposureOperationBlockedReason::OperationAlreadyArmed,
-                inner.generation,
-            ));
-        }
-        let allowed = match operation {
-            ExposureOperationKind::EntryRoute => matches!(inner.state, ExposureState::Flat),
-            ExposureOperationKind::ExitRoute => {
-                matches!(inner.state, ExposureState::Managed(_))
-            }
-            ExposureOperationKind::Bootstrap => {
-                matches!(
-                    inner.state,
-                    ExposureState::Flat
-                        | ExposureState::Managed(_)
-                        | ExposureState::BlindRecovery(_)
-                )
-            }
-            ExposureOperationKind::Recovery => {
-                matches!(inner.state, ExposureState::BlindRecovery(_))
-            }
-            ExposureOperationKind::Correction => {
-                matches!(inner.state, ExposureState::Flat | ExposureState::Managed(_))
-            }
-        };
-        if !allowed {
-            return Err(rejection(
-                blocked_reason_for_state(&inner.state),
-                inner.generation,
-            ));
+        if let Some(reason) = classify_operation(&inner, operation, expected_generation).rejection {
+            return Err(rejection(reason, inner.generation));
         }
         let prior_generation = inner.generation;
         let generation = prior_generation
@@ -3216,6 +3202,26 @@ impl GovernedExposure {
             generation,
             complete: false,
         })
+    }
+}
+
+fn classify_operation(
+    inner: &GovernedExposureInner,
+    operation: ExposureOperationKind,
+    expected_generation: u64,
+) -> ExposureOperationDecision {
+    let rejection = match (
+        inner.operation_arm.is_some(),
+        expected_generation == inner.generation,
+    ) {
+        (true, _) => Some(ExposureOperationBlockedReason::OperationAlreadyArmed),
+        (false, false) => Some(ExposureOperationBlockedReason::StaleGeneration),
+        (false, true) => (!inner.state.allows_operation(operation))
+            .then(|| blocked_reason_for_state(&inner.state)),
+    };
+    ExposureOperationDecision {
+        generation: expected_generation,
+        rejection,
     }
 }
 
@@ -4338,6 +4344,58 @@ struct ExposureProjection<'a> {
     recovery_hold: Option<&'a ExitAuthorityRecoveryHoldState>,
     sink_unknown: Option<&'a OperationSinkUnknownState>,
     occupancy: Option<ExposureOccupancy>,
+    operation_permissions: ExposureOperationPermissions,
+}
+
+#[derive(Clone, Copy, Default)]
+enum ExposureOperationPermissions {
+    #[default]
+    None,
+    Flat,
+    Managed,
+    BlindRecovery,
+}
+
+impl ExposureOperationPermissions {
+    const fn allows(self, operation: ExposureOperationKind) -> bool {
+        match (self, operation) {
+            (
+                Self::Flat,
+                ExposureOperationKind::EntryRoute
+                | ExposureOperationKind::Bootstrap
+                | ExposureOperationKind::Correction,
+            )
+            | (
+                Self::Managed,
+                ExposureOperationKind::ExitRoute
+                | ExposureOperationKind::Bootstrap
+                | ExposureOperationKind::Correction,
+            )
+            | (
+                Self::BlindRecovery,
+                ExposureOperationKind::Bootstrap | ExposureOperationKind::Recovery,
+            ) => true,
+            (
+                Self::None,
+                ExposureOperationKind::EntryRoute
+                | ExposureOperationKind::ExitRoute
+                | ExposureOperationKind::Bootstrap
+                | ExposureOperationKind::Recovery
+                | ExposureOperationKind::Correction,
+            )
+            | (Self::Flat, ExposureOperationKind::ExitRoute | ExposureOperationKind::Recovery)
+            | (
+                Self::Managed,
+                ExposureOperationKind::EntryRoute | ExposureOperationKind::Recovery,
+            )
+            | (
+                Self::BlindRecovery,
+                ExposureOperationKind::EntryRoute
+                | ExposureOperationKind::ExitRoute
+                | ExposureOperationKind::Correction,
+            ) => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -4422,10 +4480,16 @@ impl ExposureState {
         self.projection().occupancy
     }
 
+    fn allows_operation(&self, operation: ExposureOperationKind) -> bool {
+        self.projection().operation_permissions.allows(operation)
+    }
+
     fn projection(&self) -> ExposureProjection<'_> {
         let mut projection = ExposureProjection::default();
         match self {
-            Self::Flat => {}
+            Self::Flat => {
+                projection.operation_permissions = ExposureOperationPermissions::Flat;
+            }
             Self::PendingEntry(pending) => {
                 projection.pending_entry = Some(pending);
                 projection.occupancy = Some(ExposureOccupancy::PendingEntry);
@@ -4439,6 +4503,7 @@ impl ExposureState {
                 projection.managed = Some(position);
                 projection.tracked = Some(position);
                 projection.occupancy = Some(ExposureOccupancy::ManagedPosition);
+                projection.operation_permissions = ExposureOperationPermissions::Managed;
             }
             Self::ExitAttempting(attempt) => {
                 projection.pending_entry = attempt.managed.pending_entry.as_ref();
@@ -4477,6 +4542,7 @@ impl ExposureState {
                     .retained_authority()
                     .map_or_else(ExposureProjection::default, ExposureState::projection);
                 projection.occupancy = Some(ExposureOccupancy::BlindRecovery);
+                projection.operation_permissions = ExposureOperationPermissions::BlindRecovery;
             }
             Self::OperationSinkUnknown(unknown) => {
                 projection.sink_unknown = Some(unknown);
@@ -4485,6 +4551,7 @@ impl ExposureState {
             Self::ObligationSaturated(saturated) => {
                 projection = saturated.retained.projection();
                 projection.occupancy = Some(ExposureOccupancy::BlindRecovery);
+                projection.operation_permissions = ExposureOperationPermissions::None;
             }
             Self::ReplacementConflict(conflict) => {
                 projection.pending_entry = conflict.retained.pending_entry.as_ref();

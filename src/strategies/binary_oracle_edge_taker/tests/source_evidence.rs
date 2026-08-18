@@ -2913,6 +2913,7 @@ fn minimal_entry_evaluation() -> EntryEvaluation {
 fn minimal_entry_submission_decision() -> EntrySubmissionDecision {
     EntrySubmissionDecision {
         evaluation: minimal_entry_evaluation(),
+        operation_generation: 0,
         instrument_id: None,
         order_side: None,
         price: None,
@@ -2948,6 +2949,7 @@ fn minimal_exit_prepared_order() -> ExitIntentDecision {
                 fair_probability_down: None,
                 uncertainty_band_probability: None,
             },
+            operation_generation: 0,
             position_outcome_side: None,
             forced_flat_reasons: vec![],
             hold_ev_bps: None,
@@ -4923,11 +4925,11 @@ fn rv_clock_domain_amendment_entry_skip_records_each_registered_reason_once() {
     // twelve RV gate/watermark bits, which is not its axis under the frozen
     // registry -- that domain belongs to the blocked-snapshot producer, whose
     // own twelve-bit test still stands beside this one. Entry skip's registered
-    // domain is the nineteen skip reasons, so that is what is exercised here, and
+    // domain is the twenty-one skip reasons, so that is what is exercised here, and
     // exhaustively: a reason added to the enum without a registry state fails
     // the mapping's exhaustive match at compile time, and a reason that stops
     // recording fails the count below.
-    const REGISTERED_REASONS: [EntrySkipReason; 19] = [
+    const REGISTERED_REASONS: [EntrySkipReason; 21] = [
         EntrySkipReason::StrategyCoreNotRegistered,
         EntrySkipReason::EntryGateBlocked,
         EntrySkipReason::EntryPricingBlocked,
@@ -4944,6 +4946,8 @@ fn rv_clock_domain_amendment_entry_skip_records_each_registered_reason_once() {
         EntrySkipReason::PositionContractInvalid,
         EntrySkipReason::EntryPositionContractUnsupported,
         EntrySkipReason::OnePositionInvariantViolation,
+        EntrySkipReason::EntryOperationStaleGeneration,
+        EntrySkipReason::EntryOperationAlreadyArmed,
         EntrySkipReason::EntryMalformedRejected,
         EntrySkipReason::EntryBalanceRejected,
         EntrySkipReason::EntryUnfillableRejectedUnchangedBook,

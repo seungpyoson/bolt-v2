@@ -681,6 +681,8 @@ define_closed_enum! {
         PositionContractInvalid,
         EntryPositionContractUnsupported,
         OnePositionInvariantViolation,
+        EntryOperationStaleGeneration,
+        EntryOperationAlreadyArmed,
         EntryMalformedRejected,
         EntryBalanceRejected,
         EntryUnfillableRejectedUnchangedBook,

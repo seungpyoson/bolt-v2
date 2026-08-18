@@ -331,7 +331,7 @@ mod exposure;
 
 use self::exposure::{
     AdoptionCapableExposureEvent, AdoptionCapablePositionTruthEvent, BlindRecoveryIdentityReason,
-    BlindRecoveryProbeReason, BlindRecoveryReason, BlindRecoveryRestartReason, BlindRecoveryState,
+    BlindRecoveryProbeReason, BlindRecoveryRestartReason, BlindRecoveryState,
     BootstrapAdoptionEvent, CanonicalPositionProjection, ClassifiedOpenPosition,
     ConfiguredPositionContract, EntryLifecycleEvent, EntryReconcileReason, ExitAttemptingState,
     ExitAuthorityFlatRecovery, ExitAuthorityRecoveryHoldState, ExitAuthorityRecoveryPlan,
@@ -349,7 +349,7 @@ use self::exposure::{
     managed_position_effective_entry_cost, supports_strategy_managed_position,
 };
 #[cfg(test)]
-use self::exposure::{ObligationSaturatedState, OperationSinkUnknownState};
+use self::exposure::{BlindRecoveryReason, ObligationSaturatedState, OperationSinkUnknownState};
 use crate::bolt_v3_feed_health::{
     ForcedFlatInputs, ForcedFlatReason, evaluate_forced_flat_predicates,
 };
@@ -3155,7 +3155,7 @@ impl BinaryOracleEdgeTaker {
                 open_position.side,
             );
             ClassifiedOpenPosition::BlindRecovery(BlindRecoveryState::identity_bearing(
-                BlindRecoveryIdentityReason::InvalidBootstrappedPosition {
+                BlindRecoveryIdentityReason::InvalidBootstrap {
                     entry_order_side: open_position.entry_order_side,
                     side: open_position.side,
                 },
@@ -3611,6 +3611,7 @@ impl BinaryOracleEdgeTaker {
         );
     }
 
+    #[cfg(test)]
     fn enforce_one_position_invariant(&self) -> Result<()> {
         let Some(occupancy) = self.exposure_occupancy() else {
             return Ok(());
@@ -4452,7 +4453,7 @@ impl BinaryOracleEdgeTaker {
         {
             // An entry skip is declining new risk: a telemetry-write failure
             // must never abort the strategy callback (which would skip
-            // downstream safety logic such as enforce_one_position_invariant).
+            // downstream fail-closed handling).
             // Surface the lost write at the highest non-panicking severity and
             // let the skip path proceed.
             log::error!(
@@ -5320,7 +5321,7 @@ impl BinaryOracleEdgeTaker {
             } else {
                 self.exposure.reduce(ExposureEvent::PositionTruth(
                     PositionTruthEvent::BlindRecovery(BlindRecoveryState::identity_bearing(
-                        BlindRecoveryIdentityReason::InvalidLivePosition {
+                        BlindRecoveryIdentityReason::InvalidLive {
                             entry_order_side,
                             side: Some(side),
                         },
@@ -6957,8 +6958,10 @@ impl BinaryOracleEdgeTaker {
         now_ms: u64,
         realized_volatility_receipt: ExitRealizedVolatilityGateReceipt,
     ) -> ExitEvaluation {
+        let operation = self.exposure.inspect_exit_operation();
         let mut evaluation = ExitEvaluation {
             realized_volatility_receipt,
+            operation_generation: operation.generation,
             position_outcome_side: self.open_position_outcome_side(),
             forced_flat_reasons: self.position_forced_flat_reasons_at(now_ms),
             hold_ev_bps: None,
@@ -6967,13 +6970,9 @@ impl BinaryOracleEdgeTaker {
             blocked_reason: None,
         };
 
-        let operation_generation = self.exposure.generation();
-        match self.exposure.request_exit_operation(operation_generation) {
-            Ok(grant) => drop(grant),
-            Err(rejection) => {
-                evaluation.blocked_reason = Some(exit_operation_blocked_reason(rejection.reason));
-                return evaluation;
-            }
+        if let Some(reason) = operation.rejection {
+            evaluation.blocked_reason = Some(exit_operation_blocked_reason(reason));
+            return evaluation;
         }
 
         if self
@@ -8330,7 +8329,7 @@ impl BinaryOracleEdgeTaker {
         };
         let exit_operation_grant = match self
             .exposure
-            .request_exit_operation(self.exposure.generation())
+            .request_exit_operation(decision.evaluation.operation_generation)
         {
             Ok(grant) => grant,
             Err(rejection) => {
@@ -8846,8 +8845,10 @@ impl BinaryOracleEdgeTaker {
         receive_context: EntryEvaluationReceiveContext,
     ) -> EntrySubmissionDecision {
         let evaluation = self.entry_evaluation_for_receive_at(now_ms, receive_context);
+        let operation = self.exposure.inspect_entry_operation();
         let mut decision = EntrySubmissionDecision {
             evaluation: evaluation.clone(),
+            operation_generation: operation.generation,
             instrument_id: self.active.instrument_id,
             order_side: None,
             price: None,
@@ -9062,28 +9063,20 @@ impl BinaryOracleEdgeTaker {
 
         let entry_operation_grant = match self
             .exposure
-            .request_entry_operation(self.exposure.generation())
+            .request_entry_operation(decision.operation_generation)
         {
             Ok(grant) => grant,
-            Err(_) => {
-                let newly_recorded = self.record_entry_skip_once(
-                    now_ms,
-                    &decision,
-                    EvidenceEntrySkipReason::OnePositionInvariantViolation,
-                )?;
-                // Keep WARN on the same dedupe as evidence (not per-tick), then
-                // propagate the invariant failure so admission fails closed.
+            Err(rejection) => {
+                let reason = entry_operation_blocked_reason(rejection.reason);
+                let newly_recorded = self.record_entry_skip_once(now_ms, &decision, reason)?;
                 if newly_recorded {
                     log::warn!(
                         "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
                         self.config.strategy_id,
-                        entry_skip_reason_label(
-                            EvidenceEntrySkipReason::OnePositionInvariantViolation
-                        )
+                        entry_skip_reason_label(reason)
                     );
                 }
-                self.enforce_one_position_invariant()?;
-                unreachable!("occupied exposure must fail the one-position invariant");
+                return Ok(None);
             }
         };
 
@@ -11031,6 +11024,33 @@ fn should_warn_on_exit_submission_block(reason: Option<EvidenceExitBlockedReason
                 | EvidenceExitBlockedReason::ExitHold
         )
     )
+}
+
+const fn entry_operation_blocked_reason(
+    reason: ExposureOperationBlockedReason,
+) -> EvidenceEntrySkipReason {
+    match reason {
+        ExposureOperationBlockedReason::StaleGeneration => {
+            EvidenceEntrySkipReason::EntryOperationStaleGeneration
+        }
+        ExposureOperationBlockedReason::OperationAlreadyArmed => {
+            EvidenceEntrySkipReason::EntryOperationAlreadyArmed
+        }
+        ExposureOperationBlockedReason::Unoccupied
+        | ExposureOperationBlockedReason::PendingEntryOccupied
+        | ExposureOperationBlockedReason::EntryReconcileOccupied
+        | ExposureOperationBlockedReason::ManagedOccupied
+        | ExposureOperationBlockedReason::ExitAttemptOccupied
+        | ExposureOperationBlockedReason::ExitPendingOccupied
+        | ExposureOperationBlockedReason::RecoveryHoldOccupied
+        | ExposureOperationBlockedReason::UnsupportedOccupied
+        | ExposureOperationBlockedReason::BlindRecoveryOccupied
+        | ExposureOperationBlockedReason::ReplacementConflictOccupied
+        | ExposureOperationBlockedReason::SinkUnknownOccupied
+        | ExposureOperationBlockedReason::ObligationSaturated => {
+            EvidenceEntrySkipReason::OnePositionInvariantViolation
+        }
+    }
 }
 
 const fn exit_operation_blocked_reason(

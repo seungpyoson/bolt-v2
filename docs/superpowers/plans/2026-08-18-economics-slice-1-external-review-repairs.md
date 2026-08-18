@@ -207,7 +207,7 @@ Replace the current invalid-combination matrix with behavior cases for each cons
 let cases = [
     BlindRecoveryState::probe(BlindRecoveryProbeReason::CacheProbeFailed),
     BlindRecoveryState::identity_bearing(
-        BlindRecoveryIdentityReason::DivergentUnsupportedPosition,
+        BlindRecoveryIdentityReason::DivergentUnsupported,
         recorded_episode.clone(),
     ),
     BlindRecoveryState::restart_adoption(
@@ -341,6 +341,7 @@ git commit -m "refactor(exposure): type recovery causes and projections"
 - Modify: `src/strategies/binary_oracle_edge_taker/{entry_decision.rs,exit_decision.rs,mod.rs}`
 - Modify: `src/bolt_v3_current_evidence/facts.rs:660-690`
 - Modify: `src/bolt_v3_current_evidence/codec/entry_skip.rs`
+- Modify: `config/evidence-novelty.toml`
 - Test: `src/strategies/binary_oracle_edge_taker/tests/{exposure.rs,source_evidence.rs}`
 - Test: current-evidence codec unit tests in `src/bolt_v3_current_evidence/codec.rs`
 
@@ -348,7 +349,7 @@ git commit -m "refactor(exposure): type recovery causes and projections"
 - Produces: `ExposureOperationDecision { generation, rejection }`, `operation_generation` on entry/exit decisions, and entry skip variants `EntryOperationStaleGeneration` and `EntryOperationAlreadyArmed`.
 - Consumes: existing `ExposureOperationBlockedReason` and `request_{entry,exit}_operation(expected_generation)`.
 
-- [ ] **Step 1: Write stale and already-armed entry-route tests**
+- [x] **Step 1: Write stale and already-armed entry-route tests**
 
 Add two tests. The stale case creates an admitted entry decision, transitions `Flat -> PendingEntry -> Flat`, then routes the old decision. The already-armed case holds an entry grant while routing the decision. Assert no sink/tracked order mutation and exact evidence:
 
@@ -363,7 +364,7 @@ assert_eq!(
 );
 ```
 
-- [ ] **Step 2: Run the new tests and verify failure**
+- [x] **Step 2: Run the new tests and verify failure**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib entry_operation_ -- --test-threads=1
@@ -371,7 +372,7 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: FAIL because decisions carry no generation and all route rejections are labeled one-position violations.
 
-- [ ] **Step 3: Centralize pure operation classification**
+- [x] **Step 3: Centralize pure operation classification**
 
 Implement one classifier used by both decision inspection and grant construction:
 
@@ -386,26 +387,30 @@ fn classify_operation(
     inner: &GovernedExposureInner,
     operation: ExposureOperationKind,
     expected_generation: u64,
-) -> Option<ExposureOperationBlockedReason> {
-    if expected_generation != inner.generation {
-        return Some(ExposureOperationBlockedReason::StaleGeneration);
+) -> ExposureOperationDecision {
+    let rejection = match (
+        inner.operation_arm.is_some(),
+        expected_generation == inner.generation,
+    ) {
+        (true, _) => Some(ExposureOperationBlockedReason::OperationAlreadyArmed),
+        (false, false) => Some(ExposureOperationBlockedReason::StaleGeneration),
+        (false, true) => (!inner.state.allows_operation(operation))
+            .then(|| blocked_reason_for_state(&inner.state)),
+    };
+    ExposureOperationDecision {
+        generation: expected_generation,
+        rejection,
     }
-    if inner.operation_arm.is_some() {
-        return Some(ExposureOperationBlockedReason::OperationAlreadyArmed);
-    }
-    operation_allowed(&inner.state, operation)
-        .then_some(())
-        .map_or_else(|| Some(blocked_reason_for_state(&inner.state)), |_| None)
 }
 ```
 
-`operation_allowed` exhaustively matches `(ExposureOperationKind, ExposureState)`. `inspect_operation` calls the classifier without mutation; `request_operation` calls the same classifier and arms only an allowed exact generation.
+The existing exhaustive exposure projection owns an `ExposureOperationPermissions` value whose `(permissions, operation)` table names every combination. `inspect_operation` calls the classifier without mutation; `request_operation` calls the same classifier and arms only an allowed exact generation. An occupied sole arm takes precedence over the generation it advanced, so overlapping requests are classified as `OperationAlreadyArmed`; an unarmed changed generation is `StaleGeneration`.
 
-- [ ] **Step 4: Carry generation through entry and exit decisions**
+- [x] **Step 4: Carry generation through entry and exit decisions**
 
 Add `operation_generation: u64` to `EntrySubmissionDecision` and `ExitEvaluation`. At evaluation, call `inspect_entry_operation` or `inspect_exit_operation`. Delete the exit probe-grant/drop cycle. At route time, pass `decision.operation_generation`; never refresh it with `self.exposure.generation()`.
 
-- [ ] **Step 5: Map exact entry rejections and remove the panic path**
+- [x] **Step 5: Map exact entry rejections and remove the panic path**
 
 Add:
 
@@ -440,11 +445,11 @@ const fn entry_operation_blocked_reason(
 
 Record the mapped reason and return `Ok(None)`. Delete the second occupancy check and `unreachable!`.
 
-- [ ] **Step 6: Extend evidence codecs exhaustively**
+- [x] **Step 6: Extend evidence codecs exhaustively**
 
 Add both new `EntrySkipReason` variants to `facts.rs`, `codec/entry_skip.rs`, canonical-state/label matches in `entry_decision.rs`, and round-trip tests. Do not change historical enum spellings.
 
-- [ ] **Step 7: Run focused behavior and codec tests**
+- [x] **Step 7: Run focused behavior and codec tests**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib entry_operation_ -- --test-threads=1
@@ -454,10 +459,10 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: PASS; stale/armed entry decisions do not panic or route.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
-git add src/strategies/binary_oracle_edge_taker src/bolt_v3_current_evidence/facts.rs src/bolt_v3_current_evidence/codec/entry_skip.rs src/bolt_v3_current_evidence/codec.rs
+git add src/strategies/binary_oracle_edge_taker src/bolt_v3_current_evidence/facts.rs src/bolt_v3_current_evidence/codec/entry_skip.rs src/bolt_v3_current_evidence/codec.rs config/evidence-novelty.toml
 git commit -m "fix(exposure): bind decisions to operation generations"
 ```
 

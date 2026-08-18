@@ -13,7 +13,7 @@ This is a scope reduction, not a replacement architecture.
 
 ## Why this boundary
 
-NautilusTrader owns order lifecycle, cache, and reconciliation. Bolt can prove its own pre-sink work, but after calling `Strategy::submit_order` it cannot infer from the returned `Result<()>` whether the command remained local or entered routing. The pinned implementation can route the command and then fail while installing the GTD timer.
+NautilusTrader owns order lifecycle, cache, and reconciliation. Bolt can prove its own pre-sink work, but after calling `Strategy::submit_order` it cannot infer from the returned `Result<()>` whether the command remained local or entered routing. The pinned implementation can route the command and then fail while installing the GTD timer. Shipped configuration currently disables managed GTD expiry, so that particular sequence is config-latent; the shared boundary is still unsound because the flag and future pins are not part of the return type.
 
 The attempted upstream API in nautechsystems/nautilus_trader#4790 and PR #4791 tried to expose that handoff. Both were closed with maintainer direction that reservations should follow order lifecycle rather than a handoff result. At the pinned revision, some local denials enter the cache and publish lifecycle events while some errors returned before routing do not. Bolt cannot distinguish those cases from the returned error, so this design follows lifecycle evidence and does not reopen the same API downstream or require an NT pin change.
 
@@ -23,7 +23,7 @@ The conservative consequence is intentional: if NT returns an error after Bolt i
 
 | Owner | Responsibility |
 | --- | --- |
-| Strategy | Signal, intent, cooldown, and strategy-facing evidence |
+| Strategy | Signal, intent, cooldown, current-process occupancy reduction from supplied lifecycle facts, and strategy-facing evidence |
 | Shared Bolt execution/admission | Pre-sink validation, final order/economics seal, capacity reservation, submit phase, and exhaustive route settlement |
 | Shared maker lifecycle/registry | Quote participant settlement, resting registration, cancellation intent, and retry coordination |
 | NautilusTrader | Command routing, cache, order/position lifecycle, reconciliation, and venue translation |
@@ -54,6 +54,8 @@ The implementation deletes the restart and fill-void reconstruction machinery ad
 - `ManagedPositionOrigin`, the `origin` field, and `is_recovering()`; every routeable managed position is current-process state;
 - startup adoption of a cached exit as newly minted Bolt authority;
 - startup materialization of a cached position as routeable `Managed` or `UnsupportedObserved` state;
+- startup settlement shortcuts that turn a cached open position into `Flat`, including the
+  `settled_position_keys` branch and the prior-booking-terminal transition;
 - fill-void reconstruction after the original current-process authority has retired;
 - the cache-absence and correction arms of timer reconciliation that attempt to rebuild or release authority.
 
@@ -65,7 +67,7 @@ Timer reconciliation remains only for that retained local authority. An exact ca
 
 ### Restart behavior
 
-Startup may consume canonical NT facts for observation and evidence, but it cannot mint a Bolt submit claim from them. Any cached open position, possibly related order, conflicting projection, or insufficient proof that no prior exit remains live places the edge taker in `BlindRecovery`, which routes no entry, exit, cancel, or modify. In particular, a cached position never becomes routeable `Managed`, and an empty attributed-exit-order list is not proof that the position has no live exit.
+Startup may consume canonical NT facts for observation and evidence, but it cannot mint a Bolt submit claim from them. The open-position count is classified before any settlement-release shortcut. Any cached open position, possibly related order, conflicting projection, or insufficient proof that no prior exit remains live places the edge taker in `BlindRecovery`, which routes no entry, exit, cancel, or modify. In particular, a cached position never becomes routeable `Managed`; an empty attributed-exit-order list is not proof that the position has no live exit; and a recovered settled-position key or prior booking-terminal fact may be recorded but cannot turn a cached open position into `Flat`.
 
 The existing clean-start case with zero scoped positions remains `Flat`; #1544 does not claim that this is crash-safe restart proof. Once startup enters `BlindRecovery`, later cache absence or position rematerialization cannot turn it into `Managed`, `ExitPending`, or `Flat`. Returning that state to routing requires a future separately approved capability with stronger proof.
 
@@ -77,32 +79,46 @@ If a fill correction arrives while the original local exit authority is still re
 
 A missing cached order does not discard a retained local authority and does not create a replacement one. The strategy keeps the original occupied lifecycle state and waits for authoritative terminal or rejection evidence. It does not route a second exit.
 
-## Explicit exposure states and one exit-routing transition
+## One local exposure owner
 
-`ManagedPositionContext` contains only the position. It has neither `origin` nor `pending_entry: Option<_>`. A partially filled entry whose remainder may still work is represented by explicit strategy-local states:
+`ManagedPositionContext` contains only the supported position. It has neither `origin` nor `pending_entry: Option<_>`. A partially filled entry whose remainder may still work is represented by one strategy-local `EntryRemainder` state rather than multiplying outer exposure variants:
 
-- `ManagedWithEntryRemainder { position, pending_entry }` before cancellation is requested;
-- `ManagedEntryCancellationPending { position, pending_entry }` installed before invoking the existing shared order-execution cancellation route.
-- `UnsupportedObservedWithEntryRemainder { position, pending_entry, reason }` when current-process entry lineage materializes an unsupported position; it retains the exact entry identity but routes no order operation.
+```text
+EntryRemainder {
+    pending_entry: exact current-process order identity,
+    position: Supported(position) | Unsupported(position, reason) | CanonicallyFlat,
+    cancellation: Working | Pending,
+}
+```
 
-All three states remain occupied. An updated fill changes the explicit position without dropping the entry identity. Exact terminal or zero-leaves order evidence moves an entry-remainder state only after the same reducer obtains a coherent canonical position projection: a supported open projection becomes `Managed`, an unsupported open projection remains non-routing, a flat projection becomes `Flat`, and missing or contradictory position truth remains occupied in the existing entry-reconciliation state. If the position becomes flat before order-terminal proof, the state becomes the existing pending-entry/reconciliation state rather than `Flat`.
+Every combination is meaningful: supportedness controls whether an eventual position may become routeable, while the cancellation phase controls only the known working entry order. There is no optional order identity. A fill or position update changes the typed position projection without dropping the entry identity. A position close or economic settlement may change the projection to `CanonicallyFlat`, but the outer state remains occupied until exact entry terminal or zero-leaves evidence arrives.
+
+All shipped edge-taker configs currently use FOK entries, so a working entry remainder is config-latent. The TOML schema permits persistent GTC/GTD entries, and lifecycle safety cannot depend on the shipped value never changing.
+
+Exact entry terminal evidence consumes the `EntryRemainder` state only after the same reducer obtains coherent canonical position truth: `Supported` becomes plain `Managed`, `Unsupported` becomes the existing non-routing unsupported state, and `CanonicallyFlat` becomes `Flat`. Missing or contradictory truth leaves the exact claim occupied in entry reconciliation. A partial fill alone cannot consume it.
 
 Routeable `Managed` may be constructed only by consuming a current-process pending-entry claim or by updating an already current-process managed/exit state. A newly observed position without that lineage enters `BlindRecovery`. Position materialization exhaustively preserves `BlindRecovery`; later cache or position events cannot smuggle restart or external state back into routing.
 
-Exit eligibility is no longer assembled from correlated projections such as “has a managed position,” “has no exit snapshot,” and “has no pending entry.” One strategy-local transition owns the decision:
+The strategy stores one small exposure owner whose inner `ExposureState` and variants are private to the strategy-local exposure module. This encapsulates the existing edge-taker occupancy state; it does not create independent lifecycle truth. Strategy orchestration can submit typed NT-derived facts and consume typed actions, but cannot construct, assign, or match the inner state directly. The owner has no clock, cache, NT handle, sink, subscription, timer, retry loop, persistence, or TOML policy; orchestration supplies facts and performs returned effects through existing shared routes. This wrapper is not shared with execution/admission and carries no generic cross-strategy policy.
+
+The owner exposes two mutation entry points: apply one typed lifecycle/position observation, or request an exit. Observation reduction delegates every vacancy decision to one private release reducer. That release reducer is the only runtime path that may produce `Flat`; clean startup with zero scoped positions is the only constructor exception. `Flat` is not used as a temporary `mem::replace` sentinel: each transition computes a complete next state before committing it. Settlement success, terminal booking error, position close, entry terminal, exit terminal, and cancel rejection all enter through the observation enum. It preserves `EntryRemainder`, retained exit authority, and `BlindRecovery` rather than treating position or settlement evidence as order-lifecycle proof.
+
+Exit eligibility is no longer assembled from correlated projections such as “has a managed position,” “has no exit snapshot,” and “has no pending entry.” One exhaustive transition owns the decision:
 
 ```text
 Managed -> ExitAttempting
-ManagedWithEntryRemainder -> request exact entry cancellation; no exit
-ManagedEntryCancellationPending -> typed non-routing outcome; no exit
-every other exposure state -> typed non-routing outcome, state unchanged
+EntryRemainder { cancellation: Working, .. } -> install Pending; request exact entry cancellation; no exit
+EntryRemainder { cancellation: Pending, .. } -> typed non-routing outcome; no exit
+every other exposure state -> typed non-routing outcome; state unchanged
 ```
 
-The forced-flat path follows the same transition. It cannot bypass the working-entry state, fire an asynchronous cancellation, and immediately submit an exit. The reducer installs `ManagedEntryCancellationPending` before the cancel call; a proven pre-sink cancel failure may restore `ManagedWithEntryRemainder` only if that exact client-order state is still present. A synchronous terminal callback wins and cannot be overwritten by the return path. Only exact terminal or zero-leaves evidence for the entry remainder plus coherent canonical position truth permits `Managed`, after which one later evaluation may route the exit. Cancellation uses the existing shared order-execution policy; this design adds no cancellation map or algorithm.
+The cancellation-only transition applies to supported, unsupported, and canonically flat position projections. Forced flat invokes it for a supported remainder. Materialization or release that produces `Unsupported` or `CanonicallyFlat` invokes it immediately. Each installs `Pending` before returning the one cancellation effect, so unsupported materialization, position close, and settlement cannot leave a known remainder working.
 
-The transition exhaustively matches `ExposureState`. In particular, `ExitAttempting`, `ExitPending`, `TerminalExitAwaitingPosition`, `BlindRecovery`, entry states, entry-remainder states, and unsupported observations cannot yield another exit attempt. Route code receives the managed position only from this transition.
+The shared cancel boundary returns one exhaustive attempt outcome: `SkippedByPolicy`, `NtCallReturned`, or `NtCallErrored`. `SkippedByPolicy` may restore the exact `Working` state only while the same entry identity remains present. In live mode, both other variants mean only that NT was called; neither restores the state or proves that a cancel command left the process. This replaces the misleading `Canceled` name and prevents callers from inferring routing from `Result<()>`. After either live outcome, an exact client-order cache observation may settle terminal or zero-leaves state; pending-cancel and ambiguous working observations remain pending. An exact `OrderCancelRejected` event changes that same entry identity back to `Working`, allowing one later evaluation to retry. No retry occurs before new lifecycle evidence, and a missing order remains pending. `NtCallErrored` emits an error-level diagnostic and typed non-routing evidence; observability does not grant retry or release authority.
 
-This removes the current projection mismatch where a recovery hold appears position-bearing to one helper but not exit-pending to another. It also prevents another helper pair from recreating the same bug.
+The reducer installs `Pending` before the cancel call. A synchronous terminal callback consumes the exact entry identity and cannot be overwritten by the return path. Route completion reduces only while that identity and pending phase still match. Cancellation uses the existing shared order-execution policy and event/cache truth; this design adds no cancellation map, timer, or second retry algorithm.
+
+Authority-mutating matches enumerate every private `ExposureState` variant without a wildcard. Position-close and unsupported-position observations enter the same reducers instead of matching state in strategy orchestration. Read-only projections may group states inside the owner, but they cannot authorize a route or discard an order/position claim.
 
 ## Shared submit outcome
 
@@ -123,13 +139,24 @@ The call boundary is the authority. Bolt proves its own prepared-order and admis
 
 The admission permit crosses from refundable to sink-invoked immediately before the NT submit call. Its already-committed admission-evidence receipt is consumed at that phase transition rather than waiting for `Submitted`; rollback authority exists only before the transition. No fallible Bolt work occurs between the completed participant phase transition and the direct NT call. Once that phase is reached, neither `Submitted` nor `SinkInvokedUnknown` can refund it.
 
-The existing reservation index becomes one typed reservation record containing the attribution and liability needed to survive an NT projection. Its phase is `Reserved` or `SinkInvoked`; there is no parallel unknown-reservation map. A complete open-order projection merges any still-retained sink-invoked record that is absent from the projection instead of silently clearing it. An incomplete projection keeps the typed records, marks the existing admission gate unreconciled, and blocks admission until a complete rebuild; it does not clear the records. The merge lives in shared admission state, not `LiveNode`.
+The existing reservation index becomes one order-ID-keyed typed reservation record containing the immutable committed attribution, exact ledger reservation ID, and lifecycle phase. It does not own a second mutable liability number. Its phase is `Reserved`, `SinkInvoked`, or `ObservedOpen`; there is no parallel unknown-reservation map. `Reserved` is refundable before the call boundary. `SinkInvoked` is a carried commitment whose authority is the completed admission plus the Bolt-to-NT call boundary. `ObservedOpen` is backed by fresh NT open-order evidence. An exact open observation may advance `SinkInvoked` to `ObservedOpen`; projection omission cannot do so.
 
-The shared capital-admission event feed triggers an exact cache observation and retires the record only when the same client order is authoritatively terminal or has zero leaves. `OrderFilled` alone is not terminal proof because it may be partial. Exact generation and projection-epoch ordering ensure that a synchronous terminal callback or newer event may retire the record before submit/rebuild completion and that stale completion cannot reinsert it. Cache absence, projection omission, or elapsed time cannot retire it.
+Capital rebuild accepts one exhaustive evidence enum inside the existing gate:
 
-`SinkInvokedUnknown` records are not silent. Creation emits an error-level diagnostic and typed outcome evidence. Existing admission rebuild evidence exposes a derived `unresolved_sink_invocation_count` while a retained sink-invoked record is absent from a complete projection; logging occurs when that derived health state changes, not on every projection. This is observability over the one typed record, not another lifecycle authority or release path.
+- `NtOpenOrder` uses the current freshness, pool-snapshot, and liability-validation rules;
+- `RetainedSinkInvocation` carries the exact already-live ledger reservation selected by the typed record and cross-checks it against the original committed attribution.
 
-This ensures both the numerical reservation and the admission gate remain occupied; merely setting liability to zero behind an unreconciled flag is not an acceptable substitute.
+`RetainedSinkInvocation` is not a new admission request. It therefore does not pretend that its original invocation time is a fresh NT observation, does not copy the current projection time into that field, and is not rejected merely because the pool snapshot has advanced. The original admission timestamp remains the lifecycle baseline and diagnostic. The carry path validates exact request, pool, collateral-group, client-order, and positive-liability identity, then clones that existing live reservation into the candidate `ReservationLedger`. It does not reapply current available-balance or minimum-balance policy to erase an obligation that is already committed. If carried obligations now exceed the pool, their full numerical liability remains visible and later admissions fail closed.
+
+The transition to `SinkInvoked` is atomic with proving that the exact live ledger reservation exists. A missing ledger entry is an invariant failure before the NT call, not a reason to reconstruct a number later. Subsequent invalidation paths preserve both objects together.
+
+Rebuild is candidate-first and atomic. It builds a candidate ledger and candidate typed index without clearing the live state. Only a complete, valid rebuild whose evidence write succeeds replaces both. Incomplete projection, rejected reservation evidence, fill-evidence-integrity failure, missing capital state, duplicate attribution, or rebuild-evidence write failure preserves the existing records and numerical ledger, calls the gate's non-destructive reconciliation invalidation, and blocks new admission. Every current-process invalidation uses that non-destructive operation; an empty `CapitalAdmissionGate::unreconciled()` is used only for initial construction or restart before any current-process reservation exists. No error path clears `SinkInvoked` records. The merge and commit live in shared admission state, not `LiveNode`.
+
+A complete open-order projection merges every still-retained `SinkInvoked` record absent from the projection as `RetainedSinkInvocation`. If the exact client order is present, its fresh attribution-checked observation advances the one record to `ObservedOpen`; it is not inserted a second time, and an identity mismatch rejects the candidate. The shared capital-admission event feed triggers an exact cache observation and retires the sink-invoked phase only when the same client order is authoritatively terminal or has zero leaves. `OrderFilled` alone is not terminal proof because it may be partial. Exact generation and projection-epoch ordering ensure that a synchronous terminal callback or newer event may retire the record before submit/rebuild completion and that stale completion cannot reinsert it. Cache absence, projection omission, elapsed time, or another rebuild failure cannot retire it.
+
+`SinkInvokedUnknown` creation emits an error-level diagnostic and typed outcome evidence. Existing admission rebuild evidence exposes a derived `unresolved_sink_invocation_count` while any retained `SinkInvoked` record is absent from a complete projection; logging occurs when that derived health state changes, not on every projection. This also covers a successful NT return whose order has not yet appeared. It is observability over the one typed record, not another lifecycle authority or release path.
+
+This keeps one accounting authority: the existing gate and ledger own both observed and carried liabilities. Merely retaining an attribution record while replacing the ledger with zero liability behind an unreconciled flag is not an acceptable substitute.
 
 ### Resting maker registration
 
@@ -151,7 +178,7 @@ Every participant is marked sink-invoked before NT submit. `SinkInvokedUnknown` 
 
 ### Edge-taker entry and exit
 
-A sink-invoked-unknown entry keeps its pending-entry occupancy. A partial fill with a potentially working remainder moves to `ManagedWithEntryRemainder`, never to plain `Managed`. A sink-invoked-unknown exit keeps the local exit authority and exact client order ID in the current-process pending lifecycle. Route completion reduces only the exact attempt generation still present, so a synchronous callback that already advanced or retired it wins. None becomes `Managed` or `Flat` from the synchronous error, and none records the false diagnostic that the order “did not reach the venue.”
+A sink-invoked-unknown entry keeps its pending-entry occupancy. A partial fill with a potentially working remainder moves to `EntryRemainder`, never to plain `Managed`. A sink-invoked-unknown exit keeps the local exit authority and exact client order ID in the current-process pending lifecycle. Route completion reduces only the exact attempt generation still present, so a synchronous callback that already advanced or retired it wins. None becomes `Managed` or `Flat` from the synchronous error, and none records the false diagnostic that the order “did not reach the venue.”
 
 The strategy records the typed outcome but does not decide its accounting or lifecycle settlement.
 
@@ -161,6 +188,8 @@ The strategy records the typed outcome but does not decide its accounting or lif
 - `OrderDenied`, `OrderRejected`, `OrderCanceled`, `OrderExpired`, fills, and corrections are reconciled through current authoritative NT cache/lifecycle handling; a fill retires an order claim only with exact terminal or zero-leaves proof.
 - A contradictory or insufficient observation preserves occupancy or moves to `BlindRecovery`; it never releases capacity or authorizes another order.
 - A locally rejected command before the shared call boundary remains refundable.
+- A live cancel return or error carries no release authority. Policy skip is the only route result that proves NT was not called; terminal/zero-leaves cache truth and exact lifecycle events settle cancellation.
+- `OrderCancelRejected` retains the entry claim and reopens one cancellation request only for the same exact entry identity. No timer or unchanged cache observation manufactures a retry.
 - There is no second cancellation algorithm. The edge taker uses the existing shared order-execution cancellation route for its entry remainder, while maker cancellation remains with the existing shared coordinator.
 
 ## Required behavior tests
@@ -173,38 +202,53 @@ Tests exercise public behavior and event sequences; no source-scanning test is a
 4. A synchronous NT callback that advances or retires a participant before submit returns cannot be overwritten by either `Submitted` or `SinkInvokedUnknown` settlement.
 5. Maker rotation promotes only `RetainedActive`; synchronous `RetiredByCallback` consumes the pre-minted identity without creating an active binding for both submit outcomes.
 6. A current-process exit whose cached order is temporarily absent remains occupied, while a later exact cached terminal observation retires through the existing reducer. Later trading triggers produce zero additional exit calls before retirement.
-7. Startup with a cached open position and zero attributed exit orders enters `BlindRecovery` and routes nothing. A newly observed position without current-process entry/managed lineage does the same. Later position/cache events cannot materialize either as `Managed`.
-8. A partial-fill entry remainder blocks every exit, including forced flat. Forced flat requests cancellation exactly once through the existing route, zero exit calls occur before exact entry terminal proof plus coherent canonical position truth, and one later exit may route after the state becomes plain `Managed`. A synchronous cancel-terminal callback cannot be overwritten by cancel return, and position-flat-before-entry-terminal remains occupied by the entry claim.
-9. A sink-invoked record absent from a complete projection remains reserved and exposes nonzero `unresolved_sink_invocation_count`; an incomplete projection preserves the record and leaves the gate unreconciled.
-10. A fill void after local authority retirement enters `BlindRecovery` and routes nothing.
-11. A terminal zero-fill exit and a positive-fill residual exit continue through their existing current-process lifecycle, with the proven residual remanaged exactly once.
-12. Maker registration and quote-budget tests prove that an error after invocation cannot use rollback paths reserved for pre-sink failure.
+7. Startup with any cached open position enters `BlindRecovery` and routes nothing, including zero attributed exit orders, a recovered settled-position key, and prior booking-terminal evidence. A newly observed position without current-process lineage does the same. Later position/cache events cannot materialize any of them as `Managed` or `Flat`.
+8. A partial-fill entry remainder blocks every exit, including forced flat. Supported, unsupported, and canonically flat projections all retain the same exact order identity and may issue cancellation only through the one transition. Position close, settlement success, and booking-terminal settlement cannot release the order claim.
+9. Cancel policy skip restores only the exact entry identity. A live NT return and a live NT error remain `Pending`; missing or unchanged working cache observations do not retry. Exact terminal/zero-leaves truth settles it, a synchronous terminal callback cannot be overwritten, and `OrderCancelRejected` permits one later retry for that identity. Zero exit calls occur before entry retirement plus coherent supported position truth.
+10. A carried sink-invoked reservation whose original admission timestamp predates a newer pool projection rebuilds without `StaleRequest`, keeps that original timestamp, remains numerically present in `live_reserved_liability`, and reduces available capacity by its exact carried liability.
+11. A sink-invoked record absent from a complete projection remains reserved and exposes nonzero `unresolved_sink_invocation_count`. Incomplete projection, rejected rebuild input, fill-evidence-integrity failure, and evidence-write failure all preserve the record and numerical liability while invalidating admission reconciliation.
+12. A terminal callback that retires a record before a stale rebuild completes cannot be reinserted by that rebuild.
+13. A fill void after local authority retirement enters `BlindRecovery` and routes nothing.
+14. A terminal zero-fill exit and a positive-fill residual exit continue through their existing current-process lifecycle, with the proven residual remanaged exactly once.
+15. Maker registration and quote-budget tests prove that an error after invocation cannot use rollback paths reserved for pre-sink failure.
 
 ## Conditional-debt constraint
 
-The conditional census counts production source lines containing the lexical Rust keyword `if` or `match` after stripping comments and string/character literals. It covers `src/**` and `crates/*/src/**`, excludes test paths and `#[cfg(test)]` items, and reports added, removed, and net lines per file for both the exact repair range and the complete PR range.
+The primary census counts production source lines containing the lexical Rust keyword `if` or `match` after stripping comments and string/character literals. It covers `src/**` and `crates/*/src/**`, excludes test paths and complete `#[cfg(test)]` items, and reports added, removed, and net lines per file.
+
+The immutable endpoints are:
+
+- implementation repair: `23960a0dcf4232c818db4b539a41ac5b4bb928d7..IMPLEMENTATION_HEAD`;
+- complete PR: `e62584045629208e81d2dce1fce608720ea01fbf..IMPLEMENTATION_HEAD`.
+
+`IMPLEMENTATION_HEAD` means the exact final production commit named in the implementation review record, not the current documentation head.
+
+`623801311` is the historical pre-takeover comparison only. If reported, it is labeled that way and is never called the complete PR range. The implementation review record includes the exact scanner source, its SHA-256, the invocation, and raw per-file output for both required ranges. The scanner is review evidence, not a repository test or a new verifier subsystem.
+
+A companion decision-construct report counts match arms and the conditional forms that could otherwise hide a keyword reduction, including `matches!`, `&&`, `||`, `is_some_and`, `is_none_or`, `map_or`, `filter`, `and_then`, `or_else`, and `then_some`. It is reported over the same endpoints. Review rejects moving a reducer between files or replacing `if`/`match` with an equivalent combinator merely to improve either number.
 
 This repair is deletion-led, with hard review constraints:
 
-- no new production `if` keyword line is added under `src/strategies/`; explicit enum arms are used instead of correlated predicates;
+- no route or release decision is added as a new Boolean/projection chain under `src/strategies/`; authority decisions use the typed reducers and exhaustive enum arms;
 - strategy restart/reconstruction functions and their branches are deleted rather than renamed or wrapped;
 - the shared submit change adds only exhaustive enum/disposition arms needed for the replacement outcome;
 - exit routing uses one exhaustive transition over explicit states, not multiple Boolean/projection checks;
-- the exact repair range is net negative for production `if`/`match` lines under `src/strategies/`, including separately net-negative results for `binary_oracle_edge_taker/mod.rs` and `exposure.rs`;
-- the complete PR range ends below a net `+250` production `if`/`match` lines;
-- no wildcard hides a future variant in the position-materialization reducer, exit-routing reducer, resting-identity disposition, or submit-outcome matches. Existing projection helpers outside those authorities are not expanded merely to satisfy a source metric.
+- the implementation repair range is net negative for both the primary and companion counts under `src/strategies/`, including a separately net-negative combined result for `binary_oracle_edge_taker/mod.rs` plus `exposure.rs`; there is no per-file quota that rewards moving the reducer;
+- the actual complete PR range from `e62584045629208e81d2dce1fce608720ea01fbf` ends below a net `+250` primary `if`/`match` lines;
+- no wildcard hides a future variant in an authority-mutating exposure reducer, resting-identity disposition, submit-outcome match, reservation rebuild evidence match, or cancel-settlement match. Read-only projections are not expanded merely to satisfy a source metric.
 
-The census is required review evidence but is not a source-scanning test and is not a substitute for the sequence tests. If a safety repair needs an explicit state or match arm, correctness wins; equivalent obsolete branches must then be deleted so the hard net budgets still hold.
+The census is required review evidence but is not a source-scanning test and is not a substitute for sequence tests or structural review. Safety-required states and arms are not removed or hidden to meet the budget. If the actual-base target cannot be met by deleting obsolete lifecycle/recovery policy inside this slice, implementation stops and returns for an explicit scope decision instead of refactoring unrelated code or changing syntax to game the count.
 
 ## Atomic cutover
 
 One production commit performs the behavior cutover:
 
 - adds `SinkInvokedUnknown` settlement;
-- changes all shared participants and admission capacity to retain after invocation;
+- changes all shared participants and admission capacity to retain after invocation through one atomic candidate rebuild;
+- replaces the shared cancel `Result`/`Canceled` surface with the exhaustive `SkippedByPolicy | NtCallReturned | NtCallErrored` attempt outcome and makes it non-authoritative for lifecycle settlement;
 - adds the exact-generation resting identity disposition;
-- changes edge entry/exit settlement to remain occupied;
-- replaces optional managed-entry and restart-origin fields with explicit non-routeable states;
+- changes edge entry/exit settlement to remain occupied and moves every runtime `Flat` transition into the local release reducer;
+- replaces optional managed-entry and restart-origin fields with the typed local `EntryRemainder` state;
 - deletes recovered exit authority and strategy reconstruction in the same commit;
 - replaces reconstruction tests with the required non-routing sequences.
 
@@ -232,6 +276,7 @@ The implementation plan must map each rule above to behavior evidence. At minimu
 - isolated backtesting checks when the changed shared surface compiles there;
 - `git diff --check` for the repair and complete PR ranges;
 - symbol inspection proving recovered-authority production surfaces are deleted;
+- symbol inspection proving the private exposure owner is the only runtime `Flat` producer and current-process admission invalidation no longer clears live typed records or replaces their ledger with an empty gate;
 - exact-range conditional census with per-file totals;
 - internal adversarial review before external review;
 - stable PR-body disclosure of this lifecycle-first scope and the unchanged #869/Slices 2–5 remainder.

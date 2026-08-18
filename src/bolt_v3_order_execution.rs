@@ -3181,7 +3181,7 @@ mod tests {
         bolt_v3_position_authority_feed::{
             BoltV3PositionAuthorityCapability, BoltV3PositionAuthorityFeed,
         },
-        bolt_v3_quote_lifecycle::{Leg, MarketQuote},
+        bolt_v3_quote_lifecycle::{Leg, MakerOrderLifecycleScopeIdentity, MarketQuote},
         bolt_v3_requote_budget::{RequoteBudget, RequoteBudgetPair},
         bolt_v3_submit_admission::{
             BoltV3CompiledOrderAdmissionEvidence, BoltV3CompiledOrderKind,
@@ -3327,7 +3327,40 @@ mod tests {
     fn quote_transaction_for_submit(
         command: &MakerCompiledOrderCommand,
     ) -> MakerQuoteTransactionContext {
-        quote_transaction_for_submit_on(command, &MarketQuote::new_for_test(false))
+        let MakerCompiledOrderCommand::Submit { leg, inputs, .. } = command else {
+            panic!("quote transaction test helper requires a submit command");
+        };
+        quote_transaction_for_submit_on(
+            command,
+            &market_for_command_leg(*leg, inputs.instrument_id, false),
+        )
+    }
+
+    fn market_for_command_leg(
+        leg: Leg,
+        instrument_id: InstrumentId,
+        supports_modify: bool,
+    ) -> MarketQuote {
+        let other_instrument_id = InstrumentId::from("OTHER.INSTRUMENT");
+        let (yes_instrument_id, no_instrument_id) = match leg {
+            Leg::Yes => (instrument_id, other_instrument_id),
+            Leg::No => (other_instrument_id, instrument_id),
+        };
+        MarketQuote::new(
+            MakerOrderLifecycleScopeIdentity::new(1_000, yes_instrument_id, no_instrument_id),
+            supports_modify,
+        )
+    }
+
+    fn market_for_test_instruments() -> MarketQuote {
+        MarketQuote::new(
+            MakerOrderLifecycleScopeIdentity::new(
+                1_000,
+                InstrumentId::from("YES.INSTRUMENT"),
+                InstrumentId::from("NO.INSTRUMENT"),
+            ),
+            false,
+        )
     }
 
     fn quote_transaction_for_submit_on(
@@ -3354,13 +3387,13 @@ mod tests {
                 now_ms: 0,
             },
         );
-        MakerQuoteTransactionContext {
-            market: market.clone(),
+        MakerQuoteTransactionContext::new(
+            market.clone(),
             budget,
-            proposal: decision
+            decision
                 .proposal
                 .expect("fresh submit should mint a quote transaction proposal"),
-        }
+        )
     }
 
     fn coordinator_budget_for_test() -> RequoteBudgetPair {
@@ -3395,22 +3428,25 @@ mod tests {
                 now_ms: 2,
             },
         );
-        MakerQuoteTransactionContext {
-            market: market.clone(),
+        MakerQuoteTransactionContext::new(
+            market.clone(),
             budget,
-            proposal: decision
+            decision
                 .proposal
                 .expect("requote cancel should mint a quote transaction proposal"),
-        }
+        )
     }
 
     fn quote_transaction_for_modify(
         command: &MakerCompiledOrderCommand,
     ) -> MakerQuoteTransactionContext {
-        let MakerCompiledOrderCommand::Modify { leg, .. } = command else {
+        let MakerCompiledOrderCommand::Modify {
+            leg, instrument_id, ..
+        } = command
+        else {
             panic!("quote transaction test helper requires a modify command");
         };
-        let mut market = MarketQuote::new_for_test(true);
+        let mut market = market_for_command_leg(*leg, *instrument_id, true);
         market.on_leg_event(
             *leg,
             crate::bolt_v3_quote_lifecycle::LegEvent::QuoteTrigger {
@@ -3434,13 +3470,13 @@ mod tests {
                 now_ms: 2,
             },
         );
-        MakerQuoteTransactionContext {
+        MakerQuoteTransactionContext::new(
             market,
             budget,
-            proposal: decision
+            decision
                 .proposal
                 .expect("modify should mint a quote transaction proposal"),
-        }
+        )
     }
 
     #[test]
@@ -3609,7 +3645,7 @@ mod tests {
         let order_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
             "maker_execution_client",
         );
-        let quote_market = MarketQuote::new_for_test(false);
+        let quote_market = market_for_test_instruments();
         let submit = MakerCompiledOrderCommand::Submit {
             leg: Leg::No,
             template: Box::new(maker_limit_post_only_template()),
@@ -3684,13 +3720,22 @@ mod tests {
         let no_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
             "maker_execution_client",
         );
-        let instrument_id = InstrumentId::from("YES.INSTRUMENT");
         let yes_id = ClientOrderId::from("MAKER-CONTENTION-YES");
         let no_id = ClientOrderId::from("MAKER-CONTENTION-NO");
-        let market = MarketQuote::new_for_test(false);
-        for (leg, client_order_id, economics) in [
-            (Leg::Yes, yes_id, &yes_economics),
-            (Leg::No, no_id, &no_economics),
+        let market = market_for_test_instruments();
+        for (leg, instrument_id, client_order_id, economics) in [
+            (
+                Leg::Yes,
+                InstrumentId::from("YES.INSTRUMENT"),
+                yes_id,
+                &yes_economics,
+            ),
+            (
+                Leg::No,
+                InstrumentId::from("NO.INSTRUMENT"),
+                no_id,
+                &no_economics,
+            ),
         ] {
             let submit_admission = BoltV3SubmitAdmissionState::new_with_live_submit_limits(
                 writer.clone(),
@@ -3761,20 +3806,32 @@ mod tests {
                     now_ms: 1,
                 },
             );
-            MakerQuoteTransactionContext {
-                market: market.clone(),
-                budget: shared_budget.clone(),
-                proposal: decision
+            MakerQuoteTransactionContext::new(
+                market.clone(),
+                shared_budget.clone(),
+                decision
                     .proposal
                     .expect("both legs should propose before either reservation arms"),
-            }
+            )
         };
         let yes_context = cancel_context(Leg::Yes);
         let no_context = cancel_context(Leg::No);
 
-        for (leg, client_order_id, context, economics) in [
-            (Leg::Yes, yes_id, yes_context, &yes_economics),
-            (Leg::No, no_id, no_context, &no_economics),
+        for (leg, instrument_id, client_order_id, context, economics) in [
+            (
+                Leg::Yes,
+                InstrumentId::from("YES.INSTRUMENT"),
+                yes_id,
+                yes_context,
+                &yes_economics,
+            ),
+            (
+                Leg::No,
+                InstrumentId::from("NO.INSTRUMENT"),
+                no_id,
+                no_context,
+                &no_economics,
+            ),
         ] {
             let cancel = MakerCompiledOrderCommand::Cancel {
                 leg,
@@ -3840,7 +3897,7 @@ mod tests {
         let order_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
             "maker_execution_client",
         );
-        let quote_market = MarketQuote::new_for_test(false);
+        let quote_market = market_for_test_instruments();
         let client_order_id = ClientOrderId::from("MAKER-RETRY-1");
         let submit = MakerCompiledOrderCommand::Submit {
             leg: Leg::Yes,
@@ -4075,7 +4132,7 @@ mod tests {
         let order_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
             "maker_execution_client",
         );
-        let quote_market = MarketQuote::new_for_test(false);
+        let quote_market = market_for_test_instruments();
         let client_order_id = ClientOrderId::from("MAKER-QUERY-1");
         let submit = MakerCompiledOrderCommand::Submit {
             leg: Leg::Yes,

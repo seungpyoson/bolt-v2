@@ -261,11 +261,11 @@ fn fresh_quote_transaction_context(leg: Leg) -> MakerQuoteTransactionContext {
             now_ms: 0,
         },
     );
-    MakerQuoteTransactionContext {
+    MakerQuoteTransactionContext::new(
         market,
         budget,
-        proposal: decision.proposal.expect("fresh quote must be proposed"),
-    }
+        decision.proposal.expect("fresh quote must be proposed"),
+    )
 }
 
 fn quote_transaction_context_for_active_market(
@@ -288,11 +288,11 @@ fn quote_transaction_context_for_active_market(
             now_ms: 0,
         },
     );
-    MakerQuoteTransactionContext {
+    MakerQuoteTransactionContext::new(
         market,
         budget,
-        proposal: decision.proposal.expect("fresh quote must be proposed"),
-    }
+        decision.proposal.expect("fresh quote must be proposed"),
+    )
 }
 
 fn market_quote_for_active_market(

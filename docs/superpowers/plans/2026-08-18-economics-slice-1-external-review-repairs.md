@@ -537,18 +537,21 @@ git commit -m "fix(economics): require provider fee descriptors"
 
 **Files:**
 - Modify: `src/bolt_v3_quote_lifecycle.rs:2750-2780`
+- Modify: `src/bolt_v3_maker_quote_control.rs:35-115`
 - Modify: `src/bolt_v3_maker_order_dispatch.rs:20-330`
 - Modify: `src/strategies/binary_oracle_maker/mod.rs:460-610,770-810`
+- Test: `src/bolt_v3_order_execution.rs`
+- Test: `src/bolt_v3_order_execution/tracked_order_economics.rs`
 - Test: `src/bolt_v3_maker_order_dispatch.rs` unit tests
 - Test: `tests/bolt_v3_binary_oracle_maker_runtime.rs`
 - Test: `tests/bolt_v3_maker_runtime_quote.rs`
 
 **Interfaces:**
-- Produces: `MakerOrderLifecycleScopeIdentity::instrument_id(leg)`, private `MakerQuoteLegAuthority`, and `MakerQuoteTransactionContext::try_new`.
-- Removes: public fields on `MakerQuoteTransactionContext`.
+- Produces: branch-free `MakerOrderLifecycleScopeIdentity::instrument_id(leg)`, private `MakerQuoteLegAuthority`, and `MakerQuoteTransactionContext::new`.
+- Removes: public fields on `MakerQuoteTransactionContext` and the redundant `MakerQuoteCommandProposal::action` field.
 - Preserves: `MakerOrderCommandAuthority::ScopeCancelAll` as a separate capability.
 
-- [ ] **Step 1: Add malformed submit/cancel/modify tests**
+- [x] **Step 1: Add malformed submit/cancel/modify tests**
 
 For a market sealed as YES=`Y`, NO=`N`, construct commands with `leg=Yes` and `instrument_id=N`. Assert `LifecycleScope` failure and zero build/preparation/registration/sink counts. Cover:
 
@@ -560,7 +563,7 @@ MakerCompiledOrderCommand::Modify { leg: Leg::Yes, instrument_id: no_id, .. }
 
 Keep the existing correct YES/YES and NO/NO controls.
 
-- [ ] **Step 2: Run the mismatch tests and verify the current dispatcher accepts them**
+- [x] **Step 2: Run the mismatch tests and verify the current dispatcher accepts them**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib maker_command_rejects_leg_instrument_mismatch -- --test-threads=1
@@ -568,15 +571,12 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: FAIL because `bind_to` checks only `MarketAction`.
 
-- [ ] **Step 3: Add the scope accessor and sealed context**
+- [x] **Step 3: Add the scope accessor and sealed context**
 
 ```rust
 impl MakerOrderLifecycleScopeIdentity {
     pub(crate) const fn instrument_id(self, leg: Leg) -> InstrumentId {
-        match leg {
-            Leg::Yes => self.yes_instrument_id,
-            Leg::No => self.no_instrument_id,
-        }
+        self.instrument_ids[leg as usize]
     }
 }
 
@@ -585,7 +585,6 @@ struct MakerQuoteLegAuthority {
     market: MarketQuote,
     budget: RequoteBudgetPair,
     proposal: MakerQuoteCommandProposal,
-    leg: Leg,
     instrument_id: InstrumentId,
 }
 
@@ -595,17 +594,17 @@ pub struct MakerQuoteTransactionContext {
 }
 ```
 
-`try_new(market, budget, proposal)` derives `leg` from the proposal, validates `proposal.action`, and derives the instrument from `market.scope_identity().instrument_id(leg)`. Expose a feature-gated test constructor that calls the same validation; never expose fields.
+`new(market, budget, proposal)` derives the action from the proposal's private lifecycle and the instrument from `market.scope_identity().instrument_id(leg)`. The proposal no longer stores a second, correlated action field; the context never exposes fields.
 
-- [ ] **Step 4: Validate command and final order before mutation**
+- [x] **Step 4: Validate command and final order before mutation**
 
 Change `bind_to` to accept the command action and command instrument. For submit, validate once before order construction and validate `order.instrument_id()` again before `prepare_maker_order`. For cancel/modify, validate before calling the sink. Return `LifecycleScope` for instrument mismatch.
 
-- [ ] **Step 5: Migrate strategy and integration-test construction**
+- [x] **Step 5: Migrate strategy and integration-test construction**
 
-Construct contexts only through `MakerQuoteTransactionContext::try_new`. `route_maker_order_command` continues to resolve exactly one active market and bind shared retention authority before dispatch.
+Construct contexts only through `MakerQuoteTransactionContext::new`. `route_maker_order_command` continues to resolve exactly one active market and bind shared retention authority before dispatch.
 
-- [ ] **Step 6: Run maker authority tests**
+- [x] **Step 6: Run maker authority tests**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib maker_order_dispatch -- --test-threads=1
@@ -615,10 +614,10 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: PASS with no mutation on cross-leg commands.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
-git add src/bolt_v3_quote_lifecycle.rs src/bolt_v3_maker_order_dispatch.rs src/strategies/binary_oracle_maker/mod.rs tests/bolt_v3_binary_oracle_maker_runtime.rs tests/bolt_v3_maker_runtime_quote.rs
+git add src/bolt_v3_quote_lifecycle.rs src/bolt_v3_maker_quote_control.rs src/bolt_v3_maker_order_dispatch.rs src/strategies/binary_oracle_maker/mod.rs src/bolt_v3_order_execution.rs src/bolt_v3_order_execution/tracked_order_economics.rs tests/bolt_v3_binary_oracle_maker_runtime.rs tests/bolt_v3_maker_runtime_quote.rs
 git commit -m "fix(maker): seal quote leg instrument authority"
 ```
 

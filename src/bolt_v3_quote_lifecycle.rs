@@ -2711,6 +2711,7 @@ impl GovernedQuoteTransaction {
 }
 
 /// The two sides of a binary market the maker quotes.
+#[repr(usize)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Leg {
     /// The YES (e.g. up) outcome token.
@@ -2753,8 +2754,7 @@ pub enum MarketAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MakerOrderLifecycleScopeIdentity {
     start_timestamp_milliseconds: u64,
-    yes_instrument_id: InstrumentId,
-    no_instrument_id: InstrumentId,
+    instrument_ids: [InstrumentId; 2],
 }
 
 impl MakerOrderLifecycleScopeIdentity {
@@ -2766,9 +2766,13 @@ impl MakerOrderLifecycleScopeIdentity {
     ) -> Self {
         Self {
             start_timestamp_milliseconds,
-            yes_instrument_id,
-            no_instrument_id,
+            instrument_ids: [yes_instrument_id, no_instrument_id],
         }
+    }
+
+    #[must_use]
+    pub(crate) const fn instrument_id(self, leg: Leg) -> InstrumentId {
+        self.instrument_ids[leg as usize]
     }
 }
 

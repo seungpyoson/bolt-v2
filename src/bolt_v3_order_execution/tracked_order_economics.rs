@@ -2012,11 +2012,11 @@ mod tests {
                 now_ms: 1_000,
             },
         );
-        maker_quote_transaction_participant_for_test(MakerQuoteTransactionContext {
-            market: market.clone(),
-            budget: budget.clone(),
-            proposal: decision.proposal.expect("maker submit must be proposed"),
-        })
+        maker_quote_transaction_participant_for_test(MakerQuoteTransactionContext::new(
+            market.clone(),
+            budget.clone(),
+            decision.proposal.expect("maker submit must be proposed"),
+        ))
     }
 
     #[test]

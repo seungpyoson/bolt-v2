@@ -561,7 +561,7 @@ impl BinaryOracleMaker {
                         ));
                     }
                 };
-                self.bind_retention_scope(market_key, &transaction.market)
+                self.bind_retention_scope(market_key, transaction.market())
                     .map_err(|error| {
                         MakerOrderCommandFailure::new(
                             MakerOrderCommandFailureKind::LifecycleScope,
@@ -792,11 +792,11 @@ impl BinaryOracleMaker {
                                     "binary_oracle_maker quote-bearing command has no governed lifecycle proposal",
                                 )
                             })?;
-                            MakerOrderCommandAuthority::Quote(MakerQuoteTransactionContext {
-                                market: market.clone(),
-                                budget: budget.clone(),
+                            MakerOrderCommandAuthority::Quote(MakerQuoteTransactionContext::new(
+                                market.clone(),
+                                budget.clone(),
                                 proposal,
-                            })
+                            ))
                         }
                         MakerCompiledOrderCommand::CancelAll { .. } => {
                             MakerOrderCommandAuthority::ScopeCancelAll

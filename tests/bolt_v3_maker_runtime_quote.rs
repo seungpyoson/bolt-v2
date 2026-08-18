@@ -3,6 +3,7 @@ use bolt_v2::{
     bolt_v3_config::ReferencePriceProvider,
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig, UsableMu},
+    bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
     bolt_v3_maker_order_dispatch::{
         MakerOrderCommandAuthority, MakerOrderCommandFailure, MakerOrderCommandFailureKind,
         MakerOrderCommandSink, MakerOrderDispatchInput, MakerOrderDispatchOutcome,
@@ -12,6 +13,7 @@ use bolt_v2::{
         MakerLegBinding, MakerMarketActionOrderInput, MakerOrderIntent,
         maker_order_plan_from_market_action,
     },
+    bolt_v3_maker_quote_control::{QuoteControlInput, drive_quote_leg},
     bolt_v3_maker_quote_plan::MakerQuotePlanInputs,
     bolt_v3_maker_rate_budget::build_requote_budget_pair,
     bolt_v3_maker_runtime_order::{
@@ -27,9 +29,10 @@ use bolt_v2::{
     bolt_v3_order_execution::{
         BoltV3RestingRegistrationCommitParticipant, BoltV3RestingSubmitTransactionOutcome,
     },
-    bolt_v3_order_intent::NtOrderTemplate,
+    bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
     bolt_v3_quote_lifecycle::{
-        Leg, LegEvent, LifecycleAction, MakerQuoteLifecycleIdentity, MarketAction, MarketState,
+        Leg, LegEvent, LifecycleAction, MakerOrderLifecycleScopeIdentity,
+        MakerQuoteLifecycleIdentity, MarketAction, MarketQuote, MarketState,
     },
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
@@ -570,7 +573,14 @@ fn runtime_quote_tick_fails_closed_for_unsupported_family_without_mutation() {
 
 #[test]
 fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
+    let mut market = MarketQuote::new(
+        MakerOrderLifecycleScopeIdentity::new(
+            1_000,
+            InstrumentId::from("YES.RUNTIME"),
+            InstrumentId::from("NO.RUNTIME"),
+        ),
+        false,
+    );
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
     let decision = plan_maker_runtime_quote(
@@ -611,11 +621,9 @@ fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
                 MakerOrderDispatchInput {
                     command,
                     submit_order_prefix,
-                    authority: MakerOrderCommandAuthority::Quote(MakerQuoteTransactionContext {
-                        market: market.clone(),
-                        budget: budget.clone(),
-                        proposal,
-                    }),
+                    authority: MakerOrderCommandAuthority::Quote(
+                        MakerQuoteTransactionContext::new(market.clone(), budget.clone(), proposal),
+                    ),
                 },
                 &mut sink,
             )
@@ -678,6 +686,63 @@ fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
             ClientOrderId::from("MAKER-NO-1"),
         ]
     );
+}
+
+#[test]
+fn maker_command_rejects_leg_instrument_mismatch_before_mutation() {
+    let no_instrument_id = InstrumentId::from("NO.RUNTIME");
+    let commands = [
+        (
+            LifecycleAction::Submit,
+            MakerCompiledOrderCommand::Submit {
+                leg: Leg::Yes,
+                template: Box::new(maker_limit_post_only_template()),
+                inputs: NtOrderBuildInputs {
+                    instrument_id: no_instrument_id,
+                    order_side: OrderSide::Buy,
+                    quantity: Quantity::new(2.0, 2),
+                    price: Some(Price::new(0.40, 2)),
+                    client_order_id: ClientOrderId::from("MAKER-CROSS-LEG-SUBMIT"),
+                },
+                fallback_price: Price::new(0.40, 2),
+            },
+        ),
+        (
+            LifecycleAction::Cancel,
+            MakerCompiledOrderCommand::Cancel {
+                leg: Leg::Yes,
+                instrument_id: no_instrument_id,
+                client_order_id: ClientOrderId::from("MAKER-CROSS-LEG-CANCEL"),
+            },
+        ),
+        (
+            LifecycleAction::Modify,
+            MakerCompiledOrderCommand::Modify {
+                leg: Leg::Yes,
+                instrument_id: no_instrument_id,
+                client_order_id: ClientOrderId::from("MAKER-CROSS-LEG-MODIFY"),
+                price: Price::new(0.41, 2),
+                quantity: Quantity::new(2.0, 2),
+            },
+        ),
+    ];
+
+    for (action, command) in commands {
+        let context = quote_transaction_context_for_action(action);
+        let mut sink = RecordingMakerOrderSink::new();
+        let error = dispatch_maker_order_command(
+            MakerOrderDispatchInput {
+                command: &command,
+                submit_order_prefix: "maker_submit",
+                authority: MakerOrderCommandAuthority::Quote(context),
+            },
+            &mut sink,
+        )
+        .expect_err("a command cannot bind one leg to the other leg's instrument");
+
+        assert_eq!(error.kind(), MakerOrderCommandFailureKind::LifecycleScope);
+        assert_eq!(sink.mutation_counts(), [0; 6]);
+    }
 }
 
 #[test]
@@ -1207,10 +1272,63 @@ fn order_identity(client_order_id: &str, generation: u64) -> OrderIdentity {
     )
 }
 
+fn quote_transaction_context_for_action(action: LifecycleAction) -> MakerQuoteTransactionContext {
+    let supports_modify = action == LifecycleAction::Modify;
+    let mut market = MarketQuote::new(
+        MakerOrderLifecycleScopeIdentity::new(
+            1_000,
+            InstrumentId::from("YES.RUNTIME"),
+            InstrumentId::from("NO.RUNTIME"),
+        ),
+        supports_modify,
+    );
+    if action != LifecycleAction::Submit {
+        market.on_leg_event(
+            Leg::Yes,
+            LegEvent::QuoteTrigger {
+                requote_needed: true,
+            },
+        );
+        market.on_leg_event(Leg::Yes, LegEvent::Accepted);
+    }
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+    let decision = drive_quote_leg(
+        &mut market,
+        &mut budget,
+        QuoteControlInput {
+            leg: Leg::Yes,
+            desired_price: 0.6,
+            resting_price: (action != LifecycleAction::Submit).then_some(0.5),
+            requote_threshold: 0.01,
+            eps: 1e-9,
+            now_ms: 1_000,
+        },
+    );
+    assert_eq!(
+        decision.action,
+        Some(MarketAction::Leg {
+            leg: Leg::Yes,
+            action
+        })
+    );
+    MakerQuoteTransactionContext::new(
+        market,
+        budget,
+        decision
+            .proposal
+            .expect("requested action must be proposed"),
+    )
+}
+
 struct RecordingMakerOrderSink {
     clock: Rc<RefCell<dyn Clock>>,
     order_factory: RefCell<OrderFactory>,
     next_generation: u64,
+    order_factory_calls: usize,
+    prepared_submit_calls: usize,
+    cancel_calls: usize,
+    modify_calls: usize,
     submitted: Vec<OrderAny>,
     canceled_all: Vec<(Option<Leg>, InstrumentId, Option<OrderSide>)>,
 }
@@ -1234,6 +1352,10 @@ impl RecordingMakerOrderSink {
             )),
             clock,
             next_generation: 1,
+            order_factory_calls: 0,
+            prepared_submit_calls: 0,
+            cancel_calls: 0,
+            modify_calls: 0,
             submitted: Vec::new(),
             canceled_all: Vec::new(),
         }
@@ -1251,16 +1373,29 @@ impl RecordingMakerOrderSink {
         self.next_generation += 1;
         generation
     }
+
+    fn mutation_counts(&self) -> [usize; 6] {
+        [
+            self.order_factory_calls,
+            self.prepared_submit_calls,
+            self.submitted.len(),
+            self.cancel_calls,
+            self.modify_calls,
+            usize::try_from(self.next_generation - 1).expect("test generation fits usize"),
+        ]
+    }
 }
 
 impl MakerOrderCommandSink for RecordingMakerOrderSink {
     type PreparedSubmit = OrderAny;
 
     fn order_factory(&mut self) -> RefMut<'_, OrderFactory> {
+        self.order_factory_calls += 1;
         self.order_factory.borrow_mut()
     }
 
     fn prepare_maker_order(&mut self, order: OrderAny) -> Result<Self::PreparedSubmit> {
+        self.prepared_submit_calls += 1;
         Ok(order)
     }
 
@@ -1307,6 +1442,7 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
         client_order_id: ClientOrderId,
         mut participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
     ) -> Result<()> {
+        self.cancel_calls += 1;
         let generation = self.begin_generation();
         let actor_now_ns = self.clock.borrow().timestamp_ns().as_u64();
         participant.arm_at_identity(MakerQuoteLifecycleIdentity::new(
@@ -1337,6 +1473,7 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
         _quantity: Quantity,
         _participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
     ) -> Result<()> {
+        self.modify_calls += 1;
         anyhow::bail!("test sink should not receive modify commands")
     }
 }

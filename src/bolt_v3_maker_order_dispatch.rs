@@ -26,16 +26,22 @@ use crate::{
     bolt_v3_order_intent::build_nt_order,
     bolt_v3_quote_lifecycle::{
         Leg, LifecycleAction, MakerQuoteLifecycleHandle, MakerQuoteLifecycleIdentity, MarketAction,
-        MarketQuote, QuoteTransactionRegistrationPhase,
+        MarketQuote, QuoteLegTransitionProposal, QuoteTransactionRegistrationPhase,
     },
     bolt_v3_requote_budget::RequoteBudgetPair,
 };
 
 #[derive(Debug, Clone, PartialEq)]
+struct MakerQuoteLegAuthority {
+    market: MarketQuote,
+    budget: RequoteBudgetPair,
+    proposal: MakerQuoteCommandProposal,
+    instrument_id: InstrumentId,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct MakerQuoteTransactionContext {
-    pub market: MarketQuote,
-    pub budget: RequoteBudgetPair,
-    pub proposal: MakerQuoteCommandProposal,
+    authority: MakerQuoteLegAuthority,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,11 +66,21 @@ struct MakerQuoteTransactionParticipant {
 
 impl MakerQuoteTransactionParticipant {
     fn new(context: MakerQuoteTransactionContext) -> Self {
+        let MakerQuoteLegAuthority {
+            market,
+            budget,
+            proposal,
+            instrument_id: _,
+        } = context.authority;
         Self {
-            market: context.market,
-            budget: context.budget,
-            proposal: context.proposal,
+            market,
+            budget,
+            proposal,
         }
+    }
+
+    const fn lifecycle(&self) -> QuoteLegTransitionProposal {
+        self.proposal.lifecycle()
     }
 
     fn require_settled(settled: bool) -> Result<()> {
@@ -86,23 +102,23 @@ impl BoltV3RestingRegistrationCommitParticipant for MakerQuoteTransactionPartici
     }
 
     fn maker_lifecycle(&self) -> MakerQuoteLifecycleHandle {
-        MakerQuoteLifecycleHandle::new(self.market.clone(), self.proposal.lifecycle.leg())
+        MakerQuoteLifecycleHandle::new(self.market.clone(), self.lifecycle().leg())
     }
 
     fn arm_at_identity(&mut self, identity: MakerQuoteLifecycleIdentity) -> Result<()> {
         self.market.arm_leg_transaction(
-            self.proposal.lifecycle,
+            self.lifecycle(),
             self.budget.clone(),
-            self.proposal.budget,
+            self.proposal.budget(),
             identity,
         )
     }
 
     fn mark_sink_invoked(&mut self, actor_now_ns: u64) -> Result<()> {
         self.market.mark_leg_transaction_sink_invoked(
-            self.proposal.lifecycle,
+            self.lifecycle(),
             self.market
-                .transaction_generation(self.proposal.lifecycle)
+                .transaction_generation(self.lifecycle())
                 .ok_or_else(|| anyhow::anyhow!("maker quote transaction is not armed"))?,
             actor_now_ns / NANOS_PER_MILLI_U64,
         )
@@ -111,7 +127,7 @@ impl BoltV3RestingRegistrationCommitParticipant for MakerQuoteTransactionPartici
     fn registration_capability(&self, generation: u64) -> BoltV3RestingRegistrationCapability {
         match self
             .market
-            .leg_transaction_registration_phase(self.proposal.lifecycle, generation)
+            .leg_transaction_registration_phase(self.lifecycle(), generation)
         {
             QuoteTransactionRegistrationPhase::PreSink => {
                 BoltV3RestingRegistrationCapability::PreSink
@@ -128,59 +144,59 @@ impl BoltV3RestingRegistrationCommitParticipant for MakerQuoteTransactionPartici
     fn settle_submitted(&mut self, generation: u64) -> Result<()> {
         Self::require_settled(
             self.market
-                .commit_leg_transaction(self.proposal.lifecycle, generation),
+                .commit_leg_transaction(self.lifecycle(), generation),
         )
     }
 
     fn settle_command_issued(&mut self, generation: u64) -> Result<()> {
         Self::require_settled(
             self.market
-                .commit_leg_transaction(self.proposal.lifecycle, generation),
+                .commit_leg_transaction(self.lifecycle(), generation),
         )
     }
 
     fn settle_sink_rejected(&mut self, generation: u64) -> Result<()> {
         Self::require_settled(
             self.market
-                .reject_leg_transaction_at_sink(self.proposal.lifecycle, generation),
+                .reject_leg_transaction_at_sink(self.lifecycle(), generation),
         )
     }
 
     fn settle_callback_retired(&mut self, generation: u64) -> Result<()> {
         Self::require_settled(
             self.market
-                .retire_leg_transaction_from_callback(self.proposal.lifecycle, generation),
+                .retire_leg_transaction_from_callback(self.lifecycle(), generation),
         )
     }
 
     fn abort_pre_sink(&mut self, generation: u64) -> Result<()> {
         Self::require_settled(
             self.market
-                .abort_leg_transaction(self.proposal.lifecycle, generation),
+                .abort_leg_transaction(self.lifecycle(), generation),
         )
     }
 
     fn fail_pre_sink_invariant(&mut self, generation: u64) -> Result<()> {
         Self::require_settled(
             self.market
-                .fail_pre_sink_leg_transaction(self.proposal.lifecycle, generation),
+                .fail_pre_sink_leg_transaction(self.lifecycle(), generation),
         )
     }
 
     fn fail_post_sink_invariant(&mut self, generation: u64) -> Result<()> {
         Self::require_settled(
             self.market
-                .unwind_post_sink_leg_transaction(self.proposal.lifecycle, generation),
+                .unwind_post_sink_leg_transaction(self.lifecycle(), generation),
         )
     }
 }
 
 impl Drop for MakerQuoteTransactionParticipant {
     fn drop(&mut self) {
-        if let Err(error) = self.market.unwind_leg_transaction(self.proposal.lifecycle) {
+        if let Err(error) = self.market.unwind_leg_transaction(self.lifecycle()) {
             log::error!(
                 "maker quote transaction unwind failed: leg={:?} error={error:#}",
-                self.proposal.lifecycle.leg(),
+                self.lifecycle().leg(),
             );
         }
     }
@@ -306,20 +322,57 @@ impl MakerOrderCommandFailure {
 }
 
 impl MakerQuoteTransactionContext {
+    #[must_use]
+    pub fn new(
+        market: MarketQuote,
+        budget: RequoteBudgetPair,
+        proposal: MakerQuoteCommandProposal,
+    ) -> Self {
+        let instrument_id = market
+            .scope_identity()
+            .instrument_id(proposal.lifecycle().leg());
+        Self {
+            authority: MakerQuoteLegAuthority {
+                market,
+                budget,
+                proposal,
+                instrument_id,
+            },
+        }
+    }
+
+    pub(crate) const fn market(&self) -> &MarketQuote {
+        &self.authority.market
+    }
+
+    #[cfg(test)]
+    const fn proposal(&self) -> MakerQuoteCommandProposal {
+        self.authority.proposal
+    }
+
     fn bind_to(
-        self,
-        expected: MarketAction,
-    ) -> std::result::Result<MakerQuoteTransactionParticipant, MakerOrderCommandFailure> {
-        if self.proposal.action != expected {
+        &self,
+        action: MarketAction,
+        instrument_id: InstrumentId,
+    ) -> std::result::Result<(), MakerOrderCommandFailure> {
+        let sealed = (
+            self.authority.proposal.action(),
+            self.authority.instrument_id,
+        );
+        let command = (action, instrument_id);
+        if sealed != command {
             return Err(MakerOrderCommandFailure::new(
-                MakerOrderCommandFailureKind::Lifecycle,
+                MakerOrderCommandFailureKind::LifecycleScope,
                 format_args!(
-                    "maker quote transaction does not match the compiled command: expected={expected:?} actual={:?}",
-                    self.proposal.action,
+                    "maker quote transaction does not match the compiled command: sealed={sealed:?} command={command:?}",
                 ),
             ));
         }
-        Ok(MakerQuoteTransactionParticipant::new(self))
+        Ok(())
+    }
+
+    fn into_participant(self) -> MakerQuoteTransactionParticipant {
+        MakerQuoteTransactionParticipant::new(self)
     }
 }
 
@@ -393,10 +446,11 @@ pub fn dispatch_maker_order_command(
             },
             MakerOrderCommandAuthority::Quote(quote_transaction),
         ) => {
-            let participant = quote_transaction.bind_to(MarketAction::Leg {
+            let action = MarketAction::Leg {
                 leg: *leg,
                 action: LifecycleAction::Submit,
-            })?;
+            };
+            quote_transaction.bind_to(action, inputs.instrument_id)?;
             let order = {
                 // `order_factory()` now yields a `RefMut` guard (NT moved the strategy
                 // `OrderFactory` behind `Rc<RefCell<_>>`). Scope it so the borrow of `sink`
@@ -410,6 +464,7 @@ pub fn dispatch_maker_order_command(
             };
             let prepared_client_order_id = order.client_order_id();
             let instrument_id = order.instrument_id();
+            quote_transaction.bind_to(action, instrument_id)?;
             let price = order.price().unwrap_or(*fallback_price);
             let quantity = order.quantity();
             let prepared = sink.prepare_maker_order(order).map_err(|error| {
@@ -418,7 +473,8 @@ pub fn dispatch_maker_order_command(
                     error,
                 )
             })?;
-            let transaction = sink.submit_maker_order(prepared, Box::new(participant));
+            let transaction =
+                sink.submit_maker_order(prepared, Box::new(quote_transaction.into_participant()));
             Ok(MakerOrderDispatchOutcome::SubmitAttempt {
                 leg: *leg,
                 instrument_id,
@@ -436,15 +492,18 @@ pub fn dispatch_maker_order_command(
             },
             MakerOrderCommandAuthority::Quote(quote_transaction),
         ) => {
-            let participant = quote_transaction.bind_to(MarketAction::Leg {
-                leg: *leg,
-                action: LifecycleAction::Cancel,
-            })?;
+            quote_transaction.bind_to(
+                MarketAction::Leg {
+                    leg: *leg,
+                    action: LifecycleAction::Cancel,
+                },
+                *instrument_id,
+            )?;
             sink.cancel_maker_order(
                 *leg,
                 *instrument_id,
                 *client_order_id,
-                Box::new(participant),
+                Box::new(quote_transaction.into_participant()),
             )
             .map_err(|error| {
                 MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::Cancel, error)
@@ -483,17 +542,20 @@ pub fn dispatch_maker_order_command(
             },
             MakerOrderCommandAuthority::Quote(quote_transaction),
         ) => {
-            let participant = quote_transaction.bind_to(MarketAction::Leg {
-                leg: *leg,
-                action: LifecycleAction::Modify,
-            })?;
+            quote_transaction.bind_to(
+                MarketAction::Leg {
+                    leg: *leg,
+                    action: LifecycleAction::Modify,
+                },
+                *instrument_id,
+            )?;
             sink.modify_maker_order(
                 *leg,
                 *instrument_id,
                 *client_order_id,
                 *price,
                 *quantity,
-                Box::new(participant),
+                Box::new(quote_transaction.into_participant()),
             )
             .map_err(|error| {
                 MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::Modify, error)
@@ -589,11 +651,11 @@ mod tests {
                 now_ms: NOW_MS,
             },
         );
-        MakerQuoteTransactionContext {
-            market: market.clone(),
-            budget: budget.clone(),
-            proposal: decision.proposal.expect("fresh quote must be proposed"),
-        }
+        MakerQuoteTransactionContext::new(
+            market.clone(),
+            budget.clone(),
+            decision.proposal.expect("fresh quote must be proposed"),
+        )
     }
 
     fn resting_context(
@@ -621,11 +683,11 @@ mod tests {
                 now_ms: NOW_MS,
             },
         );
-        MakerQuoteTransactionContext {
-            market: market.clone(),
-            budget: budget.clone(),
-            proposal: decision.proposal.expect("requote cancel must be proposed"),
-        }
+        MakerQuoteTransactionContext::new(
+            market.clone(),
+            budget.clone(),
+            decision.proposal.expect("requote cancel must be proposed"),
+        )
     }
 
     fn settle_fresh(
@@ -806,7 +868,7 @@ mod tests {
         let market = MarketQuote::new_for_test(false);
         let budget = budget_pair(8, 8);
         let context = fresh_context(&market, &budget, Leg::Yes);
-        let lifecycle = context.proposal.lifecycle;
+        let lifecycle = context.proposal().lifecycle();
         let mut participant = MakerQuoteTransactionParticipant::new(context);
         participant.arm_at_identity(lifecycle_identity(11)).unwrap();
         assert!(market.abort_leg_transaction(lifecycle, 11));
@@ -821,7 +883,7 @@ mod tests {
         let market = MarketQuote::new_for_test(false);
         let budget = budget_pair(8, 8);
         let context = fresh_context(&market, &budget, Leg::Yes);
-        let proposal = context.proposal.lifecycle;
+        let proposal = context.proposal().lifecycle();
         let mut participant = MakerQuoteTransactionParticipant::new(context);
         participant.arm_at_identity(lifecycle_identity(7)).unwrap();
         participant
@@ -904,7 +966,7 @@ mod tests {
         let market = MarketQuote::new_for_test(false);
         let budget = budget_pair(submit_cap, rest_cap);
         let context = resting_context(&market, &budget);
-        let lifecycle = context.proposal.lifecycle;
+        let lifecycle = context.proposal().lifecycle();
         let mut participant = MakerQuoteTransactionParticipant::new(context);
         participant.arm_at_identity(lifecycle_identity(1)).unwrap();
         participant
@@ -928,7 +990,7 @@ mod tests {
         let budget = budget_pair(8, 8);
         let context = resting_context(&market, &budget);
         let lifecycle =
-            MakerQuoteLifecycleHandle::new(market.clone(), context.proposal.lifecycle.leg());
+            MakerQuoteLifecycleHandle::new(market.clone(), context.proposal().lifecycle().leg());
         let mut participant = MakerQuoteTransactionParticipant::new(context);
         participant.arm_at_identity(lifecycle_identity(1)).unwrap();
         participant
@@ -1002,7 +1064,7 @@ mod tests {
         let budget = budget_pair(8, 8);
         let context = resting_context(&market, &budget);
         let lifecycle =
-            MakerQuoteLifecycleHandle::new(market.clone(), context.proposal.lifecycle.leg());
+            MakerQuoteLifecycleHandle::new(market.clone(), context.proposal().lifecycle().leg());
         let mut participant = MakerQuoteTransactionParticipant::new(context);
         participant.arm_at_identity(lifecycle_identity(1)).unwrap();
         participant
@@ -1088,11 +1150,11 @@ mod tests {
                     now_ms: NOW_MS,
                 },
             );
-            let context = MakerQuoteTransactionContext {
-                market: market.clone(),
-                budget: budget.clone(),
-                proposal: decision.proposal.expect("requote cancel must be proposed"),
-            };
+            let context = MakerQuoteTransactionContext::new(
+                market.clone(),
+                budget.clone(),
+                decision.proposal.expect("requote cancel must be proposed"),
+            );
             let generation = u64::try_from(offset + 1).expect("test generation fits u64");
             let mut participant = MakerQuoteTransactionParticipant::new(context);
             participant
@@ -1167,11 +1229,7 @@ mod tests {
         )
         .proposal
         .expect("modify must be proposed");
-        MakerQuoteTransactionContext {
-            market: market.clone(),
-            budget: budget.clone(),
-            proposal,
-        }
+        MakerQuoteTransactionContext::new(market.clone(), budget.clone(), proposal)
     }
 
     #[test]
@@ -1247,11 +1305,11 @@ mod tests {
                 now_ms: NOW_MS + 1,
             },
         );
-        MakerQuoteTransactionContext {
-            market: market.clone(),
-            budget: budget.clone(),
-            proposal: decision.proposal.expect("replacement must be proposed"),
-        }
+        MakerQuoteTransactionContext::new(
+            market.clone(),
+            budget.clone(),
+            decision.proposal.expect("replacement must be proposed"),
+        )
     }
 
     #[test]
@@ -1267,7 +1325,7 @@ mod tests {
 
         let context = replacement_context(&market, &budget);
         assert!(matches!(
-            context.proposal.budget,
+            context.proposal().budget(),
             MakerQuoteBudgetProposal::Prepaid { .. }
         ));
         let mut replacement = MakerQuoteTransactionParticipant::new(context);
@@ -1326,7 +1384,7 @@ mod tests {
         assert_eq!(budget.submit_commands_in_window(), 1);
         assert_eq!(budget.rest_cost_in_window(), 2);
         assert!(matches!(
-            replacement_context(&market, &budget).proposal.budget,
+            replacement_context(&market, &budget).proposal().budget(),
             MakerQuoteBudgetProposal::Reserve(_)
         ));
     }
@@ -1344,7 +1402,7 @@ mod tests {
 
         let second_context = replacement_context(&market, &budget);
         assert!(matches!(
-            second_context.proposal.budget,
+            second_context.proposal().budget(),
             MakerQuoteBudgetProposal::Reserve(_)
         ));
         let mut second = MakerQuoteTransactionParticipant::new(second_context);
@@ -1444,7 +1502,7 @@ mod tests {
             })
         );
         assert!(matches!(
-            recovered.proposal.map(|proposal| proposal.budget),
+            recovered.proposal.map(MakerQuoteCommandProposal::budget),
             Some(MakerQuoteBudgetProposal::Prepaid {
                 generation,
                 ..
@@ -1498,7 +1556,7 @@ mod tests {
         let market = MarketQuote::new_for_test(false);
         let budget = short_window_budget_pair(1, 2);
         let context = resting_context(&market, &budget);
-        let lifecycle = context.proposal.lifecycle;
+        let lifecycle = context.proposal().lifecycle();
         let mut cancel = MakerQuoteTransactionParticipant::new(context);
         cancel.arm_at_identity(lifecycle_identity(1)).unwrap();
         cancel

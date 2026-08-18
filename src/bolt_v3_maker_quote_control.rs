@@ -42,9 +42,25 @@ pub struct QuoteControlDecision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MakerQuoteCommandProposal {
-    pub action: MarketAction,
-    pub lifecycle: QuoteLegTransitionProposal,
-    pub budget: MakerQuoteBudgetProposal,
+    lifecycle: QuoteLegTransitionProposal,
+    budget: MakerQuoteBudgetProposal,
+}
+
+impl MakerQuoteCommandProposal {
+    pub(crate) const fn lifecycle(self) -> QuoteLegTransitionProposal {
+        self.lifecycle
+    }
+
+    pub(crate) const fn budget(self) -> MakerQuoteBudgetProposal {
+        self.budget
+    }
+
+    pub(crate) const fn action(self) -> MarketAction {
+        MarketAction::Leg {
+            leg: self.lifecycle.leg(),
+            action: self.lifecycle.action(),
+        }
+    }
 }
 
 pub fn drive_quote_leg(
@@ -92,7 +108,6 @@ pub fn drive_quote_leg(
         (
             Some(action),
             Some(MakerQuoteCommandProposal {
-                action,
                 lifecycle,
                 budget: budget_proposal,
             }),

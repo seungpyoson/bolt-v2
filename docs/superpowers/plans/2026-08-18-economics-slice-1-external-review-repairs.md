@@ -482,7 +482,7 @@ git commit -m "fix(exposure): bind decisions to operation generations"
 - Removes: `PolymarketAbsentFeeDescriptorPolicy` and `PolymarketEconomicsConfig::absent_fee_descriptor_policy`.
 - Preserves: explicit provider `fd.r == 0` as provider-sourced `PointEstimate::ProvenZero`.
 
-- [ ] **Step 1: Replace the assertion test with two authority tests**
+- [x] **Step 1: Replace the assertion test with two authority tests**
 
 Rename the descriptor-absence test to `absent_fee_descriptor_always_fails_closed` and delete its asserted-zero branch. Add `explicit_zero_fee_descriptor_is_provider_sourced_proven_zero`, using a fixture whose only semantic difference is:
 
@@ -492,7 +492,7 @@ Rename the descriptor-absence test to `absent_fee_descriptor_always_fails_closed
 
 Assert one component, `PointEstimate::ProvenZero`, and source equality with the provider snapshot metadata.
 
-- [ ] **Step 2: Run the explicit-zero test and verify it initially lacks a fixture/path**
+- [x] **Step 2: Run the explicit-zero test and verify it initially lacks a fixture/path**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib explicit_zero_fee_descriptor_is_provider_sourced_proven_zero -- --test-threads=1
@@ -500,7 +500,7 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: FAIL until the explicit descriptor fixture is created and call sites stop using descriptor absence as zero.
 
-- [ ] **Step 3: Delete the config policy and unconditionalize fail-closed behavior**
+- [x] **Step 3: Delete the config policy and unconditionalize fail-closed behavior**
 
 Remove the policy enum/field, formula-key validation, config build match, and TOML key from all four config files. Replace the quote branch with:
 
@@ -512,11 +512,11 @@ if self.snapshot.platform == PolymarketPlatformPlan::FeeDescriptorUnknown {
 
 Keep `effect` unchanged so an explicit evaluated zero descriptor remains the only route to `ProvenZero`.
 
-- [ ] **Step 4: Migrate positive fixtures to explicit zero**
+- [x] **Step 4: Migrate positive fixtures to explicit zero**
 
 Create `explicit_zero_fee.json` from the descriptor-missing fixture plus the explicit `fd` object. Keep `fee_free.json` descriptor-missing and negative. Update `tests/support/economics.rs` and `fee_free_authoritative_input` to use `explicit_zero_fee.json`.
 
-- [ ] **Step 5: Run fee, config, and routed-economics tests**
+- [x] **Step 5: Run fee, config, and routed-economics tests**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib polymarket::economics -- --test-threads=1
@@ -526,7 +526,7 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: PASS; shipped configuration contains no absence assertion.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/bolt_v3_providers/polymarket/economics.rs tests/fixtures/economics/polymarket/explicit_zero_fee.json tests/support/economics.rs tests/bolt_v3_economics_runtime.rs config/root.toml config/profiles/prod-btc-5m.overlay.toml tests/fixtures/bolt_v3/root.toml tests/fixtures/legacy_prod_btc_5m_oracle.toml

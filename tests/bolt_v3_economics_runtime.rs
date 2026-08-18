@@ -288,9 +288,9 @@ fn fee_free_authoritative_input() -> AuthoritativeVenueEconomicsInput {
             fetched_at_ns: 950,
             valid_until_ns: 2_000,
         },
-        include_str!("fixtures/economics/polymarket/fee_free.json"),
+        include_str!("fixtures/economics/polymarket/explicit_zero_fee.json"),
     )
-    .expect("descriptor-absent market-info should parse as typed unknown");
+    .expect("explicit-zero market-info should parse as provider authority");
     polymarket_authoritative_economics_input(
         "polymarket_main",
         "token-yes.POLYMARKET",

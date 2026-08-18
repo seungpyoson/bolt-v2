@@ -29,7 +29,7 @@ pub fn polymarket_inputs(loaded: &LoadedBoltV3Config) -> AuthoritativeEconomicsI
             fetched_at_ns: 950,
             valid_until_ns: 2_000,
         },
-        include_str!("../fixtures/economics/polymarket/fee_free.json"),
+        include_str!("../fixtures/economics/polymarket/explicit_zero_fee.json"),
     )
     .expect("fixture market-info snapshot should parse");
     AuthoritativeEconomicsInputStore::try_new([authoritative_economics_input(
@@ -85,7 +85,7 @@ pub fn polymarket_order_economics_for(
             fetched_at_ns: source_at_ns,
             valid_until_ns: u64::MAX,
         },
-        include_str!("../fixtures/economics/polymarket/fee_free.json"),
+        include_str!("../fixtures/economics/polymarket/explicit_zero_fee.json"),
     )
     .expect("fixture market-info snapshot should parse");
     let inputs = instrument_ids.iter().map(|instrument_id| {

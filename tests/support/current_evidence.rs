@@ -164,11 +164,6 @@ impl RecordingDecisionEvidenceWriter {
                     outcome: fact.outcome,
                     details: fact.details,
                 }),
-                CurrentFact::ForcedReductionAdmission(fact) => Some(RecordedAdmissionDecision {
-                    intent_kind: BoltV3SubmitIntentKind::KillSwitchForcedReduction,
-                    outcome: fact.outcome,
-                    details: fact.details,
-                }),
                 _ => None,
             })
             .collect()

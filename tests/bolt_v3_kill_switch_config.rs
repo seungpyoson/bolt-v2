@@ -27,9 +27,6 @@ action_retry_interval_ms = 250
 action_retry_timeout_ms = 5000
 mandatory_proof_max_age_ms = 1000
 manual_reset_evidence_max_age_ms = 60000
-forced_reduction_policy_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-forced_reduction_max_live_order_count = 4
-forced_reduction_max_notional_per_order = "100.00"
 authorized_operator_ids = ["operator-primary"]
 account_ids = ["POLYMARKET-001"]
 instrument_ids = ["BTC-USD.BINANCE"]
@@ -92,15 +89,6 @@ fn kill_switch_config_is_optional_and_parses_when_present() {
 
     assert!(kill_switch.enabled);
     assert_eq!(kill_switch.state_path, "state/kill-switch.json");
-    assert_eq!(
-        kill_switch.forced_reduction_policy_sha256,
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    );
-    assert_eq!(kill_switch.forced_reduction_max_live_order_count, 4);
-    assert_eq!(
-        kill_switch.forced_reduction_max_notional_per_order,
-        "100.00"
-    );
     let cancel = kill_switch
         .cancel
         .as_ref()
@@ -171,9 +159,6 @@ action_retry_interval_ms = 0
 action_retry_timeout_ms = 0
 mandatory_proof_max_age_ms = 0
 manual_reset_evidence_max_age_ms = 0
-forced_reduction_policy_sha256 = "not-a-sha"
-forced_reduction_max_live_order_count = 0
-forced_reduction_max_notional_per_order = "0"
 authorized_operator_ids = []
 account_ids = []
 instrument_ids = ["not-an-instrument"]
@@ -191,9 +176,6 @@ instrument_ids = ["not-an-instrument"]
         "risk.kill_switch.action_retry_timeout_ms must be positive",
         "risk.kill_switch.mandatory_proof_max_age_ms must be positive",
         "risk.kill_switch.manual_reset_evidence_max_age_ms must be positive",
-        "risk.kill_switch.forced_reduction_policy_sha256 must be a 64-character SHA-256 hex digest",
-        "risk.kill_switch.forced_reduction_max_live_order_count must be positive",
-        "risk.kill_switch.forced_reduction_max_notional_per_order must be positive",
         "risk.kill_switch.authorized_operator_ids must not be empty when enabled",
         "risk.kill_switch.account_ids must not be empty when enabled",
         "risk.kill_switch.instrument_ids[`not-an-instrument`] is not a valid Nautilus instrument ID",
@@ -340,8 +322,6 @@ is_quote_quantity = true
     let errors = validate_root_only(&root);
 
     for expected in [
-        "risk.kill_switch.flatten.max_live_order_count must be <= risk.kill_switch.forced_reduction_max_live_order_count",
-        "risk.kill_switch.flatten.max_notional_per_order must be <= risk.kill_switch.forced_reduction_max_notional_per_order",
         "risk.kill_switch.flatten.is_reduce_only must be true",
         "risk.kill_switch.flatten.is_quote_quantity must be false",
         "risk.kill_switch.flatten: order_template.time_in_force=gtd is not supported for order_type=market",

@@ -1654,7 +1654,6 @@ impl BoltV3LiveNodeRuntime {
 
         let mut reservations = Vec::with_capacity(open_order_snapshots.len());
         let mut live_non_reservation_client_order_ids = BTreeSet::new();
-        let mut live_forced_reduction_client_order_ids = BTreeSet::new();
         let mut all_open_orders_attributed = projection_complete;
         let committed_admission_authority =
             submit_admission.committed_admission_authority_snapshot();
@@ -1665,10 +1664,6 @@ impl BoltV3LiveNodeRuntime {
             };
             let client_order_id = evidence.client_order_id.clone();
             if committed_admission_authority.authorizes_non_reservation_order(&client_order_id) {
-                if committed_admission_authority.authorizes_forced_reduction_order(&client_order_id)
-                {
-                    live_forced_reduction_client_order_ids.insert(client_order_id.clone());
-                }
                 live_non_reservation_client_order_ids.insert(client_order_id);
                 continue;
             }
@@ -1689,7 +1684,6 @@ impl BoltV3LiveNodeRuntime {
         if !all_open_orders_attributed {
             reservations.clear();
             live_non_reservation_client_order_ids.clear();
-            live_forced_reduction_client_order_ids.clear();
         }
 
         let commit_components = canonical_components
@@ -1707,7 +1701,6 @@ impl BoltV3LiveNodeRuntime {
                 all_open_orders_attributed,
                 reservations,
                 live_non_reservation_client_order_ids,
-                live_forced_reduction_client_order_ids,
             },
             now_ns,
         );

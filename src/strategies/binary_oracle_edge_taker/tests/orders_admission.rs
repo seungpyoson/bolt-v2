@@ -1241,7 +1241,6 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
                 order_quantity: Decimal::new(1, 0),
                 intent_kind: crate::bolt_v3_submit_admission::BoltV3SubmitIntentKind::Entry,
                 risk_reducing_exit_proof: None,
-                kill_switch_forced_reduction: None,
                 admission_evidence: None,
             },
         )

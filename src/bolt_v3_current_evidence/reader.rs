@@ -391,19 +391,17 @@ pub(super) fn apply_startup_recovery_projections(
     if reservation_relevant {
         let event = match &fact {
             CurrentFact::AdmittedEntryAdmission(value) => {
-                ReservationRecoveryEvent::AdmittedEntry(value.clone())
+                Some(ReservationRecoveryEvent::AdmittedEntry(value.clone()))
             }
             CurrentFact::BasketAdmissionGranted(value) => {
-                ReservationRecoveryEvent::BasketGranted(value.clone())
+                Some(ReservationRecoveryEvent::BasketGranted(value.clone()))
             }
             CurrentFact::RiskReducingExitAdmission(value) => {
-                ReservationRecoveryEvent::RiskReducingExit(value.clone())
+                Some(ReservationRecoveryEvent::RiskReducingExit(value.clone()))
             }
-            CurrentFact::ForcedReductionAdmission(value) => {
-                ReservationRecoveryEvent::ForcedReduction(value.clone())
-            }
+            CurrentFact::ForcedReductionAdmission(_) => None,
             CurrentFact::SubmitReservationFill(value) => {
-                ReservationRecoveryEvent::Fill(value.clone())
+                Some(ReservationRecoveryEvent::Fill(value.clone()))
             }
             _ => {
                 return Err(anyhow!(
@@ -411,7 +409,9 @@ pub(super) fn apply_startup_recovery_projections(
                 ));
             }
         };
-        recovery.reservation.apply(event)?;
+        if let Some(event) = event {
+            recovery.reservation.apply(event)?;
+        }
     }
     if settlement_relevant {
         let event = match &fact {

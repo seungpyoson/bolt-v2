@@ -1035,7 +1035,6 @@ fn single_order_request(client_order_id: &str, notional: Decimal) -> BoltV3Submi
         order_quantity: dec!(1),
         intent_kind: BoltV3SubmitIntentKind::Entry,
         risk_reducing_exit_proof: None,
-        kill_switch_forced_reduction: None,
         admission_evidence: None,
     }
 }

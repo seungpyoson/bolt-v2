@@ -465,15 +465,6 @@ pub(crate) fn encode_risk_reducing_exit_admission(
     )
 }
 
-pub(crate) fn encode_forced_reduction_admission(
-    fact: ForcedReductionAdmissionFact,
-) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    <CurrentCodecs as CodecFor<identities::ForcedReductionAdmissionV1>>::encode(
-        &fact,
-        current_utc_ns()?,
-    )
-}
-
 pub(crate) fn encode_risk_reducing_exit_order_intent(
     fact: RiskReducingExitOrderIntentFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {

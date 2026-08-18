@@ -3,7 +3,6 @@ use crate::{
     bolt_v3_numeric::is_sha256_hex_digest,
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, validate_nt_order_template},
     bolt_v3_position_contract::{expected_exit_order_side_for_position, is_observed_open_side},
-    bolt_v3_submit_admission::BoltV3KillSwitchForcedReductionClaim,
 };
 use nautilus_model::{
     enums::{OrderSide, OrderStatus, PositionSide, TradingState},
@@ -11,6 +10,58 @@ use nautilus_model::{
     types::Quantity,
 };
 use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3KillSwitchForcedReductionClaim {
+    halt_id: String,
+    action_id: String,
+    policy_sha256: String,
+}
+
+impl BoltV3KillSwitchForcedReductionClaim {
+    pub fn new(
+        halt_id: impl Into<String>,
+        action_id: impl Into<String>,
+        policy_sha256: impl Into<String>,
+    ) -> Result<Self, BoltV3KillSwitchForcedReductionError> {
+        let halt_id = halt_id.into();
+        let action_id = action_id.into();
+        let policy_sha256 = policy_sha256.into();
+        if halt_id.trim().is_empty() {
+            return Err(BoltV3KillSwitchForcedReductionError::MissingHaltId);
+        }
+        if action_id.trim().is_empty() {
+            return Err(BoltV3KillSwitchForcedReductionError::MissingActionId);
+        }
+        if !is_sha256_hex_digest(&policy_sha256) {
+            return Err(BoltV3KillSwitchForcedReductionError::InvalidPolicySha256);
+        }
+        Ok(Self {
+            halt_id,
+            action_id,
+            policy_sha256,
+        })
+    }
+
+    pub fn halt_id(&self) -> &str {
+        &self.halt_id
+    }
+
+    pub fn action_id(&self) -> &str {
+        &self.action_id
+    }
+
+    pub fn policy_sha256(&self) -> &str {
+        &self.policy_sha256
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3KillSwitchForcedReductionError {
+    MissingHaltId,
+    MissingActionId,
+    InvalidPolicySha256,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3KillSwitchFlattenPositionEvidenceKind {

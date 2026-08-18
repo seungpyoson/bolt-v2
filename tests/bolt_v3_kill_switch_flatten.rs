@@ -10,9 +10,9 @@ use bolt_v2::{
         BoltV3KillSwitchFlattenQuantitySource, BoltV3KillSwitchFlattenResult,
         BoltV3KillSwitchFlattenRouteKind, BoltV3KillSwitchFlattenRouteProof,
         BoltV3KillSwitchFlattenSnapshot, BoltV3KillSwitchFlattenSupervisor,
+        BoltV3KillSwitchForcedReductionClaim,
     },
     bolt_v3_order_intent::NtOrderTemplate,
-    bolt_v3_submit_admission::BoltV3KillSwitchForcedReductionClaim,
 };
 use nautilus_model::{
     enums::{OrderSide, OrderStatus, OrderType, PositionSide, TimeInForce, TradingState},

@@ -76,9 +76,6 @@ pub enum BoltV3FinalOrderEconomicsScenario {
         stored_entry_cost_per_unit: Decimal,
         position: PositionContext,
     },
-    ForcedReduction {
-        position: PositionContext,
-    },
 }
 
 impl BoltV3FinalOrderEconomicsScenario {
@@ -97,25 +94,17 @@ impl BoltV3FinalOrderEconomicsScenario {
         })
     }
 
-    pub fn forced_reduction(position: PositionContext) -> Result<Self> {
-        validate_position(&position)?;
-        Ok(Self::ForcedReduction { position })
-    }
-
     pub const fn intent_kind(&self) -> BoltV3SubmitIntentKind {
         match self {
             Self::TerminalValueEntry(_) => BoltV3SubmitIntentKind::Entry,
             Self::PlannedRiskReducingExit { .. } => BoltV3SubmitIntentKind::RiskReducingExit,
-            Self::ForcedReduction { .. } => BoltV3SubmitIntentKind::KillSwitchForcedReduction,
         }
     }
 
     pub const fn lifecycle_path(&self) -> LifecyclePath {
         match self {
             Self::TerminalValueEntry(_) => LifecyclePath::HoldToRedemption,
-            Self::PlannedRiskReducingExit { .. } | Self::ForcedReduction { .. } => {
-                LifecyclePath::PlannedExit
-            }
+            Self::PlannedRiskReducingExit { .. } => LifecyclePath::PlannedExit,
         }
     }
 
@@ -124,30 +113,24 @@ impl BoltV3FinalOrderEconomicsScenario {
             Self::TerminalValueEntry(entry) => EconomicsAdmissionPolicy::TradingEdge {
                 minimum_core_edge_ratio: entry.minimum_core_edge_ratio,
             },
-            Self::PlannedRiskReducingExit { .. } | Self::ForcedReduction { .. } => {
-                EconomicsAdmissionPolicy::RiskReduction
-            }
+            Self::PlannedRiskReducingExit { .. } => EconomicsAdmissionPolicy::RiskReduction,
         }
     }
 
     pub fn position(&self) -> Option<PositionContext> {
         match self {
             Self::TerminalValueEntry(_) => None,
-            Self::PlannedRiskReducingExit { position, .. } | Self::ForcedReduction { position } => {
-                Some(position.clone())
-            }
+            Self::PlannedRiskReducingExit { position, .. } => Some(position.clone()),
         }
     }
 
     pub fn validate_order_shape(&self, order: &OrderAny) -> Result<()> {
         let expected_side = match self {
             Self::TerminalValueEntry(_) => OrderSide::Buy,
-            Self::PlannedRiskReducingExit { position, .. } | Self::ForcedReduction { position } => {
-                match position.side {
-                    PositionSide::Long => OrderSide::Sell,
-                    PositionSide::Short => OrderSide::Buy,
-                }
-            }
+            Self::PlannedRiskReducingExit { position, .. } => match position.side {
+                PositionSide::Long => OrderSide::Sell,
+                PositionSide::Short => OrderSide::Buy,
+            },
         };
         anyhow::ensure!(
             order.order_side() == expected_side,
@@ -173,7 +156,6 @@ impl BoltV3FinalOrderEconomicsScenario {
             } => checked_leg_value_sum(legs, |leg| {
                 leg.price.checked_sub(*stored_entry_cost_per_unit)
             }),
-            Self::ForcedReduction { .. } => Ok(Decimal::ZERO),
         }
     }
 }

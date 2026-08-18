@@ -1536,7 +1536,6 @@ fn entry_request() -> BoltV3SubmitAdmissionRequest {
         order_quantity: Decimal::new(1, 0),
         intent_kind: BoltV3SubmitIntentKind::Entry,
         risk_reducing_exit_proof: None,
-        kill_switch_forced_reduction: None,
         admission_evidence: None,
     }
 }

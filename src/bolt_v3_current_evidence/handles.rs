@@ -5,8 +5,8 @@ use super::{
     BasketAdmissionRejectedFact, BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact,
     CommittedAdmission, CommittedSettlement, DecisionEvidenceRecorder, EntryOrderIntentFact,
     EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact, ExitIntentDecisionFact,
-    ExitPreparedOrderFact, ForcedReductionAdmissionFact, LossGovernorHaltFact,
-    NonBlockingRecordOutcome, ObservationRecordOutcome, OrderLifecycleFact, OrderRejectFact,
+    ExitPreparedOrderFact, LossGovernorHaltFact, NonBlockingRecordOutcome,
+    ObservationRecordOutcome, OrderLifecycleFact, OrderRejectFact,
     ProviderCollateralAllowanceCaptureFailureFact, RecordFailure, RejectedEntryAdmissionFact,
     RequoteThrottleObservationFact, RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact,
     SettlementFact, SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
@@ -222,16 +222,6 @@ impl SubmitAdmissionEvidence {
     ) -> NonBlockingRecordOutcome {
         match self.recorder() {
             Ok(recorder) => recorder.record_risk_reducing_exit_admission(fact),
-            Err(error) => NonBlockingRecordOutcome::Failed(error),
-        }
-    }
-
-    pub fn record_forced_reduction_admission(
-        &self,
-        fact: ForcedReductionAdmissionFact,
-    ) -> NonBlockingRecordOutcome {
-        match self.recorder() {
-            Ok(recorder) => recorder.record_forced_reduction_admission(fact),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }

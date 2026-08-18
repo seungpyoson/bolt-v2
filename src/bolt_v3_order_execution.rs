@@ -1933,8 +1933,7 @@ pub(crate) fn record_order_intent(
             .record_entry_order_intent(EntryOrderIntentFact { details })
             .map(|_| ())
             .map_err(anyhow::Error::from),
-        BoltV3SubmitIntentKind::RiskReducingExit
-        | BoltV3SubmitIntentKind::KillSwitchForcedReduction => match recorder
+        BoltV3SubmitIntentKind::RiskReducingExit => match recorder
             .record_risk_reducing_exit_order_intent(RiskReducingExitOrderIntentFact { details })
         {
             NonBlockingRecordOutcome::Appended(_) => Ok(()),
@@ -2201,10 +2200,7 @@ impl<'a> BoltV3SubmitRoutingRequest<'a> {
     ) -> Self {
         let purpose = match request.intent_kind {
             BoltV3SubmitIntentKind::Entry => EconomicsAdmissionPurpose::TradingEdge,
-            BoltV3SubmitIntentKind::RiskReducingExit
-            | BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
-                EconomicsAdmissionPurpose::RiskReduction
-            }
+            BoltV3SubmitIntentKind::RiskReducingExit => EconomicsAdmissionPurpose::RiskReduction,
         };
         let order_side = match order.order_side() {
             OrderSide::Buy => crate::economics::OrderSide::Buy,
@@ -3247,7 +3243,6 @@ mod tests {
                         CurrentFact::AdmittedEntryAdmission(_)
                             | CurrentFact::RejectedEntryAdmission(_)
                             | CurrentFact::RiskReducingExitAdmission(_)
-                            | CurrentFact::ForcedReductionAdmission(_)
                     )
                 })
                 .count()
@@ -6748,7 +6743,6 @@ mod tests {
             order_quantity: Decimal::new(1, 0),
             intent_kind: BoltV3SubmitIntentKind::Entry,
             risk_reducing_exit_proof: None,
-            kill_switch_forced_reduction: None,
             admission_evidence: None,
         }
     }
@@ -6801,7 +6795,6 @@ mod tests {
                 position_quantity,
                 exit_quantity: order_quantity,
             }),
-            kill_switch_forced_reduction: None,
             admission_evidence: Some(BoltV3CompiledOrderAdmissionEvidence {
                 venue_id: "VENUE-A".to_string(),
                 product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
@@ -7262,57 +7255,6 @@ mod tests {
                 .to_string()
                 .contains("does not exceed required minimum 0"),
             "{rejected:#}"
-        );
-    }
-
-    #[test]
-    fn forced_reduction_derives_zero_gross_and_risk_reduction_purpose() {
-        let economics =
-            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
-        let order = limit_exit_order("forced-reduction-scenario", Quantity::new(1.0, 2));
-        let intent = exit_intent_for_order(&order);
-        let position = economics
-            .planned_exit_position(
-                PositionId::from("POSITION-001"),
-                PositionSide::Long,
-                Decimal::ONE,
-            )
-            .expect("forced-reduction position should construct");
-        let sealed = build_order_economics_submit_admission(
-            &economics,
-            BoltV3FinalOrderEconomicsInput {
-                execution_client_id: "execution_client",
-                intent: &intent,
-                order: &order,
-                valuation: OrderValuationContext::empty(),
-                risk_reducing_exit_position: None,
-                scenario: BoltV3FinalOrderEconomicsScenario::forced_reduction(position)
-                    .expect("forced-reduction scenario should construct"),
-                candidate_fill_levels: vec![BoltV3PlannedFillLeg {
-                    price: Decimal::new(5, 1),
-                    quantity: Decimal::ONE,
-                }],
-                requested_at_ns: 1,
-                decision_correlation_id: "forced-reduction-scenario",
-            },
-        )
-        .expect("forced reduction should seal without caller-selected gross or lifecycle");
-
-        assert_eq!(
-            sealed.economics().net_edge().gross_expected_value,
-            Decimal::ZERO
-        );
-        assert_eq!(
-            sealed.request().intent_kind,
-            BoltV3SubmitIntentKind::KillSwitchForcedReduction
-        );
-        assert_eq!(
-            sealed.economics().request().lifecycle_path,
-            LifecyclePath::PlannedExit
-        );
-        assert_eq!(
-            sealed.economics().purpose(),
-            EconomicsAdmissionPurpose::RiskReduction
         );
     }
 

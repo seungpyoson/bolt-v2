@@ -18,10 +18,9 @@ use super::codec::{
     encode_basket_admission_rejected, encode_blocked_strategy_input_observation,
     encode_capital_admission_rebuild, encode_entry_order_intent, encode_entry_skip_observation,
     encode_exit_evaluation, encode_exit_hold_decision, encode_exit_intent_decision,
-    encode_exit_prepared_order, encode_forced_reduction_admission, encode_loss_governor_halt,
-    encode_order_lifecycle, encode_order_reject,
-    encode_provider_collateral_allowance_capture_failure, encode_rejected_entry_admission,
-    encode_requote_throttle_observation, encode_reservation_fill,
+    encode_exit_prepared_order, encode_loss_governor_halt, encode_order_lifecycle,
+    encode_order_reject, encode_provider_collateral_allowance_capture_failure,
+    encode_rejected_entry_admission, encode_requote_throttle_observation, encode_reservation_fill,
     encode_risk_reducing_exit_admission, encode_risk_reducing_exit_order_intent, encode_settlement,
     encode_submit_linked_strategy_input_snapshot, encode_terminal_settlement,
 };
@@ -29,8 +28,8 @@ use super::facts::{
     AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
     BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact, EntryOrderIntentFact,
     EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact, ExitIntentDecisionFact,
-    ExitPreparedOrderFact, ForcedReductionAdmissionFact, LossGovernorHaltFact, OrderLifecycleFact,
-    OrderRejectFact, ProviderCollateralAllowanceCaptureFailureFact, RejectedEntryAdmissionFact,
+    ExitPreparedOrderFact, LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact,
+    ProviderCollateralAllowanceCaptureFailureFact, RejectedEntryAdmissionFact,
     RequoteThrottleObservationFact, RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact,
     SettlementFact, SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
     TerminalSettlementFact,
@@ -842,20 +841,6 @@ impl DecisionEvidenceRecorder {
         match encode_risk_reducing_exit_admission(fact) {
             Ok(record) => self.record_nonblocking(
                 KnownProducer::SubmitAdmissionExit,
-                EffectPolicy::RiskReducingContinues,
-                record,
-            ),
-            Err(error) => NonBlockingRecordOutcome::Failed(error),
-        }
-    }
-
-    pub fn record_forced_reduction_admission(
-        &self,
-        fact: ForcedReductionAdmissionFact,
-    ) -> NonBlockingRecordOutcome {
-        match encode_forced_reduction_admission(fact) {
-            Ok(record) => self.record_nonblocking(
-                KnownProducer::SubmitAdmissionForcedReduction,
                 EffectPolicy::RiskReducingContinues,
                 record,
             ),

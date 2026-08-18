@@ -1405,7 +1405,6 @@ pub struct ReservationRecoveryFacts {
     reservation_fills: BTreeMap<(String, String), BTreeMap<String, SubmitReservationFillFact>>,
     admitted_unreserved_entry_client_order_ids: BTreeSet<String>,
     admitted_risk_reducing_client_order_ids: BTreeSet<String>,
-    admitted_forced_reduction_client_order_ids: BTreeSet<String>,
 }
 
 impl ReservationRecoveryFacts {
@@ -1415,7 +1414,6 @@ impl ReservationRecoveryFacts {
             && self.reservation_fills.is_empty()
             && self.admitted_unreserved_entry_client_order_ids.is_empty()
             && self.admitted_risk_reducing_client_order_ids.is_empty()
-            && self.admitted_forced_reduction_client_order_ids.is_empty()
     }
 
     #[must_use]
@@ -1448,21 +1446,12 @@ impl ReservationRecoveryFacts {
             || self
                 .admitted_risk_reducing_client_order_ids
                 .contains(client_order_id)
-            || self
-                .admitted_forced_reduction_client_order_ids
-                .contains(client_order_id)
     }
 
     #[must_use]
     pub fn authorizes_order(&self, client_order_id: &str) -> bool {
         self.reservation_attribution.contains_key(client_order_id)
             || self.authorizes_non_reservation_order(client_order_id)
-    }
-
-    #[must_use]
-    pub fn authorizes_forced_reduction_order(&self, client_order_id: &str) -> bool {
-        self.admitted_forced_reduction_client_order_ids
-            .contains(client_order_id)
     }
 
     pub(crate) fn apply(&mut self, fact: ReservationRecoveryEvent) -> Result<()> {
@@ -1502,14 +1491,6 @@ impl ReservationRecoveryFacts {
                     self.insert_non_reservation_authorization(
                         admission.details.client_order_id,
                         RecoveredNonReservationAuthorization::RiskReducing,
-                    )?;
-                }
-            }
-            ReservationRecoveryEvent::ForcedReduction(admission) => {
-                if admission.outcome == AdmissionDecisionOutcome::Admitted {
-                    self.insert_non_reservation_authorization(
-                        admission.details.client_order_id,
-                        RecoveredNonReservationAuthorization::ForcedReduction,
                     )?;
                 }
             }
@@ -1587,9 +1568,6 @@ impl ReservationRecoveryFacts {
                 .contains(&attribution.client_order_id)
                 && !self
                     .admitted_unreserved_entry_client_order_ids
-                    .contains(&attribution.client_order_id)
-                && !self
-                    .admitted_forced_reduction_client_order_ids
                     .contains(&attribution.client_order_id),
             "submit-reservation attribution for client_order_id `{}` conflicts with a non-reservation admission",
             attribution.client_order_id
@@ -1611,9 +1589,6 @@ impl ReservationRecoveryFacts {
                     .contains(&client_order_id)
                 && !self
                     .admitted_risk_reducing_client_order_ids
-                    .contains(&client_order_id)
-                && !self
-                    .admitted_forced_reduction_client_order_ids
                     .contains(&client_order_id),
             "duplicate or conflicting admission authorization for client_order_id `{client_order_id}`"
         );
@@ -1624,10 +1599,6 @@ impl ReservationRecoveryFacts {
             }
             RecoveredNonReservationAuthorization::RiskReducing => {
                 self.admitted_risk_reducing_client_order_ids
-                    .insert(client_order_id);
-            }
-            RecoveredNonReservationAuthorization::ForcedReduction => {
-                self.admitted_forced_reduction_client_order_ids
                     .insert(client_order_id);
             }
         }
@@ -1656,7 +1627,6 @@ fn reservation_fill_stable_identity_eq(
 enum RecoveredNonReservationAuthorization {
     UnreservedEntry,
     RiskReducing,
-    ForcedReduction,
 }
 
 #[derive(Debug, Default)]
@@ -1750,7 +1720,6 @@ pub(crate) enum ReservationRecoveryEvent {
     AdmittedEntry(Box<AdmittedEntryAdmissionFact>),
     BasketGranted(BasketAdmissionGrantedFact),
     RiskReducingExit(Box<RiskReducingExitAdmissionFact>),
-    ForcedReduction(Box<ForcedReductionAdmissionFact>),
     Fill(SubmitReservationFillFact),
 }
 

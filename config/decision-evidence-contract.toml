@@ -109,6 +109,7 @@ current_fact = "risk_reducing_exit_admission_v1"
 [[purposes]]
 id = "forced_reduction_admission"
 owner = "bolt_v3_decision_evidence"
+decode_only = true
 duties = ["action"]
 effect_policy = "risk_reducing_continues"
 sink = "machine"
@@ -319,7 +320,7 @@ current_fact = "provider_collateral_allowance_capture_failure_v1"
 [[census_dispositions]]
 ancestor = "admission_decision"
 disposition = "inherited"
-current_producers = ["submit_admission_admitted_entry", "submit_admission_rejected_entry", "submit_admission_exit", "submit_admission_forced_reduction"]
+current_producers = ["submit_admission_admitted_entry", "submit_admission_rejected_entry", "submit_admission_exit"]
 
 [[census_dispositions]]
 ancestor = "basket_admission_decision"
@@ -488,17 +489,6 @@ purpose = "risk_reducing_exit_admission"
 classification = "event-keyed"
 runtime_wiring = "wired"
 reviewed_runtime_triggers = ["startup", "quote", "book", "timer"]
-call_sites = ["src/bolt_v3_submit_admission.rs::record_admission_decision"]
-repeat_semantics = "every submit admission result remains append-complete"
-dedupe_key_evidence = "client_order_id event identity; no suppression"
-census_ancestor = "admission_decision"
-
-[[producers]]
-id = "submit_admission_forced_reduction"
-purpose = "forced_reduction_admission"
-classification = "event-keyed"
-runtime_wiring = "wired"
-reviewed_runtime_triggers = ["startup", "timer", "index-price", "position-event"]
 call_sites = ["src/bolt_v3_submit_admission.rs::record_admission_decision"]
 repeat_semantics = "every submit admission result remains append-complete"
 dedupe_key_evidence = "client_order_id event identity; no suppression"

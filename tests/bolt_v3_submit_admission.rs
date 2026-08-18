@@ -2,8 +2,8 @@ use crate::support;
 
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_current_evidence::{
-    AdmissionDecisionOutcome, AdmissionRejectionReason, CapitalAdmissionRebuildSource,
-    DecisionEvidenceRecorder, OrderRejectReason, OrderRejectSource, StaleLossReason,
+    AdmissionDecisionOutcome, AdmissionRejectionReason, DecisionEvidenceRecorder,
+    OrderRejectReason, OrderRejectSource, StaleLossReason,
 };
 use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
@@ -13,12 +13,11 @@ use bolt_v2::bolt_v3_loss_governor::{
 };
 use bolt_v2::bolt_v3_strategy_context::StrategyBuildContext;
 use bolt_v2::bolt_v3_submit_admission::{
-    BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
     BoltV3LiveSubmitApprovalLimits, BoltV3QuoteQuantityAdmissionInput,
     BoltV3QuoteQuantityOrderSide, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
-    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
-    BoltV3SubmitCapitalAdmissionOpenOrderSnapshot, BoltV3SubmitIntentKind, OrderValuationContext,
-    conservative_quote_quantity_admission_notional, market_style_admission_ceiling_notional,
+    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
+    OrderValuationContext, conservative_quote_quantity_admission_notional,
+    market_style_admission_ceiling_notional,
 };
 use nautilus_model::data::{QuoteTick, TradeTick};
 use nautilus_model::enums::{AggressorSide, OrderSide, PositionSide, TimeInForce};
@@ -26,10 +25,7 @@ use nautilus_model::identifiers::{ClientOrderId, InstrumentId, StrategyId, Trade
 use nautilus_model::orders::{LimitOrder, MarketOrder, MarketToLimitOrder, OrderAny};
 use nautilus_model::types::{Price, Quantity};
 use rust_decimal::Decimal;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 #[test]
 fn market_style_admission_ceiling_notional_values_at_instrument_price_ceiling() {
@@ -851,7 +847,6 @@ fn submit_request_with_kind_and_exit_proof(
     let (order_side, order_quantity) = match intent_kind {
         BoltV3SubmitIntentKind::RiskReducingExit => (OrderSide::Sell, Decimal::new(264, 2)),
         BoltV3SubmitIntentKind::Entry => (OrderSide::Buy, Decimal::new(1, 0)),
-        BoltV3SubmitIntentKind::KillSwitchForcedReduction => (OrderSide::Sell, Decimal::new(1, 0)),
     };
     BoltV3SubmitAdmissionRequest {
         strategy_id: "strategy-a".to_string(),
@@ -863,7 +858,6 @@ fn submit_request_with_kind_and_exit_proof(
         order_quantity,
         intent_kind,
         risk_reducing_exit_proof,
-        kill_switch_forced_reduction: None,
         admission_evidence: None,
     }
 }
@@ -959,78 +953,6 @@ fn latched_kill_switch_states() -> Vec<KillSwitchState> {
             reason: "durable evidence write failed".to_string(),
         },
     ]
-}
-
-fn forced_reduction_policy() -> BoltV3KillSwitchForcedReductionPolicy {
-    BoltV3KillSwitchForcedReductionPolicy::new(
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        1,
-        Decimal::new(10, 0),
-    )
-    .expect("valid forced-reduction policy should construct")
-}
-
-fn reconcile_forced_reduction_liveness(
-    admission: &BoltV3SubmitAdmissionState,
-    client_order_ids: impl IntoIterator<Item = &'static str>,
-) {
-    let decision = admission.rebuild_capital_admission_open_order_snapshot_for_test(
-        BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
-            observed_at_ns: 1,
-            evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
-            observed_open_order_count: 0,
-            all_open_orders_attributed: true,
-            reservations: Vec::new(),
-            live_non_reservation_client_order_ids: BTreeSet::new(),
-            live_forced_reduction_client_order_ids: client_order_ids
-                .into_iter()
-                .map(str::to_string)
-                .collect::<BTreeSet<_>>(),
-        },
-        1,
-    );
-    assert!(decision.accepted);
-}
-
-fn forced_reduction_claim(halt_id: &str) -> BoltV3KillSwitchForcedReductionClaim {
-    BoltV3KillSwitchForcedReductionClaim::new(
-        halt_id,
-        "flatten-action-1",
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    )
-    .expect("valid forced-reduction claim should construct")
-}
-
-fn forced_reduction_request(
-    notional: Decimal,
-    claim: BoltV3KillSwitchForcedReductionClaim,
-) -> BoltV3SubmitAdmissionRequest {
-    with_client_order_id(
-        BoltV3SubmitAdmissionRequest {
-            kill_switch_forced_reduction: Some(claim),
-            ..submit_request_with_kind(notional, BoltV3SubmitIntentKind::KillSwitchForcedReduction)
-        },
-        "forced-client-order-1",
-    )
-}
-
-#[test]
-fn forced_reduction_policy_and_claim_expose_proof_metadata() {
-    let policy = forced_reduction_policy();
-    assert_eq!(
-        policy.policy_sha256(),
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    );
-    assert_eq!(policy.max_live_order_count(), 1);
-    assert_eq!(policy.max_notional_per_order(), Decimal::new(10, 0));
-
-    let claim = forced_reduction_claim("halt-1");
-    assert_eq!(claim.halt_id(), "halt-1");
-    assert_eq!(claim.action_id(), "flatten-action-1");
-    assert_eq!(
-        claim.policy_sha256(),
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    );
 }
 
 #[test]
@@ -1792,186 +1714,6 @@ fn provider_collateral_allowance_latch_blocks_all_normal_submit_classes() {
             .all(|decision| decision.outcome
                 == AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::KillSwitchLatched))
     );
-}
-
-#[test]
-fn forced_reduction_requires_halt_action_and_policy_proof_before_cap_bypass() {
-    let admission = limited_admission(1, Decimal::new(1, 0));
-    admission.replace_kill_switch_state(halted_kill_switch_state());
-
-    for request in [
-        submit_request_with_kind(
-            Decimal::new(10, 0),
-            BoltV3SubmitIntentKind::KillSwitchForcedReduction,
-        ),
-        forced_reduction_request(Decimal::new(10, 0), forced_reduction_claim("other-halt")),
-    ] {
-        let error = admission
-            .admit(&request)
-            .expect_err("forced reduction without matching proof must fail closed");
-        assert!(matches!(
-            error,
-            BoltV3SubmitAdmissionError::KillSwitchForcedReductionProofInvalid
-        ));
-    }
-    assert_eq!(admission.admitted_order_count(), 0);
-}
-
-#[test]
-fn forced_reduction_is_only_admissible_while_kill_switch_is_latched() {
-    let admission = limited_admission(1, Decimal::new(1, 0));
-    admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
-    reconcile_forced_reduction_liveness(&admission, []);
-
-    let error = admission
-        .admit(&forced_reduction_request(
-            Decimal::new(10, 0),
-            forced_reduction_claim("halt-1"),
-        ))
-        .expect_err("forced reduction must not run while kill switch is armed");
-
-    assert!(matches!(
-        error,
-        BoltV3SubmitAdmissionError::KillSwitchForcedReductionProofInvalid
-    ));
-}
-
-#[test]
-fn valid_forced_reduction_while_latched_bypasses_normal_count_and_notional_caps() {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(1, 0));
-    admission
-        .admit(&submit_request_with_kind(
-            Decimal::new(1, 1),
-            BoltV3SubmitIntentKind::Entry,
-        ))
-        .expect("entry submit should consume the only normal count slot")
-        .commit_submitted();
-    admission.replace_kill_switch_state(halted_kill_switch_state());
-    admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
-    reconcile_forced_reduction_liveness(&admission, []);
-
-    admission
-        .admit(&forced_reduction_request(
-            Decimal::new(10, 0),
-            forced_reduction_claim("halt-1"),
-        ))
-        .expect("valid forced reduction should bypass normal count and notional caps")
-        .commit_submitted();
-
-    let decisions = writer.admission_decisions();
-    assert_eq!(
-        decisions.last().map(|decision| decision.intent_kind),
-        Some(BoltV3SubmitIntentKind::KillSwitchForcedReduction)
-    );
-    assert_eq!(
-        decisions.last().map(|decision| decision.outcome.clone()),
-        Some(AdmissionDecisionOutcome::Admitted)
-    );
-    assert_eq!(admission.admitted_order_count(), 2);
-}
-
-#[test]
-fn valid_forced_reduction_while_flattening_uses_matching_halt_policy_proof() {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(1, 0));
-    admission
-        .admit(&submit_request_with_kind(
-            Decimal::new(1, 1),
-            BoltV3SubmitIntentKind::Entry,
-        ))
-        .expect("entry submit should consume the only normal count slot")
-        .commit_submitted();
-    admission.replace_kill_switch_state(KillSwitchState::Flattening {
-        halt_id: "halt-1".to_string(),
-    });
-    admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
-    reconcile_forced_reduction_liveness(&admission, []);
-
-    admission
-        .admit(&forced_reduction_request(
-            Decimal::new(10, 0),
-            forced_reduction_claim("halt-1"),
-        ))
-        .expect("valid flattening forced reduction should bypass normal count and notional caps")
-        .commit_submitted();
-
-    let decisions = writer.admission_decisions();
-    assert_eq!(
-        decisions.last().map(|decision| decision.intent_kind),
-        Some(BoltV3SubmitIntentKind::KillSwitchForcedReduction)
-    );
-    assert_eq!(
-        decisions.last().map(|decision| decision.outcome.clone()),
-        Some(AdmissionDecisionOutcome::Admitted)
-    );
-    assert_eq!(admission.admitted_order_count(), 2);
-}
-
-#[test]
-fn forced_reduction_live_count_releases_terminal_order_before_next_admission() {
-    let admission = limited_admission(1, Decimal::new(1, 0));
-    admission.replace_kill_switch_state(halted_kill_switch_state());
-    admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
-    reconcile_forced_reduction_liveness(&admission, []);
-    let request = |client_order_id| {
-        with_client_order_id(
-            forced_reduction_request(Decimal::new(10, 0), forced_reduction_claim("halt-1")),
-            client_order_id,
-        )
-    };
-
-    admission
-        .admit(&request("forced-client-order-1"))
-        .expect("first live forced reduction should be admitted")
-        .commit_submitted();
-
-    let capped = admission
-        .admit(&request("forced-client-order-2"))
-        .expect_err("second live forced reduction should hit live cap");
-    assert!(matches!(
-        capped,
-        BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
-    ));
-
-    reconcile_forced_reduction_liveness(&admission, []);
-
-    admission
-        .admit(&request("forced-client-order-3"))
-        .expect("terminal forced reduction should release the live cap")
-        .commit_submitted();
-}
-
-#[test]
-fn dropped_uncommitted_forced_reduction_permit_rolls_back_live_cap() {
-    let admission = limited_admission(1, Decimal::new(1, 0));
-    admission.replace_kill_switch_state(halted_kill_switch_state());
-    admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
-    reconcile_forced_reduction_liveness(&admission, []);
-    let request = |client_order_id| {
-        with_client_order_id(
-            forced_reduction_request(Decimal::new(10, 0), forced_reduction_claim("halt-1")),
-            client_order_id,
-        )
-    };
-
-    {
-        let _permit = admission
-            .admit(&request("forced-client-order-1"))
-            .expect("valid forced reduction should reserve the live cap");
-        let capped = admission
-            .admit(&request("forced-client-order-2"))
-            .expect_err("uncommitted forced reduction should hold the live cap");
-        assert!(matches!(
-            capped,
-            BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
-        ));
-    }
-
-    admission
-        .admit(&request("forced-client-order-3"))
-        .expect("dropped forced-reduction permit should release the live cap")
-        .commit_submitted();
 }
 
 #[test]

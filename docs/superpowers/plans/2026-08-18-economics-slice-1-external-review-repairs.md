@@ -901,8 +901,10 @@ git commit -m "refactor(maker): collapse quote transaction phases"
 - Modify: `src/bolt_v3_submit_admission.rs`
 - Modify: `src/strategies/binary_oracle_edge_taker/mod.rs`
 - Modify: `src/bolt_v3_current_evidence/{facts.rs,reader.rs,record.rs,handles.rs}`
+- Modify: `src/bolt_v3_current_evidence/{codec.rs,contract_generator.rs,generated_contract.rs}` and `config/decision-evidence-contract.toml`
 - Modify: `src/bolt_v3_live_node.rs`
 - Modify: `src/bolt_v3_kill_switch_{flatten,action_router}.rs`
+- Modify: `src/bolt_v3_config.rs`, `src/bolt_v3_validate{.rs,/kill_switch.rs}`, and shipped/fixture TOML
 - Modify tests: `tests/{bolt_v3_submit_admission.rs,bolt_v3_capital_admission_runtime_feed.rs,bolt_v3_current_evidence_runtime.rs,bolt_v3_kill_switch_flatten.rs,bolt_v3_kill_switch_action_router.rs}`
 - Modify fixtures/support: `src/bolt_v3_live_node/tests/fixtures.rs`, `tests/support/current_evidence.rs`
 
@@ -911,7 +913,7 @@ git commit -m "refactor(maker): collapse quote transaction phases"
 - Preserves: historical `ForcedReductionAdmissionFact` decoding and proof-only flatten planning.
 - Changes: historical forced-reduction facts are ignored by `ReservationRecoveryFacts` and cannot satisfy `authorizes_order`.
 
-- [ ] **Step 1: Add the historical-evidence inertness regression**
+- [x] **Step 1: Add the historical-evidence inertness regression**
 
 Read the existing forced-reduction JSONL fixture through the current reader. Assert it still decodes as `CurrentFact::ForcedReductionAdmission`, then build reservation recovery facts and assert:
 
@@ -920,7 +922,7 @@ assert!(!recovery.authorizes_order("the-historical-client-order-id"));
 assert!(!recovery.authorizes_non_reservation_order("the-historical-client-order-id"));
 ```
 
-- [ ] **Step 2: Run the regression and verify current failure**
+- [x] **Step 2: Run the regression and verify current failure**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --test bolt_v3_current_evidence_runtime historical_forced_reduction_fact_is_decode_only -- --test-threads=1
@@ -928,7 +930,7 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: FAIL because admitted historical forced reduction currently populates recovered submit authority.
 
-- [ ] **Step 3: Delete economics and submit intent variants**
+- [x] **Step 3: Delete economics and submit intent variants**
 
 Remove the scenario variant/constructor and every related branch from `economics_basis.rs` and `order_execution.rs`. Reduce the intent enum to:
 
@@ -941,23 +943,23 @@ pub enum BoltV3SubmitIntentKind {
 
 Delete the impossible normal-admission arm and update all exhaustive matches.
 
-- [ ] **Step 4: Delete admission authority and liveness state**
+- [x] **Step 4: Delete admission authority and liveness state**
 
 Remove the request claim field, admission policy/configuration, evaluator, live forced-reduction ID set, forced-reduction reconciliation flag, special counters/rollback, current evidence authority, and current error mapping. `CapitalAdmissionRebuildSnapshot` retains only `live_non_reservation_client_order_ids`.
 
-- [ ] **Step 5: Make historical recovery inert and remove current producers**
+- [x] **Step 5: Make historical recovery inert and remove current producers**
 
 Keep `ForcedReductionAdmissionFact`, its identity, decoder, and fixture. Remove `ReservationRecoveryEvent::ForcedReduction`, the recovered set/accessor, and the reader mapping into reservation authority; the reader must decode then skip that fact for authorization. Remove `record_forced_reduction_admission` from production recorder/handle APIs and remove runtime fixtures that call it.
 
-- [ ] **Step 6: Retain proof-only kill-switch planning outside submit admission**
+- [x] **Step 6: Retain proof-only kill-switch planning outside submit admission**
 
 Move `BoltV3KillSwitchForcedReductionClaim` and its validation error to `bolt_v3_kill_switch_flatten.rs`; import it from `bolt_v3_kill_switch_action_router.rs`. Delete `BoltV3KillSwitchForcedReductionPolicy`, which exists only for submit admission. Keep the existing loaded-config rejection of automatic flattening and proof-only planner tests.
 
-- [ ] **Step 7: Delete obsolete tests and migrate unaffected fixtures**
+- [x] **Step 7: Delete obsolete tests and migrate unaffected fixtures**
 
 Delete tests whose sole purpose is admitting/rate-limiting a current forced-reduction submit. Preserve codec decode/round-trip tests, flatten-plan proof tests, and config rejection tests. Remove forced intent branches from shared test helpers rather than replacing them with dummy behavior.
 
-- [ ] **Step 8: Run targeted admission, evidence, and kill-switch tests**
+- [x] **Step 8: Run targeted admission, evidence, and kill-switch tests**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib economics_basis::tests -- --test-threads=1
@@ -968,7 +970,7 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: PASS; historical evidence decodes but grants no current authority.
 
-- [ ] **Step 9: Confirm current authority symbols are gone**
+- [x] **Step 9: Confirm current authority symbols are gone**
 
 ```bash
 rg -n 'BoltV3FinalOrderEconomicsScenario::ForcedReduction|BoltV3SubmitIntentKind::KillSwitchForcedReduction|record_forced_reduction_admission|authorizes_forced_reduction_order|live_kill_switch_forced_reduction_client_order_ids' src tests
@@ -976,10 +978,10 @@ rg -n 'BoltV3FinalOrderEconomicsScenario::ForcedReduction|BoltV3SubmitIntentKind
 
 Expected: no matches. Historical fact/codec names may remain and must be inspected separately.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
-git add src tests
+git add config docs src tests
 git commit -m "refactor(admission): delete dormant forced reduction authority"
 ```
 

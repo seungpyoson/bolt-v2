@@ -115,28 +115,6 @@ pub(super) fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<S
         errors
             .push("risk.kill_switch.manual_reset_evidence_max_age_ms must be positive".to_string());
     }
-    if !is_sha256_hex_digest(&block.forced_reduction_policy_sha256) {
-        errors.push(
-            "risk.kill_switch.forced_reduction_policy_sha256 must be a 64-character SHA-256 hex digest"
-                .to_string(),
-        );
-    }
-    if block.forced_reduction_max_live_order_count == 0 {
-        errors.push(
-            "risk.kill_switch.forced_reduction_max_live_order_count must be positive".to_string(),
-        );
-    }
-    match parse_decimal_string(&block.forced_reduction_max_notional_per_order) {
-        Ok(notional) if notional > Decimal::ZERO => {}
-        Ok(_) => errors.push(
-            "risk.kill_switch.forced_reduction_max_notional_per_order must be positive"
-                .to_string(),
-        ),
-        Err(reason) => errors.push(format!(
-            "risk.kill_switch.forced_reduction_max_notional_per_order is not a valid decimal string ({reason}): `{}`",
-            block.forced_reduction_max_notional_per_order
-        )),
-    }
     if block.authorized_operator_ids.is_empty() {
         errors.push(
             "risk.kill_switch.authorized_operator_ids must not be empty when enabled".to_string(),
@@ -182,11 +160,7 @@ pub(super) fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<S
         errors.extend(validate_kill_switch_cancel_block(cancel));
     }
     if let Some(flatten) = &block.flatten {
-        errors.extend(validate_kill_switch_flatten_block(
-            flatten,
-            block.forced_reduction_max_live_order_count,
-            &block.forced_reduction_max_notional_per_order,
-        ));
+        errors.extend(validate_kill_switch_flatten_block(flatten));
     }
     errors
 }
@@ -259,11 +233,7 @@ fn parse_kill_switch_cancel_surface(
     }
 }
 
-fn validate_kill_switch_flatten_block(
-    block: &KillSwitchFlattenConfigBlock,
-    global_max_live_order_count: u32,
-    global_max_notional_per_order: &str,
-) -> Vec<String> {
+fn validate_kill_switch_flatten_block(block: &KillSwitchFlattenConfigBlock) -> Vec<String> {
     if !block.enabled {
         return Vec::new();
     }
@@ -272,32 +242,17 @@ fn validate_kill_switch_flatten_block(
     if block.max_live_order_count == 0 {
         errors.push("risk.kill_switch.flatten.max_live_order_count must be positive".to_string());
     }
-    if global_max_live_order_count > 0 && block.max_live_order_count > global_max_live_order_count {
-        errors.push(
-            "risk.kill_switch.flatten.max_live_order_count must be <= risk.kill_switch.forced_reduction_max_live_order_count"
-                .to_string(),
-        );
-    }
-
-    match (
-        parse_decimal_string(&block.max_notional_per_order),
-        parse_decimal_string(global_max_notional_per_order),
-    ) {
-        (Ok(local), Ok(global)) if local > Decimal::ZERO && local <= global => {}
-        (Ok(local), Ok(_)) if local <= Decimal::ZERO => {
+    match parse_decimal_string(&block.max_notional_per_order) {
+        Ok(notional) if notional > Decimal::ZERO => {}
+        Ok(_) => {
             errors.push(
                 "risk.kill_switch.flatten.max_notional_per_order must be positive".to_string(),
             );
         }
-        (Ok(_), Ok(_)) => errors.push(
-            "risk.kill_switch.flatten.max_notional_per_order must be <= risk.kill_switch.forced_reduction_max_notional_per_order"
-                .to_string(),
-        ),
-        (Err(reason), _) => errors.push(format!(
+        Err(reason) => errors.push(format!(
             "risk.kill_switch.flatten.max_notional_per_order is not a valid decimal string ({reason}): `{}`",
             block.max_notional_per_order
         )),
-        (_, Err(_)) => {}
     }
 
     if !block.is_reduce_only {

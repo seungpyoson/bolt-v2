@@ -1,6 +1,7 @@
 use crate::{
-    bolt_v3_kill_switch::KillSwitchState, bolt_v3_numeric::is_sha256_hex_digest,
-    bolt_v3_submit_admission::BoltV3KillSwitchForcedReductionClaim,
+    bolt_v3_kill_switch::KillSwitchState,
+    bolt_v3_kill_switch_flatten::BoltV3KillSwitchForcedReductionClaim,
+    bolt_v3_numeric::is_sha256_hex_digest,
 };
 use nautilus_model::enums::TradingState;
 use nautilus_model::identifiers::{AccountId, InstrumentId};

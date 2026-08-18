@@ -127,6 +127,8 @@ struct ConsumerRow {
 struct PurposeRow {
     id: String,
     owner: String,
+    #[serde(default)]
+    decode_only: bool,
     duties: Vec<String>,
     effect_policy: String,
     sink: String,
@@ -482,13 +484,18 @@ fn validate_registry(wire: &RegistryWire) -> Result<()> {
             );
         }
 
+        let producer_count = producers_per_purpose
+            .get(purpose.id.as_str())
+            .copied()
+            .unwrap_or_default();
         ensure!(
-            producers_per_purpose
-                .get(purpose.id.as_str())
-                .copied()
-                .unwrap_or_default()
-                > 0,
-            "purpose `{}` requires at least one producer",
+            producer_count > 0 || purpose.decode_only,
+            "purpose `{}` requires a producer or an explicit decode-only boundary",
+            purpose.id
+        );
+        ensure!(
+            producer_count == 0 || !purpose.decode_only,
+            "decode-only purpose `{}` cannot name a current producer",
             purpose.id
         );
         ensure!(

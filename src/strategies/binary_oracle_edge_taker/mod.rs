@@ -7679,9 +7679,6 @@ impl BinaryOracleEdgeTaker {
                         )
                     }
                     BoltV3SubmitIntentKind::RiskReducingExit => planned_exit_scenario(facts.price)?,
-                    BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
-                        anyhow::bail!("edge-taker fixture cannot construct forced reduction")
-                    }
                 };
                 (
                     scenario,

@@ -342,79 +342,127 @@ enum QuoteRouteSuccess {
     NtMutationInvoked,
 }
 
-impl QuoteRouteSuccess {
-    const fn settlement(self) -> QuoteRouteSettlement {
-        match self {
-            Self::Submitted => QuoteRouteSettlement::Submitted,
-            Self::NtMutationInvoked => QuoteRouteSettlement::NtMutationInvoked,
-        }
-    }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct QuoteRouteSuccessProjection {
+    settlement: QuoteRouteSettlement,
+    illegal_outcome_message: &'static str,
+}
 
-    const fn illegal_outcome_message(self) -> &'static str {
+impl QuoteRouteSuccess {
+    const fn projection(self) -> QuoteRouteSuccessProjection {
         match self {
-            Self::Submitted => "submitted outcome is not legal for this quote transaction",
-            Self::NtMutationInvoked => {
-                "NT-mutation-invoked outcome is not legal for this quote transaction"
-            }
+            Self::Submitted => QuoteRouteSuccessProjection {
+                settlement: QuoteRouteSettlement::Submitted,
+                illegal_outcome_message: "submitted outcome is not legal for this quote transaction",
+            },
+            Self::NtMutationInvoked => QuoteRouteSuccessProjection {
+                settlement: QuoteRouteSettlement::NtMutationInvoked,
+                illegal_outcome_message: "NT-mutation-invoked outcome is not legal for this quote transaction",
+            },
         }
     }
 }
 
 #[derive(Debug)]
 enum QuoteTransactionState {
-    Idle,
-    SubmitPending,
-    Resting,
-    RequotePending {
-        prepaid: RequoteBudgetReservation,
-    },
-    ModifyPending,
-    CancelPending,
-    ReplacementPendingBackoff,
-    ReplacementPendingBackoffPrepaid {
-        prepaid: RequoteBudgetReservation,
-    },
-    PoisonedReconciliationHold {
-        obligation: QuoteLegTransactionObligation,
-    },
-    PoisonedReconciliationHoldPrepaid {
-        obligation: QuoteLegTransactionObligation,
-        prepaid: RequoteBudgetReservation,
-    },
-    ArmedReserved {
-        arm: QuoteTransactionArm,
-        reservation: RequoteBudgetReservation,
-    },
-    ArmedPrepaid {
-        arm: QuoteTransactionArm,
-        prepaid: RequoteBudgetReservation,
-    },
-    SinkInvokedCharged {
-        arm: QuoteTransactionArm,
-    },
-    SinkInvokedPrepaid {
-        arm: QuoteTransactionArm,
-        prepaid: RequoteBudgetReservation,
-    },
-    WindingDown(WindDownQuoteTransactionState),
-    Settled {
-        generation: u64,
-        route: Option<QuoteRouteSettlement>,
-        reopened: bool,
-        stable: Box<QuoteTransactionState>,
-    },
+    Stable(QuoteStableState),
+    Attempt(QuoteAttemptState),
+    Settled(QuoteSettlementState),
 }
 
 #[derive(Debug)]
-enum QuoteTransactionGenerationFence {
-    Current(QuoteTransactionState),
-    Stale(QuoteTransactionState),
+enum QuoteStableState {
+    Active(ActiveQuotePhase),
+    WindingDown(WindDownQuotePhase),
+    Poisoned(QuotePoisonedHold),
+}
+
+#[derive(Debug)]
+enum ActiveQuotePhase {
+    Idle,
+    SubmitPending,
+    Resting,
+    RequotePending { prepaid: RequoteBudgetReservation },
+    ModifyPending,
+    CancelPending,
+    ReplacementPendingBackoff,
+    ReplacementPendingBackoffPrepaid { prepaid: RequoteBudgetReservation },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WindDownQuotePhase {
+    Idle,
+    CancelPending,
+}
+
+#[derive(Debug)]
+struct QuotePoisonedHold {
+    mode: QuoteTransactionMode,
+    obligation: QuoteLegTransactionObligation,
+    budget: QuotePoisonedBudget,
+}
+
+#[derive(Debug)]
+enum QuotePoisonedBudget {
+    Charged,
+    Prepaid(RequoteBudgetReservation),
+}
+
+#[derive(Debug)]
+struct QuoteAttemptState {
+    mode: QuoteTransactionMode,
+    arm: QuoteTransactionArm,
+    phase: QuoteAttemptPhase,
+}
+
+#[derive(Debug)]
+enum QuoteAttemptPhase {
+    Armed(ArmedQuoteBudget),
+    SinkInvoked(SinkInvokedQuoteBudget),
+}
+
+#[derive(Debug)]
+struct QuoteSettlementState {
+    generation: u64,
+    status: QuoteSettlementStatus,
+    stable: QuoteStableState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QuoteSettlementStatus {
+    AwaitingRoute,
+    ReopenedAwaitingRoute,
+    RouteSettled(QuoteRouteSettlement),
+    Reopened(QuoteRouteSettlement),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QuoteTransactionMode {
     Active,
     WindingDown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ActiveQuoteProjection {
+    leg_state: LegState,
+    prepaid_generation: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct QuoteStableProjection {
+    leg_state: LegState,
+    prepaid_generation: Option<u64>,
+    winding_down: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct QuoteStateProjection<'a> {
+    armed_identity: Option<&'a MakerQuoteLifecycleIdentity>,
+    leg_state: LegState,
+    prepaid_generation: Option<u64>,
+    winding_down: bool,
+    generation: Option<u64>,
+    registration_phase: QuoteTransactionRegistrationPhase,
 }
 
 #[derive(Debug)]
@@ -427,17 +475,6 @@ enum ArmedQuoteBudget {
 enum SinkInvokedQuoteBudget {
     Charged,
     Prepaid(RequoteBudgetReservation),
-}
-
-#[derive(Debug)]
-enum ClassifiedSinkInvokedState {
-    Invoked {
-        mode: QuoteTransactionMode,
-        arm: QuoteTransactionArm,
-        budget: SinkInvokedQuoteBudget,
-    },
-    Settled(QuoteTransactionState),
-    Inactive(QuoteTransactionState),
 }
 
 impl ArmedQuoteBudget {
@@ -484,289 +521,313 @@ impl ArmedQuoteBudget {
 }
 
 impl QuoteTransactionMode {
-    fn armed_state(
-        self,
-        arm: QuoteTransactionArm,
-        budget: ArmedQuoteBudget,
-    ) -> QuoteTransactionState {
-        match (self, budget) {
-            (Self::Active, ArmedQuoteBudget::Reserved(reservation)) => {
-                QuoteTransactionState::ArmedReserved { arm, reservation }
-            }
-            (Self::Active, ArmedQuoteBudget::Prepaid(prepaid)) => {
-                QuoteTransactionState::ArmedPrepaid { arm, prepaid }
-            }
-            (Self::WindingDown, ArmedQuoteBudget::Reserved(reservation)) => {
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::ArmedReserved {
-                    arm,
-                    reservation,
-                })
-            }
-            (Self::WindingDown, ArmedQuoteBudget::Prepaid(prepaid)) => {
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::ArmedPrepaid {
-                    arm,
-                    prepaid,
-                })
-            }
-        }
+    const fn is_winding_down(self) -> bool {
+        matches!(self, Self::WindingDown)
     }
 
-    fn sink_invoked_state(
-        self,
-        arm: QuoteTransactionArm,
-        budget: SinkInvokedQuoteBudget,
-    ) -> QuoteTransactionState {
-        match (self, budget) {
-            (Self::Active, SinkInvokedQuoteBudget::Charged) => {
-                QuoteTransactionState::SinkInvokedCharged { arm }
-            }
-            (Self::Active, SinkInvokedQuoteBudget::Prepaid(prepaid)) => {
-                QuoteTransactionState::SinkInvokedPrepaid { arm, prepaid }
-            }
-            (Self::WindingDown, SinkInvokedQuoteBudget::Charged) => {
-                QuoteTransactionState::WindingDown(
-                    WindDownQuoteTransactionState::SinkInvokedCharged { arm },
-                )
-            }
-            (Self::WindingDown, SinkInvokedQuoteBudget::Prepaid(prepaid)) => {
-                QuoteTransactionState::WindingDown(
-                    WindDownQuoteTransactionState::SinkInvokedPrepaid { arm, prepaid },
-                )
-            }
-        }
+    fn begin_wind_down(&mut self) -> Option<LifecycleAction> {
+        let action = match self {
+            Self::Active => Some(LifecycleAction::Cancel),
+            Self::WindingDown => None,
+        };
+        *self = Self::WindingDown;
+        action
     }
 }
 
-#[derive(Debug)]
-enum WindDownQuoteTransactionState {
-    Idle,
-    CancelPending,
-    PoisonedReconciliationHold,
-    PoisonedReconciliationHoldPrepaid {
-        prepaid: RequoteBudgetReservation,
-    },
-    ArmedReserved {
-        arm: QuoteTransactionArm,
-        reservation: RequoteBudgetReservation,
-    },
-    ArmedPrepaid {
-        arm: QuoteTransactionArm,
-        prepaid: RequoteBudgetReservation,
-    },
-    SinkInvokedCharged {
-        arm: QuoteTransactionArm,
-    },
-    SinkInvokedPrepaid {
-        arm: QuoteTransactionArm,
-        prepaid: RequoteBudgetReservation,
-    },
-}
-
-impl WindDownQuoteTransactionState {
-    const fn leg_state(&self) -> LegState {
+impl ActiveQuotePhase {
+    fn projection(&self) -> ActiveQuoteProjection {
         match self {
-            Self::Idle => LegState::Idle,
-            Self::CancelPending => LegState::CancelPending,
-            Self::PoisonedReconciliationHold | Self::PoisonedReconciliationHoldPrepaid { .. } => {
-                LegState::PoisonedReconciliationHold
-            }
-            Self::ArmedReserved { arm, .. }
-            | Self::ArmedPrepaid { arm, .. }
-            | Self::SinkInvokedCharged { arm }
-            | Self::SinkInvokedPrepaid { arm, .. } => arm.pending_state,
+            Self::Idle => ActiveQuoteProjection {
+                leg_state: LegState::Idle,
+                prepaid_generation: None,
+            },
+            Self::SubmitPending => ActiveQuoteProjection {
+                leg_state: LegState::SubmitPending,
+                prepaid_generation: None,
+            },
+            Self::Resting => ActiveQuoteProjection {
+                leg_state: LegState::Resting,
+                prepaid_generation: None,
+            },
+            Self::RequotePending { prepaid } => ActiveQuoteProjection {
+                leg_state: LegState::RequotePending,
+                prepaid_generation: Some(prepaid.generation()),
+            },
+            Self::ModifyPending => ActiveQuoteProjection {
+                leg_state: LegState::ModifyPending,
+                prepaid_generation: None,
+            },
+            Self::CancelPending => ActiveQuoteProjection {
+                leg_state: LegState::CancelPending,
+                prepaid_generation: None,
+            },
+            Self::ReplacementPendingBackoff => ActiveQuoteProjection {
+                leg_state: LegState::ReplacementPendingBackoff,
+                prepaid_generation: None,
+            },
+            Self::ReplacementPendingBackoffPrepaid { prepaid } => ActiveQuoteProjection {
+                leg_state: LegState::ReplacementPendingBackoff,
+                prepaid_generation: Some(prepaid.generation()),
+            },
         }
     }
+}
 
+impl QuotePoisonedBudget {
     fn prepaid_generation(&self) -> Option<u64> {
         match self {
-            Self::PoisonedReconciliationHoldPrepaid { prepaid, .. }
-            | Self::ArmedPrepaid { prepaid, .. }
-            | Self::SinkInvokedPrepaid { prepaid, .. } => Some(prepaid.generation()),
-            Self::Idle
-            | Self::CancelPending
-            | Self::PoisonedReconciliationHold
-            | Self::ArmedReserved { .. }
-            | Self::SinkInvokedCharged { .. } => None,
+            Self::Charged => None,
+            Self::Prepaid(prepaid) => Some(prepaid.generation()),
+        }
+    }
+}
+
+impl QuoteStableState {
+    const fn active(phase: ActiveQuotePhase) -> Self {
+        Self::Active(phase)
+    }
+
+    const fn winding_down(phase: WindDownQuotePhase) -> Self {
+        Self::WindingDown(phase)
+    }
+
+    const fn poisoned(
+        mode: QuoteTransactionMode,
+        obligation: QuoteLegTransactionObligation,
+        budget: QuotePoisonedBudget,
+    ) -> Self {
+        Self::Poisoned(QuotePoisonedHold {
+            mode,
+            obligation,
+            budget,
+        })
+    }
+
+    fn projection(&self) -> QuoteStableProjection {
+        match self {
+            Self::Active(phase) => {
+                let active = phase.projection();
+                QuoteStableProjection {
+                    leg_state: active.leg_state,
+                    prepaid_generation: active.prepaid_generation,
+                    winding_down: false,
+                }
+            }
+            Self::WindingDown(WindDownQuotePhase::Idle) => QuoteStableProjection {
+                leg_state: LegState::Idle,
+                prepaid_generation: None,
+                winding_down: true,
+            },
+            Self::WindingDown(WindDownQuotePhase::CancelPending) => QuoteStableProjection {
+                leg_state: LegState::CancelPending,
+                prepaid_generation: None,
+                winding_down: true,
+            },
+            Self::Poisoned(hold) => QuoteStableProjection {
+                leg_state: LegState::PoisonedReconciliationHold,
+                prepaid_generation: hold.budget.prepaid_generation(),
+                winding_down: hold.mode.is_winding_down(),
+            },
         }
     }
 
-    fn retire_on_terminal(self) -> Self {
-        match self {
-            Self::Idle
-            | Self::CancelPending
-            | Self::PoisonedReconciliationHold
-            | Self::SinkInvokedCharged { .. } => Self::Idle,
-            Self::PoisonedReconciliationHoldPrepaid { prepaid, .. }
-            | Self::ArmedPrepaid { prepaid, .. }
-            | Self::SinkInvokedPrepaid { prepaid, .. } => {
-                drop(prepaid);
-                Self::Idle
+    fn can_reopen(&self) -> bool {
+        matches!(
+            self.projection().leg_state,
+            LegState::Idle | LegState::CancelPending | LegState::ReplacementPendingBackoff
+        )
+    }
+}
+
+impl QuoteAttemptState {
+    fn projection(&self) -> QuoteStateProjection<'_> {
+        let (prepaid_generation, registration_phase) = match &self.phase {
+            QuoteAttemptPhase::Armed(ArmedQuoteBudget::Prepaid(prepaid)) => (
+                Some(prepaid.generation()),
+                QuoteTransactionRegistrationPhase::PreSink,
+            ),
+            QuoteAttemptPhase::Armed(ArmedQuoteBudget::Reserved(_)) => {
+                (None, QuoteTransactionRegistrationPhase::PreSink)
             }
-            Self::ArmedReserved { reservation, .. } => {
-                drop(reservation);
-                Self::Idle
+            QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Prepaid(prepaid)) => (
+                Some(prepaid.generation()),
+                QuoteTransactionRegistrationPhase::SinkInvoked,
+            ),
+            QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Charged) => {
+                (None, QuoteTransactionRegistrationPhase::SinkInvoked)
             }
+        };
+        QuoteStateProjection {
+            armed_identity: Some(&self.arm.identity),
+            leg_state: self.arm.pending_state,
+            prepaid_generation,
+            winding_down: self.mode.is_winding_down(),
+            generation: Some(self.arm.identity.generation()),
+            registration_phase,
+        }
+    }
+}
+
+impl QuoteSettlementState {
+    fn into_stable(self) -> QuoteStableState {
+        self.stable
+    }
+
+    fn reduce_stable(
+        mut self,
+        reduce: impl FnOnce(QuoteStableState) -> (QuoteStableState, GovernedQuoteTransactionCommit),
+    ) -> (Self, GovernedQuoteTransactionCommit) {
+        let (stable, commit) = reduce(self.stable);
+        self.stable = stable;
+        (self, commit)
+    }
+
+    fn close_reopened(mut self, closes_reopened: bool) -> Self {
+        self.status = match (closes_reopened, self.status) {
+            (false, status) => status,
+            (true, QuoteSettlementStatus::ReopenedAwaitingRoute) => {
+                QuoteSettlementStatus::AwaitingRoute
+            }
+            (true, QuoteSettlementStatus::Reopened(route)) => {
+                QuoteSettlementStatus::RouteSettled(route)
+            }
+            (
+                true,
+                status @ (QuoteSettlementStatus::AwaitingRoute
+                | QuoteSettlementStatus::RouteSettled(_)),
+            ) => status,
+        };
+        self
+    }
+
+    fn settle_route(
+        mut self,
+        generation: u64,
+        route: QuoteRouteSettlement,
+    ) -> std::result::Result<Self, (Self, anyhow::Error)> {
+        let status = match (self.status, self.generation == generation) {
+            (QuoteSettlementStatus::AwaitingRoute, true) => {
+                QuoteSettlementStatus::RouteSettled(route)
+            }
+            (QuoteSettlementStatus::ReopenedAwaitingRoute, true) => {
+                QuoteSettlementStatus::Reopened(route)
+            }
+            (
+                status @ (QuoteSettlementStatus::RouteSettled(settled_route)
+                | QuoteSettlementStatus::Reopened(settled_route)),
+                true,
+            ) if settled_route == route => status,
+            (status, _) => {
+                self.status = status;
+                return Err((
+                    self,
+                    anyhow::anyhow!("conflicting or stale quote transaction settlement"),
+                ));
+            }
+        };
+        self.status = status;
+        Ok(self)
+    }
+
+    fn reopen(mut self) -> std::result::Result<Self, (Self, anyhow::Error)> {
+        let status = match (self.status, self.stable.can_reopen()) {
+            (
+                status @ (QuoteSettlementStatus::ReopenedAwaitingRoute
+                | QuoteSettlementStatus::Reopened(_)),
+                _,
+            ) => status,
+            (QuoteSettlementStatus::AwaitingRoute, true) => {
+                QuoteSettlementStatus::ReopenedAwaitingRoute
+            }
+            (QuoteSettlementStatus::RouteSettled(route), true) => {
+                QuoteSettlementStatus::Reopened(route)
+            }
+            (status, false) => {
+                self.status = status;
+                return Err((
+                    self,
+                    anyhow::anyhow!("maker quote reopening conflicts with current leg occupancy"),
+                ));
+            }
+        };
+        self.status = status;
+        Ok(self)
+    }
+
+    fn leg_state(&self) -> LegState {
+        match self.status {
+            QuoteSettlementStatus::ReopenedAwaitingRoute | QuoteSettlementStatus::Reopened(_) => {
+                LegState::CancelPending
+            }
+            QuoteSettlementStatus::AwaitingRoute | QuoteSettlementStatus::RouteSettled(_) => {
+                self.stable.projection().leg_state
+            }
+        }
+    }
+
+    fn projection(&self) -> QuoteStateProjection<'_> {
+        let stable = self.stable.projection();
+        QuoteStateProjection {
+            armed_identity: None,
+            leg_state: self.leg_state(),
+            prepaid_generation: stable.prepaid_generation,
+            winding_down: stable.winding_down,
+            generation: Some(self.generation),
+            registration_phase: QuoteTransactionRegistrationPhase::Settled,
         }
     }
 }
 
 impl QuoteTransactionState {
-    fn fence_generation(self, generation: u64) -> QuoteTransactionGenerationFence {
-        match self.armed_identity() {
-            Some(identity) if identity.generation() != generation => {
-                QuoteTransactionGenerationFence::Stale(self)
-            }
-            Some(_) | None => QuoteTransactionGenerationFence::Current(self),
-        }
+    const fn idle() -> Self {
+        Self::Stable(QuoteStableState::active(ActiveQuotePhase::Idle))
     }
 
-    fn classify_sink_invoked(self) -> ClassifiedSinkInvokedState {
+    fn projection(&self) -> QuoteStateProjection<'_> {
         match self {
-            Self::SinkInvokedCharged { arm } => ClassifiedSinkInvokedState::Invoked {
-                mode: QuoteTransactionMode::Active,
-                arm,
-                budget: SinkInvokedQuoteBudget::Charged,
-            },
-            Self::SinkInvokedPrepaid { arm, prepaid } => ClassifiedSinkInvokedState::Invoked {
-                mode: QuoteTransactionMode::Active,
-                arm,
-                budget: SinkInvokedQuoteBudget::Prepaid(prepaid),
-            },
-            Self::WindingDown(WindDownQuoteTransactionState::SinkInvokedCharged { arm }) => {
-                ClassifiedSinkInvokedState::Invoked {
-                    mode: QuoteTransactionMode::WindingDown,
-                    arm,
-                    budget: SinkInvokedQuoteBudget::Charged,
+            Self::Stable(stable) => {
+                let stable = stable.projection();
+                QuoteStateProjection {
+                    armed_identity: None,
+                    leg_state: stable.leg_state,
+                    prepaid_generation: stable.prepaid_generation,
+                    winding_down: stable.winding_down,
+                    generation: None,
+                    registration_phase: QuoteTransactionRegistrationPhase::PreSink,
                 }
             }
-            Self::WindingDown(WindDownQuoteTransactionState::SinkInvokedPrepaid {
-                arm,
-                prepaid,
-            }) => ClassifiedSinkInvokedState::Invoked {
-                mode: QuoteTransactionMode::WindingDown,
-                arm,
-                budget: SinkInvokedQuoteBudget::Prepaid(prepaid),
-            },
-            state @ Self::Settled { .. } => ClassifiedSinkInvokedState::Settled(state),
-            state @ (Self::Idle
-            | Self::SubmitPending
-            | Self::Resting
-            | Self::RequotePending { .. }
-            | Self::ModifyPending
-            | Self::CancelPending
-            | Self::ReplacementPendingBackoff
-            | Self::ReplacementPendingBackoffPrepaid { .. }
-            | Self::PoisonedReconciliationHold { .. }
-            | Self::PoisonedReconciliationHoldPrepaid { .. }
-            | Self::ArmedReserved { .. }
-            | Self::ArmedPrepaid { .. }
-            | Self::WindingDown(
-                WindDownQuoteTransactionState::Idle
-                | WindDownQuoteTransactionState::CancelPending
-                | WindDownQuoteTransactionState::PoisonedReconciliationHold
-                | WindDownQuoteTransactionState::PoisonedReconciliationHoldPrepaid { .. }
-                | WindDownQuoteTransactionState::ArmedReserved { .. }
-                | WindDownQuoteTransactionState::ArmedPrepaid { .. },
-            )) => ClassifiedSinkInvokedState::Inactive(state),
+            Self::Attempt(attempt) => attempt.projection(),
+            Self::Settled(settlement) => settlement.projection(),
         }
     }
 
     fn armed_identity(&self) -> Option<&MakerQuoteLifecycleIdentity> {
-        match self {
-            Self::ArmedReserved { arm, .. }
-            | Self::ArmedPrepaid { arm, .. }
-            | Self::SinkInvokedCharged { arm }
-            | Self::SinkInvokedPrepaid { arm, .. }
-            | Self::WindingDown(
-                WindDownQuoteTransactionState::ArmedReserved { arm, .. }
-                | WindDownQuoteTransactionState::ArmedPrepaid { arm, .. }
-                | WindDownQuoteTransactionState::SinkInvokedCharged { arm }
-                | WindDownQuoteTransactionState::SinkInvokedPrepaid { arm, .. },
-            ) => Some(&arm.identity),
-            Self::Idle
-            | Self::SubmitPending
-            | Self::Resting
-            | Self::RequotePending { .. }
-            | Self::ModifyPending
-            | Self::CancelPending
-            | Self::ReplacementPendingBackoff
-            | Self::ReplacementPendingBackoffPrepaid { .. }
-            | Self::PoisonedReconciliationHold { .. }
-            | Self::PoisonedReconciliationHoldPrepaid { .. }
-            | Self::WindingDown(
-                WindDownQuoteTransactionState::Idle
-                | WindDownQuoteTransactionState::CancelPending
-                | WindDownQuoteTransactionState::PoisonedReconciliationHold
-                | WindDownQuoteTransactionState::PoisonedReconciliationHoldPrepaid { .. },
-            )
-            | Self::Settled { .. } => None,
-        }
+        self.projection().armed_identity
     }
 
-    const fn leg_state(&self) -> LegState {
-        match self {
-            Self::Idle => LegState::Idle,
-            Self::SubmitPending => LegState::SubmitPending,
-            Self::Resting => LegState::Resting,
-            Self::RequotePending { .. } => LegState::RequotePending,
-            Self::ModifyPending => LegState::ModifyPending,
-            Self::CancelPending => LegState::CancelPending,
-            Self::ReplacementPendingBackoff | Self::ReplacementPendingBackoffPrepaid { .. } => {
-                LegState::ReplacementPendingBackoff
-            }
-            Self::PoisonedReconciliationHold { .. }
-            | Self::PoisonedReconciliationHoldPrepaid { .. } => {
-                LegState::PoisonedReconciliationHold
-            }
-            Self::ArmedReserved { arm, .. }
-            | Self::ArmedPrepaid { arm, .. }
-            | Self::SinkInvokedCharged { arm }
-            | Self::SinkInvokedPrepaid { arm, .. } => arm.pending_state,
-            Self::WindingDown(state) => state.leg_state(),
-            Self::Settled { reopened: true, .. } => LegState::CancelPending,
-            Self::Settled { stable, .. } => stable.leg_state(),
-        }
+    fn leg_state(&self) -> LegState {
+        self.projection().leg_state
     }
 
     fn prepaid_generation(&self) -> Option<u64> {
-        match self {
-            Self::RequotePending { prepaid }
-            | Self::ReplacementPendingBackoffPrepaid { prepaid }
-            | Self::PoisonedReconciliationHoldPrepaid { prepaid, .. }
-            | Self::ArmedPrepaid { prepaid, .. }
-            | Self::SinkInvokedPrepaid { prepaid, .. } => Some(prepaid.generation()),
-            Self::WindingDown(state) => state.prepaid_generation(),
-            Self::Settled { stable, .. } => stable.prepaid_generation(),
-            Self::Idle
-            | Self::SubmitPending
-            | Self::Resting
-            | Self::ModifyPending
-            | Self::CancelPending
-            | Self::ReplacementPendingBackoff
-            | Self::PoisonedReconciliationHold { .. }
-            | Self::ArmedReserved { .. }
-            | Self::SinkInvokedCharged { .. } => None,
-        }
+        self.projection().prepaid_generation
     }
 
     fn is_winding_down(&self) -> bool {
-        match self {
-            Self::WindingDown(_) => true,
-            Self::Settled { stable, .. } => stable.is_winding_down(),
-            Self::Idle
-            | Self::SubmitPending
-            | Self::Resting
-            | Self::RequotePending { .. }
-            | Self::ModifyPending
-            | Self::CancelPending
-            | Self::ReplacementPendingBackoff
-            | Self::ReplacementPendingBackoffPrepaid { .. }
-            | Self::PoisonedReconciliationHold { .. }
-            | Self::PoisonedReconciliationHoldPrepaid { .. }
-            | Self::ArmedReserved { .. }
-            | Self::ArmedPrepaid { .. }
-            | Self::SinkInvokedCharged { .. }
-            | Self::SinkInvokedPrepaid { .. } => false,
+        self.projection().winding_down
+    }
+
+    fn generation(&self) -> Option<u64> {
+        self.projection().generation
+    }
+
+    fn registration_phase(&self, generation: u64) -> QuoteTransactionRegistrationPhase {
+        let projection = self.projection();
+        if projection.generation == Some(generation) {
+            projection.registration_phase
+        } else {
+            QuoteTransactionRegistrationPhase::PreSink
         }
     }
 }
@@ -851,7 +912,7 @@ impl QuoteTransactionReductionRequest {
         self,
         inner: &mut GovernedQuoteTransactionInner,
     ) -> anyhow::Result<GovernedQuoteTransactionCommit> {
-        let prior = std::mem::replace(&mut inner.state, QuoteTransactionState::Idle);
+        let prior = std::mem::replace(&mut inner.state, QuoteTransactionState::idle());
         let (settled_owner, poison_only) = match &self.event {
             QuoteTransactionReductionEvent::SinkCapable(
                 SinkCapableQuoteTransactionEvent::Submitted { .. }
@@ -935,7 +996,7 @@ impl MakerQuoteLifecycleRefinementRequest {
         self,
         inner: &mut GovernedQuoteTransactionInner,
     ) -> MakerQuoteLifecycleRefinementOutcome {
-        let prior = std::mem::replace(&mut inner.state, QuoteTransactionState::Idle);
+        let prior = std::mem::replace(&mut inner.state, QuoteTransactionState::idle());
         let active = prior
             .armed_identity()
             .cloned()
@@ -958,48 +1019,26 @@ impl MakerQuoteLifecycleRefinementRequest {
                 MakerQuoteRefinementAuthority::Exact,
             ) => {
                 let generation = identity.generation();
-                let had_in_flight_route = prior.armed_identity().is_some();
-                let next = match prior {
-                    QuoteTransactionState::Settled {
-                        generation,
-                        route,
-                        reopened,
-                        stable,
-                    } => {
-                        let (stable, commit) = match stable_effect {
-                            Some(disposition) => {
-                                GovernedQuoteTransactionInner::reduce_terminal(*stable, disposition)
-                            }
-                            None => (*stable, GovernedQuoteTransactionCommit::no_action()),
-                        };
+                match GovernedQuoteTransactionInner::reduce_terminal_refinement(
+                    prior,
+                    generation,
+                    stable_effect,
+                    closes_reopened,
+                ) {
+                    Ok((next, commit)) => {
                         debug_assert!(commit.action.is_none());
-                        QuoteTransactionState::Settled {
-                            generation,
-                            route,
-                            reopened: reopened && !closes_reopened,
-                            stable: Box::new(stable),
+                        inner.state = next;
+                        inner.terminal_owner = Some(identity);
+                        MakerQuoteLifecycleRefinementOutcome::Applied
+                    }
+                    Err((restored, _)) => {
+                        inner.state = restored;
+                        MakerQuoteLifecycleRefinementOutcome::Invalid {
+                            event: identity,
+                            active,
                         }
                     }
-                    state => {
-                        let (stable, commit) = match stable_effect {
-                            Some(disposition) => {
-                                GovernedQuoteTransactionInner::reduce_terminal(state, disposition)
-                            }
-                            None => (state, GovernedQuoteTransactionCommit::no_action()),
-                        };
-                        debug_assert!(commit.action.is_none());
-                        QuoteTransactionState::Settled {
-                            generation,
-                            route: (!had_in_flight_route)
-                                .then_some(QuoteRouteSettlement::CallbackRetired),
-                            reopened: false,
-                            stable: Box::new(stable),
-                        }
-                    }
-                };
-                inner.state = next;
-                inner.terminal_owner = Some(identity);
-                MakerQuoteLifecycleRefinementOutcome::Applied
+                }
             }
             (
                 MakerQuoteLifecycleRefinement::Reopened,
@@ -1024,21 +1063,11 @@ impl MakerQuoteLifecycleRefinementRequest {
                 MakerQuoteRefinementAuthority::Exact,
             ) => {
                 let next = match prior {
-                    QuoteTransactionState::Settled {
-                        generation,
-                        route,
-                        stable,
-                        ..
-                    } => {
-                        let (stable, commit) =
-                            GovernedQuoteTransactionInner::reduce_wind_down(*stable);
+                    QuoteTransactionState::Settled(settlement) => {
+                        let (settlement, commit) = settlement
+                            .reduce_stable(GovernedQuoteTransactionInner::reduce_stable_wind_down);
                         debug_assert!(commit.action.is_none());
-                        QuoteTransactionState::Settled {
-                            generation,
-                            route,
-                            reopened: false,
-                            stable: Box::new(stable),
-                        }
+                        QuoteTransactionState::Settled(settlement.close_reopened(true))
                     }
                     state => state,
                 };
@@ -1066,6 +1095,21 @@ impl MakerQuoteLifecycleRefinementRequest {
 }
 
 impl GovernedQuoteTransactionInner {
+    fn reduce_generation_fenced(
+        state: QuoteTransactionState,
+        generation: u64,
+        stale: impl FnOnce(QuoteTransactionState) -> QuoteReduction,
+        current: impl FnOnce(QuoteTransactionState) -> QuoteReduction,
+    ) -> QuoteReduction {
+        let generation_is_current = state
+            .armed_identity()
+            .map(|identity| identity.generation() == generation);
+        match generation_is_current {
+            Some(false) => stale(state),
+            Some(true) | None => current(state),
+        }
+    }
+
     fn reduce_pre_sink(
         state: QuoteTransactionState,
         event: QuoteTransactionEvent,
@@ -1127,16 +1171,20 @@ impl GovernedQuoteTransactionInner {
         event: LegEvent,
         supports_modify: bool,
     ) -> (QuoteTransactionState, GovernedQuoteTransactionCommit) {
-        let state = match state {
-            QuoteTransactionState::Settled { stable, .. } => *stable,
-            state => state,
+        let stable = match state {
+            QuoteTransactionState::Stable(stable) => stable,
+            QuoteTransactionState::Settled(settlement) => settlement.into_stable(),
+            state @ QuoteTransactionState::Attempt(_) => {
+                return (state, GovernedQuoteTransactionCommit::no_action());
+            }
         };
         let action = |action| GovernedQuoteTransactionCommit {
             action: Some(action),
         };
-        match (state, event) {
+        let no_action = GovernedQuoteTransactionCommit::no_action();
+        match (stable, event) {
             (
-                QuoteTransactionState::WindingDown(state),
+                QuoteStableState::WindingDown(phase),
                 event @ (LegEvent::QuoteTrigger { .. }
                 | LegEvent::Accepted
                 | LegEvent::Rejected
@@ -1145,29 +1193,37 @@ impl GovernedQuoteTransactionInner {
                 | LegEvent::ModifyRejected
                 | LegEvent::CancelRejected
                 | LegEvent::Filled),
-            ) => Self::reduce_winding_down_lifecycle(state, event),
-            (QuoteTransactionState::Idle, LegEvent::QuoteTrigger { .. }) => (
-                QuoteTransactionState::SubmitPending,
+            ) => {
+                let (stable, commit) = Self::reduce_winding_down_lifecycle(phase, event);
+                (QuoteTransactionState::Stable(stable), commit)
+            }
+            (QuoteStableState::Poisoned(hold), _) => (
+                QuoteTransactionState::Stable(QuoteStableState::Poisoned(hold)),
+                no_action,
+            ),
+            (QuoteStableState::Active(ActiveQuotePhase::Idle), LegEvent::QuoteTrigger { .. }) => (
+                QuoteTransactionState::Stable(QuoteStableState::active(
+                    ActiveQuotePhase::SubmitPending,
+                )),
                 action(LifecycleAction::Submit),
             ),
-            (QuoteTransactionState::SubmitPending, LegEvent::Accepted) => (
-                QuoteTransactionState::Resting,
-                GovernedQuoteTransactionCommit::no_action(),
+            (QuoteStableState::Active(ActiveQuotePhase::SubmitPending), LegEvent::Accepted) => (
+                QuoteTransactionState::Stable(QuoteStableState::active(ActiveQuotePhase::Resting)),
+                no_action,
             ),
             (
-                QuoteTransactionState::SubmitPending | QuoteTransactionState::CancelPending,
+                QuoteStableState::Active(
+                    ActiveQuotePhase::SubmitPending | ActiveQuotePhase::CancelPending,
+                ),
                 LegEvent::Rejected,
-            ) => (
-                QuoteTransactionState::Idle,
-                GovernedQuoteTransactionCommit::no_action(),
-            ),
+            ) => (QuoteTransactionState::idle(), no_action),
             (
-                state @ QuoteTransactionState::Resting,
+                stable @ QuoteStableState::Active(ActiveQuotePhase::Resting),
                 LegEvent::QuoteTrigger {
                     requote_needed: true,
                 },
             ) => (
-                state,
+                QuoteTransactionState::Stable(stable),
                 action(if supports_modify {
                     LifecycleAction::Modify
                 } else {
@@ -1175,338 +1231,292 @@ impl GovernedQuoteTransactionInner {
                 }),
             ),
             (
-                state @ QuoteTransactionState::ReplacementPendingBackoff,
+                stable @ QuoteStableState::Active(
+                    ActiveQuotePhase::ReplacementPendingBackoff
+                    | ActiveQuotePhase::ReplacementPendingBackoffPrepaid { .. },
+                ),
                 LegEvent::QuoteTrigger { .. },
-            )
-            | (
-                state @ QuoteTransactionState::ReplacementPendingBackoffPrepaid { .. },
-                LegEvent::QuoteTrigger { .. },
-            ) => (state, action(LifecycleAction::Submit)),
-            (QuoteTransactionState::RequotePending { prepaid }, LegEvent::Canceled) => (
-                QuoteTransactionState::ReplacementPendingBackoffPrepaid { prepaid },
-                GovernedQuoteTransactionCommit::no_action(),
+            ) => (
+                QuoteTransactionState::Stable(stable),
+                action(LifecycleAction::Submit),
             ),
-            (QuoteTransactionState::ModifyPending, LegEvent::Modified) => (
-                QuoteTransactionState::Resting,
-                GovernedQuoteTransactionCommit::no_action(),
+            (
+                QuoteStableState::Active(ActiveQuotePhase::RequotePending { prepaid }),
+                LegEvent::Canceled,
+            ) => (
+                QuoteTransactionState::Stable(QuoteStableState::active(
+                    ActiveQuotePhase::ReplacementPendingBackoffPrepaid { prepaid },
+                )),
+                no_action,
             ),
-            (QuoteTransactionState::ModifyPending, LegEvent::ModifyRejected) => (
-                QuoteTransactionState::Resting,
+            (QuoteStableState::Active(ActiveQuotePhase::ModifyPending), LegEvent::Modified) => (
+                QuoteTransactionState::Stable(QuoteStableState::active(ActiveQuotePhase::Resting)),
+                no_action,
+            ),
+            (
+                QuoteStableState::Active(ActiveQuotePhase::ModifyPending),
+                LegEvent::ModifyRejected,
+            ) => (
+                QuoteTransactionState::Stable(QuoteStableState::active(ActiveQuotePhase::Resting)),
                 action(LifecycleAction::Cancel),
             ),
             (
-                state @ QuoteTransactionState::CancelPending,
+                stable @ QuoteStableState::Active(
+                    ActiveQuotePhase::CancelPending | ActiveQuotePhase::Idle,
+                ),
                 LegEvent::Accepted | LegEvent::Modified | LegEvent::ModifyRejected,
-            )
-            | (
-                state @ QuoteTransactionState::Idle,
-                LegEvent::Accepted | LegEvent::Modified | LegEvent::ModifyRejected,
-            ) => (state, action(LifecycleAction::Cancel)),
+            ) => (
+                QuoteTransactionState::Stable(stable),
+                action(LifecycleAction::Cancel),
+            ),
             (
-                QuoteTransactionState::CancelPending
-                | QuoteTransactionState::SubmitPending
-                | QuoteTransactionState::Resting
-                | QuoteTransactionState::ModifyPending,
+                QuoteStableState::Active(
+                    ActiveQuotePhase::CancelPending
+                    | ActiveQuotePhase::SubmitPending
+                    | ActiveQuotePhase::Resting
+                    | ActiveQuotePhase::ModifyPending,
+                ),
                 LegEvent::Canceled,
-            ) => (
-                QuoteTransactionState::Idle,
-                GovernedQuoteTransactionCommit::no_action(),
-            ),
+            ) => (QuoteTransactionState::idle(), no_action),
             (
-                QuoteTransactionState::SubmitPending
-                | QuoteTransactionState::Resting
-                | QuoteTransactionState::ModifyPending
-                | QuoteTransactionState::CancelPending
-                | QuoteTransactionState::ReplacementPendingBackoff,
+                QuoteStableState::Active(
+                    ActiveQuotePhase::SubmitPending
+                    | ActiveQuotePhase::Resting
+                    | ActiveQuotePhase::ModifyPending
+                    | ActiveQuotePhase::CancelPending
+                    | ActiveQuotePhase::ReplacementPendingBackoff,
+                ),
                 LegEvent::Filled,
-            ) => (
-                QuoteTransactionState::Idle,
-                GovernedQuoteTransactionCommit::no_action(),
-            ),
-            (QuoteTransactionState::RequotePending { prepaid }, LegEvent::Filled)
-            | (
-                QuoteTransactionState::ReplacementPendingBackoffPrepaid { prepaid },
+            ) => (QuoteTransactionState::idle(), no_action),
+            (
+                QuoteStableState::Active(
+                    ActiveQuotePhase::RequotePending { prepaid }
+                    | ActiveQuotePhase::ReplacementPendingBackoffPrepaid { prepaid },
+                ),
                 LegEvent::Filled,
             ) => {
                 drop(prepaid);
-                (
-                    QuoteTransactionState::Idle,
-                    GovernedQuoteTransactionCommit::no_action(),
-                )
+                (QuoteTransactionState::idle(), no_action)
             }
             (
-                state @ (QuoteTransactionState::PoisonedReconciliationHold { .. }
-                | QuoteTransactionState::PoisonedReconciliationHoldPrepaid { .. }
-                | QuoteTransactionState::ArmedReserved { .. }
-                | QuoteTransactionState::ArmedPrepaid { .. }
-                | QuoteTransactionState::SinkInvokedCharged { .. }
-                | QuoteTransactionState::SinkInvokedPrepaid { .. }
-                | QuoteTransactionState::Settled { .. }),
+                stable @ QuoteStableState::Active(
+                    ActiveQuotePhase::Idle
+                    | ActiveQuotePhase::SubmitPending
+                    | ActiveQuotePhase::Resting
+                    | ActiveQuotePhase::RequotePending { .. }
+                    | ActiveQuotePhase::ModifyPending
+                    | ActiveQuotePhase::CancelPending
+                    | ActiveQuotePhase::ReplacementPendingBackoff
+                    | ActiveQuotePhase::ReplacementPendingBackoffPrepaid { .. },
+                ),
                 _,
-            ) => (state, GovernedQuoteTransactionCommit::no_action()),
-            (
-                state @ (QuoteTransactionState::Idle
-                | QuoteTransactionState::SubmitPending
-                | QuoteTransactionState::Resting
-                | QuoteTransactionState::RequotePending { .. }
-                | QuoteTransactionState::ModifyPending
-                | QuoteTransactionState::CancelPending
-                | QuoteTransactionState::ReplacementPendingBackoff
-                | QuoteTransactionState::ReplacementPendingBackoffPrepaid { .. }),
-                _,
-            ) => (state, GovernedQuoteTransactionCommit::no_action()),
+            ) => (QuoteTransactionState::Stable(stable), no_action),
         }
     }
 
     fn reduce_winding_down_lifecycle(
-        state: WindDownQuoteTransactionState,
+        phase: WindDownQuotePhase,
         event: LegEvent,
-    ) -> (QuoteTransactionState, GovernedQuoteTransactionCommit) {
+    ) -> (QuoteStableState, GovernedQuoteTransactionCommit) {
         let no_action = GovernedQuoteTransactionCommit::no_action();
         let cancel = GovernedQuoteTransactionCommit {
             action: Some(LifecycleAction::Cancel),
         };
-        match (state, event) {
+        match (phase, event) {
             (
-                WindDownQuoteTransactionState::Idle,
+                WindDownQuotePhase::Idle,
                 LegEvent::Accepted | LegEvent::Modified | LegEvent::ModifyRejected,
             ) => (
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::Idle),
+                QuoteStableState::winding_down(WindDownQuotePhase::Idle),
                 cancel,
             ),
             (
-                WindDownQuoteTransactionState::Idle,
+                WindDownQuotePhase::Idle,
                 LegEvent::QuoteTrigger { .. }
                 | LegEvent::Rejected
                 | LegEvent::Canceled
                 | LegEvent::CancelRejected
                 | LegEvent::Filled,
             ) => (
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::Idle),
+                QuoteStableState::winding_down(WindDownQuotePhase::Idle),
                 no_action,
             ),
             (
-                WindDownQuoteTransactionState::CancelPending,
+                WindDownQuotePhase::CancelPending,
                 LegEvent::Accepted | LegEvent::Modified | LegEvent::ModifyRejected,
             ) => (
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::CancelPending),
+                QuoteStableState::winding_down(WindDownQuotePhase::CancelPending),
                 cancel,
             ),
             (
-                WindDownQuoteTransactionState::CancelPending,
+                WindDownQuotePhase::CancelPending,
                 LegEvent::Rejected | LegEvent::Canceled | LegEvent::Filled,
             ) => (
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::Idle),
+                QuoteStableState::winding_down(WindDownQuotePhase::Idle),
                 no_action,
             ),
             (
-                WindDownQuoteTransactionState::CancelPending,
+                WindDownQuotePhase::CancelPending,
                 LegEvent::QuoteTrigger { .. } | LegEvent::CancelRejected,
             ) => (
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::CancelPending),
+                QuoteStableState::winding_down(WindDownQuotePhase::CancelPending),
                 no_action,
             ),
-            (
-                state @ (WindDownQuoteTransactionState::PoisonedReconciliationHold
-                | WindDownQuoteTransactionState::PoisonedReconciliationHoldPrepaid {
-                    ..
-                }
-                | WindDownQuoteTransactionState::ArmedReserved { .. }
-                | WindDownQuoteTransactionState::ArmedPrepaid { .. }
-                | WindDownQuoteTransactionState::SinkInvokedCharged { .. }
-                | WindDownQuoteTransactionState::SinkInvokedPrepaid { .. }),
-                LegEvent::QuoteTrigger { .. }
-                | LegEvent::Accepted
-                | LegEvent::Rejected
-                | LegEvent::Canceled
-                | LegEvent::Modified
-                | LegEvent::ModifyRejected
-                | LegEvent::CancelRejected
-                | LegEvent::Filled,
-            ) => (QuoteTransactionState::WindingDown(state), no_action),
         }
     }
 
     fn reduce_wind_down(
         state: QuoteTransactionState,
     ) -> (QuoteTransactionState, GovernedQuoteTransactionCommit) {
+        match state {
+            QuoteTransactionState::Stable(stable) => {
+                let (stable, commit) = Self::reduce_stable_wind_down(stable);
+                (QuoteTransactionState::Stable(stable), commit)
+            }
+            QuoteTransactionState::Attempt(mut attempt) => {
+                let action = attempt.mode.begin_wind_down();
+                (
+                    QuoteTransactionState::Attempt(attempt),
+                    GovernedQuoteTransactionCommit { action },
+                )
+            }
+            QuoteTransactionState::Settled(settlement) => {
+                let (settlement, commit) = settlement.reduce_stable(Self::reduce_stable_wind_down);
+                (QuoteTransactionState::Settled(settlement), commit)
+            }
+        }
+    }
+
+    fn reduce_stable_wind_down(
+        stable: QuoteStableState,
+    ) -> (QuoteStableState, GovernedQuoteTransactionCommit) {
         let cancel = GovernedQuoteTransactionCommit {
             action: Some(LifecycleAction::Cancel),
         };
-        match state {
-            QuoteTransactionState::Idle => (
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::Idle),
-                GovernedQuoteTransactionCommit::no_action(),
+        let no_action = GovernedQuoteTransactionCommit::no_action();
+        match stable {
+            QuoteStableState::Active(ActiveQuotePhase::Idle) => (
+                QuoteStableState::winding_down(WindDownQuotePhase::Idle),
+                no_action,
             ),
-            QuoteTransactionState::CancelPending => (
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::CancelPending),
-                GovernedQuoteTransactionCommit::no_action(),
+            QuoteStableState::Active(ActiveQuotePhase::CancelPending) => (
+                QuoteStableState::winding_down(WindDownQuotePhase::CancelPending),
+                no_action,
             ),
-            QuoteTransactionState::ReplacementPendingBackoff => (
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::Idle),
-                GovernedQuoteTransactionCommit::no_action(),
+            QuoteStableState::Active(ActiveQuotePhase::ReplacementPendingBackoff) => (
+                QuoteStableState::winding_down(WindDownQuotePhase::Idle),
+                no_action,
             ),
-            QuoteTransactionState::ReplacementPendingBackoffPrepaid { prepaid } => {
-                drop(prepaid);
-                (
-                    QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::Idle),
-                    GovernedQuoteTransactionCommit::no_action(),
-                )
-            }
-            QuoteTransactionState::RequotePending { prepaid } => {
-                drop(prepaid);
-                (
-                    QuoteTransactionState::WindingDown(
-                        WindDownQuoteTransactionState::CancelPending,
-                    ),
-                    GovernedQuoteTransactionCommit::no_action(),
-                )
-            }
-            QuoteTransactionState::SubmitPending
-            | QuoteTransactionState::Resting
-            | QuoteTransactionState::ModifyPending => (
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::CancelPending),
-                cancel,
-            ),
-            QuoteTransactionState::PoisonedReconciliationHold { .. } => (
-                QuoteTransactionState::WindingDown(
-                    WindDownQuoteTransactionState::PoisonedReconciliationHold,
-                ),
-                cancel,
-            ),
-            QuoteTransactionState::PoisonedReconciliationHoldPrepaid {
-                obligation: _,
+            QuoteStableState::Active(ActiveQuotePhase::ReplacementPendingBackoffPrepaid {
                 prepaid,
-            } => (
-                QuoteTransactionState::WindingDown(
-                    WindDownQuoteTransactionState::PoisonedReconciliationHoldPrepaid { prepaid },
-                ),
-                cancel,
-            ),
-            QuoteTransactionState::ArmedReserved { arm, reservation } => (
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::ArmedReserved {
-                    arm,
-                    reservation,
-                }),
-                cancel,
-            ),
-            QuoteTransactionState::ArmedPrepaid { arm, prepaid } => (
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::ArmedPrepaid {
-                    arm,
-                    prepaid,
-                }),
-                cancel,
-            ),
-            QuoteTransactionState::SinkInvokedCharged { arm } => (
-                QuoteTransactionState::WindingDown(
-                    WindDownQuoteTransactionState::SinkInvokedCharged { arm },
-                ),
-                cancel,
-            ),
-            QuoteTransactionState::SinkInvokedPrepaid { arm, prepaid } => (
-                QuoteTransactionState::WindingDown(
-                    WindDownQuoteTransactionState::SinkInvokedPrepaid { arm, prepaid },
-                ),
-                cancel,
-            ),
-            state @ QuoteTransactionState::WindingDown(_) => {
-                (state, GovernedQuoteTransactionCommit::no_action())
-            }
-            QuoteTransactionState::Settled {
-                generation,
-                route,
-                reopened,
-                stable,
-            } => {
-                let (stable, commit) = Self::reduce_wind_down(*stable);
+            }) => {
+                drop(prepaid);
                 (
-                    QuoteTransactionState::Settled {
-                        generation,
-                        route,
-                        reopened,
-                        stable: Box::new(stable),
-                    },
-                    commit,
+                    QuoteStableState::winding_down(WindDownQuotePhase::Idle),
+                    no_action,
                 )
             }
+            QuoteStableState::Active(ActiveQuotePhase::RequotePending { prepaid }) => {
+                drop(prepaid);
+                (
+                    QuoteStableState::winding_down(WindDownQuotePhase::CancelPending),
+                    no_action,
+                )
+            }
+            QuoteStableState::Active(
+                ActiveQuotePhase::SubmitPending
+                | ActiveQuotePhase::Resting
+                | ActiveQuotePhase::ModifyPending,
+            ) => (
+                QuoteStableState::winding_down(WindDownQuotePhase::CancelPending),
+                cancel,
+            ),
+            QuoteStableState::Poisoned(mut hold) => {
+                let action = hold.mode.begin_wind_down();
+                (
+                    QuoteStableState::Poisoned(hold),
+                    GovernedQuoteTransactionCommit { action },
+                )
+            }
+            stable @ QuoteStableState::WindingDown(_) => (stable, no_action),
         }
     }
 
     fn reduce_missing_money_moving_truth(
         state: QuoteTransactionState,
     ) -> (QuoteTransactionState, GovernedQuoteTransactionCommit) {
-        let hold = |obligation| QuoteTransactionState::PoisonedReconciliationHold { obligation };
-        let hold_prepaid =
-            |obligation, prepaid| QuoteTransactionState::PoisonedReconciliationHoldPrepaid {
-                obligation,
-                prepaid,
-            };
         let no_action = GovernedQuoteTransactionCommit::no_action();
         let next = match state {
-            QuoteTransactionState::Settled {
-                generation,
-                route,
-                stable,
-                ..
-            } => {
-                let (stable, commit) = Self::reduce_missing_money_moving_truth(*stable);
+            QuoteTransactionState::Settled(settlement) => {
+                let (settlement, commit) = settlement.reduce_stable(|stable| {
+                    (
+                        Self::poison_stable(stable),
+                        GovernedQuoteTransactionCommit::no_action(),
+                    )
+                });
                 debug_assert!(commit.action.is_none());
-                QuoteTransactionState::Settled {
-                    generation,
-                    route,
-                    reopened: false,
-                    stable: Box::new(stable),
-                }
+                QuoteTransactionState::Settled(settlement.close_reopened(true))
             }
-            QuoteTransactionState::RequotePending { prepaid }
-            | QuoteTransactionState::ReplacementPendingBackoffPrepaid { prepaid }
-            | QuoteTransactionState::PoisonedReconciliationHoldPrepaid { prepaid, .. } => {
-                hold_prepaid(QuoteLegTransactionObligation::PlainCancel, prepaid)
+            QuoteTransactionState::Stable(stable) => {
+                QuoteTransactionState::Stable(Self::poison_stable(stable))
             }
-            QuoteTransactionState::ArmedPrepaid { prepaid, .. }
-            | QuoteTransactionState::SinkInvokedPrepaid { prepaid, .. } => {
-                hold_prepaid(QuoteLegTransactionObligation::PlainCancel, prepaid)
-            }
-            QuoteTransactionState::ArmedReserved { reservation, .. } => {
-                drop(reservation);
-                hold(QuoteLegTransactionObligation::PlainCancel)
-            }
-            QuoteTransactionState::WindingDown(state) => {
-                let state = match state {
-                    WindDownQuoteTransactionState::PoisonedReconciliationHoldPrepaid {
-                        prepaid,
-                    }
-                    | WindDownQuoteTransactionState::ArmedPrepaid { prepaid, .. }
-                    | WindDownQuoteTransactionState::SinkInvokedPrepaid { prepaid, .. } => {
-                        WindDownQuoteTransactionState::PoisonedReconciliationHoldPrepaid { prepaid }
-                    }
-                    WindDownQuoteTransactionState::ArmedReserved { reservation, .. } => {
-                        drop(reservation);
-                        WindDownQuoteTransactionState::PoisonedReconciliationHold
-                    }
-                    WindDownQuoteTransactionState::Idle
-                    | WindDownQuoteTransactionState::CancelPending
-                    | WindDownQuoteTransactionState::PoisonedReconciliationHold
-                    | WindDownQuoteTransactionState::SinkInvokedCharged { .. } => {
-                        WindDownQuoteTransactionState::PoisonedReconciliationHold
-                    }
-                };
-                QuoteTransactionState::WindingDown(state)
-            }
-            QuoteTransactionState::PoisonedReconciliationHold { obligation } => {
-                QuoteTransactionState::PoisonedReconciliationHold { obligation }
-            }
-            QuoteTransactionState::Idle
-            | QuoteTransactionState::SubmitPending
-            | QuoteTransactionState::Resting
-            | QuoteTransactionState::ModifyPending
-            | QuoteTransactionState::CancelPending
-            | QuoteTransactionState::ReplacementPendingBackoff
-            | QuoteTransactionState::SinkInvokedCharged { .. } => {
-                hold(QuoteLegTransactionObligation::PlainCancel)
+            QuoteTransactionState::Attempt(attempt) => {
+                QuoteTransactionState::Stable(Self::poison_attempt(attempt))
             }
         };
         (next, no_action)
+    }
+
+    fn poison_stable(stable: QuoteStableState) -> QuoteStableState {
+        match stable {
+            QuoteStableState::Active(
+                ActiveQuotePhase::RequotePending { prepaid }
+                | ActiveQuotePhase::ReplacementPendingBackoffPrepaid { prepaid },
+            ) => QuoteStableState::poisoned(
+                QuoteTransactionMode::Active,
+                QuoteLegTransactionObligation::PlainCancel,
+                QuotePoisonedBudget::Prepaid(prepaid),
+            ),
+            QuoteStableState::Active(
+                ActiveQuotePhase::Idle
+                | ActiveQuotePhase::SubmitPending
+                | ActiveQuotePhase::Resting
+                | ActiveQuotePhase::ModifyPending
+                | ActiveQuotePhase::CancelPending
+                | ActiveQuotePhase::ReplacementPendingBackoff,
+            ) => QuoteStableState::poisoned(
+                QuoteTransactionMode::Active,
+                QuoteLegTransactionObligation::PlainCancel,
+                QuotePoisonedBudget::Charged,
+            ),
+            QuoteStableState::WindingDown(_) => QuoteStableState::poisoned(
+                QuoteTransactionMode::WindingDown,
+                QuoteLegTransactionObligation::PlainCancel,
+                QuotePoisonedBudget::Charged,
+            ),
+            stable @ QuoteStableState::Poisoned(_) => stable,
+        }
+    }
+
+    fn poison_attempt(attempt: QuoteAttemptState) -> QuoteStableState {
+        let budget = match attempt.phase {
+            QuoteAttemptPhase::Armed(ArmedQuoteBudget::Reserved(reservation)) => {
+                drop(reservation);
+                QuotePoisonedBudget::Charged
+            }
+            QuoteAttemptPhase::Armed(ArmedQuoteBudget::Prepaid(prepaid))
+            | QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Prepaid(prepaid)) => {
+                QuotePoisonedBudget::Prepaid(prepaid)
+            }
+            QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Charged) => {
+                QuotePoisonedBudget::Charged
+            }
+        };
+        QuoteStableState::poisoned(
+            attempt.mode,
+            QuoteLegTransactionObligation::PlainCancel,
+            budget,
+        )
     }
 
     fn reduce_arm(
@@ -1524,15 +1534,34 @@ impl GovernedQuoteTransactionInner {
                 "quote lifecycle transaction generation must be positive",
             ));
         }
-        let state = match state {
-            QuoteTransactionState::Settled { stable, .. } => *stable,
-            state => state,
+        let active = match state {
+            QuoteTransactionState::Stable(QuoteStableState::Active(active)) => active,
+            QuoteTransactionState::Settled(settlement) => match settlement.into_stable() {
+                QuoteStableState::Active(active) => active,
+                stable @ (QuoteStableState::WindingDown(_) | QuoteStableState::Poisoned(_)) => {
+                    return Err(fail(
+                        QuoteTransactionState::Stable(stable),
+                        "quote lifecycle is winding down or held",
+                    ));
+                }
+            },
+            QuoteTransactionState::Stable(
+                stable @ (QuoteStableState::WindingDown(_) | QuoteStableState::Poisoned(_)),
+            ) => {
+                return Err(fail(
+                    QuoteTransactionState::Stable(stable),
+                    "quote lifecycle is winding down or held",
+                ));
+            }
+            state @ QuoteTransactionState::Attempt(_) => {
+                return Err(fail(state, "quote lifecycle already has an armed attempt"));
+            }
         };
-        if state.is_winding_down() {
-            return Err(fail(state, "quote lifecycle is winding down"));
-        }
-        if state.leg_state() != proposal.prior_state {
-            return Err(fail(state, "quote lifecycle proposal is stale"));
+        if active.projection().leg_state != proposal.prior_state {
+            return Err(fail(
+                QuoteTransactionState::Stable(QuoteStableState::active(active)),
+                "quote lifecycle proposal is stale",
+            ));
         }
         let arm = QuoteTransactionArm {
             identity,
@@ -1540,29 +1569,39 @@ impl GovernedQuoteTransactionInner {
             pending_state: proposal.pending_state,
             obligation: QuoteLegTransactionObligation::from_proposal(proposal),
         };
-        match (state, budget_proposal) {
+        match (active, budget_proposal) {
             (
-                QuoteTransactionState::ReplacementPendingBackoffPrepaid { prepaid },
+                ActiveQuotePhase::ReplacementPendingBackoffPrepaid { prepaid },
                 MakerQuoteBudgetProposal::Prepaid {
                     generation: prepaid_generation,
                     ..
                 },
             ) if prepaid.generation() == prepaid_generation => Ok((
-                QuoteTransactionState::ArmedPrepaid { arm, prepaid },
+                QuoteTransactionState::Attempt(QuoteAttemptState {
+                    mode: QuoteTransactionMode::Active,
+                    arm,
+                    phase: QuoteAttemptPhase::Armed(ArmedQuoteBudget::Prepaid(prepaid)),
+                }),
                 GovernedQuoteTransactionCommit::no_action(),
             )),
-            (state, MakerQuoteBudgetProposal::Prepaid { .. }) => Err(fail(
-                state,
+            (active, MakerQuoteBudgetProposal::Prepaid { .. }) => Err(fail(
+                QuoteTransactionState::Stable(QuoteStableState::active(active)),
                 "replacement prepaid reservation generation is stale",
             )),
-            (state, MakerQuoteBudgetProposal::Reserve(reservation_proposal)) => {
+            (active, MakerQuoteBudgetProposal::Reserve(reservation_proposal)) => {
                 match budget.reserve(reservation_proposal) {
                     Ok(reservation) => Ok((
-                        QuoteTransactionState::ArmedReserved { arm, reservation },
+                        QuoteTransactionState::Attempt(QuoteAttemptState {
+                            mode: QuoteTransactionMode::Active,
+                            arm,
+                            phase: QuoteAttemptPhase::Armed(ArmedQuoteBudget::Reserved(
+                                reservation,
+                            )),
+                        }),
                         GovernedQuoteTransactionCommit::no_action(),
                     )),
                     Err(error) => Err((
-                        state,
+                        QuoteTransactionState::Stable(QuoteStableState::active(active)),
                         anyhow::anyhow!("maker quote budget reservation denied: {error:?}"),
                     )),
                 }
@@ -1570,46 +1609,47 @@ impl GovernedQuoteTransactionInner {
         }
     }
 
-    fn restore_prior(arm: QuoteTransactionArm) -> QuoteTransactionState {
+    fn restore_prior(arm: QuoteTransactionArm) -> QuoteStableState {
         match arm.prior_state {
-            LegState::Idle => QuoteTransactionState::Idle,
-            LegState::SubmitPending => QuoteTransactionState::SubmitPending,
-            LegState::Resting => QuoteTransactionState::Resting,
-            LegState::RequotePending => QuoteTransactionState::CancelPending,
-            LegState::ModifyPending => QuoteTransactionState::ModifyPending,
-            LegState::CancelPending => QuoteTransactionState::CancelPending,
-            LegState::ReplacementPendingBackoff => QuoteTransactionState::ReplacementPendingBackoff,
-            LegState::PoisonedReconciliationHold => {
-                QuoteTransactionState::PoisonedReconciliationHold {
-                    obligation: arm.obligation,
-                }
+            LegState::Idle => QuoteStableState::active(ActiveQuotePhase::Idle),
+            LegState::SubmitPending => QuoteStableState::active(ActiveQuotePhase::SubmitPending),
+            LegState::Resting => QuoteStableState::active(ActiveQuotePhase::Resting),
+            LegState::RequotePending | LegState::CancelPending => {
+                QuoteStableState::active(ActiveQuotePhase::CancelPending)
             }
+            LegState::ModifyPending => QuoteStableState::active(ActiveQuotePhase::ModifyPending),
+            LegState::ReplacementPendingBackoff => {
+                QuoteStableState::active(ActiveQuotePhase::ReplacementPendingBackoff)
+            }
+            LegState::PoisonedReconciliationHold => QuoteStableState::poisoned(
+                QuoteTransactionMode::Active,
+                arm.obligation,
+                QuotePoisonedBudget::Charged,
+            ),
         }
     }
 
     fn settled(
         generation: u64,
         route: QuoteRouteSettlement,
-        stable: QuoteTransactionState,
+        stable: QuoteStableState,
     ) -> QuoteTransactionState {
-        QuoteTransactionState::Settled {
+        QuoteTransactionState::Settled(QuoteSettlementState {
             generation,
-            route: Some(route),
-            reopened: false,
-            stable: Box::new(stable),
-        }
+            status: QuoteSettlementStatus::RouteSettled(route),
+            stable,
+        })
     }
 
     fn terminal_before_route_settlement(
         generation: u64,
-        stable: QuoteTransactionState,
+        stable: QuoteStableState,
     ) -> QuoteTransactionState {
-        QuoteTransactionState::Settled {
+        QuoteTransactionState::Settled(QuoteSettlementState {
             generation,
-            route: None,
-            reopened: false,
-            stable: Box::new(stable),
-        }
+            status: QuoteSettlementStatus::AwaitingRoute,
+            stable,
+        })
     }
 
     fn reduce_settlement_replay(
@@ -1618,145 +1658,93 @@ impl GovernedQuoteTransactionInner {
         route: QuoteRouteSettlement,
     ) -> QuoteReduction {
         match state {
-            QuoteTransactionState::Settled {
-                generation: settled_generation,
-                route: None,
-                reopened,
-                stable,
-            } if settled_generation == generation => Ok((
-                QuoteTransactionState::Settled {
-                    generation,
-                    route: Some(route),
-                    reopened,
-                    stable,
-                },
-                GovernedQuoteTransactionCommit::no_action(),
-            )),
-            state @ QuoteTransactionState::Settled {
-                generation: settled_generation,
-                route: Some(settled_route),
-                ..
-            } if settled_generation == generation && settled_route == route => {
-                Ok((state, GovernedQuoteTransactionCommit::no_action()))
-            }
-            state @ QuoteTransactionState::Settled { .. } => Err((
-                state,
-                anyhow::anyhow!("conflicting or stale quote transaction settlement"),
-            )),
-            state @ (QuoteTransactionState::Idle
-            | QuoteTransactionState::SubmitPending
-            | QuoteTransactionState::Resting
-            | QuoteTransactionState::RequotePending { .. }
-            | QuoteTransactionState::ModifyPending
-            | QuoteTransactionState::CancelPending
-            | QuoteTransactionState::ReplacementPendingBackoff
-            | QuoteTransactionState::ReplacementPendingBackoffPrepaid { .. }
-            | QuoteTransactionState::PoisonedReconciliationHold { .. }
-            | QuoteTransactionState::PoisonedReconciliationHoldPrepaid { .. }
-            | QuoteTransactionState::ArmedReserved { .. }
-            | QuoteTransactionState::ArmedPrepaid { .. }
-            | QuoteTransactionState::SinkInvokedCharged { .. }
-            | QuoteTransactionState::SinkInvokedPrepaid { .. }
-            | QuoteTransactionState::WindingDown(_)) => {
+            QuoteTransactionState::Settled(settlement) => settlement
+                .settle_route(generation, route)
+                .map(|settlement| {
+                    (
+                        QuoteTransactionState::Settled(settlement),
+                        GovernedQuoteTransactionCommit::no_action(),
+                    )
+                })
+                .map_err(|(settlement, error)| (QuoteTransactionState::Settled(settlement), error)),
+            state @ (QuoteTransactionState::Stable(_) | QuoteTransactionState::Attempt(_)) => {
                 Err((state, anyhow::anyhow!("quote transaction is not settled")))
             }
         }
     }
 
     fn reduce_pre_sink_abort(state: QuoteTransactionState, generation: u64) -> QuoteReduction {
-        let state = match state.fence_generation(generation) {
-            QuoteTransactionGenerationFence::Current(state) => state,
-            QuoteTransactionGenerationFence::Stale(state) => {
-                return Ok((state, GovernedQuoteTransactionCommit::no_action()));
-            }
-        };
-        match state {
-            QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::ArmedReserved {
-                arm: _,
-                reservation,
-            }) => match reservation.abort() {
-                Ok(()) => Ok((
-                    Self::settled(
-                        generation,
-                        QuoteRouteSettlement::PreSinkAbort,
-                        QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::Idle),
-                    ),
-                    GovernedQuoteTransactionCommit::no_action(),
-                )),
+        Self::reduce_generation_fenced(
+            state,
+            generation,
+            |state| Ok((state, GovernedQuoteTransactionCommit::no_action())),
+            |state| match state {
+                QuoteTransactionState::Attempt(QuoteAttemptState {
+                    mode,
+                    arm,
+                    phase: QuoteAttemptPhase::Armed(budget),
+                }) => Self::finish_pre_sink_abort(mode, arm, budget, generation),
+                state @ QuoteTransactionState::Settled(_) => Self::reduce_settlement_replay(
+                    state,
+                    generation,
+                    QuoteRouteSettlement::PreSinkAbort,
+                ),
+                state @ (QuoteTransactionState::Stable(_)
+                | QuoteTransactionState::Attempt(QuoteAttemptState {
+                    phase: QuoteAttemptPhase::SinkInvoked(_),
+                    ..
+                })) => Ok((state, GovernedQuoteTransactionCommit::no_action())),
+            },
+        )
+    }
+
+    fn finish_pre_sink_abort(
+        mode: QuoteTransactionMode,
+        arm: QuoteTransactionArm,
+        budget: ArmedQuoteBudget,
+        generation: u64,
+    ) -> QuoteReduction {
+        match budget {
+            ArmedQuoteBudget::Reserved(reservation) => match reservation.abort() {
+                Ok(()) => {
+                    let stable = match mode {
+                        QuoteTransactionMode::Active => Self::restore_prior(arm),
+                        QuoteTransactionMode::WindingDown => {
+                            QuoteStableState::winding_down(WindDownQuotePhase::Idle)
+                        }
+                    };
+                    Ok((
+                        Self::settled(generation, QuoteRouteSettlement::PreSinkAbort, stable),
+                        GovernedQuoteTransactionCommit::no_action(),
+                    ))
+                }
                 Err(error) => Err((
                     Self::settled(
                         generation,
                         QuoteRouteSettlement::PreSinkAbort,
-                        QuoteTransactionState::WindingDown(
-                            WindDownQuoteTransactionState::PoisonedReconciliationHold,
+                        QuoteStableState::poisoned(
+                            mode,
+                            arm.obligation,
+                            QuotePoisonedBudget::Charged,
                         ),
                     ),
                     anyhow::anyhow!("maker quote budget abort failed: {error:?}"),
                 )),
             },
-            QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::ArmedPrepaid {
-                arm: _,
-                prepaid,
-            }) => {
-                drop(prepaid);
-                Ok((
-                    Self::settled(
-                        generation,
-                        QuoteRouteSettlement::PreSinkAbort,
-                        QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::Idle),
+            ArmedQuoteBudget::Prepaid(prepaid) => {
+                let stable = match mode {
+                    QuoteTransactionMode::Active => QuoteStableState::active(
+                        ActiveQuotePhase::ReplacementPendingBackoffPrepaid { prepaid },
                     ),
+                    QuoteTransactionMode::WindingDown => {
+                        drop(prepaid);
+                        QuoteStableState::winding_down(WindDownQuotePhase::Idle)
+                    }
+                };
+                Ok((
+                    Self::settled(generation, QuoteRouteSettlement::PreSinkAbort, stable),
                     GovernedQuoteTransactionCommit::no_action(),
                 ))
-            }
-            QuoteTransactionState::ArmedReserved { arm, reservation } => {
-                match reservation.abort() {
-                    Ok(()) => Ok((
-                        Self::settled(
-                            generation,
-                            QuoteRouteSettlement::PreSinkAbort,
-                            Self::restore_prior(arm),
-                        ),
-                        GovernedQuoteTransactionCommit::no_action(),
-                    )),
-                    Err(error) => Err((
-                        Self::settled(
-                            generation,
-                            QuoteRouteSettlement::PreSinkAbort,
-                            QuoteTransactionState::PoisonedReconciliationHold {
-                                obligation: arm.obligation,
-                            },
-                        ),
-                        anyhow::anyhow!("maker quote budget abort failed: {error:?}"),
-                    )),
-                }
-            }
-            QuoteTransactionState::ArmedPrepaid { arm: _, prepaid } => Ok((
-                Self::settled(
-                    generation,
-                    QuoteRouteSettlement::PreSinkAbort,
-                    QuoteTransactionState::ReplacementPendingBackoffPrepaid { prepaid },
-                ),
-                GovernedQuoteTransactionCommit::no_action(),
-            )),
-            state @ QuoteTransactionState::Settled { .. } => Self::reduce_settlement_replay(
-                state,
-                generation,
-                QuoteRouteSettlement::PreSinkAbort,
-            ),
-            state @ (QuoteTransactionState::Idle
-            | QuoteTransactionState::SubmitPending
-            | QuoteTransactionState::Resting
-            | QuoteTransactionState::RequotePending { .. }
-            | QuoteTransactionState::ModifyPending
-            | QuoteTransactionState::CancelPending
-            | QuoteTransactionState::ReplacementPendingBackoff
-            | QuoteTransactionState::ReplacementPendingBackoffPrepaid { .. }
-            | QuoteTransactionState::PoisonedReconciliationHold { .. }
-            | QuoteTransactionState::PoisonedReconciliationHoldPrepaid { .. }
-            | QuoteTransactionState::SinkInvokedCharged { .. }
-            | QuoteTransactionState::SinkInvokedPrepaid { .. }
-            | QuoteTransactionState::WindingDown(_)) => {
-                Ok((state, GovernedQuoteTransactionCommit::no_action()))
             }
         }
     }
@@ -1765,24 +1753,44 @@ impl GovernedQuoteTransactionInner {
         state: QuoteTransactionState,
         generation: u64,
     ) -> QuoteReduction {
-        let state = match state.fence_generation(generation) {
-            QuoteTransactionGenerationFence::Current(state) => state,
-            QuoteTransactionGenerationFence::Stale(state) => {
-                return Ok((state, GovernedQuoteTransactionCommit::no_action()));
-            }
-        };
-        match state {
-            QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::ArmedReserved {
-                arm: _,
-                reservation,
-            }) => match reservation.commit() {
+        Self::reduce_generation_fenced(
+            state,
+            generation,
+            |state| Ok((state, GovernedQuoteTransactionCommit::no_action())),
+            |state| match state {
+                QuoteTransactionState::Attempt(QuoteAttemptState {
+                    mode,
+                    arm,
+                    phase: QuoteAttemptPhase::Armed(budget),
+                }) => Self::finish_pre_sink_invariant_failure(mode, arm, budget, generation),
+                state @ QuoteTransactionState::Settled(_) => Self::reduce_settlement_replay(
+                    state,
+                    generation,
+                    QuoteRouteSettlement::PreSinkInvariantFailure,
+                ),
+                state @ (QuoteTransactionState::Stable(_)
+                | QuoteTransactionState::Attempt(QuoteAttemptState {
+                    phase: QuoteAttemptPhase::SinkInvoked(_),
+                    ..
+                })) => Ok((state, GovernedQuoteTransactionCommit::no_action())),
+            },
+        )
+    }
+
+    fn finish_pre_sink_invariant_failure(
+        mode: QuoteTransactionMode,
+        arm: QuoteTransactionArm,
+        budget: ArmedQuoteBudget,
+        generation: u64,
+    ) -> QuoteReduction {
+        let obligation = arm.obligation;
+        match budget {
+            ArmedQuoteBudget::Reserved(reservation) => match reservation.commit() {
                 Ok(()) => Ok((
                     Self::settled(
                         generation,
                         QuoteRouteSettlement::PreSinkInvariantFailure,
-                        QuoteTransactionState::WindingDown(
-                            WindDownQuoteTransactionState::PoisonedReconciliationHold,
-                        ),
+                        QuoteStableState::poisoned(mode, obligation, QuotePoisonedBudget::Charged),
                     ),
                     GovernedQuoteTransactionCommit::no_action(),
                 )),
@@ -1790,289 +1798,92 @@ impl GovernedQuoteTransactionInner {
                     Self::settled(
                         generation,
                         QuoteRouteSettlement::PreSinkInvariantFailure,
-                        QuoteTransactionState::WindingDown(
-                            WindDownQuoteTransactionState::PoisonedReconciliationHold,
-                        ),
+                        QuoteStableState::poisoned(mode, obligation, QuotePoisonedBudget::Charged),
                     ),
                     anyhow::anyhow!("maker quote budget commit failed: {error:?}"),
                 )),
             },
-            QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::ArmedPrepaid {
-                arm: _,
-                prepaid,
-            }) => Ok((
+            ArmedQuoteBudget::Prepaid(prepaid) => Ok((
                 Self::settled(
                     generation,
                     QuoteRouteSettlement::PreSinkInvariantFailure,
-                    QuoteTransactionState::WindingDown(
-                        WindDownQuoteTransactionState::PoisonedReconciliationHoldPrepaid {
-                            prepaid,
-                        },
+                    QuoteStableState::poisoned(
+                        mode,
+                        obligation,
+                        QuotePoisonedBudget::Prepaid(prepaid),
                     ),
                 ),
                 GovernedQuoteTransactionCommit::no_action(),
             )),
-            QuoteTransactionState::ArmedReserved { arm, reservation } => {
-                match reservation.commit() {
-                    Ok(()) => Ok((
-                        Self::settled(
-                            generation,
-                            QuoteRouteSettlement::PreSinkInvariantFailure,
-                            QuoteTransactionState::PoisonedReconciliationHold {
-                                obligation: arm.obligation,
-                            },
-                        ),
-                        GovernedQuoteTransactionCommit::no_action(),
-                    )),
-                    Err(error) => Err((
-                        Self::settled(
-                            generation,
-                            QuoteRouteSettlement::PreSinkInvariantFailure,
-                            QuoteTransactionState::PoisonedReconciliationHold {
-                                obligation: arm.obligation,
-                            },
-                        ),
-                        anyhow::anyhow!("maker quote budget commit failed: {error:?}"),
-                    )),
-                }
-            }
-            QuoteTransactionState::ArmedPrepaid { arm, prepaid } => Ok((
-                Self::settled(
-                    generation,
-                    QuoteRouteSettlement::PreSinkInvariantFailure,
-                    QuoteTransactionState::PoisonedReconciliationHoldPrepaid {
-                        obligation: arm.obligation,
-                        prepaid,
-                    },
-                ),
-                GovernedQuoteTransactionCommit::no_action(),
-            )),
-            state @ QuoteTransactionState::Settled { .. } => Self::reduce_settlement_replay(
-                state,
-                generation,
-                QuoteRouteSettlement::PreSinkInvariantFailure,
-            ),
-            state @ (QuoteTransactionState::Idle
-            | QuoteTransactionState::SubmitPending
-            | QuoteTransactionState::Resting
-            | QuoteTransactionState::RequotePending { .. }
-            | QuoteTransactionState::ModifyPending
-            | QuoteTransactionState::CancelPending
-            | QuoteTransactionState::ReplacementPendingBackoff
-            | QuoteTransactionState::ReplacementPendingBackoffPrepaid { .. }
-            | QuoteTransactionState::PoisonedReconciliationHold { .. }
-            | QuoteTransactionState::PoisonedReconciliationHoldPrepaid { .. }
-            | QuoteTransactionState::SinkInvokedCharged { .. }
-            | QuoteTransactionState::SinkInvokedPrepaid { .. }
-            | QuoteTransactionState::WindingDown(_)) => {
-                Ok((state, GovernedQuoteTransactionCommit::no_action()))
-            }
         }
     }
 
     fn reduce_unwind(state: QuoteTransactionState) -> QuoteReduction {
         match state {
-            QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::ArmedReserved {
+            QuoteTransactionState::Attempt(QuoteAttemptState {
+                mode,
                 arm,
-                reservation,
+                phase: QuoteAttemptPhase::Armed(budget),
             }) => {
                 let generation = arm.identity.generation();
-                match reservation.abort() {
-                    Ok(()) => Ok((
-                        Self::settled(
-                            generation,
-                            QuoteRouteSettlement::PreSinkAbort,
-                            QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::Idle),
-                        ),
-                        GovernedQuoteTransactionCommit::no_action(),
-                    )),
-                    Err(error) => Err((
-                        Self::settled(
-                            generation,
-                            QuoteRouteSettlement::PreSinkAbort,
-                            QuoteTransactionState::WindingDown(
-                                WindDownQuoteTransactionState::PoisonedReconciliationHold,
-                            ),
-                        ),
-                        anyhow::anyhow!("maker quote budget abort failed: {error:?}"),
-                    )),
-                }
+                Self::finish_pre_sink_abort(mode, arm, budget, generation)
             }
-            QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::ArmedPrepaid {
+            QuoteTransactionState::Attempt(QuoteAttemptState {
+                mode,
                 arm,
-                prepaid,
+                phase: QuoteAttemptPhase::SinkInvoked(budget),
             }) => {
-                drop(prepaid);
-                Ok((
-                    Self::settled(
-                        arm.identity.generation(),
-                        QuoteRouteSettlement::PreSinkAbort,
-                        QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::Idle),
-                    ),
-                    GovernedQuoteTransactionCommit::no_action(),
-                ))
-            }
-            QuoteTransactionState::WindingDown(
-                WindDownQuoteTransactionState::SinkInvokedCharged { arm },
-            ) => Ok((
-                Self::settled(
-                    arm.identity.generation(),
-                    QuoteRouteSettlement::PostSinkInvariantFailure,
-                    QuoteTransactionState::WindingDown(
-                        WindDownQuoteTransactionState::PoisonedReconciliationHold,
-                    ),
-                ),
-                GovernedQuoteTransactionCommit::no_action(),
-            )),
-            QuoteTransactionState::WindingDown(
-                WindDownQuoteTransactionState::SinkInvokedPrepaid { arm, prepaid },
-            ) => Ok((
-                Self::settled(
-                    arm.identity.generation(),
-                    QuoteRouteSettlement::PostSinkInvariantFailure,
-                    QuoteTransactionState::WindingDown(
-                        WindDownQuoteTransactionState::PoisonedReconciliationHoldPrepaid {
-                            prepaid,
-                        },
-                    ),
-                ),
-                GovernedQuoteTransactionCommit::no_action(),
-            )),
-            QuoteTransactionState::ArmedReserved { arm, reservation } => {
                 let generation = arm.identity.generation();
-                match reservation.abort() {
-                    Ok(()) => Ok((
-                        Self::settled(
-                            generation,
-                            QuoteRouteSettlement::PreSinkAbort,
-                            Self::restore_prior(arm),
-                        ),
-                        GovernedQuoteTransactionCommit::no_action(),
-                    )),
-                    Err(error) => Err((
-                        Self::settled(
-                            generation,
-                            QuoteRouteSettlement::PreSinkAbort,
-                            QuoteTransactionState::PoisonedReconciliationHold {
-                                obligation: arm.obligation,
-                            },
-                        ),
-                        anyhow::anyhow!("maker quote budget abort failed: {error:?}"),
-                    )),
-                }
+                Self::finish_post_sink_failure(mode, arm, budget, generation)
             }
-            QuoteTransactionState::ArmedPrepaid { arm, prepaid } => Ok((
-                Self::settled(
-                    arm.identity.generation(),
-                    QuoteRouteSettlement::PreSinkAbort,
-                    QuoteTransactionState::ReplacementPendingBackoffPrepaid { prepaid },
-                ),
-                GovernedQuoteTransactionCommit::no_action(),
-            )),
-            QuoteTransactionState::SinkInvokedCharged { arm } => Ok((
-                Self::settled(
-                    arm.identity.generation(),
-                    QuoteRouteSettlement::PostSinkInvariantFailure,
-                    QuoteTransactionState::PoisonedReconciliationHold {
-                        obligation: arm.obligation,
-                    },
-                ),
-                GovernedQuoteTransactionCommit::no_action(),
-            )),
-            QuoteTransactionState::SinkInvokedPrepaid { arm, prepaid } => Ok((
-                Self::settled(
-                    arm.identity.generation(),
-                    QuoteRouteSettlement::PostSinkInvariantFailure,
-                    QuoteTransactionState::PoisonedReconciliationHoldPrepaid {
-                        obligation: arm.obligation,
-                        prepaid,
-                    },
-                ),
-                GovernedQuoteTransactionCommit::no_action(),
-            )),
-            state @ (QuoteTransactionState::Idle
-            | QuoteTransactionState::SubmitPending
-            | QuoteTransactionState::Resting
-            | QuoteTransactionState::RequotePending { .. }
-            | QuoteTransactionState::ModifyPending
-            | QuoteTransactionState::CancelPending
-            | QuoteTransactionState::ReplacementPendingBackoff
-            | QuoteTransactionState::ReplacementPendingBackoffPrepaid { .. }
-            | QuoteTransactionState::PoisonedReconciliationHold { .. }
-            | QuoteTransactionState::PoisonedReconciliationHoldPrepaid { .. }
-            | QuoteTransactionState::WindingDown(
-                WindDownQuoteTransactionState::Idle
-                | WindDownQuoteTransactionState::CancelPending
-                | WindDownQuoteTransactionState::PoisonedReconciliationHold
-                | WindDownQuoteTransactionState::PoisonedReconciliationHoldPrepaid { .. },
-            )
-            | QuoteTransactionState::Settled { .. }) => {
+            state @ (QuoteTransactionState::Stable(_) | QuoteTransactionState::Settled(_)) => {
                 Ok((state, GovernedQuoteTransactionCommit::no_action()))
             }
         }
     }
 
+    fn finish_post_sink_failure(
+        mode: QuoteTransactionMode,
+        arm: QuoteTransactionArm,
+        budget: SinkInvokedQuoteBudget,
+        generation: u64,
+    ) -> QuoteReduction {
+        let budget = match budget {
+            SinkInvokedQuoteBudget::Charged => QuotePoisonedBudget::Charged,
+            SinkInvokedQuoteBudget::Prepaid(prepaid) => QuotePoisonedBudget::Prepaid(prepaid),
+        };
+        Ok((
+            Self::settled(
+                generation,
+                QuoteRouteSettlement::PostSinkInvariantFailure,
+                QuoteStableState::poisoned(mode, arm.obligation, budget),
+            ),
+            GovernedQuoteTransactionCommit::no_action(),
+        ))
+    }
     fn reduce_sink_invoked(
         state: QuoteTransactionState,
         generation: u64,
         actor_now_ms: u64,
     ) -> QuoteReduction {
-        let state = match state.fence_generation(generation) {
-            QuoteTransactionGenerationFence::Current(state) => state,
-            QuoteTransactionGenerationFence::Stale(state) => {
-                return Ok((state, GovernedQuoteTransactionCommit::no_action()));
-            }
-        };
-        match state {
-            QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::ArmedReserved {
-                arm,
-                reservation,
-            }) => Self::account_sink_invocation(
-                QuoteTransactionMode::WindingDown,
-                arm,
-                ArmedQuoteBudget::Reserved(reservation),
-                actor_now_ms,
-            ),
-            QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::ArmedPrepaid {
-                arm,
-                prepaid,
-            }) => Self::account_sink_invocation(
-                QuoteTransactionMode::WindingDown,
-                arm,
-                ArmedQuoteBudget::Prepaid(prepaid),
-                actor_now_ms,
-            ),
-            QuoteTransactionState::ArmedReserved { arm, reservation } => {
-                Self::account_sink_invocation(
-                    QuoteTransactionMode::Active,
+        Self::reduce_generation_fenced(
+            state,
+            generation,
+            |state| Ok((state, GovernedQuoteTransactionCommit::no_action())),
+            |state| match state {
+                QuoteTransactionState::Attempt(QuoteAttemptState {
+                    mode,
                     arm,
-                    ArmedQuoteBudget::Reserved(reservation),
-                    actor_now_ms,
-                )
-            }
-            QuoteTransactionState::ArmedPrepaid { arm, prepaid } => Self::account_sink_invocation(
-                QuoteTransactionMode::Active,
-                arm,
-                ArmedQuoteBudget::Prepaid(prepaid),
-                actor_now_ms,
-            ),
-            state @ (QuoteTransactionState::Idle
-            | QuoteTransactionState::SubmitPending
-            | QuoteTransactionState::Resting
-            | QuoteTransactionState::RequotePending { .. }
-            | QuoteTransactionState::ModifyPending
-            | QuoteTransactionState::CancelPending
-            | QuoteTransactionState::ReplacementPendingBackoff
-            | QuoteTransactionState::ReplacementPendingBackoffPrepaid { .. }
-            | QuoteTransactionState::PoisonedReconciliationHold { .. }
-            | QuoteTransactionState::PoisonedReconciliationHoldPrepaid { .. }
-            | QuoteTransactionState::SinkInvokedCharged { .. }
-            | QuoteTransactionState::SinkInvokedPrepaid { .. }
-            | QuoteTransactionState::WindingDown(_)
-            | QuoteTransactionState::Settled { .. }) => {
-                Ok((state, GovernedQuoteTransactionCommit::no_action()))
-            }
-        }
+                    phase: QuoteAttemptPhase::Armed(budget),
+                }) => Self::account_sink_invocation(mode, arm, budget, actor_now_ms),
+                state @ (QuoteTransactionState::Stable(_)
+                | QuoteTransactionState::Settled(_)
+                | QuoteTransactionState::Attempt(QuoteAttemptState {
+                    phase: QuoteAttemptPhase::SinkInvoked(_),
+                    ..
+                })) => Ok((state, GovernedQuoteTransactionCommit::no_action())),
+            },
+        )
     }
 
     fn account_sink_invocation(
@@ -2083,27 +1894,40 @@ impl GovernedQuoteTransactionInner {
     ) -> QuoteReduction {
         match budget.mark_sink_invoked_at(arm.obligation, actor_now_ms) {
             Ok(budget) => Ok((
-                mode.sink_invoked_state(arm, budget),
+                QuoteTransactionState::Attempt(QuoteAttemptState {
+                    mode,
+                    arm,
+                    phase: QuoteAttemptPhase::SinkInvoked(budget),
+                }),
                 GovernedQuoteTransactionCommit::no_action(),
             )),
-            Err((budget, error)) => Err((mode.armed_state(arm, budget), error)),
+            Err((budget, error)) => Err((
+                QuoteTransactionState::Attempt(QuoteAttemptState {
+                    mode,
+                    arm,
+                    phase: QuoteAttemptPhase::Armed(budget),
+                }),
+                error,
+            )),
         }
     }
-
-    fn committed_pending(arm: QuoteTransactionArm) -> QuoteTransactionState {
+    fn committed_pending(arm: QuoteTransactionArm) -> QuoteStableState {
         match arm.pending_state {
-            LegState::Idle => QuoteTransactionState::Idle,
-            LegState::SubmitPending => QuoteTransactionState::SubmitPending,
-            LegState::Resting => QuoteTransactionState::Resting,
-            LegState::RequotePending => QuoteTransactionState::CancelPending,
-            LegState::ModifyPending => QuoteTransactionState::ModifyPending,
-            LegState::CancelPending => QuoteTransactionState::CancelPending,
-            LegState::ReplacementPendingBackoff => QuoteTransactionState::ReplacementPendingBackoff,
-            LegState::PoisonedReconciliationHold => {
-                QuoteTransactionState::PoisonedReconciliationHold {
-                    obligation: arm.obligation,
-                }
+            LegState::Idle => QuoteStableState::active(ActiveQuotePhase::Idle),
+            LegState::SubmitPending => QuoteStableState::active(ActiveQuotePhase::SubmitPending),
+            LegState::Resting => QuoteStableState::active(ActiveQuotePhase::Resting),
+            LegState::RequotePending | LegState::CancelPending => {
+                QuoteStableState::active(ActiveQuotePhase::CancelPending)
             }
+            LegState::ModifyPending => QuoteStableState::active(ActiveQuotePhase::ModifyPending),
+            LegState::ReplacementPendingBackoff => {
+                QuoteStableState::active(ActiveQuotePhase::ReplacementPendingBackoff)
+            }
+            LegState::PoisonedReconciliationHold => QuoteStableState::poisoned(
+                QuoteTransactionMode::Active,
+                arm.obligation,
+                QuotePoisonedBudget::Charged,
+            ),
         }
     }
 
@@ -2112,15 +1936,17 @@ impl GovernedQuoteTransactionInner {
         generation: u64,
         success: QuoteRouteSuccess,
     ) -> QuoteReduction {
-        let state = match state.fence_generation(generation) {
-            QuoteTransactionGenerationFence::Current(state) => state,
-            QuoteTransactionGenerationFence::Stale(state) => {
-                return Err((state, anyhow::anyhow!(success.illegal_outcome_message())));
-            }
-        };
-        match state.classify_sink_invoked() {
-            ClassifiedSinkInvokedState::Invoked { mode, arm, budget } => {
-                match (arm.obligation.route_success(), success) {
+        let projection = success.projection();
+        Self::reduce_generation_fenced(
+            state,
+            generation,
+            |state| Err((state, anyhow::anyhow!(projection.illegal_outcome_message))),
+            |state| match state {
+                QuoteTransactionState::Attempt(QuoteAttemptState {
+                    mode,
+                    arm,
+                    phase: QuoteAttemptPhase::SinkInvoked(budget),
+                }) => match (arm.obligation.route_success(), success) {
                     (QuoteRouteSuccess::Submitted, QuoteRouteSuccess::Submitted)
                     | (
                         QuoteRouteSuccess::NtMutationInvoked,
@@ -2128,257 +1954,268 @@ impl GovernedQuoteTransactionInner {
                     ) => {
                         let stable = Self::route_success_state(mode, arm, budget);
                         Ok((
-                            Self::settled(generation, success.settlement(), stable),
+                            Self::settled(generation, projection.settlement, stable),
                             GovernedQuoteTransactionCommit::no_action(),
                         ))
                     }
                     (QuoteRouteSuccess::Submitted, QuoteRouteSuccess::NtMutationInvoked)
                     | (QuoteRouteSuccess::NtMutationInvoked, QuoteRouteSuccess::Submitted) => {
                         Err((
-                            mode.sink_invoked_state(arm, budget),
-                            anyhow::anyhow!(success.illegal_outcome_message()),
+                            QuoteTransactionState::Attempt(QuoteAttemptState {
+                                mode,
+                                arm,
+                                phase: QuoteAttemptPhase::SinkInvoked(budget),
+                            }),
+                            anyhow::anyhow!(projection.illegal_outcome_message),
                         ))
                     }
+                },
+                state @ QuoteTransactionState::Settled(_) => {
+                    Self::reduce_settlement_replay(state, generation, projection.settlement)
                 }
-            }
-            ClassifiedSinkInvokedState::Settled(state) => {
-                Self::reduce_settlement_replay(state, generation, success.settlement())
-            }
-            ClassifiedSinkInvokedState::Inactive(state) => {
-                Err((state, anyhow::anyhow!(success.illegal_outcome_message())))
-            }
-        }
+                state @ (QuoteTransactionState::Stable(_)
+                | QuoteTransactionState::Attempt(QuoteAttemptState {
+                    phase: QuoteAttemptPhase::Armed(_),
+                    ..
+                })) => Err((state, anyhow::anyhow!(projection.illegal_outcome_message))),
+            },
+        )
     }
 
     fn route_success_state(
         mode: QuoteTransactionMode,
         arm: QuoteTransactionArm,
         budget: SinkInvokedQuoteBudget,
-    ) -> QuoteTransactionState {
+    ) -> QuoteStableState {
         match (mode, budget) {
             (QuoteTransactionMode::Active, SinkInvokedQuoteBudget::Charged) => {
                 Self::committed_pending(arm)
             }
             (QuoteTransactionMode::Active, SinkInvokedQuoteBudget::Prepaid(prepaid)) => {
-                QuoteTransactionState::RequotePending { prepaid }
+                QuoteStableState::active(ActiveQuotePhase::RequotePending { prepaid })
             }
             (QuoteTransactionMode::WindingDown, SinkInvokedQuoteBudget::Charged) => {
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::CancelPending)
+                QuoteStableState::winding_down(WindDownQuotePhase::CancelPending)
             }
             (QuoteTransactionMode::WindingDown, SinkInvokedQuoteBudget::Prepaid(prepaid)) => {
                 drop(prepaid);
-                QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::CancelPending)
+                QuoteStableState::winding_down(WindDownQuotePhase::CancelPending)
             }
         }
     }
-
     fn reduce_sink_rejected(state: QuoteTransactionState, generation: u64) -> QuoteReduction {
         const ILLEGAL_OUTCOME: &str =
             "sink-rejected outcome is not legal for this quote transaction";
-        let state = match state.fence_generation(generation) {
-            QuoteTransactionGenerationFence::Current(state) => state,
-            QuoteTransactionGenerationFence::Stale(state) => {
-                return Err((state, anyhow::anyhow!(ILLEGAL_OUTCOME)));
-            }
-        };
-        match state.classify_sink_invoked() {
-            ClassifiedSinkInvokedState::Invoked { mode, arm, budget } => {
-                match (mode, arm, budget) {
-                    (
-                        QuoteTransactionMode::WindingDown,
-                        QuoteTransactionArm {
-                            obligation:
-                                QuoteLegTransactionObligation::FreshSubmit
-                                | QuoteLegTransactionObligation::ReplacementSubmit,
-                            ..
-                        },
-                        SinkInvokedQuoteBudget::Charged,
-                    ) => Ok((
-                        Self::settled(
-                            generation,
-                            QuoteRouteSettlement::SinkRejected,
-                            QuoteTransactionState::WindingDown(WindDownQuoteTransactionState::Idle),
-                        ),
-                        GovernedQuoteTransactionCommit::no_action(),
-                    )),
-                    (
-                        QuoteTransactionMode::Active,
+        Self::reduce_generation_fenced(
+            state,
+            generation,
+            |state| Err((state, anyhow::anyhow!(ILLEGAL_OUTCOME))),
+            |state| match state {
+                QuoteTransactionState::Attempt(QuoteAttemptState {
+                    mode,
+                    arm:
                         arm @ QuoteTransactionArm {
                             obligation:
                                 QuoteLegTransactionObligation::FreshSubmit
                                 | QuoteLegTransactionObligation::ReplacementSubmit,
                             ..
                         },
-                        SinkInvokedQuoteBudget::Charged,
-                    ) => {
-                        let stable = Self::restore_prior(arm);
-                        Ok((
-                            Self::settled(generation, QuoteRouteSettlement::SinkRejected, stable),
-                            GovernedQuoteTransactionCommit::no_action(),
-                        ))
-                    }
-                    (mode, arm, budget) => Err((
-                        mode.sink_invoked_state(arm, budget),
-                        anyhow::anyhow!(ILLEGAL_OUTCOME),
-                    )),
+                    phase: QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Charged),
+                }) => {
+                    let stable = match mode {
+                        QuoteTransactionMode::Active => Self::restore_prior(arm),
+                        QuoteTransactionMode::WindingDown => {
+                            QuoteStableState::winding_down(WindDownQuotePhase::Idle)
+                        }
+                    };
+                    Ok((
+                        Self::settled(generation, QuoteRouteSettlement::SinkRejected, stable),
+                        GovernedQuoteTransactionCommit::no_action(),
+                    ))
                 }
-            }
-            ClassifiedSinkInvokedState::Settled(state) => Self::reduce_settlement_replay(
-                state,
-                generation,
-                QuoteRouteSettlement::SinkRejected,
-            ),
-            ClassifiedSinkInvokedState::Inactive(state) => {
-                Err((state, anyhow::anyhow!(ILLEGAL_OUTCOME)))
-            }
-        }
+                QuoteTransactionState::Attempt(attempt) => Err((
+                    QuoteTransactionState::Attempt(attempt),
+                    anyhow::anyhow!(ILLEGAL_OUTCOME),
+                )),
+                state @ QuoteTransactionState::Settled(_) => Self::reduce_settlement_replay(
+                    state,
+                    generation,
+                    QuoteRouteSettlement::SinkRejected,
+                ),
+                state @ QuoteTransactionState::Stable(_) => {
+                    Err((state, anyhow::anyhow!(ILLEGAL_OUTCOME)))
+                }
+            },
+        )
     }
 
     fn reduce_callback_retired(state: QuoteTransactionState, generation: u64) -> QuoteReduction {
         match state {
-            state @ QuoteTransactionState::Settled { .. } => Self::reduce_settlement_replay(
+            state @ QuoteTransactionState::Settled(_) => Self::reduce_settlement_replay(
                 state,
                 generation,
                 QuoteRouteSettlement::CallbackRetired,
             ),
-            state @ (QuoteTransactionState::Idle
-            | QuoteTransactionState::SubmitPending
-            | QuoteTransactionState::Resting
-            | QuoteTransactionState::RequotePending { .. }
-            | QuoteTransactionState::ModifyPending
-            | QuoteTransactionState::CancelPending
-            | QuoteTransactionState::ReplacementPendingBackoff
-            | QuoteTransactionState::ReplacementPendingBackoffPrepaid { .. }
-            | QuoteTransactionState::PoisonedReconciliationHold { .. }
-            | QuoteTransactionState::PoisonedReconciliationHoldPrepaid { .. }
-            | QuoteTransactionState::ArmedReserved { .. }
-            | QuoteTransactionState::ArmedPrepaid { .. }
-            | QuoteTransactionState::SinkInvokedCharged { .. }
-            | QuoteTransactionState::SinkInvokedPrepaid { .. }
-            | QuoteTransactionState::WindingDown(_)) => Err((
-                state,
-                anyhow::anyhow!("callback retirement is not legal for this quote transaction"),
-            )),
+            state @ (QuoteTransactionState::Stable(_) | QuoteTransactionState::Attempt(_)) => {
+                Err((
+                    state,
+                    anyhow::anyhow!("callback retirement is not legal for this quote transaction"),
+                ))
+            }
         }
     }
 
     fn reduce_post_sink_failure(state: QuoteTransactionState, generation: u64) -> QuoteReduction {
-        let state = match state.fence_generation(generation) {
-            QuoteTransactionGenerationFence::Current(state) => state,
-            QuoteTransactionGenerationFence::Stale(state) => {
-                return Err((
+        const ILLEGAL_OUTCOME: &str = "post-sink failure is not legal for this quote transaction";
+        Self::reduce_generation_fenced(
+            state,
+            generation,
+            |state| Err((state, anyhow::anyhow!(ILLEGAL_OUTCOME))),
+            |state| match state {
+                QuoteTransactionState::Attempt(QuoteAttemptState {
+                    mode,
+                    arm,
+                    phase: QuoteAttemptPhase::SinkInvoked(budget),
+                }) => Self::finish_post_sink_failure(mode, arm, budget, generation),
+                state @ QuoteTransactionState::Settled(_) => Self::reduce_settlement_replay(
                     state,
-                    anyhow::anyhow!("post-sink failure is not legal for this quote transaction"),
-                ));
-            }
-        };
-        match state {
-            QuoteTransactionState::WindingDown(
-                WindDownQuoteTransactionState::SinkInvokedCharged { arm: _ },
-            ) => Ok((
-                Self::settled(
                     generation,
                     QuoteRouteSettlement::PostSinkInvariantFailure,
-                    QuoteTransactionState::WindingDown(
-                        WindDownQuoteTransactionState::PoisonedReconciliationHold,
-                    ),
                 ),
-                GovernedQuoteTransactionCommit::no_action(),
-            )),
-            QuoteTransactionState::WindingDown(
-                WindDownQuoteTransactionState::SinkInvokedPrepaid { arm: _, prepaid },
-            ) => Ok((
-                Self::settled(
-                    generation,
-                    QuoteRouteSettlement::PostSinkInvariantFailure,
-                    QuoteTransactionState::WindingDown(
-                        WindDownQuoteTransactionState::PoisonedReconciliationHoldPrepaid {
-                            prepaid,
-                        },
-                    ),
-                ),
-                GovernedQuoteTransactionCommit::no_action(),
-            )),
-            QuoteTransactionState::SinkInvokedCharged { arm } => Ok((
-                Self::settled(
-                    generation,
-                    QuoteRouteSettlement::PostSinkInvariantFailure,
-                    QuoteTransactionState::PoisonedReconciliationHold {
-                        obligation: arm.obligation,
-                    },
-                ),
-                GovernedQuoteTransactionCommit::no_action(),
-            )),
-            QuoteTransactionState::SinkInvokedPrepaid { arm, prepaid } => Ok((
-                Self::settled(
-                    generation,
-                    QuoteRouteSettlement::PostSinkInvariantFailure,
-                    QuoteTransactionState::PoisonedReconciliationHoldPrepaid {
-                        obligation: arm.obligation,
-                        prepaid,
-                    },
-                ),
-                GovernedQuoteTransactionCommit::no_action(),
-            )),
-            state @ QuoteTransactionState::Settled { .. } => Self::reduce_settlement_replay(
-                state,
-                generation,
-                QuoteRouteSettlement::PostSinkInvariantFailure,
-            ),
-            state @ (QuoteTransactionState::Idle
-            | QuoteTransactionState::SubmitPending
-            | QuoteTransactionState::Resting
-            | QuoteTransactionState::RequotePending { .. }
-            | QuoteTransactionState::ModifyPending
-            | QuoteTransactionState::CancelPending
-            | QuoteTransactionState::ReplacementPendingBackoff
-            | QuoteTransactionState::ReplacementPendingBackoffPrepaid { .. }
-            | QuoteTransactionState::PoisonedReconciliationHold { .. }
-            | QuoteTransactionState::PoisonedReconciliationHoldPrepaid { .. }
-            | QuoteTransactionState::ArmedReserved { .. }
-            | QuoteTransactionState::ArmedPrepaid { .. }
-            | QuoteTransactionState::WindingDown(_)) => Err((
-                state,
-                anyhow::anyhow!("post-sink failure is not legal for this quote transaction"),
-            )),
-        }
+                state @ (QuoteTransactionState::Stable(_)
+                | QuoteTransactionState::Attempt(QuoteAttemptState {
+                    phase: QuoteAttemptPhase::Armed(_),
+                    ..
+                })) => Err((state, anyhow::anyhow!(ILLEGAL_OUTCOME))),
+            },
+        )
     }
-
     fn terminal_state(
         obligation: QuoteLegTransactionObligation,
-        prepaid: Option<RequoteBudgetReservation>,
+        budget: QuotePoisonedBudget,
         disposition: MakerQuoteTerminalDisposition,
-    ) -> QuoteTransactionState {
+    ) -> QuoteStableState {
         match disposition {
             MakerQuoteTerminalDisposition::Filled => {
-                drop(prepaid);
-                QuoteTransactionState::Idle
+                drop(budget);
+                QuoteStableState::active(ActiveQuotePhase::Idle)
             }
             MakerQuoteTerminalDisposition::Denied
             | MakerQuoteTerminalDisposition::Rejected
             | MakerQuoteTerminalDisposition::Canceled
             | MakerQuoteTerminalDisposition::Expired
-            | MakerQuoteTerminalDisposition::Voided => match (obligation, prepaid) {
+            | MakerQuoteTerminalDisposition::Voided => match (obligation, budget) {
                 (
                     QuoteLegTransactionObligation::ReplacementSubmit
                     | QuoteLegTransactionObligation::RequoteCancel,
-                    Some(prepaid),
-                ) => QuoteTransactionState::ReplacementPendingBackoffPrepaid { prepaid },
+                    QuotePoisonedBudget::Prepaid(prepaid),
+                ) => QuoteStableState::active(ActiveQuotePhase::ReplacementPendingBackoffPrepaid {
+                    prepaid,
+                }),
                 (
                     QuoteLegTransactionObligation::ReplacementSubmit
                     | QuoteLegTransactionObligation::RequoteCancel,
-                    None,
-                ) => QuoteTransactionState::ReplacementPendingBackoff,
+                    QuotePoisonedBudget::Charged,
+                ) => QuoteStableState::active(ActiveQuotePhase::ReplacementPendingBackoff),
                 (
                     QuoteLegTransactionObligation::FreshSubmit
                     | QuoteLegTransactionObligation::PlainCancel
                     | QuoteLegTransactionObligation::Modify,
-                    prepaid,
+                    budget,
                 ) => {
-                    drop(prepaid);
-                    QuoteTransactionState::Idle
+                    drop(budget);
+                    QuoteStableState::active(ActiveQuotePhase::Idle)
                 }
             },
+        }
+    }
+
+    fn terminal_stable(
+        stable: QuoteStableState,
+        disposition: MakerQuoteTerminalDisposition,
+    ) -> QuoteStableState {
+        match stable {
+            QuoteStableState::WindingDown(_) => {
+                QuoteStableState::winding_down(WindDownQuotePhase::Idle)
+            }
+            QuoteStableState::Poisoned(hold) => match hold.mode {
+                QuoteTransactionMode::Active => {
+                    Self::terminal_state(hold.obligation, hold.budget, disposition)
+                }
+                QuoteTransactionMode::WindingDown => {
+                    drop(hold.budget);
+                    QuoteStableState::winding_down(WindDownQuotePhase::Idle)
+                }
+            },
+            QuoteStableState::Active(ActiveQuotePhase::RequotePending { prepaid }) => {
+                Self::terminal_state(
+                    QuoteLegTransactionObligation::RequoteCancel,
+                    QuotePoisonedBudget::Prepaid(prepaid),
+                    disposition,
+                )
+            }
+            QuoteStableState::Active(ActiveQuotePhase::ReplacementPendingBackoffPrepaid {
+                prepaid,
+            }) => {
+                drop(prepaid);
+                QuoteStableState::active(ActiveQuotePhase::Idle)
+            }
+            QuoteStableState::Active(
+                ActiveQuotePhase::Idle
+                | ActiveQuotePhase::SubmitPending
+                | ActiveQuotePhase::Resting
+                | ActiveQuotePhase::ModifyPending
+                | ActiveQuotePhase::CancelPending
+                | ActiveQuotePhase::ReplacementPendingBackoff,
+            ) => QuoteStableState::active(ActiveQuotePhase::Idle),
+        }
+    }
+
+    fn terminal_attempt(
+        attempt: QuoteAttemptState,
+        disposition: MakerQuoteTerminalDisposition,
+    ) -> QuoteStableState {
+        let QuoteAttemptState { mode, arm, phase } = attempt;
+        match (mode, phase) {
+            (
+                QuoteTransactionMode::Active,
+                QuoteAttemptPhase::Armed(ArmedQuoteBudget::Reserved(reservation)),
+            ) => {
+                drop(reservation);
+                Self::terminal_state(arm.obligation, QuotePoisonedBudget::Charged, disposition)
+            }
+            (
+                QuoteTransactionMode::Active,
+                QuoteAttemptPhase::Armed(ArmedQuoteBudget::Prepaid(prepaid))
+                | QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Prepaid(prepaid)),
+            ) => Self::terminal_state(
+                arm.obligation,
+                QuotePoisonedBudget::Prepaid(prepaid),
+                disposition,
+            ),
+            (
+                QuoteTransactionMode::Active,
+                QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Charged),
+            ) => Self::terminal_state(arm.obligation, QuotePoisonedBudget::Charged, disposition),
+            (
+                QuoteTransactionMode::WindingDown,
+                QuoteAttemptPhase::Armed(ArmedQuoteBudget::Reserved(reservation)),
+            ) => {
+                drop(reservation);
+                QuoteStableState::winding_down(WindDownQuotePhase::Idle)
+            }
+            (
+                QuoteTransactionMode::WindingDown,
+                QuoteAttemptPhase::Armed(ArmedQuoteBudget::Prepaid(prepaid))
+                | QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Prepaid(prepaid)),
+            ) => {
+                drop(prepaid);
+                QuoteStableState::winding_down(WindDownQuotePhase::Idle)
+            }
+            (
+                QuoteTransactionMode::WindingDown,
+                QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Charged),
+            ) => QuoteStableState::winding_down(WindDownQuotePhase::Idle),
         }
     }
 
@@ -2388,128 +2225,82 @@ impl GovernedQuoteTransactionInner {
     ) -> (QuoteTransactionState, GovernedQuoteTransactionCommit) {
         let no_action = GovernedQuoteTransactionCommit::no_action();
         match state {
-            QuoteTransactionState::WindingDown(state) => {
-                let retired = match disposition {
-                    MakerQuoteTerminalDisposition::Denied
-                    | MakerQuoteTerminalDisposition::Rejected
-                    | MakerQuoteTerminalDisposition::Canceled
-                    | MakerQuoteTerminalDisposition::Expired
-                    | MakerQuoteTerminalDisposition::Filled
-                    | MakerQuoteTerminalDisposition::Voided => state.retire_on_terminal(),
-                };
-                (QuoteTransactionState::WindingDown(retired), no_action)
-            }
-            QuoteTransactionState::RequotePending { prepaid } => (
-                Self::terminal_state(
-                    QuoteLegTransactionObligation::RequoteCancel,
-                    Some(prepaid),
-                    disposition,
-                ),
+            QuoteTransactionState::Stable(stable) => (
+                QuoteTransactionState::Stable(Self::terminal_stable(stable, disposition)),
                 no_action,
             ),
-            QuoteTransactionState::PoisonedReconciliationHold { obligation } => (
-                Self::terminal_state(obligation, None, disposition),
-                no_action,
-            ),
-            QuoteTransactionState::PoisonedReconciliationHoldPrepaid {
-                obligation,
-                prepaid,
-            } => (
-                Self::terminal_state(obligation, Some(prepaid), disposition),
-                no_action,
-            ),
-            QuoteTransactionState::ArmedReserved { arm, reservation } => {
-                drop(reservation);
-                let generation = arm.identity.generation();
+            QuoteTransactionState::Attempt(attempt) => {
+                let generation = attempt.arm.identity.generation();
                 (
                     Self::terminal_before_route_settlement(
                         generation,
-                        Self::terminal_state(arm.obligation, None, disposition),
+                        Self::terminal_attempt(attempt, disposition),
                     ),
                     no_action,
                 )
             }
-            QuoteTransactionState::ArmedPrepaid { arm, prepaid }
-            | QuoteTransactionState::SinkInvokedPrepaid { arm, prepaid } => {
-                let generation = arm.identity.generation();
+            QuoteTransactionState::Settled(settlement) => {
+                let (settlement, commit) = settlement.reduce_stable(|stable| {
+                    (
+                        Self::terminal_stable(stable, disposition),
+                        GovernedQuoteTransactionCommit::no_action(),
+                    )
+                });
                 (
-                    Self::terminal_before_route_settlement(
-                        generation,
-                        Self::terminal_state(arm.obligation, Some(prepaid), disposition),
-                    ),
-                    no_action,
-                )
-            }
-            QuoteTransactionState::SinkInvokedCharged { arm } => {
-                let generation = arm.identity.generation();
-                (
-                    Self::terminal_before_route_settlement(
-                        generation,
-                        Self::terminal_state(arm.obligation, None, disposition),
-                    ),
-                    no_action,
-                )
-            }
-            QuoteTransactionState::Settled {
-                generation,
-                route,
-                reopened: _,
-                stable,
-            } => {
-                let (stable, commit) = Self::reduce_terminal(*stable, disposition);
-                (
-                    QuoteTransactionState::Settled {
-                        generation,
-                        route,
-                        reopened: false,
-                        stable: Box::new(stable),
-                    },
+                    QuoteTransactionState::Settled(settlement.close_reopened(true)),
                     commit,
                 )
-            }
-            QuoteTransactionState::ReplacementPendingBackoffPrepaid { prepaid } => {
-                drop(prepaid);
-                (QuoteTransactionState::Idle, no_action)
-            }
-            QuoteTransactionState::Idle
-            | QuoteTransactionState::SubmitPending
-            | QuoteTransactionState::Resting
-            | QuoteTransactionState::ModifyPending
-            | QuoteTransactionState::CancelPending
-            | QuoteTransactionState::ReplacementPendingBackoff => {
-                (QuoteTransactionState::Idle, no_action)
             }
         }
     }
 
-    fn reduce_reopened(state: QuoteTransactionState) -> QuoteReduction {
-        let no_action = GovernedQuoteTransactionCommit::no_action();
-        match state {
-            QuoteTransactionState::Settled {
+    fn reduce_terminal_refinement(
+        state: QuoteTransactionState,
+        generation: u64,
+        stable_effect: Option<MakerQuoteTerminalDisposition>,
+        closes_reopened: bool,
+    ) -> QuoteReduction {
+        let (state, commit) = match stable_effect {
+            Some(disposition) => Self::reduce_terminal(state, disposition),
+            None => (state, GovernedQuoteTransactionCommit::no_action()),
+        };
+        let settlement = match state {
+            QuoteTransactionState::Settled(settlement) => settlement,
+            QuoteTransactionState::Stable(stable) => QuoteSettlementState {
                 generation,
-                route,
-                reopened,
+                status: QuoteSettlementStatus::RouteSettled(QuoteRouteSettlement::CallbackRetired),
                 stable,
-            } if reopened
-                || matches!(
-                    stable.leg_state(),
-                    LegState::Idle | LegState::CancelPending | LegState::ReplacementPendingBackoff
-                ) =>
-            {
-                Ok((
-                    QuoteTransactionState::Settled {
-                        generation,
-                        route,
-                        reopened: true,
-                        stable,
-                    },
-                    no_action,
+            },
+            state @ QuoteTransactionState::Attempt(_) => {
+                return Err((
+                    state,
+                    anyhow::anyhow!(
+                        "terminal refinement without a stable effect cannot retain an active attempt"
+                    ),
+                ));
+            }
+        };
+        let settlement = settlement.close_reopened(closes_reopened);
+        Ok((QuoteTransactionState::Settled(settlement), commit))
+    }
+
+    fn reduce_reopened(state: QuoteTransactionState) -> QuoteReduction {
+        match state {
+            QuoteTransactionState::Settled(settlement) => settlement
+                .reopen()
+                .map(|settlement| {
+                    (
+                        QuoteTransactionState::Settled(settlement),
+                        GovernedQuoteTransactionCommit::no_action(),
+                    )
+                })
+                .map_err(|(settlement, error)| (QuoteTransactionState::Settled(settlement), error)),
+            state @ (QuoteTransactionState::Stable(_) | QuoteTransactionState::Attempt(_)) => {
+                Err((
+                    state,
+                    anyhow::anyhow!("maker quote reopening conflicts with current leg occupancy"),
                 ))
             }
-            state => Err((
-                state,
-                anyhow::anyhow!("maker quote reopening conflicts with current leg occupancy"),
-            )),
         }
     }
 }
@@ -2523,7 +2314,7 @@ impl GovernedQuoteTransaction {
     fn new(supports_modify: bool) -> Self {
         Self {
             inner: Arc::new(Mutex::new(GovernedQuoteTransactionInner {
-                state: QuoteTransactionState::Idle,
+                state: QuoteTransactionState::idle(),
                 supports_modify,
                 terminal_owner: None,
                 retention_scope_closed: false,
@@ -2644,76 +2435,19 @@ impl GovernedQuoteTransaction {
     }
 
     fn generation(&self) -> Option<u64> {
-        let inner = self.inner.lock().expect("quote transaction lock poisoned");
-        match &inner.state {
-            QuoteTransactionState::ArmedReserved { arm, .. }
-            | QuoteTransactionState::ArmedPrepaid { arm, .. }
-            | QuoteTransactionState::SinkInvokedCharged { arm }
-            | QuoteTransactionState::SinkInvokedPrepaid { arm, .. } => {
-                Some(arm.identity.generation())
-            }
-            QuoteTransactionState::WindingDown(
-                WindDownQuoteTransactionState::ArmedReserved { arm, .. }
-                | WindDownQuoteTransactionState::ArmedPrepaid { arm, .. }
-                | WindDownQuoteTransactionState::SinkInvokedCharged { arm }
-                | WindDownQuoteTransactionState::SinkInvokedPrepaid { arm, .. },
-            ) => Some(arm.identity.generation()),
-            QuoteTransactionState::Settled { generation, .. } => Some(*generation),
-            QuoteTransactionState::Idle
-            | QuoteTransactionState::SubmitPending
-            | QuoteTransactionState::Resting
-            | QuoteTransactionState::RequotePending { .. }
-            | QuoteTransactionState::ModifyPending
-            | QuoteTransactionState::CancelPending
-            | QuoteTransactionState::ReplacementPendingBackoff
-            | QuoteTransactionState::ReplacementPendingBackoffPrepaid { .. }
-            | QuoteTransactionState::PoisonedReconciliationHold { .. }
-            | QuoteTransactionState::PoisonedReconciliationHoldPrepaid { .. }
-            | QuoteTransactionState::WindingDown(
-                WindDownQuoteTransactionState::Idle
-                | WindDownQuoteTransactionState::CancelPending
-                | WindDownQuoteTransactionState::PoisonedReconciliationHold
-                | WindDownQuoteTransactionState::PoisonedReconciliationHoldPrepaid { .. },
-            ) => None,
-        }
+        self.inner
+            .lock()
+            .expect("quote transaction lock poisoned")
+            .state
+            .generation()
     }
 
     fn registration_phase(&self, generation: u64) -> QuoteTransactionRegistrationPhase {
-        let inner = self.inner.lock().expect("quote transaction lock poisoned");
-        match &inner.state {
-            QuoteTransactionState::SinkInvokedCharged { arm }
-            | QuoteTransactionState::SinkInvokedPrepaid { arm, .. }
-                if arm.identity.generation() == generation =>
-            {
-                QuoteTransactionRegistrationPhase::SinkInvoked
-            }
-            QuoteTransactionState::WindingDown(
-                WindDownQuoteTransactionState::SinkInvokedCharged { arm }
-                | WindDownQuoteTransactionState::SinkInvokedPrepaid { arm, .. },
-            ) if arm.identity.generation() == generation => {
-                QuoteTransactionRegistrationPhase::SinkInvoked
-            }
-            QuoteTransactionState::Settled {
-                generation: settled_generation,
-                ..
-            } if *settled_generation == generation => QuoteTransactionRegistrationPhase::Settled,
-            QuoteTransactionState::Idle
-            | QuoteTransactionState::SubmitPending
-            | QuoteTransactionState::Resting
-            | QuoteTransactionState::RequotePending { .. }
-            | QuoteTransactionState::ModifyPending
-            | QuoteTransactionState::CancelPending
-            | QuoteTransactionState::ReplacementPendingBackoff
-            | QuoteTransactionState::ReplacementPendingBackoffPrepaid { .. }
-            | QuoteTransactionState::PoisonedReconciliationHold { .. }
-            | QuoteTransactionState::PoisonedReconciliationHoldPrepaid { .. }
-            | QuoteTransactionState::ArmedReserved { .. }
-            | QuoteTransactionState::ArmedPrepaid { .. }
-            | QuoteTransactionState::SinkInvokedCharged { .. }
-            | QuoteTransactionState::SinkInvokedPrepaid { .. }
-            | QuoteTransactionState::WindingDown(_)
-            | QuoteTransactionState::Settled { .. } => QuoteTransactionRegistrationPhase::PreSink,
-        }
+        self.inner
+            .lock()
+            .expect("quote transaction lock poisoned")
+            .state
+            .registration_phase(generation)
     }
 }
 
@@ -3837,9 +3571,106 @@ mod tests {
     }
 
     #[test]
+    fn active_and_winding_down_attempts_share_accounting_and_terminal_semantics() {
+        let active_budget = RequoteBudgetPair::new(
+            RequoteBudget::new(2, 60_000, 0),
+            RequoteBudget::new(2, 60_000, 0),
+        );
+        let winding_budget = RequoteBudgetPair::new(
+            RequoteBudget::new(2, 60_000, 0),
+            RequoteBudget::new(2, 60_000, 0),
+        );
+        let active_identity = MakerQuoteLifecycleIdentity::new("TEST-ACTIVE-CANCEL", 1);
+        let winding_identity = MakerQuoteLifecycleIdentity::new("TEST-WINDING-CANCEL", 1);
+        let cancel_arm = |identity| QuoteTransactionArm {
+            identity,
+            prior_state: LegState::Resting,
+            pending_state: LegState::CancelPending,
+            obligation: QuoteLegTransactionObligation::PlainCancel,
+        };
+        let armed_cancel = |identity, budget: &RequoteBudgetPair| {
+            let proposal = budget
+                .propose_rest(1)
+                .expect("plain cancel should fit the REST budget");
+            QuoteTransactionState::Attempt(QuoteAttemptState {
+                mode: QuoteTransactionMode::Active,
+                arm: cancel_arm(identity),
+                phase: QuoteAttemptPhase::Armed(ArmedQuoteBudget::Reserved(
+                    budget
+                        .reserve(proposal)
+                        .expect("plain cancel reservation should bind"),
+                )),
+            })
+        };
+        let mut active = GovernedQuoteTransactionInner {
+            state: armed_cancel(active_identity.clone(), &active_budget),
+            supports_modify: false,
+            terminal_owner: None,
+            retention_scope_closed: false,
+        };
+        let mut winding = GovernedQuoteTransactionInner {
+            state: armed_cancel(winding_identity.clone(), &winding_budget),
+            supports_modify: false,
+            terminal_owner: None,
+            retention_scope_closed: false,
+        };
+
+        for inner in [&mut active, &mut winding] {
+            let _ = QuoteTransactionReductionRequest::from(
+                SinkCapableQuoteTransactionEvent::SinkInvoked {
+                    generation: 1,
+                    actor_now_ms: 1,
+                },
+            )
+            .apply(inner)
+            .expect("sink accounting should be shared");
+        }
+        let _ = QuoteTransactionReductionRequest::from(QuoteTransactionEvent::WindDown)
+            .apply(&mut winding)
+            .expect("wind-down should preserve the in-flight cancel");
+        for inner in [&mut active, &mut winding] {
+            let _ = QuoteTransactionReductionRequest::from(
+                SinkCapableQuoteTransactionEvent::NtMutationInvoked { generation: 1 },
+            )
+            .apply(inner)
+            .expect("cancel route settlement should be shared");
+        }
+
+        assert_eq!(active_budget.outstanding_rest_cost(), 0);
+        assert_eq!(winding_budget.outstanding_rest_cost(), 0);
+        assert_eq!(active.state.leg_state(), LegState::CancelPending);
+        assert_eq!(winding.state.leg_state(), LegState::CancelPending);
+        assert!(!active.state.is_winding_down());
+        assert!(winding.state.is_winding_down());
+
+        for (inner, identity) in [
+            (&mut active, active_identity),
+            (&mut winding, winding_identity),
+        ] {
+            assert!(matches!(
+                MakerQuoteLifecycleRefinementRequest {
+                    event: MakerQuoteLifecycleRefinementEvent::new(
+                        identity,
+                        MakerQuoteLifecycleRefinement::Terminal {
+                            stable_effect: Some(MakerQuoteTerminalDisposition::Canceled),
+                            closes_reopened: false,
+                        },
+                    ),
+                }
+                .apply(inner),
+                MakerQuoteLifecycleRefinementOutcome::Applied
+            ));
+        }
+        assert_eq!(active.state.leg_state(), LegState::Idle);
+        assert_eq!(winding.state.leg_state(), LegState::Idle);
+        assert!(!active.state.is_winding_down());
+        assert!(winding.state.is_winding_down());
+    }
+
+    #[test]
     fn governed_transaction_state_event_table_is_total_and_replay_safe() {
         let mut invalid = GovernedQuoteTransactionInner {
-            state: QuoteTransactionState::Idle,
+            state: QuoteTransactionState::idle(),
             supports_modify: false,
             terminal_owner: None,
             retention_scope_closed: false,
@@ -3851,17 +3682,22 @@ mod tests {
             .apply(&mut invalid)
             .is_err()
         );
-        assert!(matches!(invalid.state, QuoteTransactionState::Idle));
+        assert!(matches!(
+            invalid.state,
+            QuoteTransactionState::Stable(QuoteStableState::Active(ActiveQuotePhase::Idle))
+        ));
 
         let mut mismatched_success = GovernedQuoteTransactionInner {
-            state: QuoteTransactionState::SinkInvokedCharged {
+            state: QuoteTransactionState::Attempt(QuoteAttemptState {
+                mode: QuoteTransactionMode::Active,
                 arm: QuoteTransactionArm {
                     identity: MakerQuoteLifecycleIdentity::new("TEST-MISMATCHED-SUCCESS", 1),
                     prior_state: LegState::Resting,
                     pending_state: LegState::CancelPending,
                     obligation: QuoteLegTransactionObligation::PlainCancel,
                 },
-            },
+                phase: QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Charged),
+            }),
             supports_modify: false,
             terminal_owner: None,
             retention_scope_closed: false,
@@ -3875,21 +3711,22 @@ mod tests {
         );
         assert!(matches!(
             mismatched_success.state,
-            QuoteTransactionState::SinkInvokedCharged {
+            QuoteTransactionState::Attempt(QuoteAttemptState {
                 arm: QuoteTransactionArm {
                     obligation: QuoteLegTransactionObligation::PlainCancel,
                     ..
-                }
-            }
+                },
+                phase: QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Charged),
+                ..
+            })
         ));
 
         let mut replay = GovernedQuoteTransactionInner {
-            state: QuoteTransactionState::Settled {
+            state: QuoteTransactionState::Settled(QuoteSettlementState {
                 generation: 2,
-                route: Some(QuoteRouteSettlement::Submitted),
-                reopened: false,
-                stable: Box::new(QuoteTransactionState::SubmitPending),
-            },
+                status: QuoteSettlementStatus::RouteSettled(QuoteRouteSettlement::Submitted),
+                stable: QuoteStableState::active(ActiveQuotePhase::SubmitPending),
+            }),
             supports_modify: false,
             terminal_owner: None,
             retention_scope_closed: false,
@@ -3903,12 +3740,11 @@ mod tests {
         );
         assert!(matches!(
             replay.state,
-            QuoteTransactionState::Settled {
+            QuoteTransactionState::Settled(QuoteSettlementState {
                 generation: 2,
-                route: Some(QuoteRouteSettlement::Submitted),
-                reopened: false,
+                status: QuoteSettlementStatus::RouteSettled(QuoteRouteSettlement::Submitted),
                 ..
-            }
+            })
         ));
         assert!(
             QuoteTransactionReductionRequest::from(
@@ -3919,12 +3755,11 @@ mod tests {
         );
         assert!(matches!(
             replay.state,
-            QuoteTransactionState::Settled {
+            QuoteTransactionState::Settled(QuoteSettlementState {
                 generation: 2,
-                route: Some(QuoteRouteSettlement::Submitted),
-                reopened: false,
+                status: QuoteSettlementStatus::RouteSettled(QuoteRouteSettlement::Submitted),
                 ..
-            }
+            })
         ));
 
         for (generation, obligation, pending_state) in [
@@ -3940,14 +3775,16 @@ mod tests {
             ),
         ] {
             let mut inner = GovernedQuoteTransactionInner {
-                state: QuoteTransactionState::SinkInvokedCharged {
+                state: QuoteTransactionState::Attempt(QuoteAttemptState {
+                    mode: QuoteTransactionMode::Active,
                     arm: QuoteTransactionArm {
                         identity: MakerQuoteLifecycleIdentity::new("TEST-MATRIX-ORDER", generation),
                         prior_state: LegState::Resting,
                         pending_state,
                         obligation,
                     },
-                },
+                    phase: QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Charged),
+                }),
                 supports_modify: obligation == QuoteLegTransactionObligation::Modify,
                 terminal_owner: None,
                 retention_scope_closed: false,
@@ -3975,11 +3812,12 @@ mod tests {
             );
             assert!(matches!(
                 inner.state,
-                QuoteTransactionState::Settled {
-                    route: Some(QuoteRouteSettlement::NtMutationInvoked),
-                    reopened: false,
+                QuoteTransactionState::Settled(QuoteSettlementState {
+                    status: QuoteSettlementStatus::RouteSettled(
+                        QuoteRouteSettlement::NtMutationInvoked
+                    ),
                     ..
-                }
+                })
             ));
         }
     }
@@ -4091,16 +3929,21 @@ mod tests {
                 prepaid
                     .mark_sink_invoked_at(1)
                     .expect("matrix cancel should reach the sink");
-                QuoteTransactionState::PoisonedReconciliationHoldPrepaid {
+                QuoteTransactionState::Stable(QuoteStableState::poisoned(
+                    QuoteTransactionMode::Active,
                     obligation,
-                    prepaid,
-                }
+                    QuotePoisonedBudget::Prepaid(prepaid),
+                ))
             }
             QuoteLegTransactionObligation::FreshSubmit
             | QuoteLegTransactionObligation::ReplacementSubmit
             | QuoteLegTransactionObligation::PlainCancel
             | QuoteLegTransactionObligation::Modify => {
-                QuoteTransactionState::PoisonedReconciliationHold { obligation }
+                QuoteTransactionState::Stable(QuoteStableState::poisoned(
+                    QuoteTransactionMode::Active,
+                    obligation,
+                    QuotePoisonedBudget::Charged,
+                ))
             }
         }
     }

@@ -795,11 +795,11 @@ git commit -m "fix(maker): bind terminal closure to actor time"
 - Removes: `WindDownQuoteTransactionState`, recursive boxed settlement, `route: Option<_>`, and `reopened: bool`.
 - Preserves: all `MarketQuote` and participant public/crate-visible methods.
 
-- [ ] **Step 1: Add active/wind-down equivalence characterization**
+- [x] **Step 1: Add active/wind-down equivalence characterization**
 
 Create `active_and_winding_down_attempts_share_accounting_and_terminal_semantics`. Drive equivalent armed and sink-invoked cancel attempts, wind one down, settle both, and assert identical reservation retirement plus mode-specific final leg state. Keep the existing total event table and terminal matrix.
 
-- [ ] **Step 2: Run the quote lifecycle baseline**
+- [x] **Step 2: Run the quote lifecycle baseline**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib bolt_v3_quote_lifecycle::tests -- --test-threads=1
@@ -807,7 +807,7 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: existing tests pass before refactor; the new equivalence test characterizes behavior.
 
-- [ ] **Step 3: Introduce the non-recursive state product**
+- [x] **Step 3: Introduce the non-recursive state product**
 
 ```rust
 enum QuoteTransactionState {
@@ -853,19 +853,19 @@ enum QuoteSettlementState {
 
 `QuotePoisonedHold` carries mode, obligation, and typed budget ownership. `ActiveQuotePhase` owns active-only resting/replacement states; `WindDownQuotePhase` owns only idle/cancel-pending stable states.
 
-- [ ] **Step 4: Migrate arm/sink/unwind through one attempt reducer**
+- [x] **Step 4: Migrate arm/sink/unwind through one attempt reducer**
 
 Delete `QuoteTransactionMode::{armed_state,sink_invoked_state}`, `ClassifiedSinkInvokedState`, and all mirrored wind-down arms. Each attempt operation matches `QuoteAttemptPhase` once. Mode is read only when choosing the resulting `QuoteStableState`.
 
-- [ ] **Step 5: Make wind-down one-way and settlement explicit**
+- [x] **Step 5: Make wind-down one-way and settlement explicit**
 
 Wind-down converts an active stable state once, flips `QuoteAttemptState.mode`, or flips the poison hold mode. Settlement replay exhaustively distinguishes `AwaitingRoute`, matching `RouteSettled`, conflicting/stale settlement, and `Reopened`. A settlement owns `QuoteStableState`, never `QuoteTransactionState`.
 
-- [ ] **Step 6: Update introspection without recreating Cartesian matches**
+- [x] **Step 6: Update introspection without recreating Cartesian matches**
 
 Implement `leg_state`, `prepaid_generation`, `is_winding_down`, `armed_identity`, `generation`, and `registration_phase` on the smallest owning type, then delegate top-down. Do not reproduce mode-by-phase pairs in each accessor.
 
-- [ ] **Step 7: Run quote, maker, and cancellation behavior suites**
+- [x] **Step 7: Run quote, maker, and cancellation behavior suites**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib bolt_v3_quote_lifecycle::tests -- --test-threads=1
@@ -875,7 +875,7 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: PASS; `WindDownQuoteTransactionState` has zero references.
 
-- [ ] **Step 8: Inspect complexity before committing**
+- [x] **Step 8: Inspect complexity before committing**
 
 Run exact symbol/branch checks:
 
@@ -886,7 +886,7 @@ rg -n '^(\s*)(if\b|match\b)' src/bolt_v3_quote_lifecycle.rs
 
 Expected: first command has no matches. Review the second output to ensure helpers delegate instead of rebuilding parallel reducers.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add src/bolt_v3_quote_lifecycle.rs tests/bolt_v3_binary_oracle_maker_runtime.rs tests/bolt_v3_maker_runtime_quote.rs

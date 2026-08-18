@@ -329,26 +329,28 @@ use self::config::{BinaryOracleEdgeTakerConfig, BinaryOracleEdgeTakerFieldType};
 
 mod exposure;
 
-#[cfg(test)]
 use self::exposure::{
-    BlindRecoveryProvenance, ObligationSaturatedState, OperationSinkUnknownState,
-};
-use self::exposure::{
-    BlindRecoveryReason, BlindRecoveryState, BootstrapAdoptionEvent, CanonicalPositionProjection,
+    AdoptionCapableExposureEvent, AdoptionCapablePositionTruthEvent, BlindRecoveryReason,
+    BlindRecoveryState, BootstrapAdoptionEvent, CanonicalPositionProjection,
     ClassifiedOpenPosition, ConfiguredPositionContract, EntryLifecycleEvent, EntryReconcileReason,
     ExitAttemptingState, ExitAuthorityFlatRecovery, ExitAuthorityRecoveryHoldState,
     ExitAuthorityRecoveryPlan, ExitLifecycleEvent, ExitLifecyclePhase, ExitPendingState,
-    ExitRecoveryObservation, ExitWorkingObservation, ExposureEvent, ExposureOccupancy,
-    ExposureOperationBlockedReason, ExposureOperationKind, ExposureState, ExposureStateKind,
-    ExposureTransitionOutcome, FreshCanonicalPositionProjection, GovernedExposure,
-    HistoricalExitCorrection, HistoricalExitObservation, HistoricalExitObservationKey,
-    ManagedPositionContext, ManagedPositionOrigin, ManagedPositionState, OpenPositionState,
-    PendingEntryState, PendingExitState, PositionClosedEvent, PositionEpisodeFingerprint,
-    PositionReplayFragmentIdentity, PositionTruthEvent, ReplacementAdoptionCause,
+    ExitRecoveryObservation, ExitWorkingObservation, ExposureAdoptionCommit, ExposureEvent,
+    ExposureOccupancy, ExposureOperationBlockedReason, ExposureOperationKind, ExposureState,
+    ExposureStateKind, ExposureTransitionOutcome, FreshCanonicalPositionProjection,
+    GovernedExposure, HistoricalExitCorrection, HistoricalExitObservation,
+    HistoricalExitObservationKey, ManagedPositionContext, ManagedPositionOrigin,
+    ManagedPositionState, OpenPositionState, PendingEntryState, PendingExitState,
+    PositionClosedEvent, PositionEpisodeFingerprint, PositionReplayFragmentIdentity,
+    PositionTruthEvent, RecoveryOperationCommit, ReplacementAdoption, ReplacementAdoptionCause,
     RouteOperationPayload, SettlementEffectEvent, SinkUnknownResolution, TimerReconciliationEvent,
     UnsupportedObservedReason, UnsupportedObservedState, UntrackedOrderEvent,
     infer_strategy_position_side_from_entry_fill, managed_position_effective_entry_cost,
     supports_strategy_managed_position,
+};
+#[cfg(test)]
+use self::exposure::{
+    BlindRecoveryProvenance, ObligationSaturatedState, OperationSinkUnknownState,
 };
 use crate::bolt_v3_feed_health::{
     ForcedFlatInputs, ForcedFlatReason, evaluate_forced_flat_predicates,
@@ -3343,11 +3345,64 @@ impl BinaryOracleEdgeTaker {
         source: OrderLifecycleSource,
         ts_event_ns: u64,
     ) {
-        self.exposure
-            .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-                CanonicalPositionProjection::None,
-            )));
+        self.reduce_adoption_capable_exposure(
+            AdoptionCapableExposureEvent::PositionTruth(
+                AdoptionCapablePositionTruthEvent::Canonical(CanonicalPositionProjection::None),
+            ),
+            source,
+            ts_event_ns,
+            false,
+        );
         self.record_canonical_awaiting_evidence(source, ts_event_ns);
+    }
+
+    fn reduce_adoption_capable_exposure(
+        &mut self,
+        event: AdoptionCapableExposureEvent,
+        source: OrderLifecycleSource,
+        ts_event_ns: u64,
+        include_cause: bool,
+    ) -> (ExposureTransitionOutcome, Option<ReplacementAdoption>) {
+        let ExposureAdoptionCommit {
+            outcome,
+            replacement_adoption,
+        } = self.exposure.reduce(event);
+        if let Some(adoption) = replacement_adoption.as_ref() {
+            self.record_replacement_adoption_evidence(adoption, source, ts_event_ns, include_cause);
+        }
+        (outcome, replacement_adoption)
+    }
+
+    fn record_replacement_adoption_evidence(
+        &self,
+        adoption: &ReplacementAdoption,
+        source: OrderLifecycleSource,
+        ts_event_ns: u64,
+        include_cause: bool,
+    ) {
+        let raw_reason_text = include_cause.then(|| match adoption.cause {
+            ReplacementAdoptionCause::CanonicalCloseConjunction => {
+                "canonical_close_conjunction".to_string()
+            }
+            ReplacementAdoptionCause::AuthenticatedCorrection => {
+                "authenticated_fill_void_correction".to_string()
+            }
+        });
+        self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+            transition: OrderLifecycleTransition::ReplacementAdopted,
+            outcome: OrderLifecycleOutcome::Managed,
+            source,
+            market_id: adoption.adopted.lifecycle.market_id_owned(),
+            instrument_id: Some(adoption.adopted.instrument_id),
+            position_id: Some(adoption.adopted.position_id),
+            client_order_id: Some(adoption.adopted.episode.opening_order_id),
+            prior_client_order_id: Some(adoption.retained_episode.opening_order_id),
+            raw_reason_text,
+            order_side: None,
+            filled_quantity: None,
+            residual_quantity: None,
+            ts_event_ns: Some(ts_event_ns),
+        });
     }
 
     fn record_canonical_awaiting_evidence(&self, source: OrderLifecycleSource, ts_event_ns: u64) {
@@ -5077,14 +5132,21 @@ impl BinaryOracleEdgeTaker {
                 false
             }
             NtCanonicalPositionProjection::Multiple { count } => {
-                let outcome = self.exposure.reduce(ExposureEvent::PositionTruth(
-                    PositionTruthEvent::Canonical(CanonicalPositionProjection::Multiple {
-                        count,
-                        recovery: BlindRecoveryState::authority_free(
-                            BlindRecoveryReason::MultipleOpenPositions { count },
+                let (outcome, _) = self.reduce_adoption_capable_exposure(
+                    AdoptionCapableExposureEvent::PositionTruth(
+                        AdoptionCapablePositionTruthEvent::Canonical(
+                            CanonicalPositionProjection::Multiple {
+                                count,
+                                recovery: BlindRecoveryState::authority_free(
+                                    BlindRecoveryReason::MultipleOpenPositions { count },
+                                ),
+                            },
                         ),
-                    }),
-                ));
+                    ),
+                    ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
+                    ts_event_ns,
+                    false,
+                );
                 if matches!(
                     outcome,
                     ExposureTransitionOutcome::Applied {
@@ -5103,14 +5165,21 @@ impl BinaryOracleEdgeTaker {
             }
             NtCanonicalPositionProjection::ProbeFailed { diagnostic } => {
                 let raw_reason_text = diagnostic.clone();
-                let outcome = self.exposure.reduce(ExposureEvent::PositionTruth(
-                    PositionTruthEvent::Canonical(CanonicalPositionProjection::ProbeFailed {
-                        diagnostic,
-                        recovery: BlindRecoveryState::authority_free(
-                            BlindRecoveryReason::CacheProbeFailed,
+                let (outcome, _) = self.reduce_adoption_capable_exposure(
+                    AdoptionCapableExposureEvent::PositionTruth(
+                        AdoptionCapablePositionTruthEvent::Canonical(
+                            CanonicalPositionProjection::ProbeFailed {
+                                diagnostic,
+                                recovery: BlindRecoveryState::authority_free(
+                                    BlindRecoveryReason::CacheProbeFailed,
+                                ),
+                            },
                         ),
-                    }),
-                ));
+                    ),
+                    ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
+                    ts_event_ns,
+                    false,
+                );
                 if matches!(
                     outcome,
                     ExposureTransitionOutcome::Applied {
@@ -5130,7 +5199,7 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn reconcile_blind_recovery_from_fresh_probe(&mut self) {
+    fn reconcile_blind_recovery_from_fresh_probe(&mut self, ts_event_ns: u64) {
         let generation = self.exposure.generation();
         let Ok(grant) = self.exposure.request_recovery_operation(generation) else {
             return;
@@ -5150,7 +5219,19 @@ impl BinaryOracleEdgeTaker {
                 FreshCanonicalPositionProjection::ProbeFailed { diagnostic }
             }
         };
-        let (outcome, restart_adoption) = grant.commit(projection);
+        let RecoveryOperationCommit {
+            outcome,
+            replacement_adoption,
+            restart_adoption,
+        } = grant.commit(projection);
+        if let Some(adoption) = replacement_adoption.as_ref() {
+            self.record_replacement_adoption_evidence(
+                adoption,
+                ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
+                ts_event_ns,
+                false,
+            );
+        }
         if restart_adoption
             && matches!(
                 outcome,
@@ -5329,45 +5410,24 @@ impl BinaryOracleEdgeTaker {
             .filter(|pending| self.entry_order_may_remain_working(&pending.client_order_id));
         let managed_context =
             self.managed_position_context_from_cache(materialized_position, origin, pending_entry);
-        let truth_event = if pending_matches {
-            pending_context.as_ref().map_or_else(
-                || {
-                    PositionTruthEvent::Canonical(CanonicalPositionProjection::ExactlyOne(
-                        Box::new(managed_context.clone()),
-                    ))
-                },
-                |_pending| PositionTruthEvent::EntryTerminalMaterialization {
+        if pending_matches {
+            self.exposure.reduce(ExposureEvent::PositionTruth(
+                PositionTruthEvent::EntryTerminalMaterialization {
                     client_order_id: managed_context.episode.opening_order_id,
                     managed: managed_context.clone(),
                 },
-            )
+            ));
         } else {
-            PositionTruthEvent::Canonical(CanonicalPositionProjection::ExactlyOne(Box::new(
-                managed_context.clone(),
-            )))
-        };
-        self.exposure
-            .reduce(ExposureEvent::PositionTruth(truth_event));
-        if let Some(adoption) = self
-            .exposure
-            .replacement_adoption()
-            .filter(|adoption| adoption.adopted.episode == managed_context.episode)
-        {
-            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                transition: OrderLifecycleTransition::ReplacementAdopted,
-                outcome: OrderLifecycleOutcome::Managed,
+            self.reduce_adoption_capable_exposure(
+                AdoptionCapableExposureEvent::PositionTruth(
+                    AdoptionCapablePositionTruthEvent::Canonical(
+                        CanonicalPositionProjection::ExactlyOne(Box::new(managed_context.clone())),
+                    ),
+                ),
                 source,
-                market_id: adoption.adopted.lifecycle.market_id_owned(),
-                instrument_id: Some(adoption.adopted.instrument_id),
-                position_id: Some(adoption.adopted.position_id),
-                client_order_id: Some(adoption.adopted.episode.opening_order_id),
-                prior_client_order_id: Some(adoption.retained_episode.opening_order_id),
-                raw_reason_text: None,
-                order_side: None,
-                filled_quantity: None,
-                residual_quantity: None,
-                ts_event_ns: Some(ts_event_ns),
-            });
+                ts_event_ns,
+                false,
+            );
         }
         let identity_conflict = self
             .exposure
@@ -5544,9 +5604,7 @@ impl BinaryOracleEdgeTaker {
             flat_recovery,
             observations,
         };
-        let outcome = grant.commit(ExposureEvent::ExitLifecycle(
-            ExitLifecycleEvent::RecoveryHold(hold),
-        ));
+        let outcome = grant.commit(ExitLifecycleEvent::RecoveryHold(hold));
         if !matches!(outcome, ExposureTransitionOutcome::Applied { .. }) {
             return;
         }
@@ -9627,7 +9685,7 @@ impl DataActor for BinaryOracleEdgeTaker {
             self.retry_missing_live_input_subscriptions_at(now_ms);
         }
         self.try_recover_exit_authority_hold(event.ts_event.as_u64());
-        self.reconcile_blind_recovery_from_fresh_probe();
+        self.reconcile_blind_recovery_from_fresh_probe(event.ts_event.as_u64());
         self.reconcile_operation_sink_unknown_on_timer();
         self.refresh_exit_authority_baseline();
         self.reconcile_cached_exit_order_on_timer();
@@ -9820,39 +9878,19 @@ impl BinaryOracleEdgeTaker {
             NtCanonicalPositionProjection::Multiple { .. }
             | NtCanonicalPositionProjection::ProbeFailed { .. } => return false,
         };
-        self.exposure.reduce(ExposureEvent::PositionTruth(
-            PositionTruthEvent::AuthenticatedEpisodeRebase {
-                before,
-                authenticated_order_id: event.client_order_id,
-                authenticated_fill_id: event.trade_id,
-                rebased,
-            },
-        ));
-        if let Some(adoption) = self.exposure.replacement_adoption() {
-            let cause = match adoption.cause {
-                ReplacementAdoptionCause::CanonicalCloseConjunction => {
-                    "canonical_close_conjunction"
-                }
-                ReplacementAdoptionCause::AuthenticatedCorrection => {
-                    "authenticated_fill_void_correction"
-                }
-            };
-            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                transition: OrderLifecycleTransition::ReplacementAdopted,
-                outcome: OrderLifecycleOutcome::Managed,
-                source: OrderLifecycleSource::OrderFillVoided,
-                market_id: adoption.adopted.lifecycle.market_id_owned(),
-                instrument_id: Some(adoption.adopted.instrument_id),
-                position_id: Some(adoption.adopted.position_id),
-                client_order_id: Some(adoption.adopted.episode.opening_order_id),
-                prior_client_order_id: Some(adoption.retained_episode.opening_order_id),
-                raw_reason_text: Some(cause.to_string()),
-                order_side: None,
-                filled_quantity: None,
-                residual_quantity: None,
-                ts_event_ns: Some(event.ts_event.as_u64()),
-            });
-        }
+        self.reduce_adoption_capable_exposure(
+            AdoptionCapableExposureEvent::PositionTruth(
+                AdoptionCapablePositionTruthEvent::AuthenticatedEpisodeRebase {
+                    before,
+                    authenticated_order_id: event.client_order_id,
+                    authenticated_fill_id: event.trade_id,
+                    rebased: rebased.map(Box::new),
+                },
+            ),
+            OrderLifecycleSource::OrderFillVoided,
+            event.ts_event.as_u64(),
+            true,
+        );
         true
     }
 
@@ -10501,14 +10539,19 @@ nautilus_trading::nautilus_strategy!(BinaryOracleEdgeTaker, {
         };
         let canonical_none_observed =
             matches!(&fresh_projection, FreshCanonicalPositionProjection::None);
-        let close_outcome = self.exposure.reduce(ExposureEvent::PositionClosed(
-            PositionClosedEvent::ObservedWithFreshProjection {
-                expected_generation,
-                episode: closed_episode.clone(),
-                projection: fresh_projection,
-            },
-        ));
-        if let Some(adoption) = self.exposure.replacement_adoption() {
+        let (close_outcome, replacement_adoption) = self.reduce_adoption_capable_exposure(
+            AdoptionCapableExposureEvent::PositionClosed(
+                PositionClosedEvent::ObservedWithFreshProjection {
+                    expected_generation,
+                    episode: closed_episode.clone(),
+                    projection: fresh_projection,
+                },
+            ),
+            OrderLifecycleSource::PositionClosed,
+            event.ts_event.as_u64(),
+            false,
+        );
+        if let Some(adoption) = replacement_adoption {
             self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
                 transition: OrderLifecycleTransition::PositionIdentityConflict,
                 outcome: OrderLifecycleOutcome::Managed,
@@ -10522,21 +10565,6 @@ nautilus_trading::nautilus_strategy!(BinaryOracleEdgeTaker, {
                     "fresh close projection atomically replaced the retained position episode"
                         .to_string(),
                 ),
-                order_side: None,
-                filled_quantity: None,
-                residual_quantity: None,
-                ts_event_ns: Some(event.ts_event.as_u64()),
-            });
-            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                transition: OrderLifecycleTransition::ReplacementAdopted,
-                outcome: OrderLifecycleOutcome::Managed,
-                source: OrderLifecycleSource::PositionClosed,
-                market_id: adoption.adopted.lifecycle.market_id_owned(),
-                instrument_id: Some(adoption.adopted.instrument_id),
-                position_id: Some(adoption.adopted.position_id),
-                client_order_id: Some(adoption.adopted.episode.opening_order_id),
-                prior_client_order_id: Some(adoption.retained_episode.opening_order_id),
-                raw_reason_text: None,
                 order_side: None,
                 filled_quantity: None,
                 residual_quantity: None,

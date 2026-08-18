@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Scope is only PR #1544 / issue #1445 Slice 1 review repairs; do not create another issue, add live authority, or claim deploy/readiness/trading permission.
-- Preserve `economics_slice = "quote_only"`; kill-switch cancellation and flatten planning remain proof-only, with no live flatten submit adapter.
+- Preserve the Slice 1 quote-only authority boundary; kill-switch cancellation and flatten planning remain proof-only, with no live flatten submit adapter and no configuration selector that implies broader modes.
 - Keep one implementation per concern: one sealed economics constructor, provider adapters as the only fee authority, one tracked-maker cancellation coordinator, and one NT actor clock.
 - Do not add compatibility constructors, raw gross/lifecycle inputs, source-scanning tests, code defaults, wall-clock fallbacks, or strategy-owned execution mechanics.
 - Required config values live only in TOML. Use `cancel_retry_timeout_ms = 1000` and `cancel_recovery_escalation_attempts = 3` in every shipped economics section and fixture; Rust contains no fallback values.

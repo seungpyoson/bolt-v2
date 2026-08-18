@@ -32,6 +32,7 @@ use bolt_v2::{
     bolt_v3_economics_runtime::{
         AuthoritativeEconomicsInputStore, AuthoritativeValuationObservation,
         authoritative_economics_input_from_replay, bind_execution_economics,
+        configured_provider_exact_replay_from_unit,
     },
     bolt_v3_operator_artifacts::json_artifact_bytes,
     bolt_v3_order_execution::{
@@ -869,7 +870,9 @@ fn manifest_order_economics(
             let observations = input
                 .valuation_observations
                 .iter()
-                .map(manifest_valuation_observation)
+                .map(|observation| {
+                    manifest_valuation_observation(loaded, execution_client_id, observation)
+                })
                 .collect::<Result<Vec<_>>>()?;
             Ok(authority.with_valuation_observations(observations))
         })
@@ -931,6 +934,8 @@ fn manifest_authority_value(value: &ManifestEconomicsAuthorityValue) -> toml::Va
 }
 
 fn manifest_valuation_observation(
+    loaded: &LoadedBoltV3Config,
+    execution_client_id: &str,
     observation: &ManifestEconomicsValuationObservation,
 ) -> Result<AuthoritativeValuationObservation> {
     match observation {
@@ -968,7 +973,14 @@ fn manifest_valuation_observation(
             valid_until_ns,
         } => Ok(AuthoritativeValuationObservation::ProviderExactConversion {
             source_id: SourceIdentity::try_new(source_id.clone()).map_err(anyhow::Error::from)?,
-            from_unit: CurrencyId::try_new(from_unit.clone()).map_err(anyhow::Error::from)?,
+            from_unit: configured_provider_exact_replay_from_unit(
+                loaded,
+                execution_client_id,
+                source_id,
+                from_unit,
+                to_unit,
+            )
+            .map_err(anyhow::Error::from)?,
             to_unit: CurrencyId::try_new(to_unit.clone()).map_err(anyhow::Error::from)?,
             snapshot_id: SnapshotId::try_new(snapshot_id.clone()).map_err(anyhow::Error::from)?,
             observed_at_ns: *observed_at_ns,
@@ -2832,6 +2844,7 @@ mod tests {
     };
 
     use anyhow::{Context, Result, bail, ensure};
+    use bolt_v2::economics::NativeUnitId;
     use nautilus_core::{Params, UUID4, UnixNanos};
     use nautilus_model::{
         data::{BookOrder, InstrumentClose, OrderBookDelta, TradeTick},
@@ -2855,11 +2868,12 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
-        BacktestDecisionEvidenceWriter, BacktestSelectorProvenance, OrderTerminalRecord, Position,
-        PositiveFiniteEvidenceReadCap, StrategyPreparationConfig, apply_backtest_config_override,
-        assert_read_back_matches, canonical_resolved_taker_config_bytes,
-        ensure_settlement_currency_funded, expected_iterations, issue_789_proof_fill,
-        iterations_mismatch, load_bolt_v3_config, prepare_strategy_client_routes, raw_taker_config,
+        AuthoritativeValuationObservation, BacktestDecisionEvidenceWriter,
+        BacktestSelectorProvenance, OrderTerminalRecord, Position, PositiveFiniteEvidenceReadCap,
+        StrategyPreparationConfig, apply_backtest_config_override, assert_read_back_matches,
+        canonical_resolved_taker_config_bytes, ensure_settlement_currency_funded,
+        expected_iterations, issue_789_proof_fill, iterations_mismatch, load_bolt_v3_config,
+        manifest_valuation_observation, prepare_strategy_client_routes, raw_taker_config,
         replay_executable_book_at_cursor, require_pre_run_configured_account,
         resolve_existing_input_path, run_nt_backtest_node,
         run_nt_backtest_node_with_execution_contract, selector_provenance_hashes,
@@ -2911,6 +2925,37 @@ mod tests {
     const MAKER_SMOKE_YES_INSTRUMENT: &str = "SAMPLE-EVENT-YES.POLYMARKET";
     const MAKER_SMOKE_NO_INSTRUMENT: &str = "SAMPLE-EVENT-NO.POLYMARKET";
     const MAKER_SMOKE_MARKET_SLUG: &str = "will-sample-event-resolve-yes";
+
+    #[test]
+    fn manifest_exact_conversion_uses_checksummed_configured_origin_kind() -> Result<()> {
+        let loaded =
+            load_bolt_v3_config(&resolve_existing_input_path(Path::new("config/root.toml")))?;
+        let observation = |from_unit: &str| {
+            manifest_valuation_observation(
+                &loaded,
+                "polymarket_main",
+                &ManifestEconomicsValuationObservation::ProviderExactConversion {
+                    source_id: "collateral".to_string(),
+                    from_unit: from_unit.to_string(),
+                    to_unit: "USDC.e".to_string(),
+                    snapshot_id: "snapshot".to_string(),
+                    observed_at_ns: 1,
+                    fetched_at_ns: 1,
+                    valid_until_ns: 2,
+                },
+            )
+        };
+
+        let currency = observation("pUSD")?;
+        assert!(matches!(
+            currency,
+            AuthoritativeValuationObservation::ProviderExactConversion {
+                from_unit: NativeUnitId::Currency(unit),
+                ..
+            } if unit.as_str() == "pUSD"
+        ));
+        Ok(())
+    }
 
     fn polymarket_replay_economics(
         instruments: &[(&str, &str)],

@@ -36,7 +36,7 @@ use crate::{
     bolt_v3_maker_order_plan::MakerLegBinding,
     bolt_v3_maker_runtime_order::MakerRuntimeOrderDispatchOutcome,
     bolt_v3_maker_runtime_quote::MakerRuntimeOrderPlanInput,
-    bolt_v3_quote_lifecycle::Leg,
+    bolt_v3_quote_lifecycle::{Leg, MakerOrderLifecycleScopeIdentity},
 };
 
 use super::binding::{
@@ -128,6 +128,16 @@ struct LegGenerations {
     no: u64,
 }
 
+fn order_lifecycle_scope_identity(
+    binding: &MakerResolvedMarketBinding,
+) -> MakerOrderLifecycleScopeIdentity {
+    MakerOrderLifecycleScopeIdentity::new(
+        binding.start_timestamp_milliseconds,
+        binding.yes.instrument_id,
+        binding.no.instrument_id,
+    )
+}
+
 impl LegGenerations {
     /// The seed for a (market_key, leg) that has never minted. An explicit named
     /// constant rather than a `Default` impl: the bolt-v3 legacy-default fence
@@ -153,6 +163,10 @@ impl MakerMarketRuntime {
     #[must_use]
     pub fn concrete_identity(&self) -> super::binding::MakerConcreteMarketIdentity {
         self.binding.concrete_identity()
+    }
+
+    pub fn order_lifecycle_scope_identity(&self) -> MakerOrderLifecycleScopeIdentity {
+        order_lifecycle_scope_identity(&self.binding)
     }
 
     /// Build a per-market runtime, **seeding the per-leg generation counters from
@@ -366,6 +380,18 @@ impl MakerRuntime {
     #[must_use]
     pub fn market(&self, market_key: &str) -> Option<&MakerMarketRuntime> {
         self.markets.get(market_key)
+    }
+
+    pub(super) fn market_keys_for_instrument(&self, instrument_id: InstrumentId) -> Vec<String> {
+        self.markets
+            .iter()
+            .filter(|(_, market)| {
+                [Leg::Yes, Leg::No]
+                    .into_iter()
+                    .any(|leg| market.leg_binding(leg).instrument_id == instrument_id)
+            })
+            .map(|(market_key, _)| market_key.clone())
+            .collect()
     }
 
     /// Every active market's leg instrument ids, sorted and de-duplicated — the
@@ -623,9 +649,7 @@ impl MakerRuntime {
 /// correction is refreshed on the retained binding, which lets throttle pruning
 /// retire the predecessor episode without losing active or pending order handles.
 fn same_window(prior: &MakerResolvedMarketBinding, current: &MakerResolvedMarketBinding) -> bool {
-    prior.start_timestamp_milliseconds == current.start_timestamp_milliseconds
-        && prior.yes.instrument_id == current.yes.instrument_id
-        && prior.no.instrument_id == current.no.instrument_id
+    order_lifecycle_scope_identity(prior) == order_lifecycle_scope_identity(current)
 }
 
 /// Apply one leg's dispatched intent to its identity slots. See

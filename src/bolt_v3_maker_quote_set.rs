@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn two_fresh_submit_plans_mint_independent_proposals_without_charging() {
-        let mut market = MarketQuote::new(false);
+        let mut market = MarketQuote::new_for_test(false);
         let mut budget = pair(4, 8);
         let decision = drive_binary_quote_set(&mut market, &mut budget, fresh_input());
         assert_eq!(
@@ -226,7 +226,7 @@ mod tests {
         // leg's submit at the same now (delta 0 < interval) — quoting only one side
         // of the binary market every cycle. With the same-tick exemption both legs
         // must submit. This is the driver-level differential guard for that fix.
-        let mut market = MarketQuote::new(false);
+        let mut market = MarketQuote::new_for_test(false);
         let mut budget = pair_with_interval(4, 8, 500);
         let decision = drive_binary_quote_set(&mut market, &mut budget, fresh_input());
         assert_eq!(
@@ -262,7 +262,7 @@ mod tests {
         // (2 from the reprice + 1 from the fresh submit) at one tick. A non-exempting
         // gate would throttle the NO leg and strand one side of the binary market, so
         // this is the driver-level differential guard for the cross-cost-class case.
-        let mut market = MarketQuote::new(false);
+        let mut market = MarketQuote::new_for_test(false);
         market.on_leg_event(
             Leg::Yes,
             LegEvent::QuoteTrigger {

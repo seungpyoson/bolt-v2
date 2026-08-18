@@ -143,10 +143,9 @@ const REST_CALL_COST: u64 = 1;
 pub(crate) const CANCEL_RESUBMIT_REST_COST: u64 = REST_CALL_COST + REST_CALL_COST;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RequoteBudgetReservationKind {
-    FreshSubmit,
+enum RequoteBudgetSinkAccounting {
+    Standard,
     CancelResubmit,
-    Rest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,15 +153,10 @@ pub struct RequoteBudgetReservationProposal {
     now_ms: u64,
     submit_cost: u64,
     rest_cost: u64,
-    kind: RequoteBudgetReservationKind,
+    sink_accounting: RequoteBudgetSinkAccounting,
 }
 
 impl RequoteBudgetReservationProposal {
-    #[must_use]
-    pub const fn kind(self) -> RequoteBudgetReservationKind {
-        self.kind
-    }
-
     #[must_use]
     pub const fn now_ms(self) -> u64 {
         self.now_ms
@@ -181,7 +175,7 @@ struct OutstandingLiability {
     now_ms: u64,
     submit_cost: u64,
     rest_cost: u64,
-    kind: RequoteBudgetReservationKind,
+    sink_accounting: RequoteBudgetSinkAccounting,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,15 +231,6 @@ impl Eq for RequoteBudgetPair {}
 pub struct RequoteBudgetReservation {
     budget: RequoteBudgetPair,
     generation: u64,
-    state: RequoteBudgetReservationState,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RequoteBudgetReservationState {
-    Reserved,
-    ReplacementReserved,
-    SinkInvoked,
-    Settled,
 }
 
 impl RequoteBudgetPair {
@@ -275,7 +260,7 @@ impl RequoteBudgetPair {
             now_ms,
             SUBMIT_COMMAND_COST,
             REST_CALL_COST,
-            RequoteBudgetReservationKind::FreshSubmit,
+            RequoteBudgetSinkAccounting::Standard,
         )
     }
 
@@ -287,7 +272,7 @@ impl RequoteBudgetPair {
             now_ms,
             SUBMIT_COMMAND_COST,
             CANCEL_RESUBMIT_REST_COST,
-            RequoteBudgetReservationKind::CancelResubmit,
+            RequoteBudgetSinkAccounting::CancelResubmit,
         )
     }
 
@@ -299,7 +284,7 @@ impl RequoteBudgetPair {
             now_ms,
             0,
             REST_CALL_COST,
-            RequoteBudgetReservationKind::Rest,
+            RequoteBudgetSinkAccounting::Standard,
         )
     }
 
@@ -327,13 +312,12 @@ impl RequoteBudgetPair {
                 now_ms: proposal.now_ms,
                 submit_cost: proposal.submit_cost,
                 rest_cost: proposal.rest_cost,
-                kind: proposal.kind,
+                sink_accounting: proposal.sink_accounting,
             },
         );
         Ok(RequoteBudgetReservation {
             budget: self.clone(),
             generation,
-            state: RequoteBudgetReservationState::Reserved,
         })
     }
 
@@ -347,6 +331,7 @@ impl RequoteBudgetPair {
         self.lock().rest_calls.cost_in_window()
     }
 
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     pub fn outstanding_submit_cost(&self) -> u64 {
         self.lock()
             .outstanding
@@ -355,6 +340,7 @@ impl RequoteBudgetPair {
             .sum()
     }
 
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     pub fn outstanding_rest_cost(&self) -> u64 {
         self.lock()
             .outstanding
@@ -400,7 +386,7 @@ impl RequoteBudgetPair {
         now_ms: u64,
         submit_cost: u64,
         rest_cost: u64,
-        kind: RequoteBudgetReservationKind,
+        sink_accounting: RequoteBudgetSinkAccounting,
     ) -> Result<RequoteBudgetReservationProposal, RequoteBudgetReservationDenied> {
         let state = self.lock();
         if !Self::has_capacity(&state, now_ms, submit_cost, rest_cost) {
@@ -410,7 +396,7 @@ impl RequoteBudgetPair {
             now_ms,
             submit_cost,
             rest_cost,
-            kind,
+            sink_accounting,
         })
     }
 
@@ -467,44 +453,26 @@ impl RequoteBudgetReservation {
         &mut self,
         now_ms: u64,
     ) -> Result<(), RequoteBudgetReservationDenied> {
-        match self.state {
-            RequoteBudgetReservationState::Reserved => {
-                let mut state = self.budget.lock();
-                let liability = state
-                    .outstanding
-                    .get(&self.generation)
-                    .copied()
-                    .ok_or(RequoteBudgetReservationDenied::StaleReservation)?;
-                if liability.kind == RequoteBudgetReservationKind::CancelResubmit {
-                    let replacement_rest_cost = liability
-                        .rest_cost
-                        .checked_sub(REST_CALL_COST)
-                        .ok_or(RequoteBudgetReservationDenied::StaleReservation)?;
-                    let replacement = state
-                        .outstanding
-                        .get_mut(&self.generation)
-                        .ok_or(RequoteBudgetReservationDenied::StaleReservation)?;
-                    replacement.now_ms = now_ms;
-                    replacement.rest_cost = replacement_rest_cost;
-                    state.rest_calls.record_reserved(now_ms, REST_CALL_COST);
-                    self.state = RequoteBudgetReservationState::ReplacementReserved;
-                    return Ok(());
-                }
-                Self::record_remaining_liability(&mut state, self.generation, now_ms)?;
-                self.state = RequoteBudgetReservationState::SinkInvoked;
-                Ok(())
-            }
-            RequoteBudgetReservationState::ReplacementReserved => {
-                let mut state = self.budget.lock();
-                Self::record_remaining_liability(&mut state, self.generation, now_ms)?;
-                self.state = RequoteBudgetReservationState::SinkInvoked;
-                Ok(())
-            }
-            RequoteBudgetReservationState::SinkInvoked => Ok(()),
-            RequoteBudgetReservationState::Settled => {
-                Err(RequoteBudgetReservationDenied::StaleReservation)
-            }
+        let mut state = self.budget.lock();
+        let liability = state.outstanding.get(&self.generation).copied();
+        let Some(liability) = liability else {
+            // Once the sink has consumed the complete liability, the token is an
+            // inert receipt. Re-observing the same sink boundary is idempotent.
+            return Ok(());
+        };
+        if liability.sink_accounting == RequoteBudgetSinkAccounting::CancelResubmit
+            && liability.rest_cost == CANCEL_RESUBMIT_REST_COST
+        {
+            let replacement = state
+                .outstanding
+                .get_mut(&self.generation)
+                .ok_or(RequoteBudgetReservationDenied::StaleReservation)?;
+            replacement.now_ms = now_ms;
+            replacement.rest_cost = REST_CALL_COST;
+            state.rest_calls.record_reserved(now_ms, REST_CALL_COST);
+            return Ok(());
         }
+        Self::record_remaining_liability(&mut state, self.generation, now_ms)
     }
 
     pub fn commit(mut self) -> Result<(), RequoteBudgetReservationDenied> {
@@ -517,23 +485,14 @@ impl RequoteBudgetReservation {
 
     fn settle_committed(&mut self) -> Result<(), RequoteBudgetReservationDenied> {
         let mut state = self.budget.lock();
-        match self.state {
-            RequoteBudgetReservationState::Reserved
-            | RequoteBudgetReservationState::ReplacementReserved => {
-                let now_ms = state
-                    .outstanding
-                    .get(&self.generation)
-                    .map(|liability| liability.now_ms)
-                    .ok_or(RequoteBudgetReservationDenied::StaleReservation)?;
-                Self::record_remaining_liability(&mut state, self.generation, now_ms)?;
-            }
-            RequoteBudgetReservationState::SinkInvoked => {}
-            RequoteBudgetReservationState::Settled => {
-                return Err(RequoteBudgetReservationDenied::StaleReservation);
-            }
-        }
-        self.state = RequoteBudgetReservationState::Settled;
-        Ok(())
+        let Some(now_ms) = state
+            .outstanding
+            .get(&self.generation)
+            .map(|liability| liability.now_ms)
+        else {
+            return Ok(());
+        };
+        Self::record_remaining_liability(&mut state, self.generation, now_ms)
     }
 
     fn settle_aborted(&mut self) -> Result<(), RequoteBudgetReservationDenied> {
@@ -541,7 +500,6 @@ impl RequoteBudgetReservation {
         if removed.is_none() {
             return Err(RequoteBudgetReservationDenied::StaleReservation);
         }
-        self.state = RequoteBudgetReservationState::Settled;
         Ok(())
     }
 
@@ -568,14 +526,7 @@ impl RequoteBudgetReservation {
 
 impl Drop for RequoteBudgetReservation {
     fn drop(&mut self) {
-        match self.state {
-            RequoteBudgetReservationState::Reserved
-            | RequoteBudgetReservationState::ReplacementReserved => {
-                let _ = self.settle_aborted();
-            }
-            RequoteBudgetReservationState::SinkInvoked => {}
-            RequoteBudgetReservationState::Settled => {}
-        }
+        self.budget.lock().outstanding.remove(&self.generation);
     }
 }
 

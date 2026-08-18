@@ -1,5 +1,7 @@
 use crate::support;
 
+use std::{cell::RefCell, rc::Rc};
+
 use bolt_v2::{
     bolt_v3_config::{ClientBlock, ExecutionEconomicsConfig, load_bolt_v3_config},
     bolt_v3_economics_runtime::{
@@ -7,13 +9,14 @@ use bolt_v2::{
         AuthoritativeVenueEconomicsInput, EconomicsAdmissionIntent, EconomicsAdmissionPolicy,
         EconomicsEdgeAdmissionPolicy, EconomicsOrderBinding, EconomicsRuntimeBindingError,
         RestingOrderEconomicsCancelReason, RestingOrderEconomicsRefresh, bind_execution_economics,
-        refresh_resting_order_economics,
+        configured_provider_exact_replay_from_unit, refresh_resting_order_economics,
     },
     bolt_v3_order_execution::{
         BoltV3FinalOrderEconomicsInput, BoltV3FinalOrderEconomicsScenario,
-        BoltV3OrderEconomicsHandle, BoltV3PlannedFillLeg, BoltV3TerminalValueEntry,
-        BoltV3TerminalValueEntryPolicy, build_order_economics_submit_admission,
-        order_intent_details_from_compiled_order,
+        BoltV3OrderEconomicsHandle, BoltV3OrderExecutionPolicy, BoltV3PlannedFillLeg,
+        BoltV3SubmitAttemptKind, BoltV3SubmitContext, BoltV3SubmitRoutingRequest,
+        BoltV3TerminalValueEntry, BoltV3TerminalValueEntryPolicy,
+        build_order_economics_submit_admission, order_intent_details_from_compiled_order,
     },
     bolt_v3_providers::{
         hyperliquid::{
@@ -26,7 +29,9 @@ use bolt_v2::{
             authoritative_economics_input as polymarket_authoritative_economics_input,
         },
     },
-    bolt_v3_submit_admission::OrderValuationContext,
+    bolt_v3_submit_admission::{
+        BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState, OrderValuationContext,
+    },
     economics::{
         AccountId, AssetId, CurrencyId, DecisionCorrelationId, EconomicsInstrumentId,
         EconomicsQuoteRequest, EdgeBasisPolicyId, ExecutionClientId, ExitVsHoldDecision,
@@ -34,13 +39,20 @@ use bolt_v2::{
         PositionContext, PositionId, PositionSide, ProductSurfaceId, ReportingPolicyId,
         RoutingContext, SnapshotId, SourceIdentity, VenueEconomicsUnavailable,
     },
+    integrations::nautilus::economics::economics_order_binding,
+};
+use nautilus_common::{
+    cache::Cache,
+    clock::{Clock, TestClock},
 };
 use nautilus_model::{
     enums::{OrderSide as NautilusOrderSide, TimeInForce},
-    identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId},
+    identifiers::{ClientId, ClientOrderId, InstrumentId, StrategyId, TraderId},
     orders::{LimitOrder, Order, OrderAny},
     types::{Price, Quantity},
 };
+use nautilus_portfolio::portfolio::Portfolio;
+use nautilus_trading::StrategyNative;
 use rust_decimal::Decimal;
 
 macro_rules! economics_admission_intent {
@@ -600,7 +612,7 @@ source_currency = "HYPE"
 from_unit = "HYPE"
 to_currency = "USD"
 legs = [
-  { authority = "market_quote", from_kind = "asset", from_unit = "HYPE", source_currency = "HYPE", to_unit = "hUSD", valuation_policy = "top_of_book_midpoint", client_id = "hyperliquid_spot_data", instrument_id = "HYPE-hUSD.HYPERLIQUID", orientation = "base_to_quote", max_age_ms = 60000 },
+  { authority = "market_quote", from_kind = "asset", from_unit = "HYPE", source_currency = "HYPE", to_unit = "hUSD", client_id = "hyperliquid_spot_data", instrument_id = "HYPE-hUSD.HYPERLIQUID", orientation = "base_to_quote", max_age_ms = 60000 },
   { authority = "provider_exact_conversion", from_kind = "currency", from_unit = "hUSD", to_unit = "USD", source_id = "fixture-settlement", max_age_ms = 60000 },
 ]
 "#,
@@ -608,6 +620,113 @@ legs = [
             .expect("asset valuation route should parse"),
         );
     loaded
+}
+
+#[test]
+fn replay_exact_conversion_origin_kind_comes_from_configured_leg() {
+    let currency = configured_provider_exact_replay_from_unit(
+        &loaded(),
+        "polymarket_main",
+        "fixture-collateral",
+        "pUSD",
+        "USD",
+    )
+    .expect("configured currency exact conversion should resolve");
+    assert!(matches!(
+        currency,
+        NativeUnitId::Currency(unit) if unit.as_str() == "pUSD"
+    ));
+
+    let mut asset_loaded = hyperliquid_spot_loaded();
+    let execution = asset_loaded
+        .root
+        .clients
+        .get_mut("hyperliquid_offline")
+        .expect("offline Hyperliquid client should exist")
+        .execution
+        .as_mut()
+        .expect("offline Hyperliquid execution should exist");
+    execution["economics"]["valuation"]["routes"]
+        .as_table_mut()
+        .expect("valuation routes should be a table")
+        .insert(
+            "hype_usd".to_string(),
+            toml::from_str::<toml::Value>(
+                r#"from_kind = "asset"
+from_unit = "HYPE"
+to_currency = "USD"
+legs = [
+  { authority = "provider_exact_conversion", from_kind = "asset", from_unit = "HYPE", to_unit = "USD", source_id = "fixture-asset-parity", max_age_ms = 60000 },
+]
+"#,
+            )
+            .expect("asset exact-conversion route should parse"),
+        );
+    let asset = configured_provider_exact_replay_from_unit(
+        &asset_loaded,
+        "hyperliquid_offline",
+        "fixture-asset-parity",
+        "HYPE",
+        "USD",
+    )
+    .expect("configured asset exact conversion should resolve");
+    assert!(matches!(
+        asset,
+        NativeUnitId::Asset(unit) if unit.as_str() == "HYPE"
+    ));
+}
+
+#[test]
+fn replay_exact_conversion_without_configured_leg_fails_closed() {
+    let error = configured_provider_exact_replay_from_unit(
+        &loaded(),
+        "polymarket_main",
+        "missing-source",
+        "pUSD",
+        "USD",
+    )
+    .expect_err("an unconfigured replay observation must not acquire an origin kind");
+    assert!(matches!(
+        error,
+        EconomicsRuntimeBindingError::MissingProviderExactReplayValuationLeg { .. }
+    ));
+
+    let mut ambiguous = loaded();
+    ambiguous
+        .root
+        .clients
+        .get_mut("polymarket_main")
+        .expect("fixture client should exist")
+        .execution
+        .as_mut()
+        .expect("fixture execution config should exist")["economics"]["valuation"]["routes"]
+        .as_table_mut()
+        .expect("valuation routes should be a table")
+        .insert(
+            "conflicting_collateral_usd".to_string(),
+            toml::from_str::<toml::Value>(
+                r#"from_kind = "asset"
+from_unit = "pUSD"
+to_currency = "USD"
+legs = [
+  { authority = "provider_exact_conversion", from_kind = "asset", from_unit = "pUSD", to_unit = "USD", source_id = "fixture-collateral", max_age_ms = 60000 },
+]
+"#,
+            )
+            .expect("conflicting exact-conversion route should parse"),
+        );
+    let error = configured_provider_exact_replay_from_unit(
+        &ambiguous,
+        "polymarket_main",
+        "fixture-collateral",
+        "pUSD",
+        "USD",
+    )
+    .expect_err("conflicting configured origin kinds must fail closed");
+    assert!(matches!(
+        error,
+        EconomicsRuntimeBindingError::AmbiguousProviderExactReplayValuationLeg { .. }
+    ));
 }
 
 fn hyperliquid_spot_input() -> AuthoritativeVenueEconomicsInput {
@@ -765,12 +884,43 @@ fn final_nautilus_order_routes_through_its_exact_provider_authority() {
     let mut changed = order.clone();
     changed.set_quantity(Quantity::new(5.0, 2));
     changed.set_leaves_qty(Quantity::new(5.0, 2));
-    assert!(
-        sealed
-            .validate_final_order(&changed, "polymarket_main")
-            .is_err(),
-        "an order mutation after quoting must invalidate the sealed authority"
+    assert_ne!(
+        sealed.economics().order_binding(),
+        &economics_order_binding(&changed).expect("the mutated order should still serialize"),
+        "an order mutation after quoting must change the sealed authority binding"
     );
+
+    let decision_evidence = support::current_evidence::recording_evidence();
+    let submit_admission = BoltV3SubmitAdmissionState::new(decision_evidence.clone());
+    let mut strategy = support::stub_runtime_strategy::StubRuntimeStrategy::new("strategy-a");
+    let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+    let cache = Rc::new(RefCell::new(Cache::default()));
+    let portfolio = Rc::new(RefCell::new(Portfolio::new(
+        clock.clone(),
+        cache.clone(),
+        None,
+    )));
+    StrategyNative::strategy_core_mut(&mut strategy)
+        .register(TraderId::from("TRADER-001"), clock, cache, portfolio)
+        .expect("the routing-test strategy should register with NT core");
+    let outcome = BoltV3OrderExecutionPolicy::shadow().route_submit(
+        BoltV3SubmitRoutingRequest::with_economics(
+            decision_evidence.as_ref(),
+            &submit_admission,
+            intent,
+            sealed,
+        ),
+        &mut strategy,
+        changed,
+        BoltV3SubmitContext::with_client_id(ClientId::from("polymarket_main")),
+    );
+
+    assert_eq!(
+        outcome.kind(),
+        BoltV3SubmitAttemptKind::RouteValidationRejected
+    );
+    let expected_error = BoltV3SubmitAdmissionError::EconomicsOrderMismatch.to_string();
+    assert_eq!(outcome.diagnostic(), Some(expected_error.as_str()));
 }
 
 #[test]

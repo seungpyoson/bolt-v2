@@ -72,15 +72,15 @@ All normal tracked-maker cancellation origins use the coordinator: economics ref
 
 A coordinator record represents exactly one outstanding cancellation intent. It is created only by a cancellation-origin request, a pending-cancel observation for a tracked maker order, or running-state fill-void reconciliation.
 
-A focused `tracked_order_economics` module owns the public `BoltV3OrderEconomicsHandle` itself and the complete tracked-maker aggregate, not merely an inner field stored by the parent execution module. The parent module re-exports the handle but cannot name or access its fields. A handle clone shares the same private aggregate; no clone or constructor can produce a partial record. Inside the module, one opaque registry owns the lock, map, checked registration generation, monotonic typed `RestingRegistryHealth`, `TrackedMakerOrderRecord`, optional resting economics, query seed, and optional cancellation intent. The exhaustive cancellation reducer remains a subordinate private module rather than absorbing registration and economics responsibilities into a cancellation monolith.
+A focused `tracked_order_economics` module owns the public `BoltV3OrderEconomicsHandle` itself and the complete tracked-maker aggregate, not merely an inner field stored by the parent execution module. The parent module re-exports the handle but cannot name or access its fields. A handle clone shares the same private aggregate; no clone or constructor can produce a partial record. Inside the module, one opaque registry owns the lock, active map, per-order terminal-retention map, checked registration generation, monotonic typed `RestingRegistryHealth`, `TrackedMakerOrderRecord`, optional resting economics, query seed, and optional cancellation intent. Each governed active or retained record contains one non-optional lifecycle association and one per-order terminal-truth cell; the exhaustive active-record authority state separately represents a post-horizon cancellation-only reopening and cannot expose lifecycle settlement. The leg state contains no second terminal copy. The typed `MakerOrderLifecycleScopeIdentity` is the cadence start plus both NT instrument IDs and is required by the sole production `MarketQuote` constructor. Every lifecycle handle therefore carries its scope from authority construction; registration finality, authority sharing, retention matching, and scope-horizon eviction compare this sealed identity rather than a strategy-side key or Arc identity. The strategy's active-retention list is only an index of those authorities. Presenting one quote authority under a runtime scope other than the identity sealed into it is rejected before planning or identity minting. The exhaustive cancellation reducer remains a subordinate private module rather than absorbing registration and economics responsibilities into a cancellation monolith.
 
 Outside `tracked_order_economics`, code never receives `&mut TrackedMakerOrderRecord`, a mutable callback over the registry, an aggregate constructor, a registration guard, or a constructor for a partially initialized record. Its only interfaces are semantic operations: construct a complete handle from bound economics, quote economics, route a resting submit transaction, refresh economics from an authoritative cache observation, request one cancellation, request an instrument/side scope, reconcile one NT callback, drive all tracked orders from timer-owned cache observations through `drive_all_resting_order_economics_at_ms`, drive exactly the observations selected by a cancellation origin through `drive_observed_resting_order_economics`, inspect read-only IDs/health, and test whether draining is complete. The all-orders and exact-observation operations are distinct APIs: an empty exact observation set is a no-op and can never mean all tracked orders.
 
 The resting-submit transaction extends the typed route authority; it is not a fallible adapter around it. `BoltV3SubmitAttemptOutcome` remains the sole route result and contains only route validation, intent evidence, admission, policy skip, pre-sink, sink rejection, or submission. `BoltV3RestingSubmitTransactionOutcome` is the sole result for a resting transaction and is an exhaustive phase wrapper: `RegistrationRejected { reason }`, `Attempt(BoltV3SubmitAttemptOutcome)`, or `RollbackInvariantFailed { original: BoltV3RoutedNonSubmittedOutcome, reason }`. `BoltV3RoutedNonSubmittedOutcome` is an opaque refinement that owns the original `BoltV3SubmitAttemptOutcome`; it has no second discriminant or independently constructible variants, and shared execution can construct it only from the exhaustive non-`Submitted` branch. This composition prevents direct taker and kill-switch callers from handling impossible resting-only branches while preserving one route-classification authority.
 
-Before routing, the resting owner validates the single positive leg, acquires the registry, rejects duplicate client IDs, increments the checked private registration generation, and inserts a provisional record. Invalid shape/quantity, duplicate ID, initial poison, and generation overflow produce `RegistrationRejected`; they cannot escape as `anyhow` and create no new provisional record. The private `RestingRegistrationTransaction { client_order_id, generation }` then releases the lock before invoking shared routing without handing registry internals to the closure. `Attempt(Submitted)` commits only that generation. For a routed non-submission, the transaction aborts only its generation; exact rollback returns `Attempt(original_route_outcome)` unchanged. Only when cleanup cannot prove removal or authoritative retirement does shared execution move that same route outcome into the opaque `BoltV3RoutedNonSubmittedOutcome` and return `RollbackInvariantFailed { original, reason }`. Absence is accepted only when a synchronous authoritative callback already retired the same generation; a different generation is never removed. The cleanup-only path recovers a poisoned write guard solely to remove the owned generation and sets monotonic `RestingRegistryHealth::Poisoned`. A private drop backstop performs the same generation-scoped removal and cannot leave this transaction's provisional record behind. Synchronous NT callbacks can therefore reconcile or retire the record without deadlocking, no external sink is called while the registry lock is held, and duplicate/precondition/rollback failures stay within the one resting-transaction result. Registration, refresh, intent merging, terminal removal, and rollback execute inside the owner. This makes registration provenance, generation, deadline, backoff, query identity, record lifetime, and drive scope compiler-owned as one aggregate rather than replaceable at a parent call site.
+Before routing, the resting owner validates the single positive leg, acquires the registry, rejects duplicate client IDs, increments the checked private registration generation, mints the lifecycle identity, and inserts a provisional record whose non-optional lifecycle association is constructed in that same registry write. No provisional record can exist before or without its association. Invalid shape/quantity, duplicate ID, initial poison, and generation overflow produce `RegistrationRejected`; they cannot escape as `anyhow` and create no new provisional record. The private `RestingRegistrationTransaction { client_order_id, generation, identity }` then releases the lock before invoking shared routing without handing registry internals to the closure. `Attempt(Submitted)` commits only that generation; it does not attach identity after the sink. For a routed non-submission, the transaction aborts only its generation; exact rollback returns `Attempt(original_route_outcome)` unchanged. Only when cleanup cannot prove removal or authoritative retirement does shared execution move that same route outcome into the opaque `BoltV3RoutedNonSubmittedOutcome` and return `RollbackInvariantFailed { original, reason }`. Absence is accepted only when a synchronous authoritative callback already retired the same associated generation; a different generation is never removed. The cleanup-only path recovers a poisoned write guard solely to remove the owned generation and sets monotonic `RestingRegistryHealth::Poisoned`. A private drop backstop performs the same generation-scoped removal and cannot leave this transaction's provisional record behind. Synchronous NT callbacks can therefore refine per-order truth and settle the lifecycle before route completion observes the retired generation, without deadlocking or poisoning legal callback orderings. No external sink is called while the registry lock is held, and duplicate/precondition/rollback failures stay within the one resting-transaction result. Registration, refresh, intent merging, terminal removal, and rollback execute inside the owner. This makes registration provenance, generation, lifecycle identity, deadline, backoff, query identity, record lifetime, and drive scope compiler-owned as one aggregate rather than replaceable at a parent call site.
 
-Inside that aggregate, a private `TrackedOrderCancellation` owns both the query seed and the optional coordinator record; its idempotent `request_intent(quote_deadline_ns)` preserves an existing generation, deadline, and backoff. Because pinned `Strategy::query_order` accepts an `OrderAny` even though it reads only three identity fields, resting economics registration retains a private `NtOrderQuerySeed` wrapper around the submitted order clone inside that owner. The wrapper exposes no status or leaves accessors and can only be handed to that NT query call. Its `instrument_id` and `client_order_id` are immutable; while an authoritative cached order exists, the wrapper may replace its snapshot exactly once to capture a `venue_order_id` transition from `None` to `Some`. The seed is query-routing data only and never supplies status, leaves quantity, or terminality. Running-state fill-void reconciliation asks the aggregate to create a cancellation-only record from the authoritative cached order and request an immediate intent; it cannot assemble that record itself. A healthy resting order has no coordinator record and no timer drive can cancel it. Repeated origins merge diagnostics into the existing record without resetting its generation, deadline, or backoff. Terminal reconciliation removes the aggregate record.
+Inside that aggregate, a private `TrackedOrderCancellation` owns both the query seed and the optional coordinator record; its idempotent `request_intent(quote_deadline_ns)` preserves an existing generation, deadline, and backoff. Because pinned `Strategy::query_order` accepts an `OrderAny` even though it reads only three identity fields, resting economics registration retains a private `NtOrderQuerySeed` wrapper around the submitted order clone inside that owner. The wrapper exposes no status or leaves accessors and can only be handed to that NT query call. Its `instrument_id` and `client_order_id` are immutable; while an authoritative cached order exists, the wrapper may replace its snapshot exactly once to capture a `venue_order_id` transition from `None` to `Some`. The seed is query-routing data only and never supplies status, leaves quantity, or terminality. Running-state fill-void reconciliation asks the aggregate to move the same per-order authority from terminal retention back into an active cancellation record and request an immediate intent; it cannot assemble an association or terminal truth itself. A healthy resting order has no coordinator record and no timer drive can cancel it. Repeated origins merge diagnostics into the existing record without resetting its generation, deadline, or backoff. Terminal reconciliation removes the active aggregate record only after transferring refinable per-order truth into governed retention.
 
 Before mapping cached status into an authoritative observation, one private exhaustive identity-coherence transition compares the captured and cached venue IDs:
 
@@ -111,7 +111,7 @@ An `OrderFilled` callback is only a reconciliation trigger. A partial fill remai
 
 NT can later reopen a filled order through `OrderFillVoided`. While the maker is `Running`, its fill-void callback re-reads the cache. If a previously retired maker order is open again, it creates a cancellation-only coordinator record with `quote_deadline_ns = observed_now_ns`; it does not recreate or reuse expired economics admission. The next timer routes through the normal coordinator and health is immediately deadline-exceeded until NT closes the order. Strategy event ownership identifies the order as this maker's; no client-order-ID string parsing or source scan is used.
 
-This guarantee ends when `Component::stop` completes: pinned NT logs residual order events but does not dispatch strategy callbacks outside `Running`. NT exposes no authoritative event proving that a fill can never later be voided, so keeping a fill tombstone until an invented finality deadline would make graceful stop non-convergent. A post-stop reopen remains visible to NT cache/reconciliation and the existing next-start open-order fail-closed gate, but this live-disabled Slice 1 does not claim automatic post-stop cancellation or cross-process retry durability.
+This guarantee ends at one of the governed scope horizons: registration-epoch finality, market deactivation or cadence rollover, or component stop. Every horizon enters the same private retention reducer and sends the same identity-fenced retention-horizon consequence for each selected per-order authority. Registration-epoch finality retires older retained truth for that exact sealed lifecycle scope only after the successor registration has committed or synchronously retired at its exact generation. Market closure first latches the exact `MarketQuote` lifecycle scope, requests cancellation for every still-active record in it, rejects later registration through that closed lifecycle, and finalizes each record when it becomes terminal; cadence rollover uses the retired lifecycle handle rather than instrument recency, so an instrument-ID reuse cannot close its successor. Component stop can mint its horizon capability only through the drain latch, closes all later registration, and cannot finalize while any active record remains. Quote-bearing command admission resolves the order instrument to exactly one active market scope before routing: zero matches and multiple matches are typed lifecycle-scope failures, and no optional binding path exists. Pinned NT logs residual order events but does not dispatch strategy callbacks outside `Running`. NT exposes no authoritative event proving that a fill can never later be voided, so keeping a fill tombstone after its governed scope closes would make graceful stop non-convergent. A post-horizon reopening with no surviving per-order authority, whether observed through an ordinary order callback or fill-void callback, takes the money-relevant missing-truth poison/cancel path: matching live sealed scopes enter a non-routing hold, their working records receive cancellation intent, and reconciliation returns an error. The diagnostic-only absent-authority branch remains limited to terminal `Denied`, `Rejected`, `Canceled`, or `Expired` observations that leave nothing live. A post-stop reopen also remains visible to NT cache/reconciliation and the next-start open-order fail-closed gate, but this live-disabled Slice 1 does not claim automatic post-stop cancellation or cross-process retry durability.
 
 ### Coordinator state matrix
 
@@ -746,39 +746,58 @@ with the carry pattern.
 The decision to submit no longer advances the leg FSM or charges the requote
 budget as a side effect of planning. Because the tracked resting registration
 already commits or aborts inside shared execution before dispatch sees the
-outcome, an outer transaction cannot merely wrap the result: shared execution
-owns one multi-participant transaction whose participants — provisional
-registration, leg FSM advance, and budget settlement — move through the same
-explicit phases:
+outcome, an outer transaction cannot merely wrap the result. Each quote leg is
+therefore one `GovernedQuoteTransaction`, porting the `GovernedExposure`
+construction already used by the strategy. Its private state variants own leg
+occupancy, exact generation, transition obligation, live reservation or prepaid
+capacity, and route settlement together. Per-order terminal truth is owned only
+by the tracked-order authority keyed by client order ID and registration
+generation; the leg retains no terminal-disposition copy. There is no
+independently mutable participant phase, registration-transaction phase,
+reservation phase, prepaid slot, transaction arm, callback-retired generation,
+or outer leg state. The sole exhaustive `apply` reducer is the only leg-state
+assignment site; capability-split pre-sink and sink-capable event enums prevent
+the old arbitrary phase/disposition pairing; and every reducer result is a
+`#[must_use]` commit whose action must be routed or deliberately observed. One
+typed generation fence classifies every generation-bearing event before the
+semantic reducer runs, rather than repeating identity guards in each state arm.
+The sink boundary likewise reduces `ArmedQuoteBudget::{Reserved, Prepaid}` into
+`SinkInvokedQuoteBudget::{Charged, Prepaid}` once and then projects that result
+into active or winding-down occupancy.
+
+Shared execution owns the provisional registration, but reads transaction
+capability from this authority rather than mirroring it. Its semantic settlement
+methods (`submitted`, `command issued`, `sink rejected`, callback retirement,
+pre-sink abort, and phase-qualified invariant failure) replace the deleted
+generic disposition enum and settlement matrix. The governed variants move
+through these phases:
 
 1. **Proposal**: planning mints typed proposals (leg transition, budget
    reservation) with no side effect.
-2. **Pre-sink provisional arm**: before any sink call, every participant arms
-   provisionally at the attempt's exact generation — the registration
-   provisional record, the FSM's proposed transition, and a generation-bearing
-   per-leg budget reservation token.
-3. **Generation-checked commit/abort**: the completion step settles all
-   participants under the same generation check. No external participant runs
-   under the registry lock; settlement is ordered outside it, and the
-   synchronous-callback disposition is recorded during the arm so a terminal
-   callback arriving mid-attempt settles the FSM correctly (callback-wins,
-   the registry's existing exact-generation retirement property, extended to
-   every participant).
+2. **Pre-sink provisional arm**: before any sink call, the authority atomically
+   owns the proposed transition, exact registration generation, and either the
+   generation-bearing budget reservation or the previously prepaid capacity.
+3. **Generation-checked commit/abort**: the completion step sends one semantic
+   event under the exact generation. No external participant runs under the
+   registry lock. The settled leg variant retains route bookkeeping and an
+   occupancy-only reopening projection; the per-order record retains terminal
+   truth. Exact duplicate route replays are idempotent, conflicting replays
+   cannot rewrite the prior outcome, and a synchronous terminal callback refines
+   the already-associated provisional record before completion observes that
+   the same generation retired.
 4. **Sink-invoked marker**: an irreversible sink-invoked phase is recorded
    immediately before the raw sink call. It is the accounting boundary: all
    restoration and prepaid-token reuse applies strictly before it; once
    crossed, the attempted command/REST charge is committed regardless of
    outcome.
-5. **Drop guard**: an unwind before the sink-invoked phase rolls back every
-   armed participant at its exact generation or poisons loudly; it can never
-   settle one participant and strand another. An unwind **after** the
-   sink-invoked phase — panic or synchronous-callback unwind with the outcome
-   unknown — always commits the command/REST charge and poisons **only the
-   participants still armed at the transaction's generation** into the
+5. **Drop guard**: an unwind before the sink-invoked phase rolls back the owned
+   variant at its exact generation. An unwind **after** the sink-invoked phase —
+   panic or synchronous-callback unwind with the outcome unknown — always
+   commits the command/REST charge and moves the same owned payload into the
    non-routing reconciliation hold: the command may have been dispatched, so
-   neither a refund nor a routable state is permitted for an armed
-   participant. Precedence over callback-wins is explicit: a participant
-   already retired by a synchronous terminal callback stays retired — poison
+   neither a refund nor a routable state is permitted. Precedence over
+   callback-wins is explicit: an exact generation already retired by a
+   synchronous terminal callback stays retired — poison
    never overwrites a completed callback disposition, and the charge commits
    in every case. Pre-sink unwind, post-sink unwind, and the combined
    sink-invoked → terminal callback → unwind sequence carry distinct tests.
@@ -848,6 +867,130 @@ Settlement is per command and per leg, not blanket:
   specified and tested explicitly, not as a generic window-full failure.
 - **Modify**: pending advance commits at issuance; pre-issuance failures roll
   back.
+- **Plain cancel**: the authority classifies a cancel whose pending state is not
+  `RequotePending` as `PlainCancel`. It reserves and charges one REST call only,
+  never owns or retains replacement prepaid capacity, and every typed terminal
+  disposition reduces it to idle. This resolves the former cancel-retention
+  inconsistency without a compatibility path.
+
+Terminal callbacks classify the authoritative tracked NT order before its
+active record is removed (`Denied`, `Rejected`, `Canceled`, `Expired`, `Filled`,
+or `Voided`). The per-order authority first refines that order's own retained
+truth, then sends an identity-fenced consequence to the leg reducer. `Filled`
+consumes no replacement obligation and releases prepaid capacity only when that
+capacity still belongs to the refined order's leg occupancy; if replacement B
+is armed, A's late fill advances A's record while B remains byte-for-byte
+unchanged. Non-fill terminal outcomes retain replacement capacity only for an
+actual cancel-resubmit/replacement obligation. Wind-down is exhaustive across
+every private leg variant: routable work becomes cancel-pending, durable
+replacement capacity is released when the operator abandons replacement, and a
+poisoned hold emits the scoped cancellation intent while retaining its poison
+and prepaid payload until typed terminal reconciliation resolves it.
+
+Terminal classification is refinable rather than first-write frozen. Each
+`MakerQuoteOrderAuthority` contains the client order ID, registration generation,
+current lifecycle generation, non-optional lifecycle association, immutable
+order scope, and the sole optional retained-terminal cell. Initial registration
+mints the identity and association in the same write that inserts the provisional
+record; a later cancel arm atomically rebinds that record to the cancel
+operation's lifecycle generation while preserving its registration generation.
+The per-order reducer—not the leg—applies the pinned-NT refinement lattice before
+any leg consequence is considered. The leg reducer then decides exhaustively
+whether that consequence affects its current occupancy, so an older order can
+refine safely while a newer arm is active without being mislabeled stale.
+
+The exhaustive pinned-NT supersession lattice admits `Canceled -> Filled` and
+`Filled -> Voided`, plus the non-terminal reopenings NT permits after either a
+cancel race (`Canceled -> PartiallyFilled`) or fill void
+(`Filled -> PartiallyFilled`). Exact duplicates are idempotent and every other
+conflicting disposition preserves the retained per-order truth. Reopening moves
+the same authority from retention back into cancellation tracking; the leg
+projects `CancelPending` when no newer in-flight occupancy conflicts, so
+replacement submission is unrepresentable until authoritative NT terminal
+reconciliation closes the reopened order. If a newer terminal order has already
+left the leg idle, the older reopened order may reclaim that occupancy and is
+still canceled through the coordinator.
+
+Retention has only decided exits. `Final` truth is discarded immediately;
+reopening consumes retention into the active record; and every scope closure —
+registration-epoch finality, market deactivation/cadence rollover, or component
+stop — enters the same private retention-horizon reducer. Registration-epoch
+finality is emitted only after exact commit or synchronous retirement of the
+successor registration; it removes older retained generations that share that
+leg lifecycle while preserving the successor and every unrelated lifecycle.
+Market closure owns the exact `MarketQuote` lifecycle handles, not a timer,
+instrument-recency inference, or count cap. It latches those handles closed,
+requests cancellation for their active records, and emits the horizon as each
+record becomes terminal. The strategy removes retired-scope index entries only
+after every selected closure succeeds; a closure error retains the complete
+selection for an idempotent retry. Component stop uses the same event only after its typed
+drain capability proves the active map empty. Every horizon releases retained
+prepaid capacity still owned by the selected order, and completion leaves the
+drained lifecycle or component registration gate closed until the component's
+same capability reopens a new start.
+
+The resulting cardinality bound is explicit. Let `S` be the number of active
+maker leg lifecycle scopes and `I` the number of tracked in-flight orders,
+including cancellation-only reopenings and records draining a just-closed scope.
+Every quote-bearing admission resolves exactly one active market and verifies
+that the quote authority was constructed with that same typed scope, so no
+tracked or retained authority can exist outside `S` or a scope draining through
+`I`; zero-scope admission and cross-scope aliasing both fail before routing.
+The strategy and shared dispatcher accept the same exhaustive
+`MakerOrderCommandAuthority::{Quote, ScopeCancelAll}` rather than an optional
+transaction, so a quote-bearing command cannot skip scope resolution and a
+scope cancel-all cannot consume quote authority. No optional representation is
+reintroduced below the strategy boundary.
+Each committed registration epoch finalizes all older retained entries in its
+exact leg scope before that successor can later add its own retained terminal
+truth, so an active scope contributes at most one retained entry. A closed scope
+with an active record contributes no unbounded history: its prior retained
+entries are finalized at closure and its last authority is finalized when the
+record leaves `I`. Therefore `retained_terminal_orders.len() <= S + I`; steady
+state with a fixed active market set is `O(S)`, independent of quote-cycle count.
+Cadence rollover removes the predecessor from `S`, and component stop reduces
+both `S` and `I` to zero. This proof uses lifecycle finality only — no elapsed
+time, map-size threshold, or process-lifetime retention participates.
+
+`I` is one order-ID-keyed active-record map and one cancellation reducer. Every
+record owns the same cancellation state; an exhaustive authority enum
+distinguishes a governed order from a post-horizon reopening whose exact
+authority is missing. The latter cannot expose registration, economics, or
+lifecycle-settlement authority, but it follows the identical cancel, query,
+backoff, health, and terminal-removal path. No parallel quarantine map or
+authority-specific cancellation algorithm exists. Callback reconciliation first
+classifies the cached NT observation into one exhaustive missing, working,
+pending-cancel, or terminal value; authority recovery and cancellation reduction
+then consume that value in separate steps. Lifecycle-bound cancellation uses an
+explicit binding method over the same event reducer, not an optional lifecycle
+tuple selecting a second mutation path.
+
+An unmatched terminal outcome is split exhaustively by disposition. `Filled`
+and `Voided` are money-moving; absence of their per-order authority sets typed
+unhealthy registry state, requests cancellation for every exact matching active
+scope, and moves each identifiable affected leg into a non-routing poisoned
+hold. No later registration or quote submit is permitted. `Denied`, `Rejected`,
+`Canceled`, and `Expired` are non-money dispositions and may be dropped only
+with a loud diagnostic. There is no catch-all and no WARN-plus-`Ok(())` path for
+lost money-moving truth.
+
+Wind-down is a latched fact in the reducer enum, not caller-owned state or a
+boolean side channel. Its closed sub-state can represent idle,
+cancel-pending, poisoned reconciliation, and the in-flight arm/sink phases, but
+has no replacement-pending variant and carries no replacement obligation after
+poisoning. Every later route, unwind, lifecycle, and terminal transition is
+therefore reduced under wind-down; every terminal disposition retires the leg
+to wind-down idle, releases retained prepaid capacity, and leaves later quote
+triggers unable to submit.
+
+The aggregate stop horizon follows the same capability rule. The former public
+begin/finalize verbs do not exist: latching drain atomically closes registration
+and mints one opaque generation-bound capability. Only that capability can
+repeat cancellation requests, prove the active map empty, invoke component-stop
+finality, and reopen registration on a later component start. The exact
+lifecycle-scope closure path constructs the other horizon capability internally;
+the horizon reducer itself is private, so an arbitrary caller cannot erase
+retained authority while routing remains open.
 
 The dormant event-fence reconciliation functions are pre-existing #817 surface
 whose module also carries load-bearing maker identity types; this slice

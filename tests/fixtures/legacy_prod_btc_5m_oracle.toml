@@ -348,7 +348,6 @@ provider_collateral_allowance_poll_interval_ms = 1000
 transport_backend = "sockudo"
 
 [clients.polymarket_main.execution.economics]
-economics_slice = "quote_only"
 routing_attachment_policy = "forbidden"
 reporting_policy = "primary-pnl"
 quote_refresh_secs = 30
@@ -395,7 +394,7 @@ from_unit = "pUSD"
 to_currency = "USD"
 legs = [
   { authority = "provider_exact_conversion", from_kind = "currency", from_unit = "pUSD", to_unit = "USDC.e", source_id = "collateral", max_age_ms = 300000 },
-  { authority = "market_quote", from_kind = "currency", from_unit = "USDC.e", source_currency = "USDC", to_unit = "USD", valuation_policy = "top_of_book_midpoint", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
+  { authority = "market_quote", from_kind = "currency", from_unit = "USDC.e", source_currency = "USDC", to_unit = "USD", client_id = "coinbase_data", instrument_id = "USDC-USD.COINBASE", orientation = "base_to_quote", max_age_ms = 60000 },
 ]
 
 

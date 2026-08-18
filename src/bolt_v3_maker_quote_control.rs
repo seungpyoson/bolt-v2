@@ -7,10 +7,10 @@
 use crate::{
     bolt_v3_numeric::{is_non_negative_finite, sanitize_open_probability},
     bolt_v3_quote_lifecycle::{
-        Leg, LegEvent, LegState, LifecycleAction, MarketAction, MarketQuote,
-        QuoteLegTransitionProposal,
+        Leg, LegEvent, LegState, LifecycleAction, MakerQuoteBudgetProposal, MarketAction,
+        MarketQuote, QuoteLegTransitionProposal,
     },
-    bolt_v3_requote_budget::{RequoteBudgetPair, RequoteBudgetReservationProposal},
+    bolt_v3_requote_budget::RequoteBudgetPair,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,12 +47,6 @@ pub struct MakerQuoteCommandProposal {
     pub budget: MakerQuoteBudgetProposal,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MakerQuoteBudgetProposal {
-    Reserve(RequoteBudgetReservationProposal),
-    Prepaid { generation: u64, now_ms: u64 },
-}
-
 pub fn drive_quote_leg(
     market: &mut MarketQuote,
     budget: &mut RequoteBudgetPair,
@@ -81,19 +75,13 @@ pub fn drive_quote_leg(
         .map(|price| (desired_price - price).abs() >= input.requote_threshold)
         .unwrap_or(true);
     let lifecycle = market.propose_leg_event(input.leg, LegEvent::QuoteTrigger { requote_needed });
-    let action = lifecycle.map(|proposal| MarketAction::Leg {
-        leg: proposal.leg(),
-        action: proposal.action(),
-    });
-
-    let proposal = if let Some(market_action) = action {
-        let Some(budget_proposal) = propose_action_budget(
-            market,
-            budget,
-            input.now_ms,
-            market_action,
-            Some(lifecycle.expect("an action must carry a lifecycle proposal")),
-        ) else {
+    let (action, proposal) = if let Some(lifecycle) = lifecycle {
+        let action = MarketAction::Leg {
+            leg: lifecycle.leg(),
+            action: lifecycle.action(),
+        };
+        let Some(budget_proposal) = propose_action_budget(market, budget, input.now_ms, lifecycle)
+        else {
             return QuoteControlDecision {
                 action: None,
                 proposal: None,
@@ -101,13 +89,16 @@ pub fn drive_quote_leg(
                 requote_needed,
             };
         };
-        Some(MakerQuoteCommandProposal {
-            action: market_action,
-            lifecycle: lifecycle.expect("an action must carry a lifecycle proposal"),
-            budget: budget_proposal,
-        })
+        (
+            Some(action),
+            Some(MakerQuoteCommandProposal {
+                action,
+                lifecycle,
+                budget: budget_proposal,
+            }),
+        )
     } else {
-        None
+        (None, None)
     };
     QuoteControlDecision {
         action,
@@ -123,34 +114,22 @@ pub fn drive_quote_leg(
 /// the submit-command budget and the REST-call budget can never be collapsed
 /// into a single window:
 /// - `Submit` — a fresh post-only quote: one submit command + one REST call.
-/// - `Cancel` — the cancel+resubmit reprice path (modify-unsupported venues).
-///   The WHOLE round-trip (one submit command + two REST calls) is reserved up
-///   front, so a cancel can never be emitted without the budget to resubmit and
-///   strand the side. The replacement submit is driven later by the `Canceled`
-///   confirmation, not by this gate, so it is never charged twice.
+/// - `Cancel` to `RequotePending` — the cancel+resubmit reprice path. The WHOLE
+///   round-trip (one submit command + two REST calls) is reserved up front.
+/// - `Cancel` to any terminal/non-requote state — a standalone cancel: one REST
+///   call, with no replacement capacity to retain.
 /// - `Modify` — an in-place amend (modify-capable venues): one REST call and no
 ///   submit command — the same cost class as a standalone cancel.
 ///
-/// `on_leg_event` only ever yields a per-leg [`MarketAction::Leg`]; the
-/// market-wide cancel-scope variants (`CancelAllBothLegs`, `CancelAllOneSide`)
-/// are budgeted by the governor/drain path, never this per-leg gate. They are
-/// structurally unreachable here, so the arm refuses outright (charges nothing,
-/// emits nothing) rather than under-charge a multi-order cancel as one REST call.
+/// This boundary accepts only the lifecycle proposal minted for one leg, so a
+/// market-wide cancel scope cannot be represented here.
 fn propose_action_budget(
     market: &MarketQuote,
     budget: &RequoteBudgetPair,
     now_ms: u64,
-    action: MarketAction,
-    lifecycle: Option<QuoteLegTransitionProposal>,
+    lifecycle: QuoteLegTransitionProposal,
 ) -> Option<MakerQuoteBudgetProposal> {
-    let lifecycle_action = match action {
-        MarketAction::Leg { action, .. } => action,
-        MarketAction::CancelAllBothLegs | MarketAction::CancelAllOneSide { .. } => {
-            return None;
-        }
-    };
-    let lifecycle = lifecycle?;
-    match lifecycle_action {
+    match lifecycle.action() {
         LifecycleAction::Submit
             if lifecycle.prior_state() == LegState::ReplacementPendingBackoff =>
         {
@@ -168,8 +147,12 @@ fn propose_action_budget(
             .propose_fresh_submit(now_ms)
             .ok()
             .map(MakerQuoteBudgetProposal::Reserve),
-        LifecycleAction::Cancel => budget
+        LifecycleAction::Cancel if lifecycle.pending_state() == LegState::RequotePending => budget
             .propose_cancel_resubmit(now_ms)
+            .ok()
+            .map(MakerQuoteBudgetProposal::Reserve),
+        LifecycleAction::Cancel => budget
+            .propose_rest(now_ms)
             .ok()
             .map(MakerQuoteBudgetProposal::Reserve),
         LifecycleAction::Modify => budget
@@ -205,7 +188,7 @@ mod tests {
     }
 
     fn resting_market(supports_modify: bool, leg: Leg) -> MarketQuote {
-        let mut market = MarketQuote::new(supports_modify);
+        let mut market = MarketQuote::new_for_test(supports_modify);
         market.on_leg_event(
             leg,
             LegEvent::QuoteTrigger {
@@ -230,7 +213,7 @@ mod tests {
 
     #[test]
     fn fresh_submit_planning_proposes_without_advancing_or_charging() {
-        let mut market = MarketQuote::new(false);
+        let mut market = MarketQuote::new_for_test(false);
         let mut budget = pair(1, 8);
         let decision = drive_quote_leg(
             &mut market,
@@ -357,41 +340,5 @@ mod tests {
         assert_eq!(market.leg_state(Leg::Yes), LegState::Resting);
         assert_eq!(budget.outstanding_submit_cost(), 0);
         assert_eq!(budget.outstanding_rest_cost(), 0);
-    }
-
-    #[test]
-    fn the_market_wide_cancel_arm_fails_closed_and_charges_nothing() {
-        // reserve_action_budget's match is exhaustive over MarketAction, but the
-        // market-wide cancel variants never arrive here: on_leg_event only ever yields
-        // MarketAction::Leg, and CancelAllBothLegs / CancelAllOneSide originate in
-        // drain()/cancel_one_side(), outside this per-leg gate. The arm is therefore
-        // structurally unreachable; this pins its fail-closed contract so a future
-        // refactor that accidentally routed a market-wide cancel through this gate is
-        // REFUSED (charging and emitting nothing) rather than silently under-charging
-        // a multi-order cancel as a single REST call. The prior behavior charged one
-        // REST and allowed, so this test also fails against that pre-fix variant.
-        let budget = pair(8, 8);
-        assert!(
-            propose_action_budget(
-                &MarketQuote::new(false),
-                &budget,
-                NOW,
-                MarketAction::CancelAllBothLegs,
-                None,
-            )
-            .is_none()
-        );
-        assert!(
-            propose_action_budget(
-                &MarketQuote::new(false),
-                &budget,
-                NOW,
-                MarketAction::CancelAllOneSide { leg: Leg::Yes },
-                None,
-            )
-            .is_none()
-        );
-        assert_eq!(budget.submit_commands_in_window(), 0);
-        assert_eq!(budget.rest_cost_in_window(), 0);
     }
 }

@@ -5,7 +5,6 @@ use crate::support;
 const MARKET_KEY: &str = "eth-static-event";
 
 use bolt_v2::{
-    bolt_v3_config::ReferencePriceProvider,
     bolt_v3_current_evidence::{
         AdmissionDecisionOutcome, DecisionEvidenceRecorder, EvidenceRequoteLeg,
         RequoteActionCostClass, RequoteThrottleBlockReason, RequoteThrottleBound,
@@ -14,7 +13,9 @@ use bolt_v2::{
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig, UsableMu},
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
-    bolt_v3_maker_order_dispatch::{MakerOrderDispatchOutcome, MakerQuoteTransactionContext},
+    bolt_v3_maker_order_dispatch::{
+        MakerOrderCommandAuthority, MakerOrderDispatchOutcome, MakerQuoteTransactionContext,
+    },
     bolt_v3_maker_order_plan::MakerLegBinding,
     bolt_v3_maker_quote_control::{QuoteControlInput, drive_quote_leg},
     bolt_v3_maker_quote_plan::{MakerQuotePlanInputs, plan_maker_quote_targets},
@@ -22,10 +23,9 @@ use bolt_v2::{
     bolt_v3_maker_risk::{MakerLossRiskPolicy, MakerRiskBlockReason, MakerRiskMode},
     bolt_v3_maker_runtime_quote::{
         MakerRuntimeOrderPlanInput, MakerRuntimeQuoteBlockReason, MakerRuntimeQuoteSetInput,
-        MakerRuntimeReferenceFairValueBlockReason,
     },
     bolt_v3_market_families::{
-        FairProbabilityInputs, MarketSelectionOutcome, MarketSelectionTarget,
+        MarketSelectionOutcome, MarketSelectionTarget,
         market_selection_candidate_windows_from_target, static_binary_event, updown,
     },
     bolt_v3_order_execution::{BoltV3OrderExecutionPolicy, BoltV3TerminalValueEntry},
@@ -33,21 +33,12 @@ use bolt_v2::{
     bolt_v3_quote_lifecycle::{
         Leg, LegEvent, LifecycleAction, MarketAction, MarketQuote, MarketState,
     },
-    bolt_v3_realized_volatility::{
-        RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
-        RealizedVolSnapshot,
-    },
-    bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
     bolt_v3_strategy_context::StrategyBuildContext,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
-    bolt_v3_timestamp_domain::LocalReceiveMs,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::{
         BinaryOracleMaker, BinaryOracleMakerConfig, BinaryOracleMakerLifecycleError,
-        BinaryOracleMakerReferenceFairValueInput, BinaryOracleMakerRiskRouteInput,
-        BinaryOracleMakerRuntimeQuoteRouteInput, BinaryOracleMakerRuntimeReferenceQuoteBlockReason,
-        BinaryOracleMakerRuntimeReferenceQuoteRouteInput, BinaryOracleMakerStrikePrice,
-        mu::MakerMuState,
+        BinaryOracleMakerRiskRouteInput, BinaryOracleMakerRuntimeQuoteRouteInput, mu::MakerMuState,
     },
 };
 use nautilus_common::{
@@ -64,79 +55,26 @@ use nautilus_model::{
     data::TradeTick,
     enums::{AggressorSide, OrderSide, OrderType, TimeInForce},
     events::OrderEventAny,
-    identifiers::{
-        AccountId, ClientOrderId, InstrumentId, StrategyId, TradeId, TraderId, Venue, VenueOrderId,
-    },
-    orders::{LimitOrder, Order, OrderAny, stubs::TestOrderEventStubs},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, TradeId, TraderId, Venue, VenueOrderId},
+    orders::{OrderAny, stubs::TestOrderEventStubs},
     types::{Price, Quantity},
 };
 use nautilus_portfolio::portfolio::Portfolio;
 use nautilus_system::{ClockFactory, trader::Trader};
 use nautilus_trading::{Strategy, StrategyNative};
 use rust_decimal::Decimal;
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
-
-const TEST_REFERENCE_ASSET: &str = "ETH";
-const TEST_REALIZED_VOL_SURFACE_ID: &str = "maker_reference_surface";
-const TEST_REALIZED_VOL_SOURCE_ID: &str = "maker_reference_rv";
-
-fn bound_strike<'a>(
-    market_key: &'a str,
-    underlying_asset: &'a str,
-    interval_start_ms: u64,
-    price: f64,
-) -> BinaryOracleMakerStrikePrice<'a> {
-    BinaryOracleMakerStrikePrice::try_new(market_key, underlying_asset, interval_start_ms, price)
-        .expect("strike fixture should be valid")
-}
-
-#[test]
-fn maker_strike_accepts_a_canonical_market_key_with_internal_whitespace() {
-    let strike = BinaryOracleMakerStrikePrice::try_new("eth 1h", "ETH", 1_000, 100.0)
-        .expect("stable market identities permit internal whitespace");
-    assert_eq!(strike.market_key(), "eth 1h");
-}
-
-fn ready_realized_vol_snapshot(as_of_ms: u64, realized_vol: f64) -> RealizedVolSnapshot {
-    RealizedVolSnapshot {
-        surface_id: TEST_REALIZED_VOL_SURFACE_ID.to_string(),
-        as_of_ms,
-        latest_accepted_receive_ms: Some(bolt_v2::bolt_v3_timestamp_domain::LocalReceiveMs::new(
-            as_of_ms,
-        )),
-        annualized_realized_vol_decimal: Some(realized_vol),
-        measured_annualized_realized_vol_decimal: Some(realized_vol),
-        noise_robust_annualized_realized_vol_decimal: Some(realized_vol),
-        continuous_annualized_realized_vol_decimal: Some(realized_vol),
-        jump_annualized_realized_vol_decimal: Some(0.0),
-        forecast_annualized_realized_vol_decimal: None,
-        pricing_component: RealizedVolPricingComponent::Measured,
-        ready: true,
-        sources_used: vec![TEST_REALIZED_VOL_SOURCE_ID.to_string()],
-        source_diagnostics: Vec::new(),
-        horizon_estimates: Vec::new(),
-        unknown_source_rejections: BTreeMap::new(),
-        blocked_reasons: Vec::<RealizedVolBlockReason>::new(),
-        aggregate_method: RealizedVolAggregation::UpperQuantile { quantile: 1.0 },
-        seconds_per_annum: 31_536_000.0,
-        config_fingerprint: String::new(),
-    }
-}
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 #[test]
 fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
-    let mut maker = BinaryOracleMaker::new(
-        maker_config(),
-        maker_context(writer.recorder(), admission.clone()),
-    );
-    register_maker_for_order_factory(&mut maker);
+    let (mut maker, _cache) = maker_with_active_static_market(writer.recorder(), admission.clone());
     let command = MakerCompiledOrderCommand::Submit {
         leg: Leg::Yes,
         template: Box::new(maker_limit_post_only_template()),
         inputs: NtOrderBuildInputs {
-            instrument_id: InstrumentId::from("YES.RUNTIME"),
+            instrument_id: InstrumentId::from(RUNTIME_YES_INSTRUMENT),
             order_side: OrderSide::Buy,
             quantity: Quantity::new(2.0, 2),
             price: Some(Price::new(0.40, 2)),
@@ -156,7 +94,11 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
                 )
                 .expect("maker terminal value should construct"),
             ),
-            Some(fresh_quote_transaction_context(Leg::Yes)),
+            MakerOrderCommandAuthority::Quote(quote_transaction_context_for_active_market(
+                &maker,
+                RUNTIME_MARKET_KEY,
+                Leg::Yes,
+            )),
         )
         .expect("maker submit should route through shared execution context");
 
@@ -164,7 +106,7 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
         outcome,
         MakerOrderDispatchOutcome::policy_skipped_for_test(
             Leg::Yes,
-            InstrumentId::from("YES.RUNTIME"),
+            InstrumentId::from(RUNTIME_YES_INSTRUMENT),
             ClientOrderId::from("MAKER-YES-1"),
             Price::new(0.40, 2),
             Quantity::new(2.0, 2),
@@ -195,19 +137,83 @@ fn maker_runtime_submit_routes_through_shared_context_in_shadow() {
 }
 
 #[test]
-fn maker_submit_without_terminal_value_fails_before_order_evidence() {
+fn maker_command_rejects_quote_authority_without_an_active_lifecycle_scope() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
-    let mut maker = BinaryOracleMaker::new(
-        maker_config(),
-        maker_context(writer.recorder(), admission.clone()),
-    );
-    register_maker_for_order_factory(&mut maker);
+    let (mut maker, _cache) = maker_with_active_static_market(writer.recorder(), admission.clone());
     let command = MakerCompiledOrderCommand::Submit {
         leg: Leg::Yes,
         template: Box::new(maker_limit_post_only_template()),
         inputs: NtOrderBuildInputs {
-            instrument_id: InstrumentId::from("YES.RUNTIME"),
+            instrument_id: InstrumentId::from("UNSCOPED.RUNTIME"),
+            order_side: OrderSide::Buy,
+            quantity: Quantity::new(2.0, 2),
+            price: Some(Price::new(0.40, 2)),
+            client_order_id: ClientOrderId::from("MAKER-UNSCOPED-1"),
+        },
+        fallback_price: Price::new(0.40, 2),
+    };
+
+    let error = maker
+        .route_maker_order_command(
+            &command,
+            "maker_submit",
+            Some(
+                BoltV3TerminalValueEntry::try_new(
+                    Decimal::new(9, 1),
+                    bolt_v2::bolt_v3_order_execution::BoltV3TerminalValueEntryPolicy::Breakeven,
+                )
+                .expect("maker terminal value should construct"),
+            ),
+            MakerOrderCommandAuthority::Quote(fresh_quote_transaction_context(Leg::Yes)),
+        )
+        .expect_err("a quote-bearing command without one active scope must fail admission");
+
+    assert_eq!(
+        error.kind(),
+        bolt_v2::bolt_v3_maker_order_dispatch::MakerOrderCommandFailureKind::LifecycleScope
+    );
+    assert!(error.diagnostic().contains("scope"));
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert!(writer.records().is_empty());
+
+    let missing_authority = maker
+        .route_maker_order_command(
+            &command,
+            "maker_submit",
+            Some(
+                BoltV3TerminalValueEntry::try_new(
+                    Decimal::new(9, 1),
+                    bolt_v2::bolt_v3_order_execution::BoltV3TerminalValueEntryPolicy::Breakeven,
+                )
+                .expect("maker terminal value should construct"),
+            ),
+            MakerOrderCommandAuthority::ScopeCancelAll,
+        )
+        .expect_err("a quote-bearing command cannot omit its typed lifecycle authority");
+    assert_eq!(
+        missing_authority.kind(),
+        bolt_v2::bolt_v3_maker_order_dispatch::MakerOrderCommandFailureKind::LifecycleScope
+    );
+    assert!(
+        missing_authority
+            .diagnostic()
+            .contains("lifecycle authority")
+    );
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert!(writer.records().is_empty());
+}
+
+#[test]
+fn maker_submit_without_terminal_value_fails_before_order_evidence() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let (mut maker, _cache) = maker_with_active_static_market(writer.recorder(), admission.clone());
+    let command = MakerCompiledOrderCommand::Submit {
+        leg: Leg::Yes,
+        template: Box::new(maker_limit_post_only_template()),
+        inputs: NtOrderBuildInputs {
+            instrument_id: InstrumentId::from(RUNTIME_YES_INSTRUMENT),
             order_side: OrderSide::Buy,
             quantity: Quantity::new(2.0, 2),
             price: Some(Price::new(0.40, 2)),
@@ -221,7 +227,11 @@ fn maker_submit_without_terminal_value_fails_before_order_evidence() {
             &command,
             "maker_submit",
             None,
-            Some(fresh_quote_transaction_context(Leg::Yes)),
+            MakerOrderCommandAuthority::Quote(quote_transaction_context_for_active_market(
+                &maker,
+                RUNTIME_MARKET_KEY,
+                Leg::Yes,
+            )),
         )
         .expect_err("maker submit without terminal value must fail closed");
 
@@ -236,7 +246,7 @@ fn maker_submit_without_terminal_value_fails_before_order_evidence() {
 }
 
 fn fresh_quote_transaction_context(leg: Leg) -> MakerQuoteTransactionContext {
-    let mut market = MarketQuote::new(false);
+    let mut market = MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
     let decision = drive_quote_leg(
@@ -258,12 +268,52 @@ fn fresh_quote_transaction_context(leg: Leg) -> MakerQuoteTransactionContext {
     }
 }
 
+fn quote_transaction_context_for_active_market(
+    maker: &BinaryOracleMaker,
+    market_key: &str,
+    leg: Leg,
+) -> MakerQuoteTransactionContext {
+    let mut market = market_quote_for_active_market(maker, market_key, false);
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+    let decision = drive_quote_leg(
+        &mut market,
+        &mut budget,
+        QuoteControlInput {
+            leg,
+            desired_price: 0.5,
+            resting_price: None,
+            requote_threshold: 0.01,
+            eps: 1e-9,
+            now_ms: 0,
+        },
+    );
+    MakerQuoteTransactionContext {
+        market,
+        budget,
+        proposal: decision.proposal.expect("fresh quote must be proposed"),
+    }
+}
+
+fn market_quote_for_active_market(
+    maker: &BinaryOracleMaker,
+    market_key: &str,
+    supports_modify: bool,
+) -> MarketQuote {
+    let scope_identity = maker
+        .runtime()
+        .market(market_key)
+        .expect("market quote fixture requires an active market")
+        .order_lifecycle_scope_identity();
+    MarketQuote::new(scope_identity, supports_modify)
+}
+
 #[test]
 fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let (mut maker, _cache) = maker_with_active_static_market(writer.recorder(), admission.clone());
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = market_quote_for_active_market(&maker, RUNTIME_MARKET_KEY, false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
 
@@ -379,7 +429,7 @@ fn maker_runtime_quote_records_requote_throttle_once_per_blocked_leg_edge() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let (mut maker, _cache) = maker_with_active_static_market(writer.recorder(), admission.clone());
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = market_quote_for_active_market(&maker, RUNTIME_MARKET_KEY, false);
     let mut budget = build_requote_budget_pair("1/00:01:00", 100, 500)
         .expect("one-submit budget fixture builds");
     seed_emitted_yes_submit(&mut market, &budget, RUNTIME_NOW_MS);
@@ -438,7 +488,7 @@ fn maker_runtime_quote_rejects_an_inactive_market_before_planning() {
     let mut maker =
         BinaryOracleMaker::new(maker_config(), maker_context(writer.recorder(), admission));
     register_maker_for_order_factory(&mut maker);
-    let mut market = MarketQuote::new(false);
+    let mut market = MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("ample requote budget fixture builds");
 
@@ -494,7 +544,7 @@ fn maker_run_quote_cycle_rejects_an_inactive_market_without_mutation() {
         maker_context(writer.recorder(), admission.clone()),
     );
     register_maker_for_order_factory(&mut maker);
-    let mut market = MarketQuote::new(false);
+    let mut market = MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("ample requote budget fixture builds");
     let submit_template = maker_limit_post_only_template();
@@ -531,7 +581,7 @@ fn maker_runtime_quote_rejects_a_family_mismatch_before_planning() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let (mut maker, _cache) = maker_with_active_static_market(writer.recorder(), admission);
-    let mut market = MarketQuote::new(false);
+    let mut market = MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("ample requote budget fixture builds");
 
@@ -565,7 +615,7 @@ fn maker_run_quote_cycle_rejects_a_family_mismatch_before_minting_identities() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let (mut maker, _cache) = maker_with_active_static_market(writer.recorder(), admission);
-    let mut market = MarketQuote::new(false);
+    let mut market = MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("ample requote budget fixture builds");
     let submit_template = maker_limit_post_only_template();
@@ -620,7 +670,7 @@ fn maker_run_quote_cycle_waits_for_a_preloaded_next_window_without_mutation() {
         "the future fixture must have a valid half-open quote window"
     );
 
-    let mut market = MarketQuote::new(false);
+    let mut market = MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("ample requote budget fixture builds");
     let submit_template = maker_limit_post_only_template();
@@ -685,7 +735,7 @@ fn maker_runtime_quote_blocks_timestamps_outside_the_active_window_before_mutati
         } else {
             interval_start_ms - 1
         };
-        let mut market = MarketQuote::new(false);
+        let mut market = MarketQuote::new_for_test(false);
         let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
             .expect("ample requote budget fixture builds");
 
@@ -760,7 +810,7 @@ fn maker_run_quote_cycle_waits_for_timestamps_outside_the_active_window_before_m
         } else {
             interval_start_ms - 1
         };
-        let mut market = MarketQuote::new(false);
+        let mut market = MarketQuote::new_for_test(false);
         let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
             .expect("ample requote budget fixture builds");
         let submit_template = maker_limit_post_only_template();
@@ -800,383 +850,6 @@ fn maker_run_quote_cycle_waits_for_timestamps_outside_the_active_window_before_m
     }
 }
 
-#[test]
-fn maker_runtime_reference_quote_rejects_an_inactive_market_before_fair_value() {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
-    let mut maker =
-        BinaryOracleMaker::new(maker_config(), maker_context(writer.recorder(), admission));
-    register_maker_for_order_factory(&mut maker);
-    let realized_volatility_snapshot = ready_realized_vol_snapshot(1_400, 1.5);
-    let mut selector = ReferencePriceSelector::new(
-        TEST_REFERENCE_ASSET,
-        vec!["primary".to_string()],
-        1,
-        100,
-        25,
-    )
-    .expect("selector fixture should be valid");
-    let mut market = MarketQuote::new(false);
-    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
-        .expect("ample requote budget fixture builds");
-
-    let result = maker.route_maker_runtime_reference_quote(
-        MARKET_KEY,
-        &mut market,
-        &mut budget,
-        &mut selector,
-        BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
-            reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
-                reference_quotes: &[],
-                strike: Some(bound_strike(MARKET_KEY, TEST_REFERENCE_ASSET, 1_000, 100.0)),
-                realized_volatility_snapshot: &realized_volatility_snapshot,
-                realized_volatility_max_source_age_ms: None,
-                pricing_kurtosis: 0.25,
-                evaluation_receive_ms: LocalReceiveMs::new(1_500),
-            },
-            quote_plan: quote_plan_inputs(updown::KEY),
-            quote_set: quote_set_inputs(),
-            submit_template: &maker_limit_post_only_template(),
-            price_precision: 2,
-            quantity_precision: 2,
-            submit_order_prefix: "maker_submit",
-        },
-    );
-
-    assert!(
-        result.is_err(),
-        "inactive ownership must fail before even a no-fair-value decision"
-    );
-    assert_eq!(market.market_state(), MarketState::Idle);
-    assert_eq!(budget.submit_commands_in_window(), 0);
-    assert_eq!(budget.rest_cost_in_window(), 0);
-    assert!(writer.records().is_empty());
-    assert!(writer.requote_throttles().is_empty());
-}
-
-#[test]
-fn maker_runtime_reference_quote_rejects_a_family_mismatch_before_fair_value() {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
-    let (mut maker, _cache) = maker_with_active_static_market(writer.recorder(), admission);
-    let quotes = [reference_quote(
-        TEST_REFERENCE_ASSET,
-        "primary",
-        100.05,
-        1_490,
-    )];
-    let realized_volatility_snapshot = ready_realized_vol_snapshot(1_400, 1.5);
-    let mut selector = ReferencePriceSelector::new(
-        TEST_REFERENCE_ASSET,
-        vec!["primary".to_string()],
-        1,
-        100,
-        25,
-    )
-    .expect("selector fixture should be valid");
-    let mut market = MarketQuote::new(false);
-    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
-        .expect("ample requote budget fixture builds");
-
-    let result = maker.route_maker_runtime_reference_quote(
-        MARKET_KEY,
-        &mut market,
-        &mut budget,
-        &mut selector,
-        BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
-            reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
-                reference_quotes: &quotes,
-                strike: Some(bound_strike(MARKET_KEY, TEST_REFERENCE_ASSET, 1_000, 100.0)),
-                realized_volatility_snapshot: &realized_volatility_snapshot,
-                realized_volatility_max_source_age_ms: None,
-                pricing_kurtosis: 0.25,
-                evaluation_receive_ms: LocalReceiveMs::new(1_500),
-            },
-            quote_plan: quote_plan_inputs(updown::KEY),
-            quote_set: quote_set_inputs(),
-            submit_template: &maker_limit_post_only_template(),
-            price_precision: 2,
-            quantity_precision: 2,
-            submit_order_prefix: "maker_submit",
-        },
-    );
-
-    assert!(
-        result.is_err(),
-        "reference pricing must not use a caller family that disagrees with the runtime"
-    );
-    assert_eq!(market.market_state(), MarketState::Idle);
-    assert_eq!(budget.submit_commands_in_window(), 0);
-    assert_eq!(budget.rest_cost_in_window(), 0);
-    assert!(writer.records().is_empty());
-    assert!(writer.requote_throttles().is_empty());
-}
-
-#[test]
-fn maker_runtime_reference_quote_rejects_a_selector_for_another_asset() {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
-    let (mut maker, _cache) = maker_with_active_updown_market(writer.recorder(), admission);
-    let interval_start_ms = maker
-        .runtime()
-        .market(MARKET_KEY)
-        .expect("the updown runtime market is active")
-        .start_timestamp_milliseconds();
-    let quotes = [reference_quote(
-        "BTC",
-        "primary",
-        100.05,
-        RUNTIME_NOW_MS - 10,
-    )];
-    let realized_volatility_snapshot = ready_realized_vol_snapshot(RUNTIME_NOW_MS - 100, 1.5);
-    let mut selector = ReferencePriceSelector::new("BTC", vec!["primary".to_string()], 1, 100, 25)
-        .expect("foreign selector fixture should be valid");
-    let mut market = MarketQuote::new(false);
-    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
-        .expect("ample requote budget fixture builds");
-    let mut quote_set = quote_set_inputs();
-    quote_set.now_ms = RUNTIME_NOW_MS;
-
-    let result = maker.route_maker_runtime_reference_quote(
-        MARKET_KEY,
-        &mut market,
-        &mut budget,
-        &mut selector,
-        BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
-            reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
-                reference_quotes: &quotes,
-                strike: Some(bound_strike(
-                    MARKET_KEY,
-                    RUNTIME_UPDOWN_ASSET,
-                    interval_start_ms,
-                    100.0,
-                )),
-                realized_volatility_snapshot: &realized_volatility_snapshot,
-                realized_volatility_max_source_age_ms: None,
-                pricing_kurtosis: 0.25,
-                evaluation_receive_ms: LocalReceiveMs::new(RUNTIME_NOW_MS),
-            },
-            quote_plan: quote_plan_inputs(updown::KEY),
-            quote_set,
-            submit_template: &maker_limit_post_only_template(),
-            price_precision: 2,
-            quantity_precision: 2,
-            submit_order_prefix: "maker_submit",
-        },
-    );
-
-    assert!(
-        result.is_err(),
-        "reference selector asset must match the active runtime market"
-    );
-    assert_eq!(market.market_state(), MarketState::Idle);
-    assert_eq!(budget.submit_commands_in_window(), 0);
-    assert_eq!(budget.rest_cost_in_window(), 0);
-    assert!(writer.records().is_empty());
-    assert!(writer.requote_throttles().is_empty());
-}
-
-#[test]
-fn maker_runtime_reference_quote_rejects_a_strike_from_another_market_asset_or_window() {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
-    let (mut maker, _cache) = maker_with_active_updown_market(writer.recorder(), admission);
-    let runtime_market = maker
-        .runtime()
-        .market(MARKET_KEY)
-        .expect("the updown runtime market is active");
-    let interval_start_ms = runtime_market.start_timestamp_milliseconds();
-    let quotes = [reference_quote(
-        TEST_REFERENCE_ASSET,
-        "primary",
-        100.05,
-        RUNTIME_NOW_MS - 10,
-    )];
-    let foreign_strikes = [
-        (
-            "market",
-            bound_strike(
-                "other-market",
-                RUNTIME_UPDOWN_ASSET,
-                interval_start_ms,
-                100.0,
-            ),
-        ),
-        (
-            "asset",
-            bound_strike(MARKET_KEY, "BTC", interval_start_ms, 100.0),
-        ),
-        (
-            "window",
-            bound_strike(
-                MARKET_KEY,
-                RUNTIME_UPDOWN_ASSET,
-                interval_start_ms + 1,
-                100.0,
-            ),
-        ),
-    ];
-    let realized_volatility_snapshot = ready_realized_vol_snapshot(RUNTIME_NOW_MS - 100, 1.5);
-    let mut selector = ReferencePriceSelector::new(
-        TEST_REFERENCE_ASSET,
-        vec!["primary".to_string()],
-        1,
-        100,
-        25,
-    )
-    .expect("selector fixture should be valid");
-    let mut market = MarketQuote::new(false);
-    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
-        .expect("ample requote budget fixture builds");
-    for (mismatch, foreign_strike) in foreign_strikes {
-        let mut quote_set = quote_set_inputs();
-        quote_set.now_ms = RUNTIME_NOW_MS;
-        let error = maker
-            .route_maker_runtime_reference_quote(
-                MARKET_KEY,
-                &mut market,
-                &mut budget,
-                &mut selector,
-                BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
-                    reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
-                        reference_quotes: &quotes,
-                        strike: Some(foreign_strike),
-                        realized_volatility_snapshot: &realized_volatility_snapshot,
-                        realized_volatility_max_source_age_ms: None,
-                        pricing_kurtosis: 0.25,
-                        evaluation_receive_ms: LocalReceiveMs::new(RUNTIME_NOW_MS),
-                    },
-                    quote_plan: quote_plan_inputs(updown::KEY),
-                    quote_set,
-                    submit_template: &maker_limit_post_only_template(),
-                    price_precision: 2,
-                    quantity_precision: 2,
-                    submit_order_prefix: "maker_submit",
-                },
-            )
-            .expect_err("a foreign strike must fail before fair-value pricing");
-        assert!(
-            error.to_string().contains(mismatch),
-            "the failure must identify the mismatched strike field: {error:#}"
-        );
-    }
-
-    assert_eq!(market.market_state(), MarketState::Idle);
-    assert_eq!(budget.submit_commands_in_window(), 0);
-    assert_eq!(budget.rest_cost_in_window(), 0);
-    assert!(writer.records().is_empty());
-    assert!(writer.requote_throttles().is_empty());
-}
-
-#[test]
-fn maker_runtime_reference_quote_blocks_an_unavailable_window_without_touching_the_selector() {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
-    let (mut maker, _cache) = maker_with_active_updown_market(writer.recorder(), admission.clone());
-    record_one_budget_block_for_family(&mut maker, MARKET_KEY, updown::KEY);
-    let records_before_wait = writer.records().len();
-    let throttles_before_wait = writer.requote_throttles().len();
-    let admissions_before_wait = admission.admitted_order_count();
-    assert_eq!(throttles_before_wait, 1, "the test must seed one episode");
-    let runtime_market = maker
-        .runtime()
-        .market(MARKET_KEY)
-        .expect("the updown runtime market is active");
-    let interval_start_ms = runtime_market.start_timestamp_milliseconds();
-    let interval_end_ms = runtime_market.expiration_timestamp_milliseconds();
-    let quotes = [
-        reference_quote(
-            TEST_REFERENCE_ASSET,
-            "primary",
-            100.05,
-            interval_end_ms - 10,
-        ),
-        reference_quote(TEST_REFERENCE_ASSET, "backup", 101.05, interval_end_ms - 10),
-    ];
-    let realized_volatility_snapshot = ready_realized_vol_snapshot(interval_end_ms - 100, 1.5);
-    let mut selector = ReferencePriceSelector::new(
-        TEST_REFERENCE_ASSET,
-        vec!["primary".to_string(), "backup".to_string()],
-        1,
-        100,
-        25,
-    )
-    .expect("selector fixture should be valid");
-    let mut market = MarketQuote::new(false);
-    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
-        .expect("ample requote budget fixture builds");
-    let mut quote_set = quote_set_inputs();
-    quote_set.now_ms = interval_end_ms;
-    assert_eq!(selector.last_cross_source_drift_bps(), None);
-
-    let outcome = maker
-        .route_maker_runtime_reference_quote(
-            MARKET_KEY,
-            &mut market,
-            &mut budget,
-            &mut selector,
-            BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
-                reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
-                    reference_quotes: &quotes,
-                    strike: Some(bound_strike(
-                        MARKET_KEY,
-                        RUNTIME_UPDOWN_ASSET,
-                        interval_start_ms,
-                        100.0,
-                    )),
-                    realized_volatility_snapshot: &realized_volatility_snapshot,
-                    realized_volatility_max_source_age_ms: None,
-                    pricing_kurtosis: 0.25,
-                    evaluation_receive_ms: LocalReceiveMs::new(interval_end_ms),
-                },
-                quote_plan: quote_plan_inputs(updown::KEY),
-                quote_set,
-                submit_template: &maker_limit_post_only_template(),
-                price_precision: 2,
-                quantity_precision: 2,
-                submit_order_prefix: "maker_submit",
-            },
-        )
-        .expect("an unavailable runtime window is a normal blocked reference state");
-
-    assert!(
-        outcome.fair_value.fair_value.is_none(),
-        "an unavailable window must stop before fair-value pricing"
-    );
-    assert_eq!(
-        outcome.fair_value.blocked_by,
-        Some(MakerRuntimeReferenceFairValueBlockReason::RuntimeWindowUnavailable)
-    );
-    assert!(outcome.quote.is_none());
-    assert!(outcome.orders.is_none());
-    assert_eq!(
-        outcome.blocked_by,
-        Some(
-            BinaryOracleMakerRuntimeReferenceQuoteBlockReason::FairValue(
-                MakerRuntimeReferenceFairValueBlockReason::RuntimeWindowUnavailable,
-            )
-        )
-    );
-    assert_eq!(
-        selector.last_cross_source_drift_bps(),
-        None,
-        "the two live quotes would set drift if the selector were evaluated"
-    );
-    assert_eq!(market.market_state(), MarketState::Idle);
-    assert_eq!(budget.submit_commands_in_window(), 0);
-    assert_eq!(budget.rest_cost_in_window(), 0);
-    assert_eq!(writer.records().len(), records_before_wait);
-    assert_eq!(writer.requote_throttles().len(), throttles_before_wait);
-    assert_eq!(admission.admitted_order_count(), admissions_before_wait);
-
-    record_one_budget_block_for_family(&mut maker, MARKET_KEY, updown::KEY);
-    assert_eq!(
-        writer.requote_throttles().len(),
-        throttles_before_wait,
-        "waiting must preserve the existing episode rather than clear and re-emit it"
-    );
-}
-
 /// A blocked leg whose *observation* alternates while its blocked state does not
 /// must still emit one record.
 ///
@@ -1192,7 +865,7 @@ fn maker_runtime_quote_records_one_throttle_while_the_bound_oscillates() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let (mut maker, _cache) = maker_with_active_static_market(writer.recorder(), admission.clone());
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = market_quote_for_active_market(&maker, RUNTIME_MARKET_KEY, false);
     let mut budget = build_requote_budget_pair("1/00:01:00", 100, 500)
         .expect("one-submit budget fixture builds");
     seed_emitted_yes_submit(&mut market, &budget, RUNTIME_NOW_MS);
@@ -1263,7 +936,7 @@ fn maker_runtime_quote_records_each_market_in_a_shared_family() {
 
     // One budget each, because the throttle is per market.
     for market_key in [RUNTIME_MARKET_KEY, RUNTIME_SECOND_MARKET_KEY] {
-        let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+        let mut market = market_quote_for_active_market(&maker, market_key, false);
         let mut budget = build_requote_budget_pair("1/00:01:00", 100, 500)
             .expect("one-submit budget fixture builds");
         seed_emitted_yes_submit(&mut market, &budget, RUNTIME_NOW_MS);
@@ -1305,6 +978,74 @@ fn maker_runtime_quote_records_each_market_in_a_shared_family() {
             .all(|throttle| throttle.family_key == static_binary_event::KEY),
         "the family stays on the record as the category it is: {throttles:#?}"
     );
+}
+
+#[test]
+fn one_market_quote_cannot_bind_to_two_active_lifecycle_scope_identities() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let mut instruments = runtime_static_instruments();
+    instruments.extend(runtime_second_static_instruments());
+    let (mut maker, _cache) = maker_with_active_markets(
+        writer.recorder(),
+        admission,
+        vec![
+            runtime_static_declaration(),
+            runtime_second_static_declaration(),
+        ],
+        instruments,
+    );
+    let submit_template = maker_limit_post_only_template();
+    let mut market = market_quote_for_active_market(&maker, RUNTIME_MARKET_KEY, false);
+    let mut first_budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("first market budget fixture builds");
+
+    maker
+        .route_maker_runtime_quote(
+            RUNTIME_MARKET_KEY,
+            &mut market,
+            &mut first_budget,
+            BinaryOracleMakerRuntimeQuoteRouteInput {
+                quote_plan: quote_plan_inputs(static_binary_event::KEY),
+                quote_set: quote_set_inputs(),
+                submit_template: &submit_template,
+                price_precision: 2,
+                quantity_precision: 2,
+                submit_order_prefix: "maker_submit",
+            },
+        )
+        .expect("the quote authority should bind to its first active scope");
+
+    let mut second_budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("second market budget fixture builds");
+    let error = maker
+        .route_maker_runtime_quote(
+            RUNTIME_SECOND_MARKET_KEY,
+            &mut market,
+            &mut second_budget,
+            BinaryOracleMakerRuntimeQuoteRouteInput {
+                quote_plan: quote_plan_inputs(static_binary_event::KEY),
+                quote_set: quote_set_inputs(),
+                submit_template: &submit_template,
+                price_precision: 2,
+                quantity_precision: 2,
+                submit_order_prefix: "maker_submit",
+            },
+        )
+        .expect_err("one quote authority must not alias two lifecycle scopes");
+
+    assert!(error.to_string().contains("lifecycle scope"));
+    let second = maker
+        .runtime()
+        .market(RUNTIME_SECOND_MARKET_KEY)
+        .expect("the second market remains active");
+    for leg in [Leg::Yes, Leg::No] {
+        assert_eq!(
+            second.leg_binding(leg).next_order,
+            None,
+            "scope rejection must occur before the second market mints an order identity"
+        );
+    }
 }
 
 #[test]
@@ -1413,7 +1154,7 @@ fn maker_runtime_metadata_identity_round_trip_prunes_each_predecessor_episode() 
         .market(RUNTIME_MARKET_KEY)
         .expect("initial metadata identity is active")
         .concrete_identity();
-    let mut market = MarketQuote::new(false);
+    let mut market = market_quote_for_active_market(&maker, RUNTIME_MARKET_KEY, false);
     let mut budget = build_requote_budget_pair("1/00:01:00", 100, 500)
         .expect("one-submit budget fixture builds");
     seed_emitted_yes_submit(&mut market, &budget, RUNTIME_NOW_MS);
@@ -1548,7 +1289,7 @@ fn maker_runtime_quote_records_a_second_block_across_a_cycle_with_no_quote_set()
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
     let (mut maker, _cache) = maker_with_active_static_market(writer.recorder(), admission.clone());
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = market_quote_for_active_market(&maker, RUNTIME_MARKET_KEY, false);
     let mut budget = build_requote_budget_pair("1/00:01:00", 100, 500)
         .expect("one-submit budget fixture builds");
     seed_emitted_yes_submit(&mut market, &budget, RUNTIME_NOW_MS);
@@ -1601,241 +1342,8 @@ fn maker_runtime_quote_records_a_second_block_across_a_cycle_with_no_quote_set()
 }
 
 #[test]
-fn maker_runtime_reference_quote_route_uses_shared_fair_value_inputs_and_blocks_before_quote() {
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
-    let (mut maker, _cache) = maker_with_active_updown_market(writer.recorder(), admission.clone());
-    let runtime_market = maker
-        .runtime()
-        .market(MARKET_KEY)
-        .expect("the updown runtime market is active");
-    let interval_start_ms = runtime_market.start_timestamp_milliseconds();
-    let interval_end_ms = runtime_market.expiration_timestamp_milliseconds();
-    let expected_seconds_to_market_end = interval_end_ms.saturating_sub(RUNTIME_NOW_MS) / 1_000;
-    let quotes = vec![
-        reference_quote(TEST_REFERENCE_ASSET, "primary", 99.0, interval_start_ms),
-        reference_quote(TEST_REFERENCE_ASSET, "backup", 100.05, RUNTIME_NOW_MS - 10),
-    ];
-    let realized_volatility_snapshot = ready_realized_vol_snapshot(RUNTIME_NOW_MS - 100, 1.5);
-    let mut selector = ReferencePriceSelector::new(
-        TEST_REFERENCE_ASSET,
-        vec!["primary".to_string(), "backup".to_string()],
-        1,
-        100,
-        25,
-    )
-    .expect("selector fixture should be valid");
-    let fair_input = BinaryOracleMakerReferenceFairValueInput {
-        reference_quotes: &quotes,
-        strike: Some(bound_strike(
-            MARKET_KEY,
-            RUNTIME_UPDOWN_ASSET,
-            interval_start_ms,
-            100.0,
-        )),
-        realized_volatility_snapshot: &realized_volatility_snapshot,
-        realized_volatility_max_source_age_ms: None,
-        pricing_kurtosis: 0.25,
-        evaluation_receive_ms: LocalReceiveMs::new(RUNTIME_NOW_MS),
-    };
-    let quote_set_at_reference_evaluation = || {
-        let mut quote_set = quote_set_inputs();
-        quote_set.now_ms = RUNTIME_NOW_MS;
-        quote_set
-    };
-    let expected_fair_probability_up = updown::fair_probability_up(&FairProbabilityInputs {
-        spot_price: 100.05,
-        strike_price: fair_input.strike.expect("fixture strike").price(),
-        seconds_to_market_end: expected_seconds_to_market_end,
-        realized_vol: 1.5,
-        pricing_kurtosis: fair_input.pricing_kurtosis,
-    })
-    .expect("updown fixture should price")
-    .value();
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
-    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
-        .expect("well-formed rate config builds a budget");
-
-    let outcome = maker
-        .route_maker_runtime_reference_quote(
-            MARKET_KEY,
-            &mut market,
-            &mut budget,
-            &mut selector,
-            BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
-                reference_fair_value: fair_input,
-                quote_plan: quote_plan_inputs(updown::KEY),
-                quote_set: quote_set_at_reference_evaluation(),
-                submit_template: &maker_limit_post_only_template(),
-                price_precision: 2,
-                quantity_precision: 2,
-                submit_order_prefix: "maker_submit",
-            },
-        )
-        .expect("maker reference quote tick should route through shared context");
-
-    assert_eq!(outcome.blocked_by, None);
-    assert_eq!(outcome.fair_value.blocked_by, None);
-    let fair = outcome
-        .fair_value
-        .fair_value
-        .as_ref()
-        .expect("fresh backup reference current price should price");
-    assert_eq!(fair.spot_price, 100.05);
-    assert_eq!(
-        fair.strike_price,
-        fair_input.strike.expect("fixture strike").price()
-    );
-    assert_eq!(fair.seconds_to_market_end, expected_seconds_to_market_end);
-    assert_eq!(fair.realized_vol, 1.5);
-    assert_eq!(fair.pricing_kurtosis, fair_input.pricing_kurtosis);
-    assert_eq!(fair.reference_current_price, 100.05);
-    assert_eq!(fair.source_id, "backup");
-    assert_eq!(fair.reference_current_price_source_id, "backup");
-    assert_eq!(
-        fair.reference_current_price_observed_ts_ms,
-        RUNTIME_NOW_MS - 10
-    );
-    assert!(fair.failed_over);
-    assert!(fair.reference_current_price_failed_over);
-    assert_eq!(
-        fair.realized_vol_surface_id.as_deref(),
-        Some(TEST_REALIZED_VOL_SURFACE_ID)
-    );
-    assert_eq!(
-        fair.realized_vol_source_venue.as_deref(),
-        Some(TEST_REALIZED_VOL_SOURCE_ID)
-    );
-    assert_eq!(fair.realized_vol_source_ts_ms, Some(RUNTIME_NOW_MS - 100));
-    assert_eq!(fair.fair_probability_up, expected_fair_probability_up);
-    let quote_plan = outcome
-        .quote
-        .as_ref()
-        .and_then(|decision| decision.quote_plan.as_ref())
-        .expect("reference fair value should feed a maker quote plan");
-    assert_eq!(quote_plan.fair_probability_up, expected_fair_probability_up);
-    assert!(
-        outcome.orders.is_some(),
-        "reference-priced quote should dispatch maker orders"
-    );
-    assert_eq!(market.market_state(), MarketState::Idle);
-    assert_eq!(writer.records().len(), 2);
-
-    let blocked_writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let blocked_admission = Arc::new(BoltV3SubmitAdmissionState::new(blocked_writer.recorder()));
-    let (mut blocked_maker, _cache) =
-        maker_with_active_updown_market(blocked_writer.recorder(), blocked_admission);
-    let mut blocked_selector = ReferencePriceSelector::new(
-        TEST_REFERENCE_ASSET,
-        vec!["primary".to_string()],
-        1,
-        100,
-        25,
-    )
-    .expect("selector fixture should be valid");
-    let mut blocked_market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
-    let mut blocked_budget = build_requote_budget_pair("40/00:01:00", 100, 500)
-        .expect("well-formed rate config builds a budget");
-
-    let blocked = blocked_maker
-        .route_maker_runtime_reference_quote(
-            MARKET_KEY,
-            &mut blocked_market,
-            &mut blocked_budget,
-            &mut blocked_selector,
-            BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
-                reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
-                    reference_quotes: &[],
-                    ..fair_input
-                },
-                quote_plan: quote_plan_inputs(updown::KEY),
-                quote_set: quote_set_at_reference_evaluation(),
-                submit_template: &maker_limit_post_only_template(),
-                price_precision: 2,
-                quantity_precision: 2,
-                submit_order_prefix: "maker_submit",
-            },
-        )
-        .expect("maker reference quote blocker should be a route outcome");
-
-    assert_eq!(blocked.fair_value.fair_value, None);
-    assert_eq!(
-        blocked.fair_value.blocked_by,
-        Some(MakerRuntimeReferenceFairValueBlockReason::ReferenceCurrentPriceUnavailable)
-    );
-    assert_eq!(
-        blocked.blocked_by,
-        Some(
-            BinaryOracleMakerRuntimeReferenceQuoteBlockReason::FairValue(
-                MakerRuntimeReferenceFairValueBlockReason::ReferenceCurrentPriceUnavailable
-            )
-        )
-    );
-    assert_eq!(blocked.quote, None);
-    assert_eq!(blocked.orders, None);
-    assert_eq!(blocked_market.market_state(), MarketState::Idle);
-    assert_eq!(blocked_budget.submit_commands_in_window(), 0);
-    assert_eq!(blocked_budget.rest_cost_in_window(), 0);
-    assert_eq!(blocked_writer.records().len(), 0);
-
-    let missing_input_writer =
-        support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let missing_input_admission = Arc::new(BoltV3SubmitAdmissionState::new(
-        missing_input_writer.recorder(),
-    ));
-    let (mut missing_input_maker, _cache) =
-        maker_with_active_updown_market(missing_input_writer.recorder(), missing_input_admission);
-    let mut missing_input_selector = ReferencePriceSelector::new(
-        TEST_REFERENCE_ASSET,
-        vec!["primary".to_string(), "backup".to_string()],
-        1,
-        100,
-        25,
-    )
-    .expect("selector fixture should be valid");
-    let mut missing_input_market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
-    let mut missing_input_budget = build_requote_budget_pair("40/00:01:00", 100, 500)
-        .expect("well-formed rate config builds a budget");
-    let expected_blocker = MakerRuntimeReferenceFairValueBlockReason::StrikePriceMissing;
-
-    let missing_input = missing_input_maker
-        .route_maker_runtime_reference_quote(
-            MARKET_KEY,
-            &mut missing_input_market,
-            &mut missing_input_budget,
-            &mut missing_input_selector,
-            BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
-                reference_fair_value: BinaryOracleMakerReferenceFairValueInput {
-                    strike: None,
-                    ..fair_input
-                },
-                quote_plan: quote_plan_inputs(updown::KEY),
-                quote_set: quote_set_at_reference_evaluation(),
-                submit_template: &maker_limit_post_only_template(),
-                price_precision: 2,
-                quantity_precision: 2,
-                submit_order_prefix: "maker_submit",
-            },
-        )
-        .expect("maker reference quote shared fair-value blocker should be a route outcome");
-
-    assert_eq!(missing_input.fair_value.fair_value, None);
-    assert_eq!(missing_input.fair_value.blocked_by, Some(expected_blocker));
-    assert_eq!(
-        missing_input.blocked_by,
-        Some(BinaryOracleMakerRuntimeReferenceQuoteBlockReason::FairValue(expected_blocker))
-    );
-    assert_eq!(missing_input.quote, None);
-    assert_eq!(missing_input.orders, None);
-    assert_eq!(missing_input_market.market_state(), MarketState::Idle);
-    assert_eq!(missing_input_budget.submit_commands_in_window(), 0);
-    assert_eq!(missing_input_budget.rest_cost_in_window(), 0);
-    assert_eq!(missing_input_writer.records().len(), 0);
-}
-
-#[test]
 fn maker_canceled_confirmation_defers_replacement_until_the_next_quote_drive() {
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = MarketQuote::new_for_test(false);
     assert_eq!(
         market.on_leg_event(
             Leg::Yes,
@@ -2071,50 +1579,70 @@ fn maker_order_economics_at(
     )
 }
 
-fn accepted_maker_order(client_order_id: ClientOrderId) -> OrderAny {
-    let mut order = OrderAny::Limit(
-        LimitOrder::new_checked(
-            TraderId::from("TRADER-001"),
-            StrategyId::from("maker-strategy"),
-            InstrumentId::from("MAKER-RT-YES.SIM"),
-            client_order_id,
-            OrderSide::Buy,
-            Quantity::new(1.0, 2),
-            Price::new(0.50, 2),
-            TimeInForce::Gtc,
-            None,
-            true,
-            false,
-            false,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            UUID4::new(),
-            UnixNanos::from(RUNTIME_NOW_MS.saturating_mul(1_000_000)),
-        )
-        .expect("the tracked maker-order fixture is valid"),
-    );
+fn accept_cached_maker_order(
+    cache: &Rc<RefCell<Cache>>,
+    client_order_id: ClientOrderId,
+) -> OrderAny {
+    let order = cache
+        .borrow()
+        .order(&client_order_id)
+        .expect("the routed maker order is present in the NT cache")
+        .clone();
     let submitted = TestOrderEventStubs::submitted(&order, AccountId::from("ACCOUNT-001"));
-    order
-        .apply(submitted)
-        .expect("the maker-order fixture submits");
+    cache
+        .borrow_mut()
+        .update_order(&submitted)
+        .expect("the routed maker order submits");
+    let order = cache
+        .borrow()
+        .order(&client_order_id)
+        .expect("the submitted maker order remains cached")
+        .clone();
     let accepted = TestOrderEventStubs::accepted(
         &order,
         AccountId::from("ACCOUNT-001"),
         VenueOrderId::from("VENUE-DRAIN-1"),
     );
-    order
-        .apply(accepted)
-        .expect("the maker-order fixture is accepted");
-    order
+    cache
+        .borrow_mut()
+        .update_order(&accepted)
+        .expect("the routed maker order is accepted");
+    cache
+        .borrow()
+        .order(&client_order_id)
+        .expect("the accepted maker order remains cached")
+        .clone()
+}
+
+fn route_tracked_maker_submit(maker: &mut BinaryOracleMaker, client_order_id: ClientOrderId) {
+    let command = MakerCompiledOrderCommand::Submit {
+        leg: Leg::Yes,
+        template: Box::new(maker_limit_post_only_template()),
+        inputs: NtOrderBuildInputs {
+            instrument_id: InstrumentId::from("MAKER-RT-YES.SIM"),
+            order_side: OrderSide::Buy,
+            quantity: Quantity::new(1.0, 2),
+            price: Some(Price::new(0.50, 2)),
+            client_order_id,
+        },
+        fallback_price: Price::new(0.50, 2),
+    };
+    let quote_transaction =
+        quote_transaction_context_for_active_market(maker, RUNTIME_MARKET_KEY, Leg::Yes);
+    maker
+        .route_maker_order_command(
+            &command,
+            "maker_submit",
+            Some(
+                BoltV3TerminalValueEntry::try_new(
+                    Decimal::new(9, 1),
+                    bolt_v2::bolt_v3_order_execution::BoltV3TerminalValueEntryPolicy::Breakeven,
+                )
+                .expect("maker terminal value should construct"),
+            ),
+            MakerOrderCommandAuthority::Quote(quote_transaction),
+        )
+        .expect("the maker submit registers its identity-fenced lifecycle");
 }
 
 fn register_maker_for_order_factory(maker: &mut BinaryOracleMaker) {
@@ -2292,7 +1820,7 @@ fn risk_route_input<'a>(
 }
 
 fn resting_market_quote() -> MarketQuote {
-    let mut market = MarketQuote::new(false);
+    let mut market = MarketQuote::new_for_test(false);
     assert_eq!(
         market.on_leg_event(
             Leg::Yes,
@@ -2361,27 +1889,6 @@ fn maker_limit_post_only_template() -> NtOrderTemplate {
         is_reduce_only: false,
         is_quote_quantity: false,
     }
-}
-
-fn reference_quote(
-    asset: &str,
-    source_id: &str,
-    price: f64,
-    observed_ts_ms: u64,
-) -> ReferenceQuote {
-    ReferenceQuote::try_new(
-        asset,
-        source_id,
-        ReferencePriceProvider::new("fixture_provider")
-            .expect("fixture provider identifier should be valid"),
-        "fixture_feed",
-        price,
-        None,
-        None,
-        observed_ts_ms,
-        observed_ts_ms,
-    )
-    .expect("reference quote fixture should be valid")
 }
 
 // ---------------------------------------------------------------------------
@@ -2627,10 +2134,6 @@ fn runtime_static_instruments_with_question_id(question_id: &str) -> Vec<Instrum
             RUNTIME_NOW_MS - 1_000,
         ),
     ]
-}
-
-fn runtime_updown_instruments() -> Vec<InstrumentAny> {
-    runtime_updown_instruments_for(MarketSelectionOutcome::Current)
 }
 
 fn runtime_next_updown_instruments() -> Vec<InstrumentAny> {
@@ -3003,18 +2506,6 @@ fn maker_with_active_static_market(
     )
 }
 
-fn maker_with_active_updown_market(
-    writer: Arc<DecisionEvidenceRecorder>,
-    admission: Arc<BoltV3SubmitAdmissionState>,
-) -> (BinaryOracleMaker, Rc<RefCell<Cache>>) {
-    maker_with_active_markets(
-        writer,
-        admission,
-        vec![runtime_updown_declaration()],
-        runtime_updown_instruments(),
-    )
-}
-
 fn maker_with_active_next_updown_market(
     writer: Arc<DecisionEvidenceRecorder>,
     admission: Arc<BoltV3SubmitAdmissionState>,
@@ -3110,7 +2601,7 @@ fn record_one_budget_block_for_family(
     market_key: &str,
     family_key: &str,
 ) {
-    let mut market = MarketQuote::new(false);
+    let mut market = market_quote_for_active_market(maker, market_key, false);
     let mut budget = build_requote_budget_pair("1/00:01:00", 100, 500)
         .expect("one-submit budget fixture builds");
     seed_emitted_yes_submit(&mut market, &budget, RUNTIME_NOW_MS);
@@ -3228,11 +2719,11 @@ fn maker_graceful_stop_defers_until_tracked_orders_close_and_rejects_new_quotes(
             writer.recorder(),
         ),
         admission,
-        BoltV3OrderExecutionPolicy::shadow(),
+        BoltV3OrderExecutionPolicy::live(),
         Venue::from("SIM"),
     );
     let mut maker = BinaryOracleMaker::new(maker_config_with_static_market(), context);
-    let cache = register_maker_at_runtime_now_lifecycle_only(&mut maker);
+    let cache = register_maker_at_runtime_now_for_order_factory(&mut maker);
     for instrument in runtime_static_instruments() {
         cache
             .borrow_mut()
@@ -3245,18 +2736,8 @@ fn maker_graceful_stop_defers_until_tracked_orders_close_and_rejects_new_quotes(
     assert_eq!(maker.runtime().active_market_count(), 1);
 
     let client_order_id = ClientOrderId::from("MAKER-DRAIN-1");
-    let accepted_order = accepted_maker_order(client_order_id);
-    cache
-        .borrow_mut()
-        .add_order(accepted_order.clone(), None, None, false)
-        .expect("the accepted maker order is present in the NT cache");
-    order_economics
-        .reconcile_fill_void_at(
-            client_order_id,
-            Some(accepted_order.clone()),
-            RUNTIME_NOW_MS.saturating_mul(1_000_000),
-        )
-        .expect("a reopened maker order creates cancellation-only tracking");
+    route_tracked_maker_submit(&mut maker, client_order_id);
+    let accepted_order = accept_cached_maker_order(&cache, client_order_id);
     assert_eq!(order_economics.resting_order_ids().unwrap().len(), 1);
 
     assert!(
@@ -3265,7 +2746,7 @@ fn maker_graceful_stop_defers_until_tracked_orders_close_and_rejects_new_quotes(
     );
     assert!(Component::is_running(&maker));
 
-    let mut quote = MarketQuote::new(false);
+    let mut quote = MarketQuote::new_for_test(false);
     let mut budget =
         build_requote_budget_pair("1/00:01:00", 100, 500).expect("the quote budget fixture builds");
     let submit_template = maker_limit_post_only_template();
@@ -3289,7 +2770,7 @@ fn maker_graceful_stop_defers_until_tracked_orders_close_and_rejects_new_quotes(
         Some(&BinaryOracleMakerLifecycleError::Draining)
     );
     assert_eq!(quote.market_state(), MarketState::Idle);
-    assert_eq!(writer.records().len(), 0);
+    assert_eq!(writer.records().len(), 1);
 
     let canceled = TestOrderEventStubs::canceled(
         &accepted_order,
@@ -3311,6 +2792,62 @@ fn maker_graceful_stop_defers_until_tracked_orders_close_and_rejects_new_quotes(
 }
 
 #[test]
+fn maker_cadence_rollover_finalizes_retained_truth_for_the_retired_scope() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
+    let order_economics = maker_order_economics_at(RUNTIME_NOW_MS.saturating_mul(1_000_000));
+    let context = StrategyBuildContext::new(
+        order_economics.clone(),
+        bolt_v2::bolt_v3_strategy_context::StrategyDecisionEvidence::maker_for_test(
+            writer.recorder(),
+        ),
+        admission,
+        BoltV3OrderExecutionPolicy::live(),
+        Venue::from("SIM"),
+    );
+    let mut maker = BinaryOracleMaker::new(maker_config_with_static_market(), context);
+    let cache = register_maker_at_runtime_now_for_order_factory(&mut maker);
+    for instrument in runtime_static_instruments() {
+        cache
+            .borrow_mut()
+            .add_instrument(instrument)
+            .expect("seeding the active maker market");
+    }
+    DataActor::on_start(&mut maker).expect("the initial cadence scope resolves");
+
+    let client_order_id = ClientOrderId::from("MAKER-CADENCE-RETAINED");
+    route_tracked_maker_submit(&mut maker, client_order_id);
+    let accepted = accept_cached_maker_order(&cache, client_order_id);
+    let canceled = TestOrderEventStubs::canceled(
+        &accepted,
+        AccountId::from("ACCOUNT-001"),
+        Some(VenueOrderId::from("VENUE-CADENCE-RETAINED")),
+    );
+    cache
+        .borrow_mut()
+        .update_order(&canceled)
+        .expect("the canceled order updates authoritative cache state");
+    let OrderEventAny::Canceled(canceled) = &canceled else {
+        unreachable!("the test stub produced an order-canceled event")
+    };
+    <BinaryOracleMaker as Strategy>::on_order_canceled(&mut maker, canceled);
+    assert_eq!(
+        order_economics.retained_terminal_order_ids().unwrap(),
+        vec![client_order_id]
+    );
+
+    refresh_maker_instruments(&mut maker, &cache, runtime_static_instruments_rolled());
+
+    assert!(
+        order_economics
+            .retained_terminal_order_ids()
+            .unwrap()
+            .is_empty(),
+        "cadence rollover must emit the retired lifecycle's retention horizon"
+    );
+}
+
+#[test]
 fn maker_trader_stop_closure_defers_and_keeps_order_callbacks_live() {
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let admission = Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder()));
@@ -3321,7 +2858,7 @@ fn maker_trader_stop_closure_defers_and_keeps_order_callbacks_live() {
             writer.recorder(),
         ),
         admission,
-        BoltV3OrderExecutionPolicy::shadow(),
+        BoltV3OrderExecutionPolicy::live(),
         Venue::from("SIM"),
     );
     let maker = BinaryOracleMaker::new(maker_config_with_static_market(), context);
@@ -3368,19 +2905,12 @@ fn maker_trader_stop_closure_defers_and_keeps_order_callbacks_live() {
         .expect("Trader starts the registered maker");
 
     let client_order_id = ClientOrderId::from("MAKER-TRADER-DRAIN-1");
-    let accepted_order = accepted_maker_order(client_order_id);
-    cache
-        .borrow_mut()
-        .add_order(accepted_order.clone(), None, None, false)
-        .expect("the accepted maker order is present in the NT cache");
-    order_economics
-        .reconcile_fill_void_at(
-            client_order_id,
-            Some(accepted_order.clone()),
-            RUNTIME_NOW_MS.saturating_mul(1_000_000),
-        )
-        .expect("a reopened maker order creates cancellation-only tracking");
-
+    {
+        let mut maker = try_get_actor_unchecked::<BinaryOracleMaker>(&strategy_id.inner())
+            .expect("the started maker remains registered");
+        route_tracked_maker_submit(&mut maker, client_order_id);
+    }
+    let accepted_order = accept_cached_maker_order(&cache, client_order_id);
     trader
         .stop_strategy(&strategy_id)
         .expect("Trader invokes the maker stop callback");
@@ -3442,7 +2972,7 @@ fn maker_lifecycle_retires_throttle_episodes_from_the_runtime_owned_store() {
         .concrete_identity();
 
     let record_block = |maker: &mut BinaryOracleMaker| {
-        let mut quote = MarketQuote::new(false);
+        let mut quote = market_quote_for_active_market(maker, RUNTIME_MARKET_KEY, false);
         let mut budget = build_requote_budget_pair("1/00:01:00", 100, 500)
             .expect("one-submit budget fixture builds");
         seed_emitted_yes_submit(&mut quote, &budget, RUNTIME_NOW_MS);
@@ -3726,7 +3256,7 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
     assert_eq!(maker.runtime().active_market_count(), 1);
 
     let yes_id = InstrumentId::from(RUNTIME_YES_INSTRUMENT);
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = market_quote_for_active_market(&maker, RUNTIME_MARKET_KEY, false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
     let submit_template = maker_limit_post_only_template();

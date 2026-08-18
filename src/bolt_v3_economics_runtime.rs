@@ -122,8 +122,9 @@ impl AuthoritativeEconomicsInputStore {
 
     /// Atomically replace one execution client's authority set.
     ///
-    /// Runtime refreshers use this to publish rotating instruments without
-    /// leaving retired scopes quotable. Other execution clients are untouched.
+    /// This is the publication boundary for a future slice's authoritative
+    /// refresher. Slice 1 has no live publisher and does not call it. Other
+    /// execution clients are untouched.
     pub fn replace_execution_client(
         &self,
         execution_client_id: &str,
@@ -1777,6 +1778,18 @@ pub enum EconomicsRuntimeBindingError {
     MissingEconomicsConfig {
         execution_client_id: String,
     },
+    MissingProviderExactReplayValuationLeg {
+        execution_client_id: String,
+        source_id: String,
+        from_unit: String,
+        to_unit: String,
+    },
+    AmbiguousProviderExactReplayValuationLeg {
+        execution_client_id: String,
+        source_id: String,
+        from_unit: String,
+        to_unit: String,
+    },
     InvalidEconomicsConfig {
         execution_client_id: String,
         errors: Vec<String>,
@@ -1862,6 +1875,24 @@ impl std::fmt::Display for EconomicsRuntimeBindingError {
             } => write!(
                 f,
                 "execution client `{execution_client_id}` has no economics configuration"
+            ),
+            Self::MissingProviderExactReplayValuationLeg {
+                execution_client_id,
+                source_id,
+                from_unit,
+                to_unit,
+            } => write!(
+                f,
+                "execution client `{execution_client_id}` has no provider-exact valuation leg for source `{source_id}` from `{from_unit}` to `{to_unit}`"
+            ),
+            Self::AmbiguousProviderExactReplayValuationLeg {
+                execution_client_id,
+                source_id,
+                from_unit,
+                to_unit,
+            } => write!(
+                f,
+                "execution client `{execution_client_id}` has conflicting provider-exact origin kinds for source `{source_id}` from `{from_unit}` to `{to_unit}`"
             ),
             Self::InvalidEconomicsConfig {
                 execution_client_id,
@@ -1968,6 +1999,51 @@ pub fn bind_execution_economics(
     execution_client_id: &str,
     inputs: &AuthoritativeEconomicsInputStore,
 ) -> Result<BoundExecutionEconomics, EconomicsRuntimeBindingError> {
+    let LoadedExecutionEconomicsBinding {
+        reporting,
+        provider_key,
+        binding,
+        execution,
+        config,
+    } = load_execution_economics_binding(loaded, execution_client_id)?;
+    let reporting_policy_id =
+        ReportingPolicyId::try_new(reporting.policy_id.clone()).map_err(|error| {
+            EconomicsRuntimeBindingError::InvalidEconomicsConfig {
+                execution_client_id: execution_client_id.to_string(),
+                errors: vec![error.to_string()],
+            }
+        })?;
+    let reporting_currency =
+        CurrencyId::try_new(reporting.pnl_currency.clone()).map_err(|error| {
+            EconomicsRuntimeBindingError::InvalidEconomicsConfig {
+                execution_client_id: execution_client_id.to_string(),
+                errors: vec![error.to_string()],
+            }
+        })?;
+    Ok(BoundExecutionEconomics {
+        execution_client_id: execution_client_id.to_string(),
+        provider_key: provider_key.to_string(),
+        reporting_policy_id,
+        reporting_currency,
+        config,
+        execution: execution.clone(),
+        binding,
+        inputs: inputs.clone(),
+    })
+}
+
+struct LoadedExecutionEconomicsBinding<'a> {
+    reporting: &'a EconomicsReportingConfig,
+    provider_key: &'a str,
+    binding: ProviderExecutionEconomicsBinding,
+    execution: &'a toml::Value,
+    config: ExecutionEconomicsConfig,
+}
+
+fn load_execution_economics_binding<'a>(
+    loaded: &'a LoadedBoltV3Config,
+    execution_client_id: &str,
+) -> Result<LoadedExecutionEconomicsBinding<'a>, EconomicsRuntimeBindingError> {
     let reporting = loaded
         .root
         .economics
@@ -2011,30 +2087,79 @@ pub fn bind_execution_economics(
             execution_client_id: execution_client_id.to_string(),
         })?;
     validate_economics_config(execution_client_id, &config, reporting)?;
-    let reporting_policy_id =
-        ReportingPolicyId::try_new(reporting.policy_id.clone()).map_err(|error| {
-            EconomicsRuntimeBindingError::InvalidEconomicsConfig {
-                execution_client_id: execution_client_id.to_string(),
-                errors: vec![error.to_string()],
-            }
-        })?;
-    let reporting_currency =
-        CurrencyId::try_new(reporting.pnl_currency.clone()).map_err(|error| {
-            EconomicsRuntimeBindingError::InvalidEconomicsConfig {
-                execution_client_id: execution_client_id.to_string(),
-                errors: vec![error.to_string()],
-            }
-        })?;
-    Ok(BoundExecutionEconomics {
-        execution_client_id: execution_client_id.to_string(),
-        provider_key: provider_key.to_string(),
-        reporting_policy_id,
-        reporting_currency,
-        config,
-        execution: execution.clone(),
+    Ok(LoadedExecutionEconomicsBinding {
+        reporting,
+        provider_key,
         binding: economics_binding,
-        inputs: inputs.clone(),
+        execution,
+        config,
     })
+}
+
+/// Resolve a captured provider-exact replay observation through the configured
+/// valuation leg that owns its origin kind. The replay manifest supplies
+/// captured values only; the checksummed production configuration remains the
+/// sole authority for whether a same-spelling unit is a currency or an asset.
+pub fn configured_provider_exact_replay_from_unit(
+    loaded: &LoadedBoltV3Config,
+    execution_client_id: &str,
+    source_id: &str,
+    from_unit: &str,
+    to_unit: &str,
+) -> Result<NativeUnitId, EconomicsRuntimeBindingError> {
+    let loaded = load_execution_economics_binding(loaded, execution_client_id)?;
+    let mut configured_kind = None;
+    for leg in loaded
+        .config
+        .valuation
+        .routes
+        .values()
+        .flat_map(|route| route.legs.iter())
+    {
+        let EconomicsValuationLegConfig::ProviderExactConversion {
+            from_kind,
+            from_unit: configured_from_unit,
+            to_unit: configured_to_unit,
+            source_id: configured_source_id,
+            ..
+        } = leg
+        else {
+            continue;
+        };
+        if configured_source_id != source_id
+            || configured_from_unit != from_unit
+            || configured_to_unit != to_unit
+        {
+            continue;
+        }
+        if configured_kind.is_some_and(|kind| kind != *from_kind) {
+            return Err(
+                EconomicsRuntimeBindingError::AmbiguousProviderExactReplayValuationLeg {
+                    execution_client_id: execution_client_id.to_string(),
+                    source_id: source_id.to_string(),
+                    from_unit: from_unit.to_string(),
+                    to_unit: to_unit.to_string(),
+                },
+            );
+        }
+        configured_kind = Some(*from_kind);
+    }
+    let configured_kind = configured_kind.ok_or_else(|| {
+        EconomicsRuntimeBindingError::MissingProviderExactReplayValuationLeg {
+            execution_client_id: execution_client_id.to_string(),
+            source_id: source_id.to_string(),
+            from_unit: from_unit.to_string(),
+            to_unit: to_unit.to_string(),
+        }
+    })?;
+    configured_kind
+        .try_id(from_unit.to_string())
+        .map_err(
+            |error| EconomicsRuntimeBindingError::InvalidEconomicsConfig {
+                execution_client_id: execution_client_id.to_string(),
+                errors: vec![error.to_string()],
+            },
+        )
 }
 
 fn configured_quote_deadline(

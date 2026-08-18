@@ -3074,11 +3074,11 @@ fn terminal_close_reclaims_exit_decision_for_reused_position_identity() {
     // NT netting reuses `{instrument}-{strategy}` as PositionId. Recreate the
     // same logical position identity and prove its first decision is not
     // suppressed by the predecessor's last one.
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(reused_context)),
-        )));
+        )),
+    );
     strategy
         .record_exit_intent_or_hold_once(1_202, trigger, &decision)
         .expect("the reused position identity should record its first decision");
@@ -4183,11 +4183,11 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
         },
     ));
     decisions.push(strategy.exit_intent_decision_from_evaluation(base.clone()));
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(saved_exposure)),
-        )));
+        )),
+    );
 
     let saved_exit_order = strategy.config.exit_order.clone();
     strategy.config.exit_order.side = "not-an-order-side".to_string();

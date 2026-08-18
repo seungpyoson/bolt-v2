@@ -131,21 +131,25 @@ pub(super) enum ExitWorkingObservation {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum PositionTruthEvent {
-    Canonical(CanonicalPositionProjection),
-    AuthorizedRecovery(FreshCanonicalPositionProjection),
     EntryTerminalMaterialization {
         client_order_id: ClientOrderId,
         managed: ManagedPositionContext,
     },
+    RefreshContext(ManagedPositionContext),
+    Unsupported(UnsupportedObservedState),
+    BlindRecovery(BlindRecoveryState),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum AdoptionCapablePositionTruthEvent {
+    Canonical(CanonicalPositionProjection),
+    AuthorizedRecovery(FreshCanonicalPositionProjection),
     AuthenticatedEpisodeRebase {
         before: PositionEpisodeFingerprint,
         authenticated_order_id: ClientOrderId,
         authenticated_fill_id: TradeId,
-        rebased: Option<ManagedPositionContext>,
+        rebased: Option<Box<ManagedPositionContext>>,
     },
-    RefreshContext(ManagedPositionContext),
-    Unsupported(UnsupportedObservedState),
-    BlindRecovery(BlindRecoveryState),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -239,10 +243,15 @@ pub(super) enum ExposureEvent {
     ExitLifecycle(ExitLifecycleEvent),
     UntrackedOrder(UntrackedOrderEvent),
     PositionTruth(PositionTruthEvent),
-    PositionClosed(PositionClosedEvent),
     TimerReconciliation(TimerReconciliationEvent),
     BootstrapAdoption(BootstrapAdoptionEvent),
     SettlementEffect(SettlementEffectEvent),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum AdoptionCapableExposureEvent {
+    PositionTruth(AdoptionCapablePositionTruthEvent),
+    PositionClosed(PositionClosedEvent),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -905,7 +914,6 @@ struct GovernedExposureInner {
     released_exits: BTreeMap<ClientOrderId, ReleasedExitProvenance>,
     obligations: BTreeMap<ClientOrderId, DeferredExitObligation>,
     identity_conflict: Option<IdentityConflict>,
-    replacement_adoption: Option<ReplacementAdoption>,
     last_outcome: ExposureTransitionOutcome,
     operation_arm: Option<OperationArm>,
 }
@@ -930,6 +938,68 @@ pub(super) enum ReplacementAdoptionCause {
     AuthenticatedCorrection,
 }
 
+#[must_use = "adoption-capable exposure transitions must handle replacement adoption"]
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ExposureAdoptionCommit {
+    pub(super) outcome: ExposureTransitionOutcome,
+    pub(super) replacement_adoption: Option<ReplacementAdoption>,
+}
+
+enum ExposureReductionEvent {
+    NonAdopting(Box<ExposureEvent>),
+    AdoptionCapable(AdoptionCapableExposureEvent),
+}
+
+pub(super) struct ExposureReductionRequest<Output> {
+    event: ExposureReductionEvent,
+    project: fn(ExposureTransitionOutcome, Option<ReplacementAdoption>) -> Output,
+}
+
+impl From<ExposureEvent> for ExposureReductionRequest<ExposureTransitionOutcome> {
+    fn from(event: ExposureEvent) -> Self {
+        Self {
+            event: ExposureReductionEvent::NonAdopting(Box::new(event)),
+            project: |outcome, replacement_adoption| {
+                debug_assert!(replacement_adoption.is_none());
+                outcome
+            },
+        }
+    }
+}
+
+impl From<AdoptionCapableExposureEvent> for ExposureReductionRequest<ExposureAdoptionCommit> {
+    fn from(event: AdoptionCapableExposureEvent) -> Self {
+        Self {
+            event: ExposureReductionEvent::AdoptionCapable(event),
+            project: |outcome, replacement_adoption| ExposureAdoptionCommit {
+                outcome,
+                replacement_adoption,
+            },
+        }
+    }
+}
+
+impl<Output> ExposureReductionRequest<Output> {
+    fn apply(self, inner: &mut GovernedExposureInner) -> Output {
+        match self.event {
+            ExposureReductionEvent::NonAdopting(event) => {
+                (self.project)(inner.reduce(*event), None)
+            }
+            ExposureReductionEvent::AdoptionCapable(event) => {
+                let ExposureAdoptionCommit {
+                    outcome,
+                    replacement_adoption,
+                } = inner.reduce_adoption_capable(event);
+                (self.project)(outcome, replacement_adoption)
+            }
+        }
+    }
+
+    fn preserved(self, state: ExposureStateKind) -> Output {
+        (self.project)(ExposureTransitionOutcome::Preserved { state }, None)
+    }
+}
+
 impl GovernedExposureInner {
     fn new(limits: ExposureObligationLimits) -> Self {
         Self {
@@ -940,7 +1010,6 @@ impl GovernedExposureInner {
             released_exits: BTreeMap::new(),
             obligations: BTreeMap::new(),
             identity_conflict: None,
-            replacement_adoption: None,
             last_outcome: ExposureTransitionOutcome::Preserved {
                 state: ExposureStateKind::Flat,
             },
@@ -949,7 +1018,6 @@ impl GovernedExposureInner {
     }
 
     fn reduce(&mut self, event: ExposureEvent) -> ExposureTransitionOutcome {
-        self.replacement_adoption = None;
         let from = self.state.kind();
         let changed = match event {
             ExposureEvent::EntryLifecycle(event) => self.reduce_entry_lifecycle(event),
@@ -982,11 +1050,38 @@ impl GovernedExposureInner {
                 }
             },
             ExposureEvent::PositionTruth(event) => self.reduce_position_truth(event),
-            ExposureEvent::PositionClosed(event) => self.reduce_position_closed(event),
             ExposureEvent::TimerReconciliation(event) => self.reduce_timer_reconciliation(event),
             ExposureEvent::BootstrapAdoption(event) => self.reduce_bootstrap_adoption(event),
             ExposureEvent::SettlementEffect(event) => self.reduce_settlement_effect(event),
         };
+        self.finish_reduction(from, changed)
+    }
+
+    fn reduce_adoption_capable(
+        &mut self,
+        event: AdoptionCapableExposureEvent,
+    ) -> ExposureAdoptionCommit {
+        let from = self.state.kind();
+        let mut replacement_adoption = None;
+        let changed = match event {
+            AdoptionCapableExposureEvent::PositionTruth(event) => {
+                self.reduce_adoption_capable_position_truth(event, &mut replacement_adoption)
+            }
+            AdoptionCapableExposureEvent::PositionClosed(event) => {
+                self.reduce_position_closed(event, &mut replacement_adoption)
+            }
+        };
+        ExposureAdoptionCommit {
+            outcome: self.finish_reduction(from, changed),
+            replacement_adoption,
+        }
+    }
+
+    fn finish_reduction(
+        &mut self,
+        from: ExposureStateKind,
+        changed: bool,
+    ) -> ExposureTransitionOutcome {
         let to = self.state.kind();
         let outcome = if changed {
             self.generation = self
@@ -1564,27 +1659,10 @@ impl GovernedExposureInner {
 
     fn reduce_position_truth(&mut self, event: PositionTruthEvent) -> bool {
         match event {
-            PositionTruthEvent::Canonical(projection) => {
-                self.reduce_canonical_projection(projection)
-            }
-            PositionTruthEvent::AuthorizedRecovery(projection) => {
-                self.reduce_authorized_recovery(projection)
-            }
             PositionTruthEvent::EntryTerminalMaterialization {
                 client_order_id,
                 managed,
             } => self.reduce_entry_terminal_materialization(client_order_id, managed),
-            PositionTruthEvent::AuthenticatedEpisodeRebase {
-                before,
-                authenticated_order_id,
-                authenticated_fill_id,
-                rebased,
-            } => self.reduce_authenticated_episode_rebase(
-                before,
-                authenticated_order_id,
-                authenticated_fill_id,
-                rebased,
-            ),
             PositionTruthEvent::RefreshContext(context) => self.refresh_context(context),
             PositionTruthEvent::Unsupported(mut observed) => match &self.state {
                 ExposureState::Flat => self.replace(ExposureState::UnsupportedObserved(observed)),
@@ -1639,7 +1717,38 @@ impl GovernedExposureInner {
         }
     }
 
-    fn reduce_canonical_projection(&mut self, projection: CanonicalPositionProjection) -> bool {
+    fn reduce_adoption_capable_position_truth(
+        &mut self,
+        event: AdoptionCapablePositionTruthEvent,
+        replacement_adoption: &mut Option<ReplacementAdoption>,
+    ) -> bool {
+        match event {
+            AdoptionCapablePositionTruthEvent::Canonical(projection) => {
+                self.reduce_canonical_projection(projection, replacement_adoption)
+            }
+            AdoptionCapablePositionTruthEvent::AuthorizedRecovery(projection) => {
+                self.reduce_authorized_recovery(projection, replacement_adoption)
+            }
+            AdoptionCapablePositionTruthEvent::AuthenticatedEpisodeRebase {
+                before,
+                authenticated_order_id,
+                authenticated_fill_id,
+                rebased,
+            } => self.reduce_authenticated_episode_rebase(
+                before,
+                authenticated_order_id,
+                authenticated_fill_id,
+                rebased.map(|rebased| *rebased),
+                replacement_adoption,
+            ),
+        }
+    }
+
+    fn reduce_canonical_projection(
+        &mut self,
+        projection: CanonicalPositionProjection,
+        replacement_adoption: &mut Option<ReplacementAdoption>,
+    ) -> bool {
         match projection {
             CanonicalPositionProjection::None => match &mut self.state {
                 ExposureState::Managed(context) => {
@@ -1714,7 +1823,9 @@ impl GovernedExposureInner {
                     | ExposureState::ExitAuthorityRecoveryHold(_)
                     | ExposureState::UnsupportedObserved(_)
                     | ExposureState::OperationSinkUnknown(_)
-                    | ExposureState::ObligationSaturated(_) => self.apply_managed_truth(managed),
+                    | ExposureState::ObligationSaturated(_) => {
+                        self.apply_managed_truth(managed, replacement_adoption)
+                    }
                 }
             }
             CanonicalPositionProjection::Multiple { count, recovery } => {
@@ -1737,7 +1848,11 @@ impl GovernedExposureInner {
         }
     }
 
-    fn reduce_authorized_recovery(&mut self, projection: FreshCanonicalPositionProjection) -> bool {
+    fn reduce_authorized_recovery(
+        &mut self,
+        projection: FreshCanonicalPositionProjection,
+        replacement_adoption: &mut Option<ReplacementAdoption>,
+    ) -> bool {
         match projection {
             FreshCanonicalPositionProjection::None => match &self.state {
                 ExposureState::BlindRecovery(recovery) if recovery.authorizes_none() => {
@@ -1764,7 +1879,7 @@ impl GovernedExposureInner {
                     ExposureState::BlindRecovery(recovery)
                         if recovery.authorizes_exactly_one(&managed) =>
                     {
-                        let changed = self.apply_managed_truth(managed);
+                        let changed = self.apply_managed_truth(managed, replacement_adoption);
                         if changed {
                             self.identity_conflict = None;
                         }
@@ -1944,6 +2059,7 @@ impl GovernedExposureInner {
         authenticated_order_id: ClientOrderId,
         authenticated_fill_id: TradeId,
         rebased: Option<ManagedPositionContext>,
+        replacement_adoption: &mut Option<ReplacementAdoption>,
     ) -> bool {
         if authenticated_order_id != before.opening_order_id {
             return false;
@@ -2000,8 +2116,8 @@ impl GovernedExposureInner {
                 && adopted.episode != retained_episode
                 && matches!(self.state, ExposureState::Flat)
             {
-                changed |= self.apply_managed_truth(adopted.clone());
-                self.replacement_adoption = Some(ReplacementAdoption {
+                changed |= self.apply_managed_truth(adopted.clone(), replacement_adoption);
+                *replacement_adoption = Some(ReplacementAdoption {
                     retained_episode,
                     adopted,
                     cause: ReplacementAdoptionCause::AuthenticatedCorrection,
@@ -2085,7 +2201,11 @@ impl GovernedExposureInner {
         true
     }
 
-    fn apply_managed_truth(&mut self, managed: ManagedPositionContext) -> bool {
+    fn apply_managed_truth(
+        &mut self,
+        managed: ManagedPositionContext,
+        replacement_adoption: &mut Option<ReplacementAdoption>,
+    ) -> bool {
         match &mut self.state {
             ExposureState::Flat => {
                 self.identity_conflict = None;
@@ -2158,7 +2278,7 @@ impl GovernedExposureInner {
                         if conflict.candidate.episode == managed.episode
                             && conflict.retained_is_closed()
                         {
-                            self.replacement_adoption = Some(ReplacementAdoption {
+                            *replacement_adoption = Some(ReplacementAdoption {
                                 retained_episode: conflict.retained.episode.clone(),
                                 adopted: managed.clone(),
                                 cause: ReplacementAdoptionCause::CanonicalCloseConjunction,
@@ -2193,7 +2313,7 @@ impl GovernedExposureInner {
                         retained_episode: Some(current.episode.clone()),
                         candidate: managed.clone(),
                     });
-                    self.replacement_adoption = Some(ReplacementAdoption {
+                    *replacement_adoption = Some(ReplacementAdoption {
                         retained_episode: current.episode.clone(),
                         adopted: managed.clone(),
                         cause: ReplacementAdoptionCause::CanonicalCloseConjunction,
@@ -2221,7 +2341,11 @@ impl GovernedExposureInner {
         }
     }
 
-    fn reduce_position_closed(&mut self, event: PositionClosedEvent) -> bool {
+    fn reduce_position_closed(
+        &mut self,
+        event: PositionClosedEvent,
+        replacement_adoption: &mut Option<ReplacementAdoption>,
+    ) -> bool {
         let PositionClosedEvent::ObservedWithFreshProjection {
             expected_generation,
             episode,
@@ -2235,7 +2359,7 @@ impl GovernedExposureInner {
             let (state, adoption) = resolve_replacement_close(*conflict, &episode, projection);
             let changed = state != self.state;
             self.state = state;
-            self.replacement_adoption = adoption;
+            *replacement_adoption = adoption;
             return changed;
         }
 
@@ -2251,12 +2375,12 @@ impl GovernedExposureInner {
                 let next = ExposureState::BlindRecovery(recovery);
                 let changed = next != self.state;
                 self.state = next;
-                self.replacement_adoption = adoption;
+                *replacement_adoption = adoption;
                 return changed;
             }
             let changed = state != self.state;
             self.state = state;
-            self.replacement_adoption = adoption;
+            *replacement_adoption = adoption;
             return changed;
         }
 
@@ -2303,9 +2427,10 @@ impl GovernedExposureInner {
             | ExposureState::ReplacementConflict(_) => false,
         };
         let projection_changed = match projection {
-            FreshCanonicalPositionProjection::None => {
-                self.reduce_canonical_projection(CanonicalPositionProjection::None)
-            }
+            FreshCanonicalPositionProjection::None => self.reduce_canonical_projection(
+                CanonicalPositionProjection::None,
+                replacement_adoption,
+            ),
             FreshCanonicalPositionProjection::ExactlyOne(classified) => match *classified {
                 ClassifiedOpenPosition::Managed(managed) => {
                     if self.state.pending_entry().is_some_and(|pending| {
@@ -2319,9 +2444,10 @@ impl GovernedExposureInner {
                             },
                         )
                     } else {
-                        self.reduce_canonical_projection(CanonicalPositionProjection::ExactlyOne(
-                            Box::new(managed),
-                        ))
+                        self.reduce_canonical_projection(
+                            CanonicalPositionProjection::ExactlyOne(Box::new(managed)),
+                            replacement_adoption,
+                        )
                     }
                 }
                 ClassifiedOpenPosition::Unsupported(unsupported) => {
@@ -2332,19 +2458,25 @@ impl GovernedExposureInner {
                 }
             },
             FreshCanonicalPositionProjection::Multiple { count } => self
-                .reduce_canonical_projection(CanonicalPositionProjection::Multiple {
-                    count,
-                    recovery: BlindRecoveryState::authority_free(
-                        BlindRecoveryReason::MultipleOpenPositions { count },
-                    ),
-                }),
+                .reduce_canonical_projection(
+                    CanonicalPositionProjection::Multiple {
+                        count,
+                        recovery: BlindRecoveryState::authority_free(
+                            BlindRecoveryReason::MultipleOpenPositions { count },
+                        ),
+                    },
+                    replacement_adoption,
+                ),
             FreshCanonicalPositionProjection::ProbeFailed { diagnostic } => self
-                .reduce_canonical_projection(CanonicalPositionProjection::ProbeFailed {
-                    diagnostic,
-                    recovery: BlindRecoveryState::authority_free(
-                        BlindRecoveryReason::CacheProbeFailed,
-                    ),
-                }),
+                .reduce_canonical_projection(
+                    CanonicalPositionProjection::ProbeFailed {
+                        diagnostic,
+                        recovery: BlindRecoveryState::authority_free(
+                            BlindRecoveryReason::CacheProbeFailed,
+                        ),
+                    },
+                    replacement_adoption,
+                ),
         };
         projection_changed || close_changed
     }
@@ -2566,10 +2698,6 @@ impl GovernedExposure {
         self.inner.borrow().identity_conflict.clone()
     }
 
-    pub(super) fn replacement_adoption(&self) -> Option<ReplacementAdoption> {
-        self.inner.borrow().replacement_adoption.clone()
-    }
-
     pub(super) fn released_exit(
         &self,
         client_order_id: &ClientOrderId,
@@ -2659,8 +2787,11 @@ impl GovernedExposure {
             .cloned()
     }
 
-    pub(super) fn reduce(&self, event: ExposureEvent) -> ExposureTransitionOutcome {
-        self.inner.borrow_mut().reduce(event)
+    pub(super) fn reduce<Output>(
+        &self,
+        event: impl Into<ExposureReductionRequest<Output>>,
+    ) -> Output {
+        event.into().apply(&mut self.inner.borrow_mut())
     }
 
     pub(super) fn saturate_with_current_state(
@@ -2968,7 +3099,11 @@ impl ExposureOperationGrant {
         }
     }
 
-    fn commit_reducer_event(&mut self, event: ExposureEvent) -> ExposureTransitionOutcome {
+    fn commit_reducer_event<Output>(
+        &mut self,
+        event: impl Into<ExposureReductionRequest<Output>>,
+    ) -> Output {
+        let request = event.into();
         let inner = self
             .inner
             .upgrade()
@@ -2980,11 +3115,9 @@ impl ExposureOperationGrant {
                 && arm.phase == OperationArmPhase::Provisional
         }) {
             self.complete = true;
-            return ExposureTransitionOutcome::Preserved {
-                state: inner.state.kind(),
-            };
+            return request.preserved(inner.state.kind());
         }
-        let outcome = inner.reduce(event);
+        let outcome = request.apply(&mut inner);
         if inner
             .operation_arm
             .as_ref()
@@ -3165,17 +3298,32 @@ pub(super) struct RecoveryOperationGrant {
     restart_adoption: bool,
 }
 
+#[must_use = "recovery commits must handle replacement and restart adoption"]
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct RecoveryOperationCommit {
+    pub(super) outcome: ExposureTransitionOutcome,
+    pub(super) replacement_adoption: Option<ReplacementAdoption>,
+    pub(super) restart_adoption: bool,
+}
+
 impl RecoveryOperationGrant {
     pub(super) fn commit(
         mut self,
         projection: FreshCanonicalPositionProjection,
-    ) -> (ExposureTransitionOutcome, bool) {
-        let outcome = self
+    ) -> RecoveryOperationCommit {
+        let ExposureAdoptionCommit {
+            outcome,
+            replacement_adoption,
+        } = self
             .grant
-            .commit_reducer_event(ExposureEvent::PositionTruth(
-                PositionTruthEvent::AuthorizedRecovery(projection),
+            .commit_reducer_event(AdoptionCapableExposureEvent::PositionTruth(
+                AdoptionCapablePositionTruthEvent::AuthorizedRecovery(projection),
             ));
-        (outcome, self.restart_adoption)
+        RecoveryOperationCommit {
+            outcome,
+            replacement_adoption,
+            restart_adoption: self.restart_adoption,
+        }
     }
 }
 
@@ -3183,8 +3331,9 @@ impl RecoveryOperationGrant {
 pub(super) struct CorrectionOperationGrant(ExposureOperationGrant);
 
 impl CorrectionOperationGrant {
-    pub(super) fn commit(mut self, event: ExposureEvent) -> ExposureTransitionOutcome {
-        self.0.commit_reducer_event(event)
+    pub(super) fn commit(mut self, event: ExitLifecycleEvent) -> ExposureTransitionOutcome {
+        self.0
+            .commit_reducer_event(ExposureEvent::ExitLifecycle(event))
     }
 }
 

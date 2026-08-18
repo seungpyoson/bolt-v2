@@ -44,16 +44,16 @@ fn resolve_kill_switch_flatten_block(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LoadedKillSwitchFlattenResolutionError {
     InvalidBlock(KillSwitchFlattenResolutionError),
-    QuoteOnlyEconomics,
+    ForcedReductionRouteUnavailable,
 }
 
 impl std::fmt::Display for LoadedKillSwitchFlattenResolutionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidBlock(error) => error.fmt(f),
-            Self::QuoteOnlyEconomics => write!(
+            Self::ForcedReductionRouteUnavailable => write!(
                 f,
-                "kill switch flatten cannot route forced reductions while economics_slice=quote_only"
+                "kill switch flatten cannot route forced reductions because Slice 1 has no live forced-reduction route"
             ),
         }
     }
@@ -70,7 +70,7 @@ pub(crate) fn validate_loaded_kill_switch_flatten(
     {
         KillSwitchFlattenBlockResolution::Disabled => Ok(()),
         KillSwitchFlattenBlockResolution::Enabled => {
-            Err(LoadedKillSwitchFlattenResolutionError::QuoteOnlyEconomics)
+            Err(LoadedKillSwitchFlattenResolutionError::ForcedReductionRouteUnavailable)
         }
     }
 }

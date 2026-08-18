@@ -8,7 +8,7 @@ use nautilus_common::actor::DataActorNative;
 #[cfg(any(test, feature = "test-current-evidence-inspection"))]
 use nautilus_model::types::{Price, Quantity};
 use nautilus_model::{
-    enums::{OrderSide, PositionSide as NtPositionSide},
+    enums::{OrderSide, OrderStatus, PositionSide as NtPositionSide},
     identifiers::{ClientOrderId, InstrumentId, PositionId, StrategyId},
     orders::{Order, OrderAny},
 };
@@ -21,7 +21,11 @@ use crate::{
         EconomicsAdmissionPolicy, EconomicsSizingIntent, EconomicsSizingQuote,
         RestingOrderEconomicsRefresh, refresh_resting_order_economics,
     },
-    bolt_v3_quote_lifecycle::MakerQuoteLifecycleHandle,
+    bolt_v3_quote_lifecycle::{
+        MakerQuoteLifecycleHandle, MakerQuoteLifecycleIdentity, MakerQuoteLifecycleRefinement,
+        MakerQuoteLifecycleRefinementEvent, MakerQuoteLifecycleRefinementOutcome,
+        MakerQuoteTerminalDisposition,
+    },
     bolt_v3_requote_budget::RequoteBudgetPair,
     bolt_v3_submit_admission::{
         build_submit_admission_request_from_economics, order_admission_facts,
@@ -58,9 +62,54 @@ pub struct BoltV3OrderEconomicsHandle {
 struct TrackedMakerOrderRegistry {
     records: BTreeMap<ClientOrderId, TrackedMakerOrderRecord>,
     retired_provisional: BTreeMap<ClientOrderId, u64>,
+    retained_terminal_orders: BTreeMap<ClientOrderId, MakerQuoteOrderAuthority>,
     requote_budgets_by_strategy: BTreeMap<StrategyId, RequoteBudgetPair>,
+    lifecycle: RestingRegistryLifecycle,
+    next_drain_generation: u64,
     next_generation: u64,
     health: RestingRegistryHealth,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum RestingRegistryLifecycle {
+    #[default]
+    Open,
+    Draining {
+        generation: u64,
+    },
+    Stopped {
+        generation: u64,
+    },
+}
+
+pub struct BoltV3RestingOrderDrainCapability {
+    handle: BoltV3OrderEconomicsHandle,
+    generation: u64,
+}
+
+impl std::fmt::Debug for BoltV3RestingOrderDrainCapability {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BoltV3RestingOrderDrainCapability")
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RetentionHorizonCapability<'a> {
+    RegistrationEpochFinal {
+        lifecycle: &'a MakerQuoteLifecycleHandle,
+        registration_generation: u64,
+        current_client_order_id: ClientOrderId,
+    },
+    ScopeClosure {
+        lifecycles: &'a [MakerQuoteLifecycleHandle],
+        now_ns: u64,
+    },
+    ComponentStop {
+        drain_generation: u64,
+    },
 }
 
 impl TrackedMakerOrderRegistry {
@@ -70,16 +119,230 @@ impl TrackedMakerOrderRegistry {
         Some(generation)
     }
 
-    fn remove_record(
+    fn remove_registration_record(
         &mut self,
         client_order_id: &ClientOrderId,
     ) -> Option<TrackedMakerOrderRecord> {
-        let record = self.records.remove(client_order_id)?;
-        if record.registration_state == RestingRegistrationState::Provisional {
+        self.records.remove(client_order_id)
+    }
+
+    fn remove_terminal_record(
+        &mut self,
+        client_order_id: &ClientOrderId,
+    ) -> Option<TrackedMakerOrderRecord> {
+        let record = self.remove_registration_record(client_order_id);
+        if let Some(governed) = record.as_ref().and_then(TrackedMakerOrderRecord::governed)
+            && governed.registration_state == RestingRegistrationState::Provisional
+        {
             self.retired_provisional
-                .insert(*client_order_id, record.registration_generation);
+                .insert(*client_order_id, governed.registration_generation);
         }
-        Some(record)
+        record
+    }
+
+    fn cancellation(&self, client_order_id: &ClientOrderId) -> Option<&TrackedOrderCancellation> {
+        self.records
+            .get(client_order_id)
+            .map(|record| &record.cancellation)
+    }
+
+    fn cancellation_mut(
+        &mut self,
+        client_order_id: &ClientOrderId,
+    ) -> Option<&mut TrackedOrderCancellation> {
+        self.records
+            .get_mut(client_order_id)
+            .map(|record| &mut record.cancellation)
+    }
+
+    fn requote_budget(&self, client_order_id: &ClientOrderId) -> Option<RequoteBudgetPair> {
+        self.records
+            .get(client_order_id)
+            .and_then(|record| record.requote_budget.clone())
+    }
+
+    fn tracked_order_ids(&self) -> Vec<ClientOrderId> {
+        self.records.keys().copied().collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+struct MakerQuoteOrderAuthority {
+    client_order_id: ClientOrderId,
+    registration_generation: u64,
+    identity: MakerQuoteLifecycleIdentity,
+    lifecycle: MakerQuoteLifecycleHandle,
+    scope: MakerQuoteOrderScope,
+    retained: Option<MakerQuoteRetainedTerminal>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MakerQuoteOrderScope {
+    strategy_id: StrategyId,
+    instrument_id: InstrumentId,
+    order_side: OrderSide,
+}
+
+impl MakerQuoteOrderScope {
+    fn from_order(order: &OrderAny) -> Self {
+        Self {
+            strategy_id: order.strategy_id(),
+            instrument_id: order.instrument_id(),
+            order_side: order.order_side(),
+        }
+    }
+
+    fn matches(&self, order: &OrderAny) -> bool {
+        *self == Self::from_order(order)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MakerQuoteRetainedTerminal {
+    Terminal(MakerQuoteTerminalDisposition),
+    ReopenedFrom(MakerQuoteTerminalDisposition),
+}
+
+impl MakerQuoteRetainedTerminal {
+    fn can_refine(self) -> bool {
+        match self {
+            Self::Terminal(disposition) => disposition.can_refine(),
+            Self::ReopenedFrom(_) => true,
+        }
+    }
+}
+
+impl MakerQuoteOrderAuthority {
+    fn new(order: &OrderAny, generation: u64, lifecycle: MakerQuoteLifecycleHandle) -> Self {
+        Self::new_at_lifecycle_generation(order, generation, generation, lifecycle)
+    }
+
+    fn new_at_lifecycle_generation(
+        order: &OrderAny,
+        registration_generation: u64,
+        lifecycle_generation: u64,
+        lifecycle: MakerQuoteLifecycleHandle,
+    ) -> Self {
+        let client_order_id = order.client_order_id();
+        Self {
+            client_order_id,
+            registration_generation,
+            identity: MakerQuoteLifecycleIdentity::new(
+                client_order_id.as_str(),
+                lifecycle_generation,
+            ),
+            lifecycle,
+            scope: MakerQuoteOrderScope::from_order(order),
+            retained: None,
+        }
+    }
+
+    fn rebind_identity(&mut self, identity: MakerQuoteLifecycleIdentity) -> Result<()> {
+        anyhow::ensure!(
+            identity.client_order_id() == self.client_order_id.as_str(),
+            "maker quote lifecycle identity does not match its tracked order"
+        );
+        self.identity = identity;
+        Ok(())
+    }
+
+    fn terminal_event(
+        &mut self,
+        disposition: MakerQuoteTerminalDisposition,
+    ) -> MakerQuoteLifecycleRefinementEvent {
+        let prior = self.retained;
+        let next = match prior {
+            None => MakerQuoteRetainedTerminal::Terminal(disposition),
+            Some(MakerQuoteRetainedTerminal::Terminal(previous)) => {
+                MakerQuoteRetainedTerminal::Terminal(previous.refine_terminal_with(disposition))
+            }
+            Some(MakerQuoteRetainedTerminal::ReopenedFrom(_)) => {
+                MakerQuoteRetainedTerminal::Terminal(disposition)
+            }
+        };
+        let (stable_effect, closes_reopened) = match (prior, next) {
+            (None, MakerQuoteRetainedTerminal::Terminal(authoritative)) => {
+                (Some(authoritative), false)
+            }
+            (
+                Some(MakerQuoteRetainedTerminal::Terminal(previous)),
+                MakerQuoteRetainedTerminal::Terminal(authoritative),
+            ) if previous != authoritative => (Some(authoritative), false),
+            (
+                Some(MakerQuoteRetainedTerminal::ReopenedFrom(
+                    MakerQuoteTerminalDisposition::Canceled,
+                )),
+                MakerQuoteRetainedTerminal::Terminal(MakerQuoteTerminalDisposition::Filled),
+            ) => (Some(MakerQuoteTerminalDisposition::Filled), true),
+            (
+                Some(
+                    MakerQuoteRetainedTerminal::Terminal(_)
+                    | MakerQuoteRetainedTerminal::ReopenedFrom(_),
+                ),
+                MakerQuoteRetainedTerminal::Terminal(_),
+            ) => (
+                None,
+                matches!(prior, Some(MakerQuoteRetainedTerminal::ReopenedFrom(_))),
+            ),
+            (_, MakerQuoteRetainedTerminal::ReopenedFrom(_)) => unreachable!(),
+        };
+        self.retained = Some(next);
+        MakerQuoteLifecycleRefinementEvent::new(
+            self.identity.clone(),
+            MakerQuoteLifecycleRefinement::Terminal {
+                stable_effect,
+                closes_reopened,
+            },
+        )
+    }
+
+    fn reopening_event(&mut self) -> Result<MakerQuoteLifecycleRefinementEvent> {
+        let retained = self.retained.ok_or_else(|| {
+            anyhow::anyhow!("maker quote reopening requires retained per-order terminal truth")
+        })?;
+        let reopened_from = match retained {
+            MakerQuoteRetainedTerminal::Terminal(
+                disposition @ (MakerQuoteTerminalDisposition::Canceled
+                | MakerQuoteTerminalDisposition::Filled),
+            )
+            | MakerQuoteRetainedTerminal::ReopenedFrom(
+                disposition @ (MakerQuoteTerminalDisposition::Canceled
+                | MakerQuoteTerminalDisposition::Filled),
+            ) => disposition,
+            MakerQuoteRetainedTerminal::Terminal(
+                MakerQuoteTerminalDisposition::Denied
+                | MakerQuoteTerminalDisposition::Rejected
+                | MakerQuoteTerminalDisposition::Expired
+                | MakerQuoteTerminalDisposition::Voided,
+            )
+            | MakerQuoteRetainedTerminal::ReopenedFrom(
+                MakerQuoteTerminalDisposition::Denied
+                | MakerQuoteTerminalDisposition::Rejected
+                | MakerQuoteTerminalDisposition::Expired
+                | MakerQuoteTerminalDisposition::Voided,
+            ) => anyhow::bail!("maker quote final terminal truth cannot reopen"),
+        };
+        self.retained = Some(MakerQuoteRetainedTerminal::ReopenedFrom(reopened_from));
+        Ok(MakerQuoteLifecycleRefinementEvent::new(
+            self.identity.clone(),
+            MakerQuoteLifecycleRefinement::Reopened,
+        ))
+    }
+
+    fn retention_horizon_event(&self) -> MakerQuoteLifecycleRefinementEvent {
+        MakerQuoteLifecycleRefinementEvent::new(
+            self.identity.clone(),
+            MakerQuoteLifecycleRefinement::RetentionHorizon,
+        )
+    }
+
+    fn can_refine(&self) -> bool {
+        self.retained
+            .is_some_and(MakerQuoteRetainedTerminal::can_refine)
+    }
+
+    fn shares_lifecycle_scope_with(&self, lifecycle: &MakerQuoteLifecycleHandle) -> bool {
+        self.lifecycle.shares_lifecycle_scope_with(lifecycle)
     }
 }
 
@@ -88,6 +351,7 @@ enum RestingRegistryHealth {
     #[default]
     Healthy,
     Poisoned,
+    MissingMoneyRelevantAuthority,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -98,12 +362,82 @@ struct RestingOrderEconomicsRecord {
 
 #[derive(Clone, Debug)]
 struct TrackedMakerOrderRecord {
+    authority: TrackedMakerOrderAuthority,
+    requote_budget: Option<RequoteBudgetPair>,
+    cancellation: TrackedOrderCancellation,
+}
+
+#[derive(Clone, Debug)]
+enum TrackedMakerOrderAuthority {
+    Governed(Box<GovernedMakerOrderAuthority>),
+    MissingAfterRetentionHorizon,
+}
+
+#[derive(Clone, Debug)]
+struct GovernedMakerOrderAuthority {
     registration_generation: u64,
     registration_state: RestingRegistrationState,
     economics: Option<RestingOrderEconomicsRecord>,
-    requote_budget: Option<RequoteBudgetPair>,
-    maker_lifecycle: Option<MakerQuoteLifecycleHandle>,
-    cancellation: TrackedOrderCancellation,
+    maker_lifecycle: MakerQuoteOrderAuthority,
+}
+
+impl TrackedMakerOrderRecord {
+    fn new_governed(
+        registration_generation: u64,
+        registration_state: RestingRegistrationState,
+        economics: Option<RestingOrderEconomicsRecord>,
+        requote_budget: Option<RequoteBudgetPair>,
+        maker_lifecycle: MakerQuoteOrderAuthority,
+        cancellation: TrackedOrderCancellation,
+    ) -> Self {
+        Self {
+            authority: TrackedMakerOrderAuthority::Governed(Box::new(
+                GovernedMakerOrderAuthority {
+                    registration_generation,
+                    registration_state,
+                    economics,
+                    maker_lifecycle,
+                },
+            )),
+            requote_budget,
+            cancellation,
+        }
+    }
+
+    fn new_cancellation_only(
+        order: OrderAny,
+        requote_budget: Option<RequoteBudgetPair>,
+        quote_deadline_ns: u64,
+    ) -> Self {
+        let mut cancellation = TrackedOrderCancellation::new(order);
+        cancellation.request_intent(quote_deadline_ns);
+        Self {
+            authority: TrackedMakerOrderAuthority::MissingAfterRetentionHorizon,
+            requote_budget,
+            cancellation,
+        }
+    }
+
+    fn governed(&self) -> Option<&GovernedMakerOrderAuthority> {
+        match &self.authority {
+            TrackedMakerOrderAuthority::Governed(authority) => Some(authority.as_ref()),
+            TrackedMakerOrderAuthority::MissingAfterRetentionHorizon => None,
+        }
+    }
+
+    fn governed_mut(&mut self) -> Option<&mut GovernedMakerOrderAuthority> {
+        match &mut self.authority {
+            TrackedMakerOrderAuthority::Governed(authority) => Some(authority.as_mut()),
+            TrackedMakerOrderAuthority::MissingAfterRetentionHorizon => None,
+        }
+    }
+
+    fn into_governed(self) -> Option<GovernedMakerOrderAuthority> {
+        match self.authority {
+            TrackedMakerOrderAuthority::Governed(authority) => Some(*authority),
+            TrackedMakerOrderAuthority::MissingAfterRetentionHorizon => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,6 +451,7 @@ pub enum BoltV3RestingRegistrationRejectionKind {
     InvalidPlannedFillShape,
     NonPositiveQuantity,
     RegistryUnavailable,
+    RetentionScopeClosed,
     DuplicateClientOrderId,
     GenerationOverflow,
 }
@@ -236,29 +571,25 @@ impl BoltV3RestingSubmitTransactionOutcome {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BoltV3RestingCommitDisposition {
-    Submitted,
-    CommandIssued,
-    CommandIssuedRetainPrepaid,
-    SinkRejected,
-    PreSinkAborted,
-    CallbackRetired,
-    RollbackInvariantFailed,
-    PostSinkUnwind,
+pub enum BoltV3RestingRegistrationCapability {
+    PreSink,
+    SinkInvoked,
+    Settled,
 }
 
 pub trait BoltV3RestingRegistrationCommitParticipant: std::fmt::Debug {
     fn requote_budget(&self) -> Option<RequoteBudgetPair>;
-    fn maker_lifecycle(&self) -> Option<MakerQuoteLifecycleHandle> {
-        None
-    }
-    fn arm_at_generation(&mut self, generation: u64) -> Result<()>;
+    fn maker_lifecycle(&self) -> MakerQuoteLifecycleHandle;
+    fn arm_at_identity(&mut self, identity: MakerQuoteLifecycleIdentity) -> Result<()>;
     fn mark_sink_invoked(&mut self, actor_now_ns: u64) -> Result<()>;
-    fn settle_at_generation(
-        &mut self,
-        generation: u64,
-        disposition: BoltV3RestingCommitDisposition,
-    ) -> Result<()>;
+    fn registration_capability(&self, generation: u64) -> BoltV3RestingRegistrationCapability;
+    fn settle_submitted(&mut self, generation: u64) -> Result<()>;
+    fn settle_command_issued(&mut self, generation: u64) -> Result<()>;
+    fn settle_sink_rejected(&mut self, generation: u64) -> Result<()>;
+    fn settle_callback_retired(&mut self, generation: u64) -> Result<()>;
+    fn abort_pre_sink(&mut self, generation: u64) -> Result<()>;
+    fn fail_pre_sink_invariant(&mut self, generation: u64) -> Result<()>;
+    fn fail_post_sink_invariant(&mut self, generation: u64) -> Result<()>;
 }
 
 #[derive(Debug)]
@@ -266,87 +597,160 @@ struct RestingRegistrationTransaction {
     registry: Arc<RwLock<TrackedMakerOrderRegistry>>,
     client_order_id: ClientOrderId,
     generation: u64,
+    identity: MakerQuoteLifecycleIdentity,
+    lifecycle: MakerQuoteLifecycleHandle,
     participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
-    maker_lifecycle: Option<MakerQuoteLifecycleHandle>,
     rollback_failure: Arc<Mutex<Option<BoltV3RestingRollbackInvariantFailure>>>,
-    state: RestingRegistrationTransactionState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RestingRegistrationTransactionState {
+enum RestingRegistrationOwnership {
     Active,
-    Armed,
+    RetiredByCallback,
+    Replaced,
+    Missing,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UnsettledRestingRegistrationCapability {
+    PreSink,
     SinkInvoked,
-    Settled,
 }
 
 impl RestingRegistrationTransaction {
-    fn settle_route(&mut self, completion: BoltV3RouteAttemptCompletion) {
-        let (mut registry, lock_was_poisoned) = match self.registry.write() {
-            Ok(registry) => (registry, false),
-            Err(poisoned) => (poisoned.into_inner(), true),
-        };
-        if lock_was_poisoned {
-            registry.health = RestingRegistryHealth::Poisoned;
+    fn ownership(&self, registry: &TrackedMakerOrderRegistry) -> RestingRegistrationOwnership {
+        let active_generation = registry
+            .records
+            .get(&self.client_order_id)
+            .and_then(TrackedMakerOrderRecord::governed)
+            .map(|authority| authority.registration_generation);
+        let retired_generation = registry
+            .retired_provisional
+            .get(&self.client_order_id)
+            .copied();
+        match (active_generation, retired_generation) {
+            (Some(generation), _) if generation == self.generation => {
+                RestingRegistrationOwnership::Active
+            }
+            (None, Some(generation)) if generation == self.generation => {
+                RestingRegistrationOwnership::RetiredByCallback
+            }
+            (Some(_), _) => RestingRegistrationOwnership::Replaced,
+            (None, _) => RestingRegistrationOwnership::Missing,
         }
+    }
 
-        let ownership = (
-            registry
-                .records
-                .get(&self.client_order_id)
-                .map(|record| record.registration_generation),
-            registry
-                .retired_provisional
-                .get(&self.client_order_id)
-                .copied(),
-        );
-        let (disposition, failure) = match ownership {
-            (Some(generation), _) if generation == self.generation => match completion {
+    fn record_settlement_failure(
+        &self,
+        ownership_failure: Option<BoltV3RestingRollbackInvariantFailure>,
+        settlement: Result<()>,
+        retention_horizon: Result<usize>,
+    ) {
+        let failure = match (ownership_failure, settlement, retention_horizon) {
+            (Some(reason), _, _) => Some(reason),
+            (None, Err(_), _) | (None, Ok(()), Err(_)) => {
+                Some(BoltV3RestingRollbackInvariantFailure::ParticipantSettlementFailed)
+            }
+            (None, Ok(()), Ok(_)) => None,
+        };
+        if let Some(reason) = failure {
+            self.record_failure(reason);
+        }
+    }
+
+    fn settle_route(&mut self, completion: BoltV3RouteAttemptCompletion) {
+        let mut registry = match self.registry.write() {
+            Ok(registry) => registry,
+            Err(poisoned) => {
+                let mut registry = poisoned.into_inner();
+                registry.health = RestingRegistryHealth::Poisoned;
+                registry
+            }
+        };
+        let ownership = self.ownership(&registry);
+        let failure = match ownership {
+            RestingRegistrationOwnership::Active => match completion {
                 BoltV3RouteAttemptCompletion::Submitted => {
                     let record = registry
                         .records
                         .get_mut(&self.client_order_id)
                         .expect("owned resting registration must remain present");
-                    record.registration_state = RestingRegistrationState::Committed;
-                    record.maker_lifecycle = self.maker_lifecycle.clone();
-                    (BoltV3RestingCommitDisposition::Submitted, None)
+                    record
+                        .governed_mut()
+                        .expect("owned resting registration must retain exact authority")
+                        .registration_state = RestingRegistrationState::Committed;
+                    None
                 }
                 BoltV3RouteAttemptCompletion::SinkRejected => {
-                    registry.records.remove(&self.client_order_id);
-                    (BoltV3RestingCommitDisposition::SinkRejected, None)
+                    registry.remove_registration_record(&self.client_order_id);
+                    None
                 }
             },
-            (None, Some(generation)) if generation == self.generation => {
+            RestingRegistrationOwnership::RetiredByCallback => {
                 registry.retired_provisional.remove(&self.client_order_id);
-                (BoltV3RestingCommitDisposition::CallbackRetired, None)
+                None
             }
-            (Some(_), _) => {
+            RestingRegistrationOwnership::Replaced => {
                 registry.health = RestingRegistryHealth::Poisoned;
-                (
-                    BoltV3RestingCommitDisposition::RollbackInvariantFailed,
-                    Some(BoltV3RestingRollbackInvariantFailure::RegistrationGenerationReplaced),
-                )
+                Some(BoltV3RestingRollbackInvariantFailure::RegistrationGenerationReplaced)
             }
-            (None, _) => {
+            RestingRegistrationOwnership::Missing => {
                 registry.health = RestingRegistryHealth::Poisoned;
-                (
-                    BoltV3RestingCommitDisposition::RollbackInvariantFailed,
-                    Some(BoltV3RestingRollbackInvariantFailure::RegistryUnavailable),
-                )
+                Some(BoltV3RestingRollbackInvariantFailure::RegistryUnavailable)
             }
         };
-        self.state = RestingRegistrationTransactionState::Settled;
         drop(registry);
-        if self
-            .participant
-            .settle_at_generation(self.generation, disposition)
-            .is_err()
-            && failure.is_none()
-        {
-            self.record_failure(BoltV3RestingRollbackInvariantFailure::ParticipantSettlementFailed);
-        } else if let Some(reason) = failure {
-            self.record_failure(reason);
-        }
+        let settlement = match ownership {
+            RestingRegistrationOwnership::Active => match completion {
+                BoltV3RouteAttemptCompletion::Submitted => {
+                    self.participant.settle_submitted(self.generation)
+                }
+                BoltV3RouteAttemptCompletion::SinkRejected => {
+                    self.participant.settle_sink_rejected(self.generation)
+                }
+            },
+            RestingRegistrationOwnership::RetiredByCallback => {
+                self.participant.settle_callback_retired(self.generation)
+            }
+            RestingRegistrationOwnership::Replaced | RestingRegistrationOwnership::Missing => {
+                match self.participant.registration_capability(self.generation) {
+                    BoltV3RestingRegistrationCapability::PreSink => {
+                        self.participant.fail_pre_sink_invariant(self.generation)
+                    }
+                    BoltV3RestingRegistrationCapability::SinkInvoked => {
+                        self.participant.fail_post_sink_invariant(self.generation)
+                    }
+                    BoltV3RestingRegistrationCapability::Settled => Ok(()),
+                }
+            }
+        };
+        let retention_horizon = match (ownership, completion, &settlement, failure) {
+            (
+                RestingRegistrationOwnership::Active
+                | RestingRegistrationOwnership::RetiredByCallback,
+                BoltV3RouteAttemptCompletion::Submitted,
+                Ok(()),
+                None,
+            ) => apply_retention_horizon(
+                &self.registry,
+                RetentionHorizonCapability::RegistrationEpochFinal {
+                    lifecycle: &self.lifecycle,
+                    registration_generation: self.generation,
+                    current_client_order_id: self.client_order_id,
+                },
+            ),
+            (
+                RestingRegistrationOwnership::Active
+                | RestingRegistrationOwnership::RetiredByCallback
+                | RestingRegistrationOwnership::Replaced
+                | RestingRegistrationOwnership::Missing,
+                BoltV3RouteAttemptCompletion::Submitted
+                | BoltV3RouteAttemptCompletion::SinkRejected,
+                Ok(()) | Err(_),
+                Some(_) | None,
+            ) => Ok(0),
+        };
+        self.record_settlement_failure(failure, settlement, retention_horizon);
     }
 
     fn record_failure(&self, reason: BoltV3RestingRollbackInvariantFailure) {
@@ -363,15 +767,11 @@ impl RestingRegistrationTransaction {
 
 impl BoltV3RouteAttemptParticipant for RestingRegistrationTransaction {
     fn consume_at_pre_sink(&mut self) -> Result<()> {
-        self.participant.arm_at_generation(self.generation)?;
-        self.state = RestingRegistrationTransactionState::Armed;
-        Ok(())
+        self.participant.arm_at_identity(self.identity.clone())
     }
 
     fn mark_sink_invoked(&mut self, actor_now_ns: u64) -> Result<()> {
-        self.participant.mark_sink_invoked(actor_now_ns)?;
-        self.state = RestingRegistrationTransactionState::SinkInvoked;
-        Ok(())
+        self.participant.mark_sink_invoked(actor_now_ns)
     }
 
     fn complete(&mut self, completion: BoltV3RouteAttemptCompletion) {
@@ -381,71 +781,74 @@ impl BoltV3RouteAttemptParticipant for RestingRegistrationTransaction {
 
 impl Drop for RestingRegistrationTransaction {
     fn drop(&mut self) {
-        match self.state {
-            RestingRegistrationTransactionState::Settled => return,
-            RestingRegistrationTransactionState::Active
-            | RestingRegistrationTransactionState::Armed
-            | RestingRegistrationTransactionState::SinkInvoked => {}
-        }
-        let (mut registry, lock_was_poisoned) = match self.registry.write() {
-            Ok(registry) => (registry, false),
+        let capability = match self.participant.registration_capability(self.generation) {
+            BoltV3RestingRegistrationCapability::PreSink => {
+                UnsettledRestingRegistrationCapability::PreSink
+            }
+            BoltV3RestingRegistrationCapability::SinkInvoked => {
+                UnsettledRestingRegistrationCapability::SinkInvoked
+            }
+            BoltV3RestingRegistrationCapability::Settled => return,
+        };
+        let mut registry = match self.registry.write() {
+            Ok(registry) => registry,
             Err(poisoned) => {
                 let mut registry = poisoned.into_inner();
                 registry.health = RestingRegistryHealth::Poisoned;
-                (registry, true)
+                registry
             }
         };
-        let ownership = (
-            registry
-                .records
-                .get(&self.client_order_id)
-                .map(|record| record.registration_generation),
-            registry
-                .retired_provisional
-                .get(&self.client_order_id)
-                .copied(),
-        );
-        let (disposition, failure) = match ownership {
-            (Some(generation), _) if generation == self.generation => {
-                if self.state == RestingRegistrationTransactionState::SinkInvoked {
-                    registry.health = RestingRegistryHealth::Poisoned;
-                    (BoltV3RestingCommitDisposition::PostSinkUnwind, None)
-                } else {
-                    registry.records.remove(&self.client_order_id);
-                    (BoltV3RestingCommitDisposition::PreSinkAborted, None)
-                }
+        let ownership = self.ownership(&registry);
+        let failure = match (ownership, capability) {
+            (
+                RestingRegistrationOwnership::Active,
+                UnsettledRestingRegistrationCapability::PreSink,
+            ) => {
+                registry.remove_registration_record(&self.client_order_id);
+                None
             }
-            (None, Some(generation)) if generation == self.generation => {
-                registry.retired_provisional.remove(&self.client_order_id);
-                (BoltV3RestingCommitDisposition::CallbackRetired, None)
-            }
-            (Some(_), _) => {
+            (
+                RestingRegistrationOwnership::Active,
+                UnsettledRestingRegistrationCapability::SinkInvoked,
+            ) => {
                 registry.health = RestingRegistryHealth::Poisoned;
-                (
-                    BoltV3RestingCommitDisposition::RollbackInvariantFailed,
-                    Some(BoltV3RestingRollbackInvariantFailure::RegistrationGenerationReplaced),
-                )
+                None
             }
-            (None, _) => (
-                BoltV3RestingCommitDisposition::RollbackInvariantFailed,
-                Some(BoltV3RestingRollbackInvariantFailure::RegistryUnavailable),
-            ),
+            (RestingRegistrationOwnership::RetiredByCallback, _) => {
+                registry.retired_provisional.remove(&self.client_order_id);
+                None
+            }
+            (RestingRegistrationOwnership::Replaced, _) => {
+                registry.health = RestingRegistryHealth::Poisoned;
+                Some(BoltV3RestingRollbackInvariantFailure::RegistrationGenerationReplaced)
+            }
+            (RestingRegistrationOwnership::Missing, _) => {
+                Some(BoltV3RestingRollbackInvariantFailure::RegistryUnavailable)
+            }
         };
-        if lock_was_poisoned {
-            registry.health = RestingRegistryHealth::Poisoned;
-        }
         drop(registry);
-        if self
-            .participant
-            .settle_at_generation(self.generation, disposition)
-            .is_err()
-            && failure.is_none()
-        {
-            self.record_failure(BoltV3RestingRollbackInvariantFailure::ParticipantSettlementFailed);
-        } else if let Some(reason) = failure {
-            self.record_failure(reason);
-        }
-        self.state = RestingRegistrationTransactionState::Settled;
+        let settlement = match (ownership, capability) {
+            (
+                RestingRegistrationOwnership::Active,
+                UnsettledRestingRegistrationCapability::PreSink,
+            ) => self.participant.abort_pre_sink(self.generation),
+            (
+                RestingRegistrationOwnership::Active,
+                UnsettledRestingRegistrationCapability::SinkInvoked,
+            ) => self.participant.fail_post_sink_invariant(self.generation),
+            (RestingRegistrationOwnership::RetiredByCallback, _) => {
+                self.participant.settle_callback_retired(self.generation)
+            }
+            (
+                RestingRegistrationOwnership::Replaced | RestingRegistrationOwnership::Missing,
+                UnsettledRestingRegistrationCapability::PreSink,
+            ) => self.participant.fail_pre_sink_invariant(self.generation),
+            (
+                RestingRegistrationOwnership::Replaced | RestingRegistrationOwnership::Missing,
+                UnsettledRestingRegistrationCapability::SinkInvoked,
+            ) => self.participant.fail_post_sink_invariant(self.generation),
+        };
+        self.record_settlement_failure(failure, settlement, Ok(0));
     }
 }
 
@@ -520,7 +923,16 @@ impl BoltV3OrderEconomicsHandle {
             .tracked_orders
             .read()
             .map_err(|_| anyhow::anyhow!("resting economics state lock poisoned"))?
-            .records
+            .tracked_order_ids())
+    }
+
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    pub fn retained_terminal_order_ids(&self) -> Result<Vec<ClientOrderId>> {
+        Ok(self
+            .tracked_orders
+            .read()
+            .map_err(|_| anyhow::anyhow!("resting economics state lock poisoned"))?
+            .retained_terminal_orders
             .keys()
             .copied()
             .collect())
@@ -537,8 +949,59 @@ impl BoltV3OrderEconomicsHandle {
             .expect("test registry should lock")
             .records
             .get_mut(&client_order_id)
-            .expect("test resting record should exist")
+            .expect("test tracked record should exist")
             .requote_budget = Some(budget);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison_tracked_order_registry_for_test(&self) {
+        let registry = self.tracked_orders.clone();
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = registry
+                .write()
+                .expect("test registry should initially lock");
+            panic!("poison tracked order registry for behavior test");
+        }));
+        assert!(poisoned.is_err(), "test registry poison must take effect");
+    }
+
+    #[cfg(test)]
+    pub(super) fn track_cancel_coordinator_order_for_test(
+        &self,
+        order: OrderAny,
+        quote_deadline_ns: u64,
+    ) {
+        let client_order_id = order.client_order_id();
+        let strategy_id = order.strategy_id();
+        let lifecycle = MakerQuoteLifecycleHandle::new(
+            crate::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false),
+            crate::bolt_v3_quote_lifecycle::Leg::Yes,
+        );
+        let mut registry = self
+            .tracked_orders
+            .write()
+            .expect("test registry should lock");
+        let generation = registry
+            .allocate_generation()
+            .expect("test registration generation should remain available");
+        let maker_lifecycle = MakerQuoteOrderAuthority::new(&order, generation, lifecycle);
+        let mut coordinator = TrackedOrderCancellation::new(order);
+        coordinator.request_intent(quote_deadline_ns);
+        let requote_budget = registry
+            .requote_budgets_by_strategy
+            .get(&strategy_id)
+            .cloned();
+        registry.records.insert(
+            client_order_id,
+            TrackedMakerOrderRecord::new_governed(
+                generation,
+                RestingRegistrationState::Committed,
+                None,
+                requote_budget,
+                maker_lifecycle,
+                coordinator,
+            ),
+        );
     }
 
     fn refresh_tracked_economics(
@@ -551,21 +1014,27 @@ impl BoltV3OrderEconomicsHandle {
             .tracked_orders
             .write()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        let Some(record) = registry.records.get_mut(&client_order_id) else {
-            return Ok(());
-        };
         if cached.is_some_and(|order| {
             order.is_closed() || order.leaves_qty().as_decimal() == Decimal::ZERO
         }) {
-            let removed = registry.remove_record(&client_order_id);
+            let disposition = maker_terminal_disposition(
+                cached.expect("terminal cached-order branch requires an order"),
+            )?;
+            let removed = registry.remove_terminal_record(&client_order_id);
             drop(registry);
-            settle_maker_terminal(removed);
+            settle_maker_terminal(&self.tracked_orders, client_order_id, removed, disposition)?;
             return Ok(());
         }
+        let Some(record) = registry.records.get_mut(&client_order_id) else {
+            return Ok(());
+        };
         if record.cancellation.is_requested() {
             return Ok(());
-        }
-        let Some(economics) = record.economics.as_mut() else {
+        };
+        let Some(governed) = record.governed_mut() else {
+            return Ok(());
+        };
+        let Some(economics) = governed.economics.as_mut() else {
             return Ok(());
         };
         let Some(order) = cached else {
@@ -583,9 +1052,10 @@ impl BoltV3OrderEconomicsHandle {
         ) {
             RestingOrderEconomicsRefresh::NotDue => {}
             RestingOrderEconomicsRefresh::Complete => {
-                let removed = registry.remove_record(&client_order_id);
+                let disposition = maker_terminal_disposition(order)?;
+                let removed = registry.remove_terminal_record(&client_order_id);
                 drop(registry);
-                settle_maker_terminal(removed);
+                settle_maker_terminal(&self.tracked_orders, client_order_id, removed, disposition)?;
                 return Ok(());
             }
             RestingOrderEconomicsRefresh::Refreshed {
@@ -682,13 +1152,29 @@ impl BoltV3OrderEconomicsHandle {
                 ));
             }
         };
-        if registry.health == RestingRegistryHealth::Poisoned {
+        if registry.health != RestingRegistryHealth::Healthy {
             return Err(BoltV3RestingRegistrationRejection::new(
                 BoltV3RestingRegistrationRejectionKind::RegistryUnavailable,
                 "resting economics registry health is poisoned",
             ));
         }
-        if registry.records.contains_key(&client_order_id) {
+        if registry.lifecycle != RestingRegistryLifecycle::Open {
+            return Err(BoltV3RestingRegistrationRejection::new(
+                BoltV3RestingRegistrationRejectionKind::RetentionScopeClosed,
+                "resting economics registration is closed by the component drain latch",
+            ));
+        }
+        if maker_lifecycle.retention_scope_is_closed() {
+            return Err(BoltV3RestingRegistrationRejection::new(
+                BoltV3RestingRegistrationRejectionKind::RetentionScopeClosed,
+                "resting economics registration lifecycle scope is closing",
+            ));
+        }
+        if registry.records.contains_key(&client_order_id)
+            || registry
+                .retained_terminal_orders
+                .contains_key(&client_order_id)
+        {
             return Err(BoltV3RestingRegistrationRejection::new(
                 BoltV3RestingRegistrationRejectionKind::DuplicateClientOrderId,
                 format_args!(
@@ -703,6 +1189,10 @@ impl BoltV3OrderEconomicsHandle {
             ));
         };
         let strategy_id = order.strategy_id();
+        let identity = MakerQuoteLifecycleIdentity::new(client_order_id.as_str(), generation);
+        let maker_lifecycle = MakerQuoteOrderAuthority::new(&order, generation, maker_lifecycle);
+        let lifecycle = maker_lifecycle.lifecycle.clone();
+        let coordinator = TrackedOrderCancellation::new(order);
         if let Some(requote_budget) = requote_budget.as_ref() {
             registry
                 .requote_budgets_by_strategy
@@ -710,27 +1200,27 @@ impl BoltV3OrderEconomicsHandle {
         }
         registry.records.insert(
             client_order_id,
-            TrackedMakerOrderRecord {
-                registration_generation: generation,
-                registration_state: RestingRegistrationState::Provisional,
-                economics: Some(RestingOrderEconomicsRecord {
+            TrackedMakerOrderRecord::new_governed(
+                generation,
+                RestingRegistrationState::Provisional,
+                Some(RestingOrderEconomicsRecord {
                     admission,
                     authorized_quantity_ceiling,
                 }),
                 requote_budget,
-                maker_lifecycle: None,
-                cancellation: TrackedOrderCancellation::new(order),
-            },
+                maker_lifecycle,
+                coordinator,
+            ),
         );
         drop(registry);
         Ok(RestingRegistrationTransaction {
             registry: self.tracked_orders.clone(),
             client_order_id,
             generation,
+            identity,
+            lifecycle,
             participant,
-            maker_lifecycle,
             rollback_failure,
-            state: RestingRegistrationTransactionState::Active,
         })
     }
 
@@ -945,9 +1435,242 @@ pub fn build_order_economics_submit_admission(
     )
 }
 
-fn settle_maker_terminal(record: Option<TrackedMakerOrderRecord>) {
-    if let Some(lifecycle) = record.and_then(|record| record.maker_lifecycle) {
-        lifecycle.terminal_callback();
+fn maker_terminal_disposition(order: &OrderAny) -> Result<MakerQuoteTerminalDisposition> {
+    let disposition = match order.status() {
+        OrderStatus::Denied => MakerQuoteTerminalDisposition::Denied,
+        OrderStatus::Rejected => MakerQuoteTerminalDisposition::Rejected,
+        OrderStatus::Canceled => MakerQuoteTerminalDisposition::Canceled,
+        OrderStatus::Expired => MakerQuoteTerminalDisposition::Expired,
+        OrderStatus::Filled => MakerQuoteTerminalDisposition::Filled,
+        OrderStatus::Voided => MakerQuoteTerminalDisposition::Voided,
+        OrderStatus::Initialized
+        | OrderStatus::Emulated
+        | OrderStatus::Released
+        | OrderStatus::Submitted
+        | OrderStatus::Accepted
+        | OrderStatus::Triggered
+        | OrderStatus::PendingUpdate
+        | OrderStatus::PendingCancel
+        | OrderStatus::PartiallyFilled => {
+            anyhow::ensure!(
+                order.leaves_qty().as_decimal() == Decimal::ZERO,
+                "tracked maker terminal settlement requires a terminal status or zero leaves"
+            );
+            MakerQuoteTerminalDisposition::Filled
+        }
+    };
+    Ok(disposition)
+}
+
+fn apply_retention_horizon(
+    registry: &Arc<RwLock<TrackedMakerOrderRegistry>>,
+    capability: RetentionHorizonCapability<'_>,
+) -> Result<usize> {
+    let (retained, operation) = {
+        let mut registry = registry
+            .write()
+            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
+        let selected = match capability {
+            RetentionHorizonCapability::RegistrationEpochFinal {
+                lifecycle,
+                registration_generation,
+                current_client_order_id,
+            } => registry
+                .retained_terminal_orders
+                .iter()
+                .filter_map(|(client_order_id, authority)| {
+                    (authority.shares_lifecycle_scope_with(lifecycle)
+                        && authority.registration_generation < registration_generation
+                        && *client_order_id != current_client_order_id)
+                        .then_some(*client_order_id)
+                })
+                .collect::<Vec<_>>(),
+            RetentionHorizonCapability::ScopeClosure { lifecycles, now_ns } => {
+                for record in registry.records.values_mut() {
+                    let Some(governed) = record.governed() else {
+                        continue;
+                    };
+                    if !lifecycles.iter().any(|lifecycle| {
+                        governed
+                            .maker_lifecycle
+                            .shares_lifecycle_scope_with(lifecycle)
+                    }) {
+                        continue;
+                    }
+                    let quote_deadline_ns = governed
+                        .economics
+                        .as_ref()
+                        .map(|economics| economics.admission.quote().valid_until_ns())
+                        .unwrap_or(now_ns);
+                    record.cancellation.request_intent(quote_deadline_ns);
+                }
+                registry
+                    .retained_terminal_orders
+                    .iter()
+                    .filter_map(|(client_order_id, authority)| {
+                        lifecycles
+                            .iter()
+                            .any(|lifecycle| authority.shares_lifecycle_scope_with(lifecycle))
+                            .then_some(*client_order_id)
+                    })
+                    .collect::<Vec<_>>()
+            }
+            RetentionHorizonCapability::ComponentStop { drain_generation } => {
+                anyhow::ensure!(
+                    registry.lifecycle
+                        == RestingRegistryLifecycle::Draining {
+                            generation: drain_generation,
+                        },
+                    "resting retention horizon requires the exact component drain capability"
+                );
+                anyhow::ensure!(
+                    registry.records.is_empty(),
+                    "resting retention horizon cannot finalize while active tracked records exist"
+                );
+                registry.lifecycle = RestingRegistryLifecycle::Stopped {
+                    generation: drain_generation,
+                };
+                registry
+                    .retained_terminal_orders
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>()
+            }
+        };
+        let operation = match capability {
+            RetentionHorizonCapability::RegistrationEpochFinal { .. } => "registration-epoch-final",
+            RetentionHorizonCapability::ScopeClosure { .. } => "scope-closure",
+            RetentionHorizonCapability::ComponentStop { .. } => "component-stop",
+        };
+        let retained = selected
+            .into_iter()
+            .filter_map(|client_order_id| {
+                registry.retained_terminal_orders.remove(&client_order_id)
+            })
+            .collect::<Vec<_>>();
+        (retained, operation)
+    };
+
+    let count = retained.len();
+    let mut failures: Vec<String> = Vec::new();
+    for authority in retained {
+        let outcome = authority
+            .lifecycle
+            .refine(authority.retention_horizon_event());
+        if let Err(error) = consume_lifecycle_refinement_outcome(outcome, operation) {
+            failures.push(error.to_string());
+        }
+    }
+    if !failures.is_empty() {
+        match registry.write() {
+            Ok(mut registry) => registry.health = RestingRegistryHealth::Poisoned,
+            Err(poisoned) => poisoned.into_inner().health = RestingRegistryHealth::Poisoned,
+        }
+        anyhow::bail!(
+            "tracked maker retention horizon failed: {}",
+            failures.join(" | ")
+        );
+    }
+    Ok(count)
+}
+
+fn settle_maker_terminal(
+    registry: &Arc<RwLock<TrackedMakerOrderRegistry>>,
+    client_order_id: ClientOrderId,
+    record: Option<TrackedMakerOrderRecord>,
+    disposition: MakerQuoteTerminalDisposition,
+) -> Result<()> {
+    let Some(record) = record else {
+        return Ok(());
+    };
+    let Some(governed) = record.into_governed() else {
+        return Ok(());
+    };
+    settle_maker_terminal_authority(
+        registry,
+        client_order_id,
+        governed.maker_lifecycle,
+        disposition,
+    )
+}
+
+fn settle_maker_terminal_authority(
+    registry_state: &Arc<RwLock<TrackedMakerOrderRegistry>>,
+    client_order_id: ClientOrderId,
+    mut authority: MakerQuoteOrderAuthority,
+    disposition: MakerQuoteTerminalDisposition,
+) -> Result<()> {
+    anyhow::ensure!(
+        authority.client_order_id == client_order_id,
+        "maker quote lifecycle association does not match the terminal order"
+    );
+    let event = authority.terminal_event(disposition);
+    let outcome = authority.lifecycle.refine(event);
+    let result = consume_lifecycle_refinement_outcome(outcome, "terminal");
+    let mut registry = registry_state
+        .write()
+        .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
+    let scope_is_closing = authority.lifecycle.retention_scope_is_closed();
+    if scope_is_closing {
+        drop(registry);
+        result?;
+        let lifecycle = [authority.lifecycle.clone()];
+        let mut registry = registry_state
+            .write()
+            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
+        registry
+            .retained_terminal_orders
+            .insert(client_order_id, authority);
+        drop(registry);
+        apply_retention_horizon(
+            registry_state,
+            RetentionHorizonCapability::ScopeClosure {
+                lifecycles: &lifecycle,
+                now_ns: 0,
+            },
+        )?;
+        return Ok(());
+    }
+    if authority.can_refine() {
+        registry
+            .retained_terminal_orders
+            .insert(client_order_id, authority);
+    } else {
+        registry.retained_terminal_orders.remove(&client_order_id);
+    }
+    drop(registry);
+    result
+}
+
+fn consume_lifecycle_refinement_outcome(
+    outcome: MakerQuoteLifecycleRefinementOutcome,
+    operation: &'static str,
+) -> Result<()> {
+    match outcome {
+        MakerQuoteLifecycleRefinementOutcome::Applied => Ok(()),
+        MakerQuoteLifecycleRefinementOutcome::Unaffected { event, active } => {
+            log::info!(
+                "maker quote per-order refinement left current leg occupancy unchanged: operation={operation} client_order_id={} generation={} active_client_order_id={:?} active_generation={:?}",
+                event.client_order_id(),
+                event.generation(),
+                active
+                    .as_ref()
+                    .map(MakerQuoteLifecycleIdentity::client_order_id),
+                active.as_ref().map(MakerQuoteLifecycleIdentity::generation),
+            );
+            Ok(())
+        }
+        MakerQuoteLifecycleRefinementOutcome::Invalid { event, active } => {
+            anyhow::bail!(
+                "maker quote {operation} consequence rejected by lifecycle reducer: client_order_id={} generation={} active_client_order_id={:?} active_generation={:?}",
+                event.client_order_id(),
+                event.generation(),
+                active
+                    .as_ref()
+                    .map(MakerQuoteLifecycleIdentity::client_order_id),
+                active.as_ref().map(MakerQuoteLifecycleIdentity::generation),
+            )
+        }
     }
 }
 
@@ -1049,74 +1772,114 @@ mod tests {
     use nautilus_core::{UUID4, UnixNanos};
     use nautilus_model::{
         enums::{OrderSide, TimeInForce},
-        identifiers::{ClientOrderId, InstrumentId, StrategyId, TraderId},
-        orders::{LimitOrder, Order, OrderAny},
+        identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
+        orders::{LimitOrder, Order, OrderAny, stubs::TestOrderEventStubs},
         types::{Price, Quantity},
     };
     use rust_decimal::Decimal;
 
     use super::{
         BoltV3FinalOrderEconomicsInput, BoltV3FinalOrderEconomicsScenario,
-        BoltV3RestingCommitDisposition, BoltV3RestingRegistrationCommitParticipant,
+        BoltV3RestingRegistrationCapability, BoltV3RestingRegistrationCommitParticipant,
         BoltV3RestingRegistrationRejectionKind, BoltV3RestingRollbackInvariantFailure,
         BoltV3RestingSubmitTransactionOutcome, BoltV3RouteAttemptCompletion,
         BoltV3RouteAttemptParticipant, BoltV3SubmitAttemptKind, BoltV3SubmitAttemptOutcome,
-        RestingRegistryHealth, TrackedMakerOrderRegistry, build_order_economics_submit_admission,
+        MakerQuoteLifecycleIdentity, RestingRegistryHealth, TrackedMakerOrderRegistry,
+        build_order_economics_submit_admission,
     };
 
     #[derive(Debug)]
-    struct TestRegistrationParticipant;
+    struct TestRegistrationParticipant {
+        capability: Cell<BoltV3RestingRegistrationCapability>,
+        lifecycle: MakerQuoteLifecycleHandle,
+    }
+
+    impl TestRegistrationParticipant {
+        fn settle(&self) {
+            self.capability
+                .set(BoltV3RestingRegistrationCapability::Settled);
+        }
+    }
 
     impl BoltV3RestingRegistrationCommitParticipant for TestRegistrationParticipant {
         fn requote_budget(&self) -> Option<crate::bolt_v3_requote_budget::RequoteBudgetPair> {
             None
         }
 
-        fn arm_at_generation(&mut self, _generation: u64) -> anyhow::Result<()> {
+        fn maker_lifecycle(&self) -> MakerQuoteLifecycleHandle {
+            self.lifecycle.clone()
+        }
+
+        fn arm_at_identity(
+            &mut self,
+            _identity: MakerQuoteLifecycleIdentity,
+        ) -> anyhow::Result<()> {
             Ok(())
         }
 
         fn mark_sink_invoked(&mut self, _actor_now_ns: u64) -> anyhow::Result<()> {
+            self.capability
+                .set(BoltV3RestingRegistrationCapability::SinkInvoked);
             Ok(())
         }
 
-        fn settle_at_generation(
-            &mut self,
-            _generation: u64,
-            _disposition: BoltV3RestingCommitDisposition,
-        ) -> anyhow::Result<()> {
+        fn registration_capability(&self, _generation: u64) -> BoltV3RestingRegistrationCapability {
+            self.capability.get()
+        }
+
+        fn settle_submitted(&mut self, _generation: u64) -> anyhow::Result<()> {
+            self.settle();
+            Ok(())
+        }
+
+        fn settle_command_issued(&mut self, _generation: u64) -> anyhow::Result<()> {
+            self.settle();
+            Ok(())
+        }
+
+        fn settle_sink_rejected(&mut self, _generation: u64) -> anyhow::Result<()> {
+            self.settle();
+            Ok(())
+        }
+
+        fn settle_callback_retired(&mut self, _generation: u64) -> anyhow::Result<()> {
+            self.settle();
+            Ok(())
+        }
+
+        fn abort_pre_sink(&mut self, _generation: u64) -> anyhow::Result<()> {
+            self.settle();
+            Ok(())
+        }
+
+        fn fail_pre_sink_invariant(&mut self, _generation: u64) -> anyhow::Result<()> {
+            self.settle();
+            Ok(())
+        }
+
+        fn fail_post_sink_invariant(&mut self, _generation: u64) -> anyhow::Result<()> {
+            self.settle();
             Ok(())
         }
     }
 
-    fn test_participant() -> Box<dyn BoltV3RestingRegistrationCommitParticipant> {
-        Box::new(TestRegistrationParticipant)
+    pub(super) fn test_participant() -> Box<dyn BoltV3RestingRegistrationCommitParticipant> {
+        Box::new(TestRegistrationParticipant {
+            capability: Cell::new(BoltV3RestingRegistrationCapability::PreSink),
+            lifecycle: MakerQuoteLifecycleHandle::new(MarketQuote::new_for_test(false), Leg::Yes),
+        })
     }
 
     #[derive(Debug)]
     struct ReentrantSettlementParticipant {
         registry: Arc<RwLock<TrackedMakerOrderRegistry>>,
         settled_without_registry_lock: Arc<Mutex<bool>>,
+        capability: Cell<BoltV3RestingRegistrationCapability>,
+        lifecycle: MakerQuoteLifecycleHandle,
     }
 
-    impl BoltV3RestingRegistrationCommitParticipant for ReentrantSettlementParticipant {
-        fn requote_budget(&self) -> Option<crate::bolt_v3_requote_budget::RequoteBudgetPair> {
-            None
-        }
-
-        fn arm_at_generation(&mut self, _generation: u64) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn mark_sink_invoked(&mut self, _actor_now_ns: u64) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn settle_at_generation(
-            &mut self,
-            _generation: u64,
-            _disposition: BoltV3RestingCommitDisposition,
-        ) -> anyhow::Result<()> {
+    impl ReentrantSettlementParticipant {
+        fn settle(&self) -> anyhow::Result<()> {
             let unlocked = self.registry.try_read().is_ok();
             *self
                 .settled_without_registry_lock
@@ -1126,7 +1889,64 @@ mod tests {
                 unlocked,
                 "participant settled while the registry lock was held"
             );
+            self.capability
+                .set(BoltV3RestingRegistrationCapability::Settled);
             Ok(())
+        }
+    }
+
+    impl BoltV3RestingRegistrationCommitParticipant for ReentrantSettlementParticipant {
+        fn requote_budget(&self) -> Option<crate::bolt_v3_requote_budget::RequoteBudgetPair> {
+            None
+        }
+
+        fn maker_lifecycle(&self) -> MakerQuoteLifecycleHandle {
+            self.lifecycle.clone()
+        }
+
+        fn arm_at_identity(
+            &mut self,
+            _identity: MakerQuoteLifecycleIdentity,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn mark_sink_invoked(&mut self, _actor_now_ns: u64) -> anyhow::Result<()> {
+            self.capability
+                .set(BoltV3RestingRegistrationCapability::SinkInvoked);
+            Ok(())
+        }
+
+        fn registration_capability(&self, _generation: u64) -> BoltV3RestingRegistrationCapability {
+            self.capability.get()
+        }
+
+        fn settle_submitted(&mut self, _generation: u64) -> anyhow::Result<()> {
+            self.settle()
+        }
+
+        fn settle_command_issued(&mut self, _generation: u64) -> anyhow::Result<()> {
+            self.settle()
+        }
+
+        fn settle_sink_rejected(&mut self, _generation: u64) -> anyhow::Result<()> {
+            self.settle()
+        }
+
+        fn settle_callback_retired(&mut self, _generation: u64) -> anyhow::Result<()> {
+            self.settle()
+        }
+
+        fn abort_pre_sink(&mut self, _generation: u64) -> anyhow::Result<()> {
+            self.settle()
+        }
+
+        fn fail_pre_sink_invariant(&mut self, _generation: u64) -> anyhow::Result<()> {
+            self.settle()
+        }
+
+        fn fail_post_sink_invariant(&mut self, _generation: u64) -> anyhow::Result<()> {
+            self.settle()
         }
     }
 
@@ -1160,12 +1980,111 @@ mod tests {
         outcome
     }
     use crate::{
+        bolt_v3_maker_order_dispatch::{
+            MakerQuoteTransactionContext, maker_quote_transaction_participant_for_test,
+        },
+        bolt_v3_maker_quote_control::{QuoteControlInput, drive_quote_leg},
         bolt_v3_order_execution::{
             BoltV3PlannedFillLeg, BoltV3TerminalValueEntry, BoltV3TerminalValueEntryPolicy,
             order_intent_details_from_compiled_order,
         },
+        bolt_v3_quote_lifecycle::{Leg, LegEvent, MakerQuoteLifecycleHandle, MarketQuote},
+        bolt_v3_requote_budget::{RequoteBudget, RequoteBudgetPair},
         bolt_v3_submit_admission::OrderValuationContext,
     };
+
+    pub(super) fn maker_submit_participant(
+        market: &MarketQuote,
+        budget: &RequoteBudgetPair,
+        leg: Leg,
+    ) -> Box<dyn BoltV3RestingRegistrationCommitParticipant> {
+        let mut market_handle = market.clone();
+        let mut budget_handle = budget.clone();
+        let decision = drive_quote_leg(
+            &mut market_handle,
+            &mut budget_handle,
+            QuoteControlInput {
+                leg,
+                desired_price: 0.5,
+                resting_price: None,
+                requote_threshold: 0.01,
+                eps: 1e-9,
+                now_ms: 1_000,
+            },
+        );
+        maker_quote_transaction_participant_for_test(MakerQuoteTransactionContext {
+            market: market.clone(),
+            budget: budget.clone(),
+            proposal: decision.proposal.expect("maker submit must be proposed"),
+        })
+    }
+
+    #[test]
+    fn budget_denial_keeps_registry_healthy_for_a_subsequent_registration() {
+        let economics =
+            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
+        let market = MarketQuote::new_for_test(false);
+        let budget = RequoteBudgetPair::new(
+            RequoteBudget::new(1, 60_000, 0),
+            RequoteBudget::new(1, 60_000, 0),
+        );
+        let first_participant = maker_submit_participant(&market, &budget, Leg::Yes);
+        let denied_participant = maker_submit_participant(&market, &budget, Leg::No);
+
+        let first_order = post_only_limit_order("MAKER-BEFORE-BUDGET-DENIAL");
+        let first = economics.route_resting_submit(
+            first_order.clone(),
+            sealed_admission(&economics, &first_order),
+            first_participant,
+            |participant| {
+                finish_route_attempt(
+                    participant,
+                    BoltV3SubmitAttemptOutcome::submitted_for_test(),
+                )
+            },
+        );
+        assert!(first.is_submitted());
+
+        let denied_order = post_only_limit_order("MAKER-BUDGET-DENIED");
+        let denied = economics.route_resting_submit(
+            denied_order.clone(),
+            sealed_admission(&economics, &denied_order),
+            denied_participant,
+            |mut participant| {
+                participant
+                    .consume_at_pre_sink()
+                    .expect_err("the second proposal must exhaust the shared budget");
+                BoltV3SubmitAttemptOutcome::rejected_for_test(
+                    BoltV3SubmitAttemptKind::PreSinkRejected,
+                    "budget denied",
+                )
+            },
+        );
+        assert!(matches!(
+            denied,
+            BoltV3RestingSubmitTransactionOutcome::Attempt(attempt)
+                if attempt.kind() == BoltV3SubmitAttemptKind::PreSinkRejected
+        ));
+
+        let next_market = MarketQuote::new_for_test(false);
+        let next_budget = RequoteBudgetPair::new(
+            RequoteBudget::new(1, 60_000, 0),
+            RequoteBudget::new(1, 60_000, 0),
+        );
+        let next_order = post_only_limit_order("MAKER-AFTER-BUDGET-DENIAL");
+        let next = economics.route_resting_submit(
+            next_order.clone(),
+            sealed_admission(&economics, &next_order),
+            maker_submit_participant(&next_market, &next_budget, Leg::Yes),
+            |participant| {
+                finish_route_attempt(
+                    participant,
+                    BoltV3SubmitAttemptOutcome::submitted_for_test(),
+                )
+            },
+        );
+        assert!(next.is_submitted());
+    }
 
     #[test]
     fn resting_submit_releases_registry_before_a_reentrant_nt_callback() {
@@ -1200,6 +2119,148 @@ mod tests {
     }
 
     #[test]
+    fn synchronous_terminal_callback_is_associated_before_the_sink_returns() {
+        let economics =
+            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
+        let market = MarketQuote::new_for_test(false);
+        let budget = RequoteBudgetPair::new(
+            RequoteBudget::new(2, 60_000, 0),
+            RequoteBudget::new(2, 60_000, 0),
+        );
+        let mut order = post_only_limit_order("MAKER-SYNC-TERMINAL");
+        let accepted = TestOrderEventStubs::accepted(
+            &order,
+            AccountId::from("ACCOUNT-001"),
+            VenueOrderId::from("VENUE-SYNC-TERMINAL"),
+        );
+        order.apply(accepted).expect("accept should apply");
+        let client_order_id = order.client_order_id();
+        let callback_order = order.clone();
+        let outcome = economics.route_resting_submit(
+            order.clone(),
+            sealed_admission(&economics, &order),
+            maker_submit_participant(&market, &budget, Leg::Yes),
+            |mut participant| {
+                participant
+                    .consume_at_pre_sink()
+                    .expect("maker transaction should arm");
+                participant
+                    .mark_sink_invoked(1)
+                    .expect("maker transaction should enter the sink window");
+                let mut terminal = callback_order;
+                let canceled = TestOrderEventStubs::canceled(
+                    &terminal,
+                    AccountId::from("ACCOUNT-001"),
+                    Some(VenueOrderId::from("VENUE-SYNC-TERMINAL")),
+                );
+                terminal.apply(canceled).expect("cancel should apply");
+                economics
+                    .reconcile_tracked_order_at(client_order_id, Some(terminal), 2)
+                    .expect("synchronous terminal callback should settle economics");
+                participant.complete(BoltV3RouteAttemptCompletion::Submitted);
+                BoltV3SubmitAttemptOutcome::submitted_for_test()
+            },
+        );
+
+        assert!(outcome.is_submitted());
+        let registry = economics
+            .tracked_orders
+            .read()
+            .expect("registry should remain healthy");
+        assert_eq!(registry.health, RestingRegistryHealth::Healthy);
+        assert!(registry.records.is_empty());
+        assert!(
+            registry
+                .retained_terminal_orders
+                .contains_key(&client_order_id),
+            "synchronous Canceled truth must remain refinable"
+        );
+        let authority = registry
+            .retained_terminal_orders
+            .get(&client_order_id)
+            .expect("synchronous terminal truth must retain its exact authority");
+        assert_eq!(authority.client_order_id, client_order_id);
+        assert_eq!(
+            authority.identity.client_order_id(),
+            client_order_id.as_str(),
+            "the retained lifecycle identity must name the registered order"
+        );
+        assert_eq!(
+            authority.identity.generation(),
+            authority.registration_generation,
+            "association-at-birth must bind the lifecycle and registration generations"
+        );
+        drop(registry);
+        assert_eq!(
+            market.leg_state(Leg::Yes),
+            crate::bolt_v3_quote_lifecycle::LegState::Idle
+        );
+    }
+
+    #[test]
+    fn repeated_terminal_quote_cycles_retain_only_the_latest_scope_epoch() {
+        let economics =
+            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
+        let mut market = MarketQuote::new_for_test(false);
+        let budget = RequoteBudgetPair::new(
+            RequoteBudget::new(16, 60_000, 0),
+            RequoteBudget::new(16, 60_000, 0),
+        );
+
+        for cycle in 1..=4 {
+            let order_id = format!("MAKER-CHURN-{cycle}");
+            let venue_id = format!("VENUE-CHURN-{cycle}");
+            let mut order = post_only_limit_order(&order_id);
+            let client_order_id = order.client_order_id();
+            let outcome = economics.route_resting_submit(
+                order.clone(),
+                sealed_admission(&economics, &order),
+                maker_submit_participant(&market, &budget, Leg::Yes),
+                |participant| {
+                    finish_route_attempt(
+                        participant,
+                        BoltV3SubmitAttemptOutcome::submitted_for_test(),
+                    )
+                },
+            );
+            assert!(outcome.is_submitted());
+            assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Accepted), None);
+
+            let accepted = TestOrderEventStubs::accepted(
+                &order,
+                AccountId::from("ACCOUNT-001"),
+                VenueOrderId::from(venue_id.as_str()),
+            );
+            order.apply(accepted).expect("accept should apply");
+            let canceled = TestOrderEventStubs::canceled(
+                &order,
+                AccountId::from("ACCOUNT-001"),
+                Some(VenueOrderId::from(venue_id.as_str())),
+            );
+            order.apply(canceled).expect("cancel should apply");
+            economics
+                .reconcile_tracked_order_at(client_order_id, Some(order), cycle)
+                .expect("terminal quote cycle should reconcile");
+
+            let registry = economics
+                .tracked_orders
+                .read()
+                .expect("registry should remain healthy");
+            assert_eq!(
+                registry.retained_terminal_orders.len(),
+                1,
+                "one active leg scope retains at most its latest refinable terminal epoch"
+            );
+            assert!(
+                registry
+                    .retained_terminal_orders
+                    .contains_key(&client_order_id),
+                "the latest terminal epoch remains refinable"
+            );
+        }
+    }
+
+    #[test]
     fn participant_settlement_runs_outside_the_registry_lock() {
         let economics =
             crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
@@ -1211,6 +2272,11 @@ mod tests {
             Box::new(ReentrantSettlementParticipant {
                 registry: economics.tracked_orders.clone(),
                 settled_without_registry_lock: observed.clone(),
+                capability: Cell::new(BoltV3RestingRegistrationCapability::PreSink),
+                lifecycle: MakerQuoteLifecycleHandle::new(
+                    MarketQuote::new_for_test(false),
+                    Leg::Yes,
+                ),
             }),
             |participant| {
                 finish_route_attempt(
@@ -1453,6 +2519,8 @@ mod tests {
                     .records
                     .get_mut(&client_order_id)
                     .expect("provisional generation should exist")
+                    .governed_mut()
+                    .expect("provisional generation should retain exact authority")
                     .registration_generation += 1;
                 BoltV3SubmitAttemptOutcome::policy_skipped()
             },
@@ -1498,6 +2566,8 @@ mod tests {
                 .records
                 .get_mut(&client_order_id)
                 .expect("provisional record should exist")
+                .governed_mut()
+                .expect("provisional record should retain exact authority")
                 .registration_generation = replacement_generation;
             registry
                 .retired_provisional
@@ -1514,7 +2584,8 @@ mod tests {
             registry
                 .records
                 .get(&client_order_id)
-                .map(|record| record.registration_generation),
+                .and_then(|record| record.governed())
+                .map(|authority| authority.registration_generation),
             Some(replacement_generation)
         );
         assert_eq!(
@@ -1542,6 +2613,8 @@ mod tests {
                     .records
                     .get_mut(&client_order_id)
                     .expect("provisional generation should exist")
+                    .governed_mut()
+                    .expect("provisional generation should retain exact authority")
                     .registration_generation += 1;
                 finish_route_attempt(
                     participant,
@@ -1607,7 +2680,7 @@ mod tests {
         assert_eq!(registry.health, RestingRegistryHealth::Poisoned);
     }
 
-    fn sealed_admission(
+    pub(super) fn sealed_admission(
         economics: &crate::bolt_v3_order_execution::BoltV3OrderEconomicsHandle,
         order: &OrderAny,
     ) -> crate::bolt_v3_economics_runtime::EconomicsAdmission {
@@ -1644,7 +2717,7 @@ mod tests {
         .clone()
     }
 
-    fn post_only_limit_order(client_order_id: &str) -> OrderAny {
+    pub(super) fn post_only_limit_order(client_order_id: &str) -> OrderAny {
         OrderAny::Limit(
             LimitOrder::new_checked(
                 TraderId::from("TRADER-001"),

@@ -581,12 +581,6 @@ pub struct EconomicsReportingConfig {
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum EconomicsSliceConfig {
-    QuoteOnly,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum EconomicsRoutingAttachmentPolicy {
     Forbidden,
 }
@@ -594,7 +588,6 @@ pub enum EconomicsRoutingAttachmentPolicy {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionEconomicsConfig {
-    pub economics_slice: EconomicsSliceConfig,
     pub routing_attachment_policy: EconomicsRoutingAttachmentPolicy,
     pub reporting_policy: String,
     pub quote_refresh_secs: u64,
@@ -669,7 +662,6 @@ pub enum EconomicsValuationLegConfig {
         from_unit: String,
         source_currency: String,
         to_unit: String,
-        valuation_policy: EconomicsValuationPolicy,
         client_id: String,
         instrument_id: String,
         orientation: EconomicsValuationOrientation,
@@ -682,12 +674,6 @@ pub enum EconomicsValuationLegConfig {
         source_id: String,
         max_age_ms: u64,
     },
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum EconomicsValuationPolicy {
-    TopOfBookMidpoint,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]

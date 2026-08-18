@@ -343,13 +343,6 @@ struct PositionAuthorityAccountBinding {
 }
 
 impl BoltV3PositionAuthorityFeed {
-    #[cfg(test)]
-    pub(crate) fn try_new(
-        bindings: impl IntoIterator<Item = (AccountId, ClientId, Venue)>,
-    ) -> Result<Self> {
-        Self::try_new_with_cache(bindings, Rc::new(RefCell::new(Cache::default())))
-    }
-
     pub(crate) fn try_new_with_cache(
         bindings: impl IntoIterator<Item = (AccountId, ClientId, Venue)>,
         cache: Rc<RefCell<Cache>>,
@@ -688,11 +681,14 @@ mod tests {
     use nautilus_model::types::Quantity;
 
     fn feed() -> BoltV3PositionAuthorityFeed {
-        BoltV3PositionAuthorityFeed::try_new([(
-            AccountId::from("ACCOUNT-001"),
-            ClientId::from("execution-client"),
-            Venue::from("POLYMARKET"),
-        )])
+        BoltV3PositionAuthorityFeed::try_new_with_cache(
+            [(
+                AccountId::from("ACCOUNT-001"),
+                ClientId::from("execution-client"),
+                Venue::from("POLYMARKET"),
+            )],
+            Rc::new(RefCell::new(Cache::default())),
+        )
         .expect("test attribution should be unambiguous")
     }
 
@@ -874,18 +870,21 @@ mod tests {
 
     #[test]
     fn account_attribution_must_be_unambiguous() {
-        let result = BoltV3PositionAuthorityFeed::try_new([
-            (
-                AccountId::from("ACCOUNT-001"),
-                ClientId::from("execution-client-a"),
-                Venue::from("POLYMARKET"),
-            ),
-            (
-                AccountId::from("ACCOUNT-001"),
-                ClientId::from("execution-client-b"),
-                Venue::from("POLYMARKET"),
-            ),
-        ]);
+        let result = BoltV3PositionAuthorityFeed::try_new_with_cache(
+            [
+                (
+                    AccountId::from("ACCOUNT-001"),
+                    ClientId::from("execution-client-a"),
+                    Venue::from("POLYMARKET"),
+                ),
+                (
+                    AccountId::from("ACCOUNT-001"),
+                    ClientId::from("execution-client-b"),
+                    Venue::from("POLYMARKET"),
+                ),
+            ],
+            Rc::new(RefCell::new(Cache::default())),
+        );
         let Err(error) = result else {
             panic!("one account cannot select two execution clients");
         };

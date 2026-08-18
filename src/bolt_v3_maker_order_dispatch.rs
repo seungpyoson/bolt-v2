@@ -17,17 +17,18 @@ use nautilus_model::{
 
 use crate::{
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
-    bolt_v3_maker_quote_control::{MakerQuoteBudgetProposal, MakerQuoteCommandProposal},
+    bolt_v3_maker_quote_control::MakerQuoteCommandProposal,
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_order_execution::{
-        BoltV3RestingCommitDisposition, BoltV3RestingRegistrationCommitParticipant,
+        BoltV3RestingRegistrationCapability, BoltV3RestingRegistrationCommitParticipant,
         BoltV3RestingSubmitTransactionOutcome,
     },
     bolt_v3_order_intent::build_nt_order,
     bolt_v3_quote_lifecycle::{
-        Leg, LifecycleAction, MakerQuoteLifecycleHandle, MarketAction, MarketQuote,
+        Leg, LifecycleAction, MakerQuoteLifecycleHandle, MakerQuoteLifecycleIdentity, MarketAction,
+        MarketQuote, QuoteTransactionRegistrationPhase,
     },
-    bolt_v3_requote_budget::{RequoteBudgetPair, RequoteBudgetReservation},
+    bolt_v3_requote_budget::RequoteBudgetPair,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,10 +39,16 @@ pub struct MakerQuoteTransactionContext {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum MakerOrderCommandAuthority {
+    Quote(MakerQuoteTransactionContext),
+    ScopeCancelAll,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct MakerOrderDispatchInput<'a> {
     pub command: &'a MakerCompiledOrderCommand,
     pub submit_order_prefix: &'a str,
-    pub quote_transaction: Option<MakerQuoteTransactionContext>,
+    pub authority: MakerOrderCommandAuthority,
 }
 
 #[derive(Debug)]
@@ -49,18 +56,6 @@ struct MakerQuoteTransactionParticipant {
     market: MarketQuote,
     budget: RequoteBudgetPair,
     proposal: MakerQuoteCommandProposal,
-    generation: Option<u64>,
-    reservation: Option<RequoteBudgetReservation>,
-    reservation_was_prepaid: bool,
-    phase: MakerQuoteTransactionPhase,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MakerQuoteTransactionPhase {
-    Proposed,
-    Armed,
-    SinkInvoked,
-    Settled,
 }
 
 impl MakerQuoteTransactionParticipant {
@@ -69,18 +64,20 @@ impl MakerQuoteTransactionParticipant {
             market: context.market,
             budget: context.budget,
             proposal: context.proposal,
-            generation: None,
-            reservation: None,
-            reservation_was_prepaid: false,
-            phase: MakerQuoteTransactionPhase::Proposed,
         }
     }
 
-    fn take_reservation(&mut self) -> Result<RequoteBudgetReservation> {
-        self.reservation
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("maker quote transaction lost its budget reservation"))
+    fn require_settled(settled: bool) -> Result<()> {
+        anyhow::ensure!(settled, "maker quote transaction settlement was rejected");
+        Ok(())
     }
+}
+
+#[cfg(test)]
+pub(crate) fn maker_quote_transaction_participant_for_test(
+    context: MakerQuoteTransactionContext,
+) -> Box<dyn BoltV3RestingRegistrationCommitParticipant> {
+    Box::new(MakerQuoteTransactionParticipant::new(context))
 }
 
 impl BoltV3RestingRegistrationCommitParticipant for MakerQuoteTransactionParticipant {
@@ -88,160 +85,103 @@ impl BoltV3RestingRegistrationCommitParticipant for MakerQuoteTransactionPartici
         Some(self.budget.clone())
     }
 
-    fn maker_lifecycle(&self) -> Option<MakerQuoteLifecycleHandle> {
-        Some(MakerQuoteLifecycleHandle::new(
-            self.market.clone(),
-            self.proposal.lifecycle.leg(),
-        ))
+    fn maker_lifecycle(&self) -> MakerQuoteLifecycleHandle {
+        MakerQuoteLifecycleHandle::new(self.market.clone(), self.proposal.lifecycle.leg())
     }
 
-    fn arm_at_generation(&mut self, generation: u64) -> Result<()> {
-        anyhow::ensure!(
-            self.phase == MakerQuoteTransactionPhase::Proposed,
-            "maker quote transaction was armed more than once"
-        );
-        self.market
-            .arm_leg_transaction(self.proposal.lifecycle, generation)?;
-        let reservation = match self.proposal.budget {
-            MakerQuoteBudgetProposal::Reserve(proposal) => self.budget.reserve(proposal),
-            MakerQuoteBudgetProposal::Prepaid { generation, .. } => self
-                .market
-                .take_prepaid_reservation(self.proposal.lifecycle.leg(), generation)
-                .map_err(|_| {
-                    crate::bolt_v3_requote_budget::RequoteBudgetReservationDenied::StaleReservation
-                }),
-        };
-        let reservation = match reservation {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                let restored = self
-                    .market
-                    .abort_leg_transaction(self.proposal.lifecycle, generation);
-                anyhow::ensure!(restored, "budget denial failed to restore lifecycle arm");
-                return Err(anyhow::anyhow!(
-                    "maker quote budget reservation denied: {error:?}"
-                ));
-            }
-        };
-        self.reservation_was_prepaid = matches!(
+    fn arm_at_identity(&mut self, identity: MakerQuoteLifecycleIdentity) -> Result<()> {
+        self.market.arm_leg_transaction(
+            self.proposal.lifecycle,
+            self.budget.clone(),
             self.proposal.budget,
-            MakerQuoteBudgetProposal::Prepaid { .. }
-        );
-        self.generation = Some(generation);
-        self.reservation = Some(reservation);
-        self.phase = MakerQuoteTransactionPhase::Armed;
-        Ok(())
+            identity,
+        )
     }
 
     fn mark_sink_invoked(&mut self, actor_now_ns: u64) -> Result<()> {
-        anyhow::ensure!(
-            self.phase == MakerQuoteTransactionPhase::Armed,
-            "maker quote transaction reached the sink outside its armed phase"
-        );
-        let reservation = self
-            .reservation
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("maker quote transaction lost its reservation"))?;
-        reservation
-            .mark_sink_invoked_at(actor_now_ns / NANOS_PER_MILLI_U64)
-            .map_err(|error| {
-                anyhow::anyhow!("maker quote budget sink accounting failed: {error:?}")
-            })?;
-        self.phase = MakerQuoteTransactionPhase::SinkInvoked;
-        Ok(())
+        self.market.mark_leg_transaction_sink_invoked(
+            self.proposal.lifecycle,
+            self.market
+                .transaction_generation(self.proposal.lifecycle)
+                .ok_or_else(|| anyhow::anyhow!("maker quote transaction is not armed"))?,
+            actor_now_ns / NANOS_PER_MILLI_U64,
+        )
     }
 
-    fn settle_at_generation(
-        &mut self,
-        generation: u64,
-        disposition: BoltV3RestingCommitDisposition,
-    ) -> Result<()> {
-        if self.phase == MakerQuoteTransactionPhase::Proposed {
-            anyhow::ensure!(
-                matches!(disposition, BoltV3RestingCommitDisposition::PreSinkAborted),
-                "maker quote transaction received a routed disposition before provisional arming"
-            );
-            self.phase = MakerQuoteTransactionPhase::Settled;
-            return Ok(());
-        }
-        anyhow::ensure!(
-            self.generation == Some(generation),
-            "maker quote transaction generation is stale"
-        );
-        let lifecycle_settled = match disposition {
-            BoltV3RestingCommitDisposition::Submitted => self
-                .market
-                .commit_leg_transaction(self.proposal.lifecycle, generation),
-            BoltV3RestingCommitDisposition::CommandIssued => self
-                .market
-                .commit_leg_transaction(self.proposal.lifecycle, generation),
-            BoltV3RestingCommitDisposition::CommandIssuedRetainPrepaid => self
-                .market
-                .commit_leg_transaction(self.proposal.lifecycle, generation),
-            BoltV3RestingCommitDisposition::SinkRejected
-            | BoltV3RestingCommitDisposition::PreSinkAborted => self
-                .market
-                .abort_leg_transaction(self.proposal.lifecycle, generation),
-            BoltV3RestingCommitDisposition::CallbackRetired => self
-                .market
-                .retire_leg_transaction_from_callback(self.proposal.lifecycle, generation),
-            BoltV3RestingCommitDisposition::RollbackInvariantFailed
-            | BoltV3RestingCommitDisposition::PostSinkUnwind => self
-                .market
-                .poison_leg_transaction(self.proposal.lifecycle, generation),
-        };
-        anyhow::ensure!(
-            lifecycle_settled,
-            "maker quote lifecycle lost exact transaction generation"
-        );
-        let reservation = self.take_reservation()?;
-        match disposition {
-            BoltV3RestingCommitDisposition::PreSinkAborted if self.reservation_was_prepaid => self
-                .market
-                .retain_prepaid_reservation(self.proposal.lifecycle.leg(), reservation)?,
-            BoltV3RestingCommitDisposition::PreSinkAborted => reservation
-                .abort()
-                .map_err(|error| anyhow::anyhow!("maker quote budget abort failed: {error:?}"))?,
-            BoltV3RestingCommitDisposition::CommandIssuedRetainPrepaid => self
-                .market
-                .retain_prepaid_reservation(self.proposal.lifecycle.leg(), reservation)?,
-            BoltV3RestingCommitDisposition::RollbackInvariantFailed
-                if self.reservation_was_prepaid =>
-            {
-                self.market
-                    .retain_prepaid_reservation(self.proposal.lifecycle.leg(), reservation)?
+    fn registration_capability(&self, generation: u64) -> BoltV3RestingRegistrationCapability {
+        match self
+            .market
+            .leg_transaction_registration_phase(self.proposal.lifecycle, generation)
+        {
+            QuoteTransactionRegistrationPhase::PreSink => {
+                BoltV3RestingRegistrationCapability::PreSink
             }
-            BoltV3RestingCommitDisposition::Submitted
-            | BoltV3RestingCommitDisposition::CommandIssued
-            | BoltV3RestingCommitDisposition::SinkRejected
-            | BoltV3RestingCommitDisposition::CallbackRetired
-            | BoltV3RestingCommitDisposition::RollbackInvariantFailed
-            | BoltV3RestingCommitDisposition::PostSinkUnwind => reservation
-                .commit()
-                .map_err(|error| anyhow::anyhow!("maker quote budget commit failed: {error:?}"))?,
+            QuoteTransactionRegistrationPhase::SinkInvoked => {
+                BoltV3RestingRegistrationCapability::SinkInvoked
+            }
+            QuoteTransactionRegistrationPhase::Settled => {
+                BoltV3RestingRegistrationCapability::Settled
+            }
         }
-        self.phase = MakerQuoteTransactionPhase::Settled;
-        Ok(())
+    }
+
+    fn settle_submitted(&mut self, generation: u64) -> Result<()> {
+        Self::require_settled(
+            self.market
+                .commit_leg_transaction(self.proposal.lifecycle, generation),
+        )
+    }
+
+    fn settle_command_issued(&mut self, generation: u64) -> Result<()> {
+        Self::require_settled(
+            self.market
+                .commit_leg_transaction(self.proposal.lifecycle, generation),
+        )
+    }
+
+    fn settle_sink_rejected(&mut self, generation: u64) -> Result<()> {
+        Self::require_settled(
+            self.market
+                .reject_leg_transaction_at_sink(self.proposal.lifecycle, generation),
+        )
+    }
+
+    fn settle_callback_retired(&mut self, generation: u64) -> Result<()> {
+        Self::require_settled(
+            self.market
+                .retire_leg_transaction_from_callback(self.proposal.lifecycle, generation),
+        )
+    }
+
+    fn abort_pre_sink(&mut self, generation: u64) -> Result<()> {
+        Self::require_settled(
+            self.market
+                .abort_leg_transaction(self.proposal.lifecycle, generation),
+        )
+    }
+
+    fn fail_pre_sink_invariant(&mut self, generation: u64) -> Result<()> {
+        Self::require_settled(
+            self.market
+                .fail_pre_sink_leg_transaction(self.proposal.lifecycle, generation),
+        )
+    }
+
+    fn fail_post_sink_invariant(&mut self, generation: u64) -> Result<()> {
+        Self::require_settled(
+            self.market
+                .unwind_post_sink_leg_transaction(self.proposal.lifecycle, generation),
+        )
     }
 }
 
 impl Drop for MakerQuoteTransactionParticipant {
     fn drop(&mut self) {
-        let Some(generation) = self.generation else {
-            return;
-        };
-        match self.phase {
-            MakerQuoteTransactionPhase::Proposed | MakerQuoteTransactionPhase::Settled => {}
-            MakerQuoteTransactionPhase::Armed => {
-                let _ = self
-                    .market
-                    .abort_leg_transaction(self.proposal.lifecycle, generation);
-            }
-            MakerQuoteTransactionPhase::SinkInvoked => {
-                let _ = self
-                    .market
-                    .poison_leg_transaction(self.proposal.lifecycle, generation);
-            }
+        if let Err(error) = self.market.unwind_leg_transaction(self.proposal.lifecycle) {
+            log::error!(
+                "maker quote transaction unwind failed: leg={:?} error={error:#}",
+                self.proposal.lifecycle.leg(),
+            );
         }
     }
 }
@@ -323,6 +263,7 @@ impl MakerOrderDispatchOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MakerOrderCommandFailureKind {
     Lifecycle,
+    LifecycleScope,
     Build,
     SubmitPreparation,
     Cancel,
@@ -361,6 +302,24 @@ impl MakerOrderCommandFailure {
             kind,
             diagnostic: diagnostic.into(),
         }
+    }
+}
+
+impl MakerQuoteTransactionContext {
+    fn bind_to(
+        self,
+        expected: MarketAction,
+    ) -> std::result::Result<MakerQuoteTransactionParticipant, MakerOrderCommandFailure> {
+        if self.proposal.action != expected {
+            return Err(MakerOrderCommandFailure::new(
+                MakerOrderCommandFailureKind::Lifecycle,
+                format_args!(
+                    "maker quote transaction does not match the compiled command: expected={expected:?} actual={:?}",
+                    self.proposal.action,
+                ),
+            ));
+        }
+        Ok(MakerQuoteTransactionParticipant::new(self))
     }
 }
 
@@ -419,44 +378,35 @@ pub fn dispatch_maker_order_command(
     input: MakerOrderDispatchInput<'_>,
     sink: &mut impl MakerOrderCommandSink,
 ) -> std::result::Result<MakerOrderDispatchOutcome, MakerOrderCommandFailure> {
-    match input.command {
-        MakerCompiledOrderCommand::Submit {
-            leg,
-            template,
-            inputs,
-            fallback_price,
-        } => {
-            let quote_transaction = input.quote_transaction.ok_or_else(|| {
-                MakerOrderCommandFailure::new(
-                    MakerOrderCommandFailureKind::Lifecycle,
-                    "maker submit is missing its quote transaction proposal",
-                )
+    let MakerOrderDispatchInput {
+        command,
+        submit_order_prefix,
+        authority,
+    } = input;
+    match (command, authority) {
+        (
+            MakerCompiledOrderCommand::Submit {
+                leg,
+                template,
+                inputs,
+                fallback_price,
+            },
+            MakerOrderCommandAuthority::Quote(quote_transaction),
+        ) => {
+            let participant = quote_transaction.bind_to(MarketAction::Leg {
+                leg: *leg,
+                action: LifecycleAction::Submit,
             })?;
-            if quote_transaction.proposal.action
-                != (MarketAction::Leg {
-                    leg: *leg,
-                    action: LifecycleAction::Submit,
-                })
-            {
-                return Err(MakerOrderCommandFailure::new(
-                    MakerOrderCommandFailureKind::Lifecycle,
-                    "maker submit quote transaction does not match the compiled command",
-                ));
-            }
             let order = {
                 // `order_factory()` now yields a `RefMut` guard (NT moved the strategy
                 // `OrderFactory` behind `Rc<RefCell<_>>`). Scope it so the borrow of `sink`
                 // is released before the `submit_maker_order` call below.
                 let mut order_factory = sink.order_factory();
-                build_nt_order(
-                    &mut order_factory,
-                    input.submit_order_prefix,
-                    template,
-                    *inputs,
-                )
-                .map_err(|error| {
-                    MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::Build, error)
-                })?
+                build_nt_order(&mut order_factory, submit_order_prefix, template, *inputs).map_err(
+                    |error| {
+                        MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::Build, error)
+                    },
+                )?
             };
             let prepared_client_order_id = order.client_order_id();
             let instrument_id = order.instrument_id();
@@ -468,10 +418,7 @@ pub fn dispatch_maker_order_command(
                     error,
                 )
             })?;
-            let transaction = sink.submit_maker_order(
-                prepared,
-                Box::new(MakerQuoteTransactionParticipant::new(quote_transaction)),
-            );
+            let transaction = sink.submit_maker_order(prepared, Box::new(participant));
             Ok(MakerOrderDispatchOutcome::SubmitAttempt {
                 leg: *leg,
                 instrument_id,
@@ -481,33 +428,23 @@ pub fn dispatch_maker_order_command(
                 transaction,
             })
         }
-        MakerCompiledOrderCommand::Cancel {
-            leg,
-            instrument_id,
-            client_order_id,
-        } => {
-            let quote_transaction = input.quote_transaction.ok_or_else(|| {
-                MakerOrderCommandFailure::new(
-                    MakerOrderCommandFailureKind::Lifecycle,
-                    "maker cancel is missing its quote transaction proposal",
-                )
+        (
+            MakerCompiledOrderCommand::Cancel {
+                leg,
+                instrument_id,
+                client_order_id,
+            },
+            MakerOrderCommandAuthority::Quote(quote_transaction),
+        ) => {
+            let participant = quote_transaction.bind_to(MarketAction::Leg {
+                leg: *leg,
+                action: LifecycleAction::Cancel,
             })?;
-            if quote_transaction.proposal.action
-                != (MarketAction::Leg {
-                    leg: *leg,
-                    action: LifecycleAction::Cancel,
-                })
-            {
-                return Err(MakerOrderCommandFailure::new(
-                    MakerOrderCommandFailureKind::Lifecycle,
-                    "maker cancel quote transaction does not match the compiled command",
-                ));
-            }
             sink.cancel_maker_order(
                 *leg,
                 *instrument_id,
                 *client_order_id,
-                Box::new(MakerQuoteTransactionParticipant::new(quote_transaction)),
+                Box::new(participant),
             )
             .map_err(|error| {
                 MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::Cancel, error)
@@ -518,11 +455,14 @@ pub fn dispatch_maker_order_command(
                 client_order_id: *client_order_id,
             })
         }
-        MakerCompiledOrderCommand::CancelAll {
-            leg,
-            instrument_id,
-            order_side,
-        } => {
+        (
+            MakerCompiledOrderCommand::CancelAll {
+                leg,
+                instrument_id,
+                order_side,
+            },
+            MakerOrderCommandAuthority::ScopeCancelAll,
+        ) => {
             sink.cancel_all_maker_orders(*leg, *instrument_id, *order_side)
                 .map_err(|error| {
                     MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::CancelAll, error)
@@ -533,37 +473,27 @@ pub fn dispatch_maker_order_command(
                 order_side: *order_side,
             })
         }
-        MakerCompiledOrderCommand::Modify {
-            leg,
-            instrument_id,
-            client_order_id,
-            price,
-            quantity,
-        } => {
-            let quote_transaction = input.quote_transaction.ok_or_else(|| {
-                MakerOrderCommandFailure::new(
-                    MakerOrderCommandFailureKind::Lifecycle,
-                    "maker modify is missing its quote transaction proposal",
-                )
+        (
+            MakerCompiledOrderCommand::Modify {
+                leg,
+                instrument_id,
+                client_order_id,
+                price,
+                quantity,
+            },
+            MakerOrderCommandAuthority::Quote(quote_transaction),
+        ) => {
+            let participant = quote_transaction.bind_to(MarketAction::Leg {
+                leg: *leg,
+                action: LifecycleAction::Modify,
             })?;
-            if quote_transaction.proposal.action
-                != (MarketAction::Leg {
-                    leg: *leg,
-                    action: LifecycleAction::Modify,
-                })
-            {
-                return Err(MakerOrderCommandFailure::new(
-                    MakerOrderCommandFailureKind::Lifecycle,
-                    "maker modify quote transaction does not match the compiled command",
-                ));
-            }
             sink.modify_maker_order(
                 *leg,
                 *instrument_id,
                 *client_order_id,
                 *price,
                 *quantity,
-                Box::new(MakerQuoteTransactionParticipant::new(quote_transaction)),
+                Box::new(participant),
             )
             .map_err(|error| {
                 MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::Modify, error)
@@ -576,6 +506,21 @@ pub fn dispatch_maker_order_command(
                 quantity: *quantity,
             })
         }
+        (
+            MakerCompiledOrderCommand::Submit { .. }
+            | MakerCompiledOrderCommand::Cancel { .. }
+            | MakerCompiledOrderCommand::Modify { .. },
+            MakerOrderCommandAuthority::ScopeCancelAll,
+        ) => Err(MakerOrderCommandFailure::new(
+            MakerOrderCommandFailureKind::Lifecycle,
+            "quote-bearing maker command requires quote lifecycle authority",
+        )),
+        (MakerCompiledOrderCommand::CancelAll { .. }, MakerOrderCommandAuthority::Quote(_)) => {
+            Err(MakerOrderCommandFailure::new(
+                MakerOrderCommandFailureKind::Lifecycle,
+                "maker cancel-all requires scope cancellation authority",
+            ))
+        }
     }
 }
 
@@ -583,15 +528,33 @@ pub fn dispatch_maker_order_command(
 mod tests {
     use super::*;
     use crate::{
-        bolt_v3_maker_quote_control::{
-            MakerQuoteBudgetProposal, QuoteControlInput, drive_quote_leg,
+        bolt_v3_maker_quote_control::{QuoteControlInput, drive_quote_leg},
+        bolt_v3_quote_lifecycle::{
+            LegEvent, LegState, MakerQuoteBudgetProposal, MakerQuoteLifecycleRefinement,
+            MakerQuoteLifecycleRefinementEvent, MakerQuoteTerminalDisposition,
         },
-        bolt_v3_quote_lifecycle::{LegEvent, LegState},
         bolt_v3_requote_budget::RequoteBudget,
     };
 
     const NOW_MS: u64 = 1_000;
     const WINDOW_MS: u64 = 60_000;
+
+    fn lifecycle_identity(generation: u64) -> MakerQuoteLifecycleIdentity {
+        MakerQuoteLifecycleIdentity::new("TEST-MAKER-ORDER", generation)
+    }
+
+    fn terminal_event(
+        generation: u64,
+        disposition: MakerQuoteTerminalDisposition,
+    ) -> MakerQuoteLifecycleRefinementEvent {
+        MakerQuoteLifecycleRefinementEvent::new(
+            lifecycle_identity(generation),
+            MakerQuoteLifecycleRefinement::Terminal {
+                stable_effect: Some(disposition),
+                closes_reopened: false,
+            },
+        )
+    }
 
     fn budget_pair(submit_cap: u64, rest_cap: u64) -> RequoteBudgetPair {
         RequoteBudgetPair::new(
@@ -666,34 +629,69 @@ mod tests {
     }
 
     fn settle_fresh(
-        disposition: BoltV3RestingCommitDisposition,
         mark_sink: bool,
+        settle: impl FnOnce(&mut MakerQuoteTransactionParticipant) -> Result<()>,
     ) -> (MarketQuote, RequoteBudgetPair) {
-        let market = MarketQuote::new(false);
+        let market = MarketQuote::new_for_test(false);
         let budget = budget_pair(1, 1);
         let mut participant =
             MakerQuoteTransactionParticipant::new(fresh_context(&market, &budget, Leg::Yes));
-        participant.arm_at_generation(1).unwrap();
+        participant.arm_at_identity(lifecycle_identity(1)).unwrap();
         if mark_sink {
             participant
                 .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
                 .expect("participant should reach the sink");
         }
-        participant.settle_at_generation(1, disposition).unwrap();
+        settle(&mut participant).unwrap();
         (market, budget)
+    }
+
+    #[test]
+    fn submitted_outcome_is_rejected_before_sink_without_mutation() {
+        let market = MarketQuote::new_for_test(false);
+        let budget = budget_pair(8, 8);
+        let mut participant =
+            MakerQuoteTransactionParticipant::new(fresh_context(&market, &budget, Leg::Yes));
+
+        participant
+            .settle_submitted(1)
+            .expect_err("a submitted outcome cannot settle a pre-sink participant");
+
+        assert_eq!(market.leg_state(Leg::Yes), LegState::Idle);
+        assert_eq!(budget.outstanding_submit_cost(), 0);
+    }
+
+    #[test]
+    fn settled_outcome_is_idempotent_but_a_different_outcome_is_rejected() {
+        let market = MarketQuote::new_for_test(false);
+        let budget = budget_pair(8, 8);
+        let mut participant =
+            MakerQuoteTransactionParticipant::new(fresh_context(&market, &budget, Leg::Yes));
+        participant.arm_at_identity(lifecycle_identity(1)).unwrap();
+        participant
+            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
+            .expect("participant should reach the sink");
+        participant
+            .settle_submitted(1)
+            .expect("the matching settled outcome must be idempotent");
+
+        participant
+            .settle_sink_rejected(1)
+            .expect_err("a different settled outcome must be rejected");
+        assert_eq!(market.leg_state(Leg::Yes), LegState::SubmitPending);
     }
 
     #[test]
     fn pre_sink_abort_restores_lifecycle_and_budget_while_submit_commits_both() {
         let (aborted_market, aborted_budget) =
-            settle_fresh(BoltV3RestingCommitDisposition::PreSinkAborted, false);
+            settle_fresh(false, |participant| participant.abort_pre_sink(1));
         assert_eq!(aborted_market.leg_state(Leg::Yes), LegState::Idle);
         assert_eq!(aborted_budget.outstanding_submit_cost(), 0);
         assert_eq!(aborted_budget.submit_commands_in_window(), 0);
         assert_eq!(aborted_budget.rest_cost_in_window(), 0);
 
         let (submitted_market, submitted_budget) =
-            settle_fresh(BoltV3RestingCommitDisposition::Submitted, true);
+            settle_fresh(true, |participant| participant.settle_submitted(1));
         assert_eq!(
             submitted_market.leg_state(Leg::Yes),
             LegState::SubmitPending
@@ -705,7 +703,8 @@ mod tests {
 
     #[test]
     fn sink_rejected_submit_aborts_lifecycle_but_never_refunds_the_charge() {
-        let (market, budget) = settle_fresh(BoltV3RestingCommitDisposition::SinkRejected, true);
+        let (market, budget) =
+            settle_fresh(true, |participant| participant.settle_sink_rejected(1));
         assert_eq!(market.leg_state(Leg::Yes), LegState::Idle);
         assert_eq!(budget.submit_commands_in_window(), 1);
         assert_eq!(budget.rest_cost_in_window(), 1);
@@ -714,26 +713,26 @@ mod tests {
 
     #[test]
     fn drop_guard_restores_before_sink_and_poisons_with_charge_after_sink() {
-        let before_market = MarketQuote::new(false);
+        let before_market = MarketQuote::new_for_test(false);
         let before_budget = budget_pair(8, 8);
         let mut before = MakerQuoteTransactionParticipant::new(fresh_context(
             &before_market,
             &before_budget,
             Leg::Yes,
         ));
-        before.arm_at_generation(1).unwrap();
+        before.arm_at_identity(lifecycle_identity(1)).unwrap();
         drop(before);
         assert_eq!(before_market.leg_state(Leg::Yes), LegState::Idle);
         assert_eq!(before_budget.rest_cost_in_window(), 0);
 
-        let after_market = MarketQuote::new(false);
+        let after_market = MarketQuote::new_for_test(false);
         let after_budget = budget_pair(8, 8);
         let mut after = MakerQuoteTransactionParticipant::new(fresh_context(
             &after_market,
             &after_budget,
             Leg::Yes,
         ));
-        after.arm_at_generation(2).unwrap();
+        after.arm_at_identity(lifecycle_identity(2)).unwrap();
         after
             .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
             .expect("participant should reach the sink");
@@ -747,16 +746,89 @@ mod tests {
     }
 
     #[test]
+    fn post_sink_cancel_unwind_retains_prepaid_replacement_capacity() {
+        let market = MarketQuote::new_for_test(false);
+        let budget = budget_pair(1, 2);
+        let mut participant =
+            MakerQuoteTransactionParticipant::new(resting_context(&market, &budget));
+        participant.arm_at_identity(lifecycle_identity(1)).unwrap();
+        participant
+            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
+            .expect("cancel participant should reach the sink");
+
+        drop(participant);
+
+        assert!(market.prepaid_generation(Leg::Yes).is_some());
+        assert_eq!(budget.outstanding_submit_cost(), 1);
+        assert_eq!(budget.outstanding_rest_cost(), 1);
+        assert_eq!(budget.submit_commands_in_window(), 0);
+        assert_eq!(budget.rest_cost_in_window(), 1);
+    }
+
+    #[test]
+    fn poisoned_requote_cancel_recovers_to_the_prepaid_replacement_obligation() {
+        let market = MarketQuote::new_for_test(false);
+        let budget = budget_pair(1, 2);
+        let mut participant =
+            MakerQuoteTransactionParticipant::new(resting_context(&market, &budget));
+        participant.arm_at_identity(lifecycle_identity(1)).unwrap();
+        participant
+            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
+            .expect("requote cancel participant should reach the sink");
+
+        drop(participant);
+
+        let prepaid_generation = market
+            .prepaid_generation(Leg::Yes)
+            .expect("post-sink unwind must retain replacement capacity");
+        assert_eq!(
+            market.leg_state(Leg::Yes),
+            LegState::PoisonedReconciliationHold
+        );
+
+        let _ = MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes)
+            .refine(terminal_event(1, MakerQuoteTerminalDisposition::Canceled));
+
+        assert_eq!(
+            market.leg_state(Leg::Yes),
+            LegState::ReplacementPendingBackoff
+        );
+        assert_eq!(
+            market.prepaid_generation(Leg::Yes),
+            Some(prepaid_generation)
+        );
+        assert_eq!(budget.outstanding_submit_cost(), 1);
+        assert_eq!(budget.outstanding_rest_cost(), 1);
+    }
+
+    #[test]
+    fn drop_after_external_settlement_is_idempotent() {
+        let market = MarketQuote::new_for_test(false);
+        let budget = budget_pair(8, 8);
+        let context = fresh_context(&market, &budget, Leg::Yes);
+        let lifecycle = context.proposal.lifecycle;
+        let mut participant = MakerQuoteTransactionParticipant::new(context);
+        participant.arm_at_identity(lifecycle_identity(11)).unwrap();
+        assert!(market.abort_leg_transaction(lifecycle, 11));
+
+        drop(participant);
+        assert_eq!(market.leg_state(Leg::Yes), LegState::Idle);
+        assert_eq!(budget.outstanding_submit_cost(), 0);
+    }
+
+    #[test]
     fn sink_callback_then_unwind_preserves_callback_retirement_and_charge() {
-        let market = MarketQuote::new(false);
+        let market = MarketQuote::new_for_test(false);
         let budget = budget_pair(8, 8);
         let context = fresh_context(&market, &budget, Leg::Yes);
         let proposal = context.proposal.lifecycle;
         let mut participant = MakerQuoteTransactionParticipant::new(context);
-        participant.arm_at_generation(7).unwrap();
+        participant.arm_at_identity(lifecycle_identity(7)).unwrap();
         participant
             .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
             .expect("participant should reach the sink");
+        let _ = MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes)
+            .refine(terminal_event(7, MakerQuoteTerminalDisposition::Rejected));
         assert!(market.retire_leg_transaction_from_callback(proposal, 7));
         drop(participant);
 
@@ -772,7 +844,7 @@ mod tests {
                 Leg::Yes => Leg::No,
                 Leg::No => Leg::Yes,
             };
-            let market = MarketQuote::new(false);
+            let market = MarketQuote::new_for_test(false);
             let budget = budget_pair(8, 8);
             let mut submitted = MakerQuoteTransactionParticipant::new(fresh_context(
                 &market,
@@ -784,23 +856,19 @@ mod tests {
                 &budget,
                 rejected_leg,
             ));
-            submitted.arm_at_generation(1).unwrap();
-            rejected.arm_at_generation(2).unwrap();
+            submitted.arm_at_identity(lifecycle_identity(1)).unwrap();
+            rejected.arm_at_identity(lifecycle_identity(2)).unwrap();
             submitted
                 .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
                 .expect("participant should reach the sink");
-            submitted
-                .settle_at_generation(1, BoltV3RestingCommitDisposition::Submitted)
-                .unwrap();
-            rejected
-                .settle_at_generation(2, BoltV3RestingCommitDisposition::PreSinkAborted)
-                .unwrap();
+            submitted.settle_submitted(1).unwrap();
+            rejected.abort_pre_sink(2).unwrap();
             assert_eq!(market.leg_state(submitted_leg), LegState::SubmitPending);
             assert_eq!(market.leg_state(rejected_leg), LegState::Idle);
             assert_eq!(budget.submit_commands_in_window(), 1);
             assert_eq!(budget.rest_cost_in_window(), 1);
 
-            let market = MarketQuote::new(false);
+            let market = MarketQuote::new_for_test(false);
             let budget = budget_pair(8, 8);
             let mut submitted = MakerQuoteTransactionParticipant::new(fresh_context(
                 &market,
@@ -812,20 +880,16 @@ mod tests {
                 &budget,
                 rejected_leg,
             ));
-            submitted.arm_at_generation(3).unwrap();
-            rejected.arm_at_generation(4).unwrap();
+            submitted.arm_at_identity(lifecycle_identity(3)).unwrap();
+            rejected.arm_at_identity(lifecycle_identity(4)).unwrap();
             submitted
                 .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
                 .expect("participant should reach the sink");
             rejected
                 .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
                 .expect("participant should reach the sink");
-            submitted
-                .settle_at_generation(3, BoltV3RestingCommitDisposition::Submitted)
-                .unwrap();
-            rejected
-                .settle_at_generation(4, BoltV3RestingCommitDisposition::SinkRejected)
-                .unwrap();
+            submitted.settle_submitted(3).unwrap();
+            rejected.settle_sink_rejected(4).unwrap();
             assert_eq!(market.leg_state(submitted_leg), LegState::SubmitPending);
             assert_eq!(market.leg_state(rejected_leg), LegState::Idle);
             assert_eq!(budget.submit_commands_in_window(), 2);
@@ -837,25 +901,136 @@ mod tests {
         submit_cap: u64,
         rest_cap: u64,
     ) -> (MarketQuote, RequoteBudgetPair) {
-        let market = MarketQuote::new(false);
+        let market = MarketQuote::new_for_test(false);
         let budget = budget_pair(submit_cap, rest_cap);
         let context = resting_context(&market, &budget);
         let lifecycle = context.proposal.lifecycle;
         let mut participant = MakerQuoteTransactionParticipant::new(context);
-        participant.arm_at_generation(1).unwrap();
+        participant.arm_at_identity(lifecycle_identity(1)).unwrap();
         participant
             .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
             .expect("participant should reach the sink");
-        participant
-            .settle_at_generation(
-                1,
-                BoltV3RestingCommitDisposition::CommandIssuedRetainPrepaid,
-            )
-            .unwrap();
+        participant.settle_command_issued(1).unwrap();
         assert_eq!(market.leg_state(Leg::Yes), LegState::RequotePending);
         assert!(market.prepaid_generation(Leg::Yes).is_some());
-        MakerQuoteLifecycleHandle::new(market.clone(), lifecycle.leg()).terminal_callback();
+        let _ = MakerQuoteLifecycleHandle::new(market.clone(), lifecycle.leg())
+            .refine(terminal_event(1, MakerQuoteTerminalDisposition::Canceled));
         (market, budget)
+    }
+
+    fn issued_cancel_before_terminal() -> (
+        MarketQuote,
+        RequoteBudgetPair,
+        MakerQuoteLifecycleHandle,
+        MakerQuoteTransactionParticipant,
+    ) {
+        let market = MarketQuote::new_for_test(false);
+        let budget = budget_pair(8, 8);
+        let context = resting_context(&market, &budget);
+        let lifecycle =
+            MakerQuoteLifecycleHandle::new(market.clone(), context.proposal.lifecycle.leg());
+        let mut participant = MakerQuoteTransactionParticipant::new(context);
+        participant.arm_at_identity(lifecycle_identity(1)).unwrap();
+        participant
+            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
+            .expect("participant should reach the sink");
+        participant.settle_command_issued(1).unwrap();
+        (market, budget, lifecycle, participant)
+    }
+
+    #[test]
+    fn typed_terminal_disposition_distinguishes_cancel_from_fill() {
+        let (canceled_market, _canceled_budget, canceled_lifecycle, canceled_participant) =
+            issued_cancel_before_terminal();
+        let _ =
+            canceled_lifecycle.refine(terminal_event(1, MakerQuoteTerminalDisposition::Canceled));
+        assert_eq!(
+            canceled_market.leg_state(Leg::Yes),
+            LegState::ReplacementPendingBackoff
+        );
+        assert!(canceled_market.prepaid_generation(Leg::Yes).is_some());
+        drop(canceled_participant);
+
+        let (filled_market, _filled_budget, filled_lifecycle, filled_participant) =
+            issued_cancel_before_terminal();
+        let _ = filled_lifecycle.refine(terminal_event(1, MakerQuoteTerminalDisposition::Filled));
+        assert_eq!(filled_market.leg_state(Leg::Yes), LegState::Idle);
+        assert_eq!(filled_market.prepaid_generation(Leg::Yes), None);
+        drop(filled_participant);
+    }
+
+    #[test]
+    fn canceled_terminal_refines_to_filled_and_retires_prepaid_replacement() {
+        let (market, budget, lifecycle, participant) = issued_cancel_before_terminal();
+
+        let _ = lifecycle.refine(terminal_event(1, MakerQuoteTerminalDisposition::Canceled));
+        assert_eq!(
+            market.leg_state(Leg::Yes),
+            LegState::ReplacementPendingBackoff
+        );
+        assert!(market.prepaid_generation(Leg::Yes).is_some());
+
+        let _ = lifecycle.refine(terminal_event(1, MakerQuoteTerminalDisposition::Filled));
+
+        assert_eq!(market.leg_state(Leg::Yes), LegState::Idle);
+        assert_eq!(market.prepaid_generation(Leg::Yes), None);
+        assert_eq!(budget.outstanding_submit_cost(), 0);
+        assert_eq!(budget.outstanding_rest_cost(), 0);
+        assert_eq!(budget.submit_commands_in_window(), 0);
+        assert_eq!(budget.rest_cost_in_window(), 1);
+        drop(participant);
+    }
+
+    #[test]
+    fn filled_terminal_releases_the_owned_prepaid_capacity() {
+        let (market, budget, lifecycle, participant) = issued_cancel_before_terminal();
+        assert_eq!(budget.outstanding_submit_cost(), 1);
+        assert_eq!(budget.outstanding_rest_cost(), 1);
+
+        let _ = lifecycle.refine(terminal_event(1, MakerQuoteTerminalDisposition::Filled));
+
+        assert_eq!(market.prepaid_generation(Leg::Yes), None);
+        assert_eq!(budget.outstanding_submit_cost(), 0);
+        assert_eq!(budget.outstanding_rest_cost(), 0);
+        assert_eq!(budget.rest_cost_in_window(), 1);
+        drop(participant);
+    }
+
+    #[test]
+    fn poisoned_wind_down_emits_scoped_cancel_without_clearing_authority() {
+        let market = MarketQuote::new_for_test(false);
+        let budget = budget_pair(8, 8);
+        let context = resting_context(&market, &budget);
+        let lifecycle =
+            MakerQuoteLifecycleHandle::new(market.clone(), context.proposal.lifecycle.leg());
+        let mut participant = MakerQuoteTransactionParticipant::new(context);
+        participant.arm_at_identity(lifecycle_identity(1)).unwrap();
+        participant
+            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
+            .expect("participant should reach the sink");
+        participant.fail_post_sink_invariant(1).unwrap();
+        let prepaid_generation = market
+            .prepaid_generation(Leg::Yes)
+            .expect("poisoned requote cancel must retain prepaid capacity");
+
+        let mut wind_down = market.clone();
+        assert_eq!(
+            wind_down.cancel_one_side(Leg::Yes),
+            Some(MarketAction::CancelAllOneSide { leg: Leg::Yes })
+        );
+        assert_eq!(
+            market.leg_state(Leg::Yes),
+            LegState::PoisonedReconciliationHold
+        );
+        assert_eq!(
+            market.prepaid_generation(Leg::Yes),
+            Some(prepaid_generation)
+        );
+
+        let _ = lifecycle.refine(terminal_event(1, MakerQuoteTerminalDisposition::Filled));
+        assert_eq!(market.leg_state(Leg::Yes), LegState::Idle);
+        assert_eq!(market.prepaid_generation(Leg::Yes), None);
+        drop(participant);
     }
 
     fn assert_only_emitted_cancel_remains_charged(budget: &RequoteBudgetPair) {
@@ -888,7 +1063,7 @@ mod tests {
 
     #[test]
     fn both_leg_wind_down_after_confirmation_charges_both_emitted_cancels_only() {
-        let market = MarketQuote::new(false);
+        let market = MarketQuote::new_for_test(false);
         let budget = budget_pair(8, 8);
         let mut participants = Vec::new();
         for (offset, leg) in [Leg::Yes, Leg::No].into_iter().enumerate() {
@@ -920,17 +1095,17 @@ mod tests {
             };
             let generation = u64::try_from(offset + 1).expect("test generation fits u64");
             let mut participant = MakerQuoteTransactionParticipant::new(context);
-            participant.arm_at_generation(generation).unwrap();
+            participant
+                .arm_at_identity(lifecycle_identity(generation))
+                .unwrap();
             participant
                 .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
                 .expect("participant should reach the sink");
-            participant
-                .settle_at_generation(
-                    generation,
-                    BoltV3RestingCommitDisposition::CommandIssuedRetainPrepaid,
-                )
-                .unwrap();
-            MakerQuoteLifecycleHandle::new(market.clone(), leg).terminal_callback();
+            participant.settle_command_issued(generation).unwrap();
+            let _ = MakerQuoteLifecycleHandle::new(market.clone(), leg).refine(terminal_event(
+                generation,
+                MakerQuoteTerminalDisposition::Canceled,
+            ));
             participants.push(participant);
         }
         drop(participants);
@@ -949,14 +1124,12 @@ mod tests {
 
     #[test]
     fn cancel_failure_before_issuance_restores_resting_state_and_releases_prepaid_capacity() {
-        let market = MarketQuote::new(false);
+        let market = MarketQuote::new_for_test(false);
         let budget = budget_pair(1, 2);
         let mut participant =
             MakerQuoteTransactionParticipant::new(resting_context(&market, &budget));
-        participant.arm_at_generation(1).unwrap();
-        participant
-            .settle_at_generation(1, BoltV3RestingCommitDisposition::PreSinkAborted)
-            .unwrap();
+        participant.arm_at_identity(lifecycle_identity(1)).unwrap();
+        participant.abort_pre_sink(1).unwrap();
 
         assert_eq!(market.leg_state(Leg::Yes), LegState::Resting);
         assert_eq!(market.prepaid_generation(Leg::Yes), None);
@@ -1003,28 +1176,24 @@ mod tests {
 
     #[test]
     fn modify_rolls_back_before_issuance_and_commits_pending_state_at_issuance() {
-        let aborted_market = MarketQuote::new(true);
+        let aborted_market = MarketQuote::new_for_test(true);
         let aborted_budget = budget_pair(1, 1);
         let mut aborted =
             MakerQuoteTransactionParticipant::new(modify_context(&aborted_market, &aborted_budget));
-        aborted.arm_at_generation(1).unwrap();
-        aborted
-            .settle_at_generation(1, BoltV3RestingCommitDisposition::PreSinkAborted)
-            .unwrap();
+        aborted.arm_at_identity(lifecycle_identity(1)).unwrap();
+        aborted.abort_pre_sink(1).unwrap();
         assert_eq!(aborted_market.leg_state(Leg::Yes), LegState::Resting);
         assert_eq!(aborted_budget.rest_cost_in_window(), 0);
 
-        let issued_market = MarketQuote::new(true);
+        let issued_market = MarketQuote::new_for_test(true);
         let issued_budget = budget_pair(1, 1);
         let mut issued =
             MakerQuoteTransactionParticipant::new(modify_context(&issued_market, &issued_budget));
-        issued.arm_at_generation(2).unwrap();
+        issued.arm_at_identity(lifecycle_identity(2)).unwrap();
         issued
             .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
             .expect("participant should reach the sink");
-        issued
-            .settle_at_generation(2, BoltV3RestingCommitDisposition::CommandIssued)
-            .unwrap();
+        issued.settle_command_issued(2).unwrap();
         assert_eq!(issued_market.leg_state(Leg::Yes), LegState::ModifyPending);
         assert_eq!(issued_budget.submit_commands_in_window(), 0);
         assert_eq!(issued_budget.rest_cost_in_window(), 1);
@@ -1032,34 +1201,30 @@ mod tests {
 
     #[test]
     fn delayed_fresh_submit_charges_the_actor_sink_timestamp() {
-        let market = MarketQuote::new(false);
+        let market = MarketQuote::new_for_test(false);
         let budget = short_window_budget_pair(1, 1);
         let mut participant =
             MakerQuoteTransactionParticipant::new(fresh_context(&market, &budget, Leg::Yes));
-        participant.arm_at_generation(1).unwrap();
+        participant.arm_at_identity(lifecycle_identity(1)).unwrap();
         participant
             .mark_sink_invoked(1_900 * NANOS_PER_MILLI_U64)
             .unwrap();
-        participant
-            .settle_at_generation(1, BoltV3RestingCommitDisposition::Submitted)
-            .unwrap();
+        participant.settle_submitted(1).unwrap();
 
         assert!(budget.propose_fresh_submit(2_001).is_err());
     }
 
     #[test]
     fn delayed_modify_charges_the_actor_sink_timestamp() {
-        let market = MarketQuote::new(true);
+        let market = MarketQuote::new_for_test(true);
         let budget = short_window_budget_pair(1, 1);
         let mut participant =
             MakerQuoteTransactionParticipant::new(modify_context(&market, &budget));
-        participant.arm_at_generation(1).unwrap();
+        participant.arm_at_identity(lifecycle_identity(1)).unwrap();
         participant
             .mark_sink_invoked(1_900 * NANOS_PER_MILLI_U64)
             .unwrap();
-        participant
-            .settle_at_generation(1, BoltV3RestingCommitDisposition::CommandIssued)
-            .unwrap();
+        participant.settle_command_issued(1).unwrap();
 
         assert!(budget.propose_rest(2_001).is_err());
     }
@@ -1106,10 +1271,8 @@ mod tests {
             MakerQuoteBudgetProposal::Prepaid { .. }
         ));
         let mut replacement = MakerQuoteTransactionParticipant::new(context);
-        replacement.arm_at_generation(2).unwrap();
-        replacement
-            .settle_at_generation(2, BoltV3RestingCommitDisposition::PreSinkAborted)
-            .unwrap();
+        replacement.arm_at_identity(lifecycle_identity(2)).unwrap();
+        replacement.abort_pre_sink(2).unwrap();
         assert_eq!(
             market.leg_state(Leg::Yes),
             LegState::ReplacementPendingBackoff
@@ -1122,21 +1285,17 @@ mod tests {
 
     #[test]
     fn synchronous_cancel_terminal_callback_wins_without_poisoning_the_leg() {
-        let market = MarketQuote::new(false);
+        let market = MarketQuote::new_for_test(false);
         let budget = budget_pair(8, 8);
         let context = resting_context(&market, &budget);
         let mut participant = MakerQuoteTransactionParticipant::new(context);
-        participant.arm_at_generation(1).unwrap();
+        participant.arm_at_identity(lifecycle_identity(1)).unwrap();
         participant
             .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
             .expect("participant should reach the sink");
-        MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes).terminal_callback();
-        participant
-            .settle_at_generation(
-                1,
-                BoltV3RestingCommitDisposition::CommandIssuedRetainPrepaid,
-            )
-            .unwrap();
+        let _ = MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes)
+            .refine(terminal_event(1, MakerQuoteTerminalDisposition::Canceled));
+        participant.settle_command_issued(1).unwrap();
 
         assert_eq!(
             market.leg_state(Leg::Yes),
@@ -1153,13 +1312,11 @@ mod tests {
         let (market, budget) = issued_cancel_with_prepaid(8, 8);
         let mut replacement =
             MakerQuoteTransactionParticipant::new(replacement_context(&market, &budget));
-        replacement.arm_at_generation(2).unwrap();
+        replacement.arm_at_identity(lifecycle_identity(2)).unwrap();
         replacement
             .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
             .expect("participant should reach the sink");
-        replacement
-            .settle_at_generation(2, BoltV3RestingCommitDisposition::SinkRejected)
-            .unwrap();
+        replacement.settle_sink_rejected(2).unwrap();
         assert_eq!(
             market.leg_state(Leg::Yes),
             LegState::ReplacementPendingBackoff
@@ -1179,13 +1336,11 @@ mod tests {
         let (market, budget) = issued_cancel_with_prepaid(2, 3);
         let mut first =
             MakerQuoteTransactionParticipant::new(replacement_context(&market, &budget));
-        first.arm_at_generation(2).unwrap();
+        first.arm_at_identity(lifecycle_identity(2)).unwrap();
         first
             .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
             .expect("participant should reach the sink");
-        first
-            .settle_at_generation(2, BoltV3RestingCommitDisposition::SinkRejected)
-            .unwrap();
+        first.settle_sink_rejected(2).unwrap();
 
         let second_context = replacement_context(&market, &budget);
         assert!(matches!(
@@ -1193,13 +1348,11 @@ mod tests {
             MakerQuoteBudgetProposal::Reserve(_)
         ));
         let mut second = MakerQuoteTransactionParticipant::new(second_context);
-        second.arm_at_generation(3).unwrap();
+        second.arm_at_identity(lifecycle_identity(3)).unwrap();
         second
             .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
             .expect("participant should reach the sink");
-        second
-            .settle_at_generation(3, BoltV3RestingCommitDisposition::SinkRejected)
-            .unwrap();
+        second.settle_sink_rejected(3).unwrap();
         assert_eq!(budget.submit_commands_in_window(), 2);
         assert_eq!(budget.rest_cost_in_window(), 3);
 
@@ -1228,14 +1381,12 @@ mod tests {
     }
 
     #[test]
-    fn rollback_invariant_failure_poison_holds_the_prepaid_token_without_retry() {
+    fn authoritative_terminal_recovers_poisoned_replacement_with_its_prepaid_token() {
         let (market, budget) = issued_cancel_with_prepaid(8, 8);
         let mut replacement =
             MakerQuoteTransactionParticipant::new(replacement_context(&market, &budget));
-        replacement.arm_at_generation(2).unwrap();
-        replacement
-            .settle_at_generation(2, BoltV3RestingCommitDisposition::RollbackInvariantFailed)
-            .unwrap();
+        replacement.arm_at_identity(lifecycle_identity(2)).unwrap();
+        replacement.fail_pre_sink_invariant(2).unwrap();
         assert_eq!(
             market.leg_state(Leg::Yes),
             LegState::PoisonedReconciliationHold
@@ -1258,6 +1409,48 @@ mod tests {
         );
         assert_eq!(decision.action, None);
         assert_eq!(budget.rest_cost_in_window(), 1);
+
+        let prepaid_generation = market
+            .prepaid_generation(Leg::Yes)
+            .expect("poisoned replacement must retain its prepaid generation");
+        let _ = MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes)
+            .refine(terminal_event(2, MakerQuoteTerminalDisposition::Canceled));
+        assert_eq!(
+            market.leg_state(Leg::Yes),
+            LegState::ReplacementPendingBackoff
+        );
+        assert_eq!(
+            market.prepaid_generation(Leg::Yes),
+            Some(prepaid_generation)
+        );
+
+        let recovered = drive_quote_leg(
+            &mut market_handle,
+            &mut budget_handle,
+            QuoteControlInput {
+                leg: Leg::Yes,
+                desired_price: 0.6,
+                resting_price: None,
+                requote_threshold: 0.01,
+                eps: 1e-9,
+                now_ms: NOW_MS + 3,
+            },
+        );
+        assert_eq!(
+            recovered.action,
+            Some(MarketAction::Leg {
+                leg: Leg::Yes,
+                action: LifecycleAction::Submit,
+            })
+        );
+        assert!(matches!(
+            recovered.proposal.map(|proposal| proposal.budget),
+            Some(MakerQuoteBudgetProposal::Prepaid {
+                generation,
+                ..
+            }) if generation == prepaid_generation
+        ));
+        assert_eq!(budget.outstanding_submit_cost(), 1);
     }
 
     #[test]
@@ -1265,13 +1458,11 @@ mod tests {
         let (market, budget) = issued_cancel_with_prepaid(8, 8);
         let mut replacement =
             MakerQuoteTransactionParticipant::new(replacement_context(&market, &budget));
-        replacement.arm_at_generation(2).unwrap();
+        replacement.arm_at_identity(lifecycle_identity(2)).unwrap();
         replacement
             .mark_sink_invoked((NOW_MS + 1) * NANOS_PER_MILLI_U64)
             .expect("replacement should reach the sink");
-        replacement
-            .settle_at_generation(2, BoltV3RestingCommitDisposition::RollbackInvariantFailed)
-            .unwrap();
+        replacement.fail_post_sink_invariant(2).unwrap();
 
         assert_eq!(
             market.leg_state(Leg::Yes),
@@ -1304,32 +1495,26 @@ mod tests {
 
     #[test]
     fn delayed_prepaid_replacement_charges_the_actor_sink_timestamp() {
-        let market = MarketQuote::new(false);
+        let market = MarketQuote::new_for_test(false);
         let budget = short_window_budget_pair(1, 2);
         let context = resting_context(&market, &budget);
         let lifecycle = context.proposal.lifecycle;
         let mut cancel = MakerQuoteTransactionParticipant::new(context);
-        cancel.arm_at_generation(1).unwrap();
+        cancel.arm_at_identity(lifecycle_identity(1)).unwrap();
         cancel
             .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
             .unwrap();
-        cancel
-            .settle_at_generation(
-                1,
-                BoltV3RestingCommitDisposition::CommandIssuedRetainPrepaid,
-            )
-            .unwrap();
-        MakerQuoteLifecycleHandle::new(market.clone(), lifecycle.leg()).terminal_callback();
+        cancel.settle_command_issued(1).unwrap();
+        let _ = MakerQuoteLifecycleHandle::new(market.clone(), lifecycle.leg())
+            .refine(terminal_event(1, MakerQuoteTerminalDisposition::Canceled));
 
         let mut replacement =
             MakerQuoteTransactionParticipant::new(replacement_context(&market, &budget));
-        replacement.arm_at_generation(2).unwrap();
+        replacement.arm_at_identity(lifecycle_identity(2)).unwrap();
         replacement
             .mark_sink_invoked(1_900 * NANOS_PER_MILLI_U64)
             .unwrap();
-        replacement
-            .settle_at_generation(2, BoltV3RestingCommitDisposition::Submitted)
-            .unwrap();
+        replacement.settle_submitted(2).unwrap();
 
         assert!(budget.propose_fresh_submit(2_001).is_err());
     }

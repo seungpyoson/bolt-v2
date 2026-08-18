@@ -115,7 +115,7 @@ mod tests {
     use crate::bolt_v3_quote_lifecycle::{LegEvent, LegState, MarketState};
 
     fn resting_market() -> MarketQuote {
-        let mut market = MarketQuote::new(false);
+        let mut market = MarketQuote::new_for_test(false);
         market.on_leg_event(
             Leg::Yes,
             LegEvent::QuoteTrigger {
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn idle_hard_flat_still_reports_unsupported_reduce_path() {
-        let mut market = MarketQuote::new(false);
+        let mut market = MarketQuote::new_for_test(false);
 
         let decision = apply_maker_risk_mode(&mut market, MakerRiskMode::HardFlat);
 

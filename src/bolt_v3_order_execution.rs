@@ -62,11 +62,11 @@ pub use economics_basis::{
 use tracked_order_economics::route_tracked_cancel_all;
 pub use tracked_order_economics::{
     BoltV3CancellationLivenessFailure, BoltV3OrderEconomicsHandle, BoltV3RecoveryIdentityConflict,
-    BoltV3RestingCommitDisposition, BoltV3RestingOrderCancelHealthSnapshot,
-    BoltV3RestingRegistrationCommitParticipant, BoltV3RestingRegistrationRejection,
-    BoltV3RestingRegistrationRejectionKind, BoltV3RestingRollbackInvariantFailure,
-    BoltV3RestingSubmitTransactionOutcome, BoltV3RoutedNonSubmittedOutcome,
-    build_order_economics_submit_admission,
+    BoltV3RestingOrderCancelHealthSnapshot, BoltV3RestingOrderDrainCapability,
+    BoltV3RestingRegistrationCapability, BoltV3RestingRegistrationCommitParticipant,
+    BoltV3RestingRegistrationRejection, BoltV3RestingRegistrationRejectionKind,
+    BoltV3RestingRollbackInvariantFailure, BoltV3RestingSubmitTransactionOutcome,
+    BoltV3RoutedNonSubmittedOutcome, build_order_economics_submit_admission,
 };
 
 pub struct BoltV3FinalOrderEconomicsInput<'a> {
@@ -2950,6 +2950,15 @@ mod tests {
 
     const FIXTURE_CANCEL_RETRY_TIMEOUT_NS: u64 = 1_000_000_000;
 
+    fn test_position_authority_feed(
+        bindings: impl IntoIterator<Item = (AccountId, ClientId, Venue)>,
+    ) -> Result<BoltV3PositionAuthorityFeed> {
+        BoltV3PositionAuthorityFeed::try_new_with_cache(
+            bindings,
+            Rc::new(RefCell::new(nautilus_common::cache::Cache::default())),
+        )
+    }
+
     fn position_episode(
         instrument_id: InstrumentId,
         position_id: PositionId,
@@ -3164,7 +3173,8 @@ mod tests {
         bolt_v3_kill_switch::KillSwitchState,
         bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
         bolt_v3_maker_order_dispatch::{
-            MakerOrderDispatchInput, MakerOrderDispatchOutcome, MakerQuoteTransactionContext,
+            MakerOrderCommandAuthority, MakerOrderDispatchInput, MakerOrderDispatchOutcome,
+            MakerQuoteTransactionContext,
         },
         bolt_v3_maker_quote_control::{QuoteControlInput, drive_quote_leg},
         bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
@@ -3317,16 +3327,23 @@ mod tests {
     fn quote_transaction_for_submit(
         command: &MakerCompiledOrderCommand,
     ) -> MakerQuoteTransactionContext {
+        quote_transaction_for_submit_on(command, &MarketQuote::new_for_test(false))
+    }
+
+    fn quote_transaction_for_submit_on(
+        command: &MakerCompiledOrderCommand,
+        market: &MarketQuote,
+    ) -> MakerQuoteTransactionContext {
         let MakerCompiledOrderCommand::Submit { leg, .. } = command else {
             panic!("quote transaction test helper requires a submit command");
         };
-        let mut market = MarketQuote::new(false);
+        let mut market_handle = market.clone();
         let mut budget = RequoteBudgetPair::new(
             RequoteBudget::new(100, 60_000, 0),
             RequoteBudget::new(100, 60_000, 0),
         );
         let decision = drive_quote_leg(
-            &mut market,
+            &mut market_handle,
             &mut budget,
             QuoteControlInput {
                 leg: *leg,
@@ -3338,7 +3355,7 @@ mod tests {
             },
         );
         MakerQuoteTransactionContext {
-            market,
+            market: market.clone(),
             budget,
             proposal: decision
                 .proposal
@@ -3353,26 +3370,21 @@ mod tests {
         )
     }
 
-    fn quote_transaction_for_cancel(
+    fn quote_transaction_for_cancel_on(
         command: &MakerCompiledOrderCommand,
+        market: &MarketQuote,
     ) -> MakerQuoteTransactionContext {
         let MakerCompiledOrderCommand::Cancel { leg, .. } = command else {
             panic!("quote transaction test helper requires a cancel command");
         };
-        let mut market = MarketQuote::new(false);
-        market.on_leg_event(
-            *leg,
-            crate::bolt_v3_quote_lifecycle::LegEvent::QuoteTrigger {
-                requote_needed: true,
-            },
-        );
-        market.on_leg_event(*leg, crate::bolt_v3_quote_lifecycle::LegEvent::Accepted);
+        let mut market_handle = market.clone();
+        market_handle.on_leg_event(*leg, crate::bolt_v3_quote_lifecycle::LegEvent::Accepted);
         let mut budget = RequoteBudgetPair::new(
             RequoteBudget::new(100, 60_000, 0),
             RequoteBudget::new(100, 60_000, 0),
         );
         let decision = drive_quote_leg(
-            &mut market,
+            &mut market_handle,
             &mut budget,
             QuoteControlInput {
                 leg: *leg,
@@ -3384,7 +3396,7 @@ mod tests {
             },
         );
         MakerQuoteTransactionContext {
-            market,
+            market: market.clone(),
             budget,
             proposal: decision
                 .proposal
@@ -3398,7 +3410,7 @@ mod tests {
         let MakerCompiledOrderCommand::Modify { leg, .. } = command else {
             panic!("quote transaction test helper requires a modify command");
         };
-        let mut market = MarketQuote::new(true);
+        let mut market = MarketQuote::new_for_test(true);
         market.on_leg_event(
             *leg,
             crate::bolt_v3_quote_lifecycle::LegEvent::QuoteTrigger {
@@ -3464,7 +3476,9 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: Some(quote_transaction_for_submit(&command)),
+                authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_submit(
+                    &command,
+                )),
             },
         )
         .expect("maker submit should route through shared execution policy");
@@ -3557,7 +3571,9 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: Some(quote_transaction_for_submit(&command)),
+                authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_submit(
+                    &command,
+                )),
             },
         )
         .unwrap();
@@ -3593,6 +3609,7 @@ mod tests {
         let order_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
             "maker_execution_client",
         );
+        let quote_market = MarketQuote::new_for_test(false);
         let submit = MakerCompiledOrderCommand::Submit {
             leg: Leg::No,
             template: Box::new(maker_limit_post_only_template()),
@@ -3614,7 +3631,10 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &submit,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: Some(quote_transaction_for_submit(&submit)),
+                authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_submit_on(
+                    &submit,
+                    &quote_market,
+                )),
             },
         )
         .expect("maker submit should establish tracked cancellation identity");
@@ -3633,7 +3653,10 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: Some(quote_transaction_for_cancel(&command)),
+                authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_cancel_on(
+                    &command,
+                    &quote_market,
+                )),
             },
         )
         .expect("maker cancel should route through shared execution policy");
@@ -3664,6 +3687,7 @@ mod tests {
         let instrument_id = InstrumentId::from("YES.INSTRUMENT");
         let yes_id = ClientOrderId::from("MAKER-CONTENTION-YES");
         let no_id = ClientOrderId::from("MAKER-CONTENTION-NO");
+        let market = MarketQuote::new_for_test(false);
         for (leg, client_order_id, economics) in [
             (Leg::Yes, yes_id, &yes_economics),
             (Leg::No, no_id, &no_economics),
@@ -3693,7 +3717,9 @@ mod tests {
                 MakerOrderDispatchInput {
                     command: &submit,
                     submit_order_prefix: "maker_submit",
-                    quote_transaction: Some(quote_transaction_for_submit(&submit)),
+                    authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_submit_on(
+                        &submit, &market,
+                    )),
                 },
             )
             .expect("both real coordinators should register one resting leg");
@@ -3710,7 +3736,6 @@ mod tests {
         yes_economics.attach_requote_budget_for_test(yes_id, shared_budget.clone());
         no_economics.attach_requote_budget_for_test(no_id, shared_budget.clone());
 
-        let market = MarketQuote::new(false);
         let mut market_setup = market.clone();
         for leg in [Leg::Yes, Leg::No] {
             market_setup.on_leg_event(
@@ -3765,7 +3790,7 @@ mod tests {
                 MakerOrderDispatchInput {
                     command: &cancel,
                     submit_order_prefix: "maker_submit",
-                    quote_transaction: Some(context),
+                    authority: MakerOrderCommandAuthority::Quote(context),
                 },
             )
             .expect("capacity denial is a coordinator transition, not a routing error");
@@ -3815,6 +3840,7 @@ mod tests {
         let order_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
             "maker_execution_client",
         );
+        let quote_market = MarketQuote::new_for_test(false);
         let client_order_id = ClientOrderId::from("MAKER-RETRY-1");
         let submit = MakerCompiledOrderCommand::Submit {
             leg: Leg::Yes,
@@ -3837,7 +3863,10 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &submit,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: Some(quote_transaction_for_submit(&submit)),
+                authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_submit_on(
+                    &submit,
+                    &quote_market,
+                )),
             },
         )
         .unwrap();
@@ -3856,15 +3885,18 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &cancel,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: Some(quote_transaction_for_cancel(&cancel)),
+                authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_cancel_on(
+                    &cancel,
+                    &quote_market,
+                )),
             },
         )
         .expect_err("the first synchronous cancel failure must remain retryable");
         assert_eq!(runtime.venue_sink.cancel_calls, 1);
 
         let retry_timeout_ns = FIXTURE_CANCEL_RETRY_TIMEOUT_NS;
-        order_economics
-            .begin_resting_order_drain_at_ns(retry_timeout_ns / 2)
+        let (_drain, _) = order_economics
+            .latch_resting_order_drain_at_ns(retry_timeout_ns / 2)
             .expect("a second cancellation origin must merge into the existing intent");
         let cached = runtime.venue_sink.cached_order(client_order_id).unwrap();
         super::tracked_order_economics::drive_observed_resting_order_economics(
@@ -3924,7 +3956,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &submit,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: Some(quote_transaction_for_submit(&submit)),
+                authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_submit(&submit)),
             },
         )
         .unwrap();
@@ -4043,6 +4075,7 @@ mod tests {
         let order_economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
             "maker_execution_client",
         );
+        let quote_market = MarketQuote::new_for_test(false);
         let client_order_id = ClientOrderId::from("MAKER-QUERY-1");
         let submit = MakerCompiledOrderCommand::Submit {
             leg: Leg::Yes,
@@ -4065,7 +4098,10 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &submit,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: Some(quote_transaction_for_submit(&submit)),
+                authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_submit_on(
+                    &submit,
+                    &quote_market,
+                )),
             },
         )
         .unwrap();
@@ -4101,7 +4137,10 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &cancel,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: Some(quote_transaction_for_cancel(&cancel)),
+                authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_cancel_on(
+                    &cancel,
+                    &quote_market,
+                )),
             },
         )
         .unwrap();
@@ -4192,13 +4231,15 @@ mod tests {
                 MakerOrderDispatchInput {
                     command: &submit,
                     submit_order_prefix: "maker_submit",
-                    quote_transaction: Some(quote_transaction_for_submit(&submit)),
+                    authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_submit(
+                        &submit,
+                    )),
                 },
             )
             .unwrap();
         }
         runtime.venue_sink.fail_cancel_ids.insert(first);
-        order_economics.begin_resting_order_drain_at_ns(1).unwrap();
+        let (_drain, _) = order_economics.latch_resting_order_drain_at_ns(1).unwrap();
         let first_cached = runtime.venue_sink.cached_order(first).unwrap();
         let second_cached = runtime.venue_sink.cached_order(second).unwrap();
 
@@ -4237,14 +4278,10 @@ mod tests {
         let conflicted_a = accepted_limit_order("HEALTH-POST-A", "VENUE-A");
         let conflicted_b = accepted_limit_order("HEALTH-POST-A", "VENUE-B");
         let sibling = accepted_limit_order("HEALTH-POST-B", "VENUE-SIBLING");
-        order_economics
-            .reconcile_fill_void_at(conflicted_id, Some(conflicted_a.clone()), 100)
-            .unwrap();
+        order_economics.track_cancel_coordinator_order_for_test(conflicted_a.clone(), 100);
         order_economics
             .attach_requote_budget_for_test(conflicted_id, coordinator_budget_for_test());
-        order_economics
-            .reconcile_fill_void_at(sibling_id, Some(sibling.clone()), 100)
-            .unwrap();
+        order_economics.track_cancel_coordinator_order_for_test(sibling.clone(), 100);
         order_economics.attach_requote_budget_for_test(sibling_id, coordinator_budget_for_test());
         let mut sink = RecordingVenueMutationSink::default();
         sink.cached_orders
@@ -4281,9 +4318,7 @@ mod tests {
         );
         let client_order_id = ClientOrderId::from("HEALTH-SYNC-FAIL");
         let order = accepted_limit_order("HEALTH-SYNC-FAIL", "VENUE-SYNC-FAIL");
-        order_economics
-            .reconcile_fill_void_at(client_order_id, Some(order.clone()), 100)
-            .unwrap();
+        order_economics.track_cancel_coordinator_order_for_test(order.clone(), 100);
         order_economics
             .attach_requote_budget_for_test(client_order_id, coordinator_budget_for_test());
         let mut sink = RecordingVenueMutationSink {
@@ -4317,9 +4352,7 @@ mod tests {
         );
         let client_order_id = ClientOrderId::from("HEALTH-OBSERVE-FAIL");
         let order = accepted_limit_order("HEALTH-OBSERVE-FAIL", "VENUE-OBSERVE-FAIL");
-        order_economics
-            .reconcile_fill_void_at(client_order_id, Some(order.clone()), 100)
-            .unwrap();
+        order_economics.track_cancel_coordinator_order_for_test(order.clone(), 100);
         order_economics
             .attach_requote_budget_for_test(client_order_id, coordinator_budget_for_test());
         let mut sink = RecordingVenueMutationSink {
@@ -4378,7 +4411,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &submit,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: Some(quote_transaction_for_submit(&submit)),
+                authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_submit(&submit)),
             },
         )
         .expect("maker submit should establish an unrelated tracked order");
@@ -4398,7 +4431,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &mismatched_scope,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: None,
+                authority: MakerOrderCommandAuthority::ScopeCancelAll,
             },
         )
         .expect("an empty cancel-all scope must remain an exact no-op");
@@ -4456,7 +4489,9 @@ mod tests {
                 MakerOrderDispatchInput {
                     command: &submit,
                     submit_order_prefix: "maker_submit",
-                    quote_transaction: Some(quote_transaction_for_submit(&submit)),
+                    authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_submit(
+                        &submit,
+                    )),
                 },
             )
             .expect("maker submit should establish tracked cancel-all records");
@@ -4481,7 +4516,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &selected_scope,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: None,
+                authority: MakerOrderCommandAuthority::ScopeCancelAll,
             },
         )
         .expect_err("the selected cache-read failure must remain scoped");
@@ -4532,7 +4567,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &submit,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: Some(quote_transaction_for_submit(&submit)),
+                authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_submit(&submit)),
             },
         )
         .expect("maker submit should establish tracked cancel-all scope");
@@ -4550,7 +4585,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &mismatched_side,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: None,
+                authority: MakerOrderCommandAuthority::ScopeCancelAll,
             },
         )
         .expect("a side-mismatched cancel-all should be a scoped no-op");
@@ -4579,7 +4614,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: None,
+                authority: MakerOrderCommandAuthority::ScopeCancelAll,
             },
         )
         .expect("maker cancel-all should route through shared execution policy");
@@ -4609,7 +4644,7 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: None,
+                authority: MakerOrderCommandAuthority::ScopeCancelAll,
             },
         )
         .expect("repeated cancel-all origin should merge into the existing backoff");
@@ -5021,7 +5056,9 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: Some(quote_transaction_for_submit(&command)),
+                authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_submit(
+                    &command,
+                )),
             },
         )
         .expect("pre-sink rejection is a typed submit outcome");
@@ -5667,7 +5704,7 @@ mod tests {
 
     #[test]
     fn position_reduction_fence_rejects_mixed_projected_and_applied_fill_state() {
-        let feed = BoltV3PositionAuthorityFeed::try_new([(
+        let feed = test_position_authority_feed([(
             AccountId::from("ACCOUNT-001"),
             ClientId::from("execution_client"),
             Venue::from("VENUE-A"),
@@ -5736,7 +5773,7 @@ mod tests {
 
     #[test]
     fn position_reduction_fence_rejects_ambiguous_netting_aggregate() {
-        let feed = BoltV3PositionAuthorityFeed::try_new([(
+        let feed = test_position_authority_feed([(
             AccountId::from("ACCOUNT-001"),
             ClientId::from("execution_client"),
             Venue::from("VENUE-A"),
@@ -5785,7 +5822,7 @@ mod tests {
 
     #[test]
     fn position_reduction_fence_surfaces_stale_health_until_new_authority_arrives() {
-        let feed = BoltV3PositionAuthorityFeed::try_new([(
+        let feed = test_position_authority_feed([(
             AccountId::from("ACCOUNT-001"),
             ClientId::from("execution_client"),
             Venue::from("VENUE-A"),
@@ -5855,7 +5892,7 @@ mod tests {
 
     #[test]
     fn local_exit_authority_tracks_partial_fill_and_requires_causal_position_state() {
-        let feed = BoltV3PositionAuthorityFeed::try_new([(
+        let feed = test_position_authority_feed([(
             AccountId::from("ACCOUNT-001"),
             ClientId::from("execution_client"),
             Venue::from("VENUE-A"),
@@ -5953,7 +5990,7 @@ mod tests {
 
     #[test]
     fn local_denied_exit_with_authoritative_zero_fill_remanages_without_a_fence() {
-        let feed = BoltV3PositionAuthorityFeed::try_new([(
+        let feed = test_position_authority_feed([(
             AccountId::from("ACCOUNT-001"),
             ClientId::from("execution_client"),
             Venue::from("VENUE-A"),
@@ -6006,7 +6043,7 @@ mod tests {
 
     #[test]
     fn recovered_exit_coherent_baseline_uses_only_post_baseline_fills() {
-        let feed = BoltV3PositionAuthorityFeed::try_new([(
+        let feed = test_position_authority_feed([(
             AccountId::from("ACCOUNT-001"),
             ClientId::from("execution_client"),
             Venue::from("VENUE-A"),
@@ -6094,7 +6131,7 @@ mod tests {
 
     #[test]
     fn recovered_exit_terminal_before_baseline_requires_post_terminal_report() {
-        let feed = BoltV3PositionAuthorityFeed::try_new([(
+        let feed = test_position_authority_feed([(
             AccountId::from("ACCOUNT-001"),
             ClientId::from("execution_client"),
             Venue::from("VENUE-A"),
@@ -6174,7 +6211,7 @@ mod tests {
 
     #[test]
     fn fill_void_reopen_advances_fence_and_cannot_reuse_fill_set_proof() {
-        let feed = BoltV3PositionAuthorityFeed::try_new([(
+        let feed = test_position_authority_feed([(
             AccountId::from("ACCOUNT-001"),
             ClientId::from("execution_client"),
             Venue::from("VENUE-A"),
@@ -6534,7 +6571,9 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: Some(quote_transaction_for_modify(&command)),
+                authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_modify(
+                    &command,
+                )),
             },
         );
 
@@ -6577,7 +6616,9 @@ mod tests {
             MakerOrderDispatchInput {
                 command: &command,
                 submit_order_prefix: "maker_submit",
-                quote_transaction: Some(quote_transaction_for_modify(&command)),
+                authority: MakerOrderCommandAuthority::Quote(quote_transaction_for_modify(
+                    &command,
+                )),
             },
         )
         .expect("maker modify should route in shadow without bailing");

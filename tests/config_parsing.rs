@@ -234,9 +234,9 @@ is_quote_quantity = false
     let error = load_bolt_v3_config(&root_path)
         .expect_err("quote-only economics must reject active forced-reduction routing");
     assert!(
-        error
-            .to_string()
-            .contains("cannot route forced reductions while economics_slice=quote_only"),
+        error.to_string().contains(
+            "cannot route forced reductions because Slice 1 has no live forced-reduction route"
+        ),
         "load failure must identify the incompatible economics authority: {error}"
     );
 }

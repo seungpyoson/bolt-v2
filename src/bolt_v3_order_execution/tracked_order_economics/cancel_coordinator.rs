@@ -1,4 +1,6 @@
 use anyhow::Result;
+use std::sync::RwLockWriteGuard;
+
 use nautilus_model::{
     enums::{OrderSide, OrderStatus},
     identifiers::{ClientId, ClientOrderId, InstrumentId, VenueOrderId},
@@ -6,9 +8,16 @@ use nautilus_model::{
 };
 use rust_decimal::Decimal;
 
-use super::{BoltV3OrderEconomicsHandle, RestingRegistrationState, TrackedMakerOrderRecord};
+use super::{
+    BoltV3OrderEconomicsHandle, BoltV3RestingOrderDrainCapability, RestingRegistrationState,
+    RestingRegistryHealth, RestingRegistryLifecycle, RetentionHorizonCapability,
+    TrackedMakerOrderRecord, TrackedMakerOrderRegistry, apply_retention_horizon,
+};
+#[cfg(test)]
+use super::{MakerQuoteOrderAuthority, MakerQuoteRetainedTerminal};
 use crate::bolt_v3_numeric::NANOS_PER_MILLI_U64;
 use crate::bolt_v3_order_execution::{BoltV3NtVenueMutationSink, BoltV3OrderExecutionPolicy};
+use crate::bolt_v3_quote_lifecycle::{Leg, MakerQuoteLifecycleHandle, MarketQuote};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CancelOperationKind {
@@ -570,13 +579,214 @@ enum CancelCallbackOrigin {
     FillVoid,
 }
 
-impl BoltV3OrderEconomicsHandle {
-    pub fn begin_resting_order_drain_at_ns(&self, now_ns: u64) -> Result<usize> {
-        let client_order_ids = self.resting_order_ids()?;
+impl CancelCallbackOrigin {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::OrderEvent => "order-event",
+            Self::FillVoid => "fill-void",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CachedMakerOrderObservation<'a> {
+    Missing,
+    Working(&'a OrderAny),
+    PendingCancel(&'a OrderAny),
+    Terminal {
+        order: &'a OrderAny,
+        disposition: crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition,
+    },
+}
+
+impl<'a> CachedMakerOrderObservation<'a> {
+    fn classify(cached: Option<&'a OrderAny>) -> Result<Self> {
+        match cached {
+            None => Ok(Self::Missing),
+            Some(order)
+                if order.is_closed() || order.leaves_qty().as_decimal() == Decimal::ZERO =>
+            {
+                Ok(Self::Terminal {
+                    order,
+                    disposition: super::maker_terminal_disposition(order)?,
+                })
+            }
+            Some(order) if order.status() == OrderStatus::PendingCancel => {
+                Ok(Self::PendingCancel(order))
+            }
+            Some(order) => Ok(Self::Working(order)),
+        }
+    }
+
+    const fn order(self) -> Option<&'a OrderAny> {
+        match self {
+            Self::Missing => None,
+            Self::Working(order) | Self::PendingCancel(order) | Self::Terminal { order, .. } => {
+                Some(order)
+            }
+        }
+    }
+}
+
+fn quarantine_missing_money_relevant_authority(
+    registry: &mut TrackedMakerOrderRegistry,
+    order: &OrderAny,
+    now_ns: u64,
+) -> Vec<MakerQuoteLifecycleHandle> {
+    registry.health = RestingRegistryHealth::MissingMoneyRelevantAuthority;
+    let mut affected_lifecycles = Vec::new();
+    for record in registry.records.values_mut() {
+        let Some(governed) = record.governed() else {
+            continue;
+        };
+        if !governed.maker_lifecycle.scope.matches(order) {
+            continue;
+        }
+        let quote_deadline_ns = governed
+            .economics
+            .as_ref()
+            .map(|economics| economics.admission.quote().valid_until_ns())
+            .unwrap_or(now_ns);
+        let lifecycle = governed.maker_lifecycle.lifecycle.clone();
+        record.cancellation.request_intent(quote_deadline_ns);
+        if !affected_lifecycles
+            .iter()
+            .any(|retained: &MakerQuoteLifecycleHandle| {
+                retained.shares_lifecycle_scope_with(&lifecycle)
+            })
+        {
+            affected_lifecycles.push(lifecycle);
+        }
+    }
+    for retained in registry.retained_terminal_orders.values() {
+        if retained.scope.matches(order)
+            && !affected_lifecycles
+                .iter()
+                .any(|lifecycle| lifecycle.shares_lifecycle_scope_with(&retained.lifecycle))
+        {
+            affected_lifecycles.push(retained.lifecycle.clone());
+        }
+    }
+    affected_lifecycles
+}
+
+fn quarantine_missing_reopened_authority(
+    registry: &mut TrackedMakerOrderRegistry,
+    order: &OrderAny,
+    now_ns: u64,
+) -> Vec<MakerQuoteLifecycleHandle> {
+    let affected_lifecycles = quarantine_missing_money_relevant_authority(registry, order, now_ns);
+    let client_order_id = order.client_order_id();
+    let strategy_id = order.strategy_id();
+    let requote_budget = registry
+        .requote_budgets_by_strategy
+        .get(&strategy_id)
+        .cloned();
+    registry.records.entry(client_order_id).or_insert_with(|| {
+        TrackedMakerOrderRecord::new_cancellation_only(order.clone(), requote_budget, now_ns)
+    });
+    affected_lifecycles
+}
+
+fn hold_missing_money_relevant_authority(lifecycles: Vec<MakerQuoteLifecycleHandle>) -> Result<()> {
+    for lifecycle in lifecycles {
+        anyhow::ensure!(
+            lifecycle.hold_missing_money_moving_truth(),
+            "missing money-relevant maker authority could not hold its lifecycle scope"
+        );
+    }
+    Ok(())
+}
+
+impl BoltV3RestingOrderDrainCapability {
+    pub fn request_cancellation_at_ns(&self, now_ns: u64) -> Result<usize> {
+        let client_order_ids = self.handle.resting_order_ids()?;
         for client_order_id in &client_order_ids {
-            self.request_cancel_intent(*client_order_id, now_ns)?;
+            self.handle
+                .request_cancel_intent(*client_order_id, now_ns)?;
         }
         Ok(client_order_ids.len())
+    }
+
+    pub fn resting_order_ids(&self) -> Result<Vec<ClientOrderId>> {
+        self.handle.resting_order_ids()
+    }
+
+    pub fn finalize_retention_horizon(&mut self) -> Result<usize> {
+        apply_retention_horizon(
+            &self.handle.tracked_orders,
+            RetentionHorizonCapability::ComponentStop {
+                drain_generation: self.generation,
+            },
+        )
+    }
+
+    pub fn reopen_after_component_start(&mut self) -> Result<()> {
+        let mut registry = self
+            .handle
+            .tracked_orders
+            .write()
+            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
+        anyhow::ensure!(
+            registry.lifecycle
+                == (RestingRegistryLifecycle::Stopped {
+                    generation: self.generation,
+                }),
+            "resting registration can reopen only from the exact stopped drain generation"
+        );
+        registry.lifecycle = RestingRegistryLifecycle::Open;
+        Ok(())
+    }
+}
+
+impl BoltV3OrderEconomicsHandle {
+    pub fn latch_resting_order_drain_at_ns(
+        &self,
+        now_ns: u64,
+    ) -> Result<(BoltV3RestingOrderDrainCapability, usize)> {
+        let generation = {
+            let mut registry = self
+                .tracked_orders
+                .write()
+                .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
+            anyhow::ensure!(
+                registry.lifecycle == RestingRegistryLifecycle::Open,
+                "resting order drain latch can only close an open registry"
+            );
+            let generation = registry
+                .next_drain_generation
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("resting order drain generation overflow"))?;
+            registry.next_drain_generation = generation;
+            registry.lifecycle = RestingRegistryLifecycle::Draining { generation };
+            generation
+        };
+        let capability = BoltV3RestingOrderDrainCapability {
+            handle: self.clone(),
+            generation,
+        };
+        let count = capability.request_cancellation_at_ns(now_ns)?;
+        Ok((capability, count))
+    }
+
+    pub(crate) fn close_maker_quote_scope(
+        &self,
+        market: &MarketQuote,
+        now_ns: u64,
+    ) -> Result<usize> {
+        let mut closed_market = market.clone();
+        let _ = closed_market.close_retention_scope();
+        let lifecycles = [
+            MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes),
+            MakerQuoteLifecycleHandle::new(market.clone(), Leg::No),
+        ];
+        apply_retention_horizon(
+            &self.tracked_orders,
+            RetentionHorizonCapability::ScopeClosure {
+                lifecycles: &lifecycles,
+                now_ns,
+            },
+        )
     }
 
     pub(super) fn request_cancel_intent(
@@ -588,15 +798,17 @@ impl BoltV3OrderEconomicsHandle {
             .tracked_orders
             .write()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        let Some(record) = registry.records.get_mut(&client_order_id) else {
-            return Ok(false);
-        };
-        let quote_deadline_ns = record
-            .economics
-            .as_ref()
+        let quote_deadline_ns = registry
+            .records
+            .get(&client_order_id)
+            .and_then(TrackedMakerOrderRecord::governed)
+            .and_then(|authority| authority.economics.as_ref())
             .map(|economics| economics.admission.quote().valid_until_ns())
             .unwrap_or(now_ns);
-        record.cancellation.request_intent(quote_deadline_ns);
+        let Some(cancellation) = registry.cancellation_mut(&client_order_id) else {
+            return Ok(false);
+        };
+        cancellation.request_intent(quote_deadline_ns);
         Ok(true)
     }
 
@@ -610,30 +822,41 @@ impl BoltV3OrderEconomicsHandle {
             .tracked_orders
             .write()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        let mut selected = Vec::new();
-        for (client_order_id, record) in &mut registry.records {
-            if record.cancellation.query_seed.instrument_id() != instrument_id
-                || order_side
-                    .is_some_and(|side| record.cancellation.query_seed.order_side() != side)
-            {
-                continue;
-            }
-            let quote_deadline_ns = record
-                .economics
-                .as_ref()
+        let selected = registry
+            .records
+            .iter()
+            .filter_map(|(client_order_id, record)| {
+                if record.cancellation.query_seed.instrument_id() != instrument_id
+                    || order_side
+                        .is_some_and(|side| record.cancellation.query_seed.order_side() != side)
+                {
+                    return None;
+                }
+                Some(*client_order_id)
+            })
+            .collect::<Vec<_>>();
+        for client_order_id in &selected {
+            let quote_deadline_ns = registry
+                .records
+                .get(client_order_id)
+                .and_then(TrackedMakerOrderRecord::governed)
+                .and_then(|authority| authority.economics.as_ref())
                 .map(|economics| economics.admission.quote().valid_until_ns())
                 .unwrap_or(now_ns);
-            record.cancellation.request_intent(quote_deadline_ns);
-            selected.push(*client_order_id);
+            registry
+                .cancellation_mut(client_order_id)
+                .expect("selected cancellation must remain tracked")
+                .request_intent(quote_deadline_ns);
         }
         Ok(selected)
     }
 
     pub fn resting_cancel_health(&self) -> Result<Vec<BoltV3RestingOrderCancelHealthSnapshot>> {
-        Ok(self
+        let registry = self
             .tracked_orders
             .read()
-            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?
+            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
+        let mut health = registry
             .records
             .iter()
             .filter_map(|(client_order_id, record)| {
@@ -643,7 +866,9 @@ impl BoltV3OrderEconomicsHandle {
                     .as_ref()
                     .map(|cancel| cancel.health_snapshot(*client_order_id))
             })
-            .collect())
+            .collect::<Vec<_>>();
+        health.sort_unstable_by_key(BoltV3RestingOrderCancelHealthSnapshot::client_order_id);
+        Ok(health)
     }
 
     pub fn reconcile_tracked_order_at(
@@ -681,96 +906,225 @@ impl BoltV3OrderEconomicsHandle {
         now_ns: u64,
         origin: CancelCallbackOrigin,
     ) -> Result<()> {
-        let retry_timeout_ns = self.economics.cancel_retry_timeout_ns()?;
+        let observation = CachedMakerOrderObservation::classify(cached.as_ref())?;
+        let registry = self
+            .tracked_orders
+            .write()
+            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
+        match registry.records.get(&client_order_id) {
+            Some(_) => {
+                self.reconcile_registered_order(registry, client_order_id, observation, now_ns)
+            }
+            None => self.reconcile_untracked_order(
+                registry,
+                client_order_id,
+                observation,
+                now_ns,
+                origin,
+            ),
+        }
+    }
+
+    fn reconcile_untracked_order(
+        &self,
+        registry: RwLockWriteGuard<'_, TrackedMakerOrderRegistry>,
+        client_order_id: ClientOrderId,
+        observation: CachedMakerOrderObservation<'_>,
+        now_ns: u64,
+        origin: CancelCallbackOrigin,
+    ) -> Result<()> {
+        match observation {
+            CachedMakerOrderObservation::Missing => Ok(()),
+            CachedMakerOrderObservation::Terminal { order, disposition } => self
+                .reconcile_untracked_terminal(
+                    registry,
+                    client_order_id,
+                    order,
+                    disposition,
+                    now_ns,
+                ),
+            CachedMakerOrderObservation::Working(order)
+            | CachedMakerOrderObservation::PendingCancel(order) => self
+                .reconcile_untracked_reopening(
+                    registry,
+                    client_order_id,
+                    order,
+                    observation,
+                    now_ns,
+                    origin,
+                ),
+        }
+    }
+
+    fn reconcile_untracked_terminal(
+        &self,
+        mut registry: RwLockWriteGuard<'_, TrackedMakerOrderRegistry>,
+        client_order_id: ClientOrderId,
+        order: &OrderAny,
+        disposition: crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition,
+        now_ns: u64,
+    ) -> Result<()> {
+        match registry.retained_terminal_orders.remove(&client_order_id) {
+            Some(authority) => {
+                drop(registry);
+                super::settle_maker_terminal_authority(
+                    &self.tracked_orders,
+                    client_order_id,
+                    authority,
+                    disposition,
+                )
+            }
+            None => match disposition {
+                crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Filled
+                | crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Voided => {
+                    let affected_lifecycles =
+                        quarantine_missing_money_relevant_authority(&mut registry, order, now_ns);
+                    drop(registry);
+                    hold_missing_money_relevant_authority(affected_lifecycles)?;
+                    anyhow::bail!(
+                        "money-moving maker terminal refinement has no surviving per-order authority: client_order_id={client_order_id} disposition={disposition:?}"
+                    )
+                }
+                crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Denied
+                | crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Rejected
+                | crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Canceled
+                | crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Expired => {
+                    log::warn!(
+                        "non-money maker terminal refinement has no surviving per-order authority: client_order_id={client_order_id} disposition={disposition:?}"
+                    );
+                    Ok(())
+                }
+            },
+        }
+    }
+
+    fn reconcile_untracked_reopening(
+        &self,
+        mut registry: RwLockWriteGuard<'_, TrackedMakerOrderRegistry>,
+        client_order_id: ClientOrderId,
+        order: &OrderAny,
+        observation: CachedMakerOrderObservation<'_>,
+        now_ns: u64,
+        origin: CancelCallbackOrigin,
+    ) -> Result<()> {
+        let mut authority = match registry.retained_terminal_orders.remove(&client_order_id) {
+            Some(authority) => authority,
+            None => {
+                let affected_lifecycles =
+                    quarantine_missing_reopened_authority(&mut registry, order, now_ns);
+                drop(registry);
+                hold_missing_money_relevant_authority(affected_lifecycles)?;
+                anyhow::bail!(
+                    "reopened maker order has no identity-fenced lifecycle association: client_order_id={client_order_id} origin={}",
+                    origin.as_str(),
+                );
+            }
+        };
+        let reopening_event = authority.reopening_event()?;
+        drop(registry);
+        let outcome = authority.lifecycle.refine(reopening_event);
+        let refinement_result = super::consume_lifecycle_refinement_outcome(outcome, "reopening");
+
+        let strategy_id = order.strategy_id();
+        let mut coordinator = TrackedOrderCancellation::new(order.clone());
+        coordinator.request_intent(now_ns);
         let mut registry = self
             .tracked_orders
             .write()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        if !registry.records.contains_key(&client_order_id) {
-            let Some(order) = cached.as_ref() else {
-                return Ok(());
-            };
-            if !matches!(origin, CancelCallbackOrigin::FillVoid)
-                || order.is_closed()
-                || order.leaves_qty().as_decimal() == Decimal::ZERO
-            {
-                return Ok(());
-            }
-            let strategy_id = order.strategy_id();
-            let mut cancellation = TrackedOrderCancellation::new(order.clone());
-            cancellation.request_intent(now_ns);
-            let generation = registry
-                .allocate_generation()
-                .ok_or_else(|| anyhow::anyhow!("resting economics recovery generation overflow"))?;
-            let requote_budget = registry
-                .requote_budgets_by_strategy
-                .get(&strategy_id)
-                .cloned();
-            registry.records.insert(
-                client_order_id,
-                TrackedMakerOrderRecord {
-                    registration_generation: generation,
-                    registration_state: RestingRegistrationState::Committed,
-                    economics: None,
+        let requote_budget = registry
+            .requote_budgets_by_strategy
+            .get(&strategy_id)
+            .cloned();
+        match registry.records.entry(client_order_id) {
+            std::collections::btree_map::Entry::Occupied(_) => {}
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(TrackedMakerOrderRecord::new_governed(
+                    authority.registration_generation,
+                    RestingRegistrationState::Committed,
+                    None,
                     requote_budget,
-                    maker_lifecycle: None,
-                    cancellation,
-                },
-            );
+                    authority,
+                    coordinator,
+                ));
+            }
         }
+        drop(registry);
+        refinement_result?;
+
+        let registry = self
+            .tracked_orders
+            .write()
+            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
+        self.reconcile_registered_order(registry, client_order_id, observation, now_ns)
+    }
+
+    fn reconcile_registered_order(
+        &self,
+        mut registry: RwLockWriteGuard<'_, TrackedMakerOrderRegistry>,
+        client_order_id: ClientOrderId,
+        observation: CachedMakerOrderObservation<'_>,
+        now_ns: u64,
+    ) -> Result<()> {
+        let retry_timeout_ns = self.economics.cancel_retry_timeout_ns()?;
         let Some(record) = registry.records.get_mut(&client_order_id) else {
             return Ok(());
         };
-        if !record.cancellation.is_requested()
-            && cached
-                .as_ref()
-                .is_some_and(|order| order.status() == OrderStatus::PendingCancel)
-        {
-            let quote_deadline_ns = record
-                .economics
-                .as_ref()
-                .map(|economics| economics.admission.quote().valid_until_ns())
-                .unwrap_or(now_ns);
-            record.cancellation.request_intent(quote_deadline_ns);
+        match observation {
+            CachedMakerOrderObservation::PendingCancel(_) => {
+                let quote_deadline_ns = record
+                    .governed()
+                    .and_then(|authority| authority.economics.as_ref())
+                    .map(|economics| economics.admission.quote().valid_until_ns())
+                    .unwrap_or(now_ns);
+                record.cancellation.request_intent(quote_deadline_ns);
+            }
+            CachedMakerOrderObservation::Missing
+            | CachedMakerOrderObservation::Working(_)
+            | CachedMakerOrderObservation::Terminal { .. } => {}
         }
         let TrackedOrderCancellation { query_seed, intent } = &mut record.cancellation;
-        let Some(cancellation) = intent.as_mut() else {
-            if cached.as_ref().is_some_and(|order| {
-                order.is_closed() || order.leaves_qty().as_decimal() == Decimal::ZERO
-            }) {
-                let removed = registry.remove_record(&client_order_id);
-                drop(registry);
-                super::settle_maker_terminal(removed);
-            }
-            return Ok(());
+        let effect = match intent.as_mut() {
+            Some(cancellation) => Some(cancellation.apply_event(
+                query_seed,
+                CancelEvent::PassiveObserved {
+                    cached: observation.order(),
+                    now_ns,
+                    retry_timeout_ns,
+                },
+            )?),
+            None => None,
         };
-        let effect = cancellation.apply_event(
-            query_seed,
-            CancelEvent::PassiveObserved {
-                cached: cached.as_ref(),
-                now_ns,
-                retry_timeout_ns,
-            },
-        )?;
-        match effect {
-            CancelEffect::Remove => {
-                let removed = registry.remove_record(&client_order_id);
-                drop(registry);
-                super::settle_maker_terminal(removed);
-                return Ok(());
+        match (effect, observation) {
+            (
+                None | Some(CancelEffect::Remove),
+                CachedMakerOrderObservation::Terminal { disposition, .. },
+            ) => self.settle_tracked_terminal(registry, client_order_id, disposition),
+            (None | Some(CancelEffect::None), _) => Ok(()),
+            (Some(CancelEffect::Remove), _) => {
+                anyhow::bail!("callback reconciliation removed a non-terminal order")
             }
-            CancelEffect::None => {}
-            CancelEffect::Cancel { .. } | CancelEffect::Query { .. } => {
+            (Some(CancelEffect::Cancel { .. } | CancelEffect::Query { .. }), _) => {
                 anyhow::bail!("callback reconciliation produced an NT operation")
             }
-            CancelEffect::ReservationRequired { .. } => {
+            (Some(CancelEffect::ReservationRequired { .. }), _) => {
                 anyhow::bail!("callback reconciliation requested a REST reservation")
             }
-            CancelEffect::RetireIntent => {
+            (Some(CancelEffect::RetireIntent), _) => {
                 anyhow::bail!("callback reconciliation retired a requote intent")
             }
         }
-        Ok(())
+    }
+
+    fn settle_tracked_terminal(
+        &self,
+        mut registry: RwLockWriteGuard<'_, TrackedMakerOrderRegistry>,
+        client_order_id: ClientOrderId,
+        disposition: crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition,
+    ) -> Result<()> {
+        let removed = registry.remove_terminal_record(&client_order_id);
+        drop(registry);
+        super::settle_maker_terminal(&self.tracked_orders, client_order_id, removed, disposition)
     }
 
     pub(super) fn drive_cancel_intent<S>(
@@ -809,7 +1163,12 @@ impl BoltV3OrderEconomicsHandle {
                     && let Some(participant) = command_participant.as_mut()
                 {
                     let generation = self.next_cancel_operation_generation(client_order_id)?;
-                    if participant.arm_at_generation(generation).is_err() {
+                    let identity = super::MakerQuoteLifecycleIdentity::new(
+                        client_order_id.as_str(),
+                        generation,
+                    );
+                    let lifecycle = participant.maker_lifecycle();
+                    if participant.arm_at_identity(identity.clone()).is_err() {
                         let retired = self.settle_cancel_reservation(
                             client_order_id,
                             CancelEvent::RequoteReservationDenied,
@@ -820,7 +1179,7 @@ impl BoltV3OrderEconomicsHandle {
                         );
                         return self.finish_cancel_drive(client_order_id, Vec::new());
                     }
-                    let armed = self.settle_cancel_reservation(
+                    let armed = self.settle_cancel_reservation_with_lifecycle(
                         client_order_id,
                         CancelEvent::ReservationGranted {
                             operation,
@@ -828,6 +1187,8 @@ impl BoltV3OrderEconomicsHandle {
                             retry_timeout_ns,
                             escalation_attempts,
                         },
+                        identity,
+                        lifecycle,
                     )?;
                     anyhow::ensure!(
                         matches!(armed, CancelEffect::Cancel { generation: armed_generation } if armed_generation == generation),
@@ -835,12 +1196,7 @@ impl BoltV3OrderEconomicsHandle {
                     );
                     (armed, None)
                 } else {
-                    if let Some(mut participant) = command_participant.take() {
-                        participant.settle_at_generation(
-                            0,
-                            super::BoltV3RestingCommitDisposition::PreSinkAborted,
-                        )?;
-                    }
+                    drop(command_participant.take());
                     let now_ms = now_ns / NANOS_PER_MILLI_U64;
                     let reservation =
                         self.cancel_requote_budget(client_order_id)?
@@ -873,12 +1229,7 @@ impl BoltV3OrderEconomicsHandle {
                 }
             }
             other => {
-                if let Some(mut participant) = command_participant.take() {
-                    participant.settle_at_generation(
-                        0,
-                        super::BoltV3RestingCommitDisposition::PreSinkAborted,
-                    )?;
-                }
+                drop(command_participant.take());
                 (other, None)
             }
         };
@@ -959,13 +1310,10 @@ impl BoltV3OrderEconomicsHandle {
         };
         let mut settlement_failures = Vec::new();
         if let Some(mut participant) = command_participant
-            && let Err(error) = participant.settle_at_generation(
-                generation,
-                match sink_invoked {
-                    true => super::BoltV3RestingCommitDisposition::CommandIssuedRetainPrepaid,
-                    false => super::BoltV3RestingCommitDisposition::PreSinkAborted,
-                },
-            )
+            && let Err(error) = match sink_invoked {
+                true => participant.settle_command_issued(generation),
+                false => participant.abort_pre_sink(generation),
+            }
         {
             settlement_failures.push(error.to_string());
         }
@@ -1027,18 +1375,31 @@ impl BoltV3OrderEconomicsHandle {
         retry_timeout_ns: u64,
     ) -> Result<()> {
         let mut failures = Vec::new();
+        let terminal_disposition = match &completion {
+            CancelOperationCompletion::Observed {
+                cached: Some(cached),
+                ..
+            } if cached.is_closed() || cached.leaves_qty().as_decimal() == Decimal::ZERO => {
+                Some(super::maker_terminal_disposition(cached)?)
+            }
+            CancelOperationCompletion::Observed { cached: None, .. }
+            | CancelOperationCompletion::Observed {
+                cached: Some(_), ..
+            }
+            | CancelOperationCompletion::Unobserved(_) => None,
+        };
         let mut registry = self
             .tracked_orders
             .write()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        let Some(record) = registry.records.get_mut(&client_order_id) else {
+        let Some(tracked_cancellation) = registry.cancellation_mut(&client_order_id) else {
             if let CancelOperationCompletion::Unobserved(error) = completion {
                 failures.push(error.to_string());
             }
             return finish_cancel_failures(failures);
         };
 
-        let TrackedOrderCancellation { query_seed, intent } = &mut record.cancellation;
+        let TrackedOrderCancellation { query_seed, intent } = tracked_cancellation;
         let Some(cancellation) = intent.as_mut() else {
             anyhow::bail!(
                 "armed cancellation operation lost its coordinator record: client_order_id={client_order_id}"
@@ -1063,7 +1424,7 @@ impl BoltV3OrderEconomicsHandle {
         let mut removed = None;
         match effect {
             Ok(CancelEffect::Remove) => {
-                removed = registry.remove_record(&client_order_id);
+                removed = registry.remove_terminal_record(&client_order_id);
             }
             Ok(CancelEffect::None) => {}
             Ok(CancelEffect::Cancel { .. } | CancelEffect::Query { .. }) => {
@@ -1079,7 +1440,22 @@ impl BoltV3OrderEconomicsHandle {
             Err(error) => failures.push(error.to_string()),
         }
         drop(registry);
-        super::settle_maker_terminal(removed);
+        match (removed, terminal_disposition) {
+            (Some(record), Some(disposition)) => {
+                if let Err(error) = super::settle_maker_terminal(
+                    &self.tracked_orders,
+                    client_order_id,
+                    Some(record),
+                    disposition,
+                ) {
+                    failures.push(error.to_string());
+                }
+            }
+            (Some(_), None) => {
+                failures.push("terminal cancel settlement lost its disposition".to_string());
+            }
+            (None, Some(_) | None) => {}
+        }
         self.finish_cancel_drive(client_order_id, failures)
     }
 
@@ -1095,10 +1471,10 @@ impl BoltV3OrderEconomicsHandle {
             .tracked_orders
             .write()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        let Some(record) = registry.records.get_mut(&client_order_id) else {
+        let Some(tracked_cancellation) = registry.cancellation_mut(&client_order_id) else {
             return Ok(CancelEffect::None);
         };
-        let TrackedOrderCancellation { query_seed, intent } = &mut record.cancellation;
+        let TrackedOrderCancellation { query_seed, intent } = tracked_cancellation;
         let Some(cancellation) = intent.as_mut() else {
             return Ok(CancelEffect::None);
         };
@@ -1123,9 +1499,19 @@ impl BoltV3OrderEconomicsHandle {
         }?;
         match effect {
             CancelEffect::Remove => {
-                let removed = registry.remove_record(&client_order_id);
+                let disposition = super::maker_terminal_disposition(
+                    cached.expect("terminal cancel drive requires an order"),
+                )?;
+                let removed = registry.remove_terminal_record(&client_order_id);
                 drop(registry);
-                super::settle_maker_terminal(removed);
+                if let Some(removed) = removed {
+                    super::settle_maker_terminal(
+                        &self.tracked_orders,
+                        client_order_id,
+                        Some(removed),
+                        disposition,
+                    )?;
+                }
                 Ok(CancelEffect::Remove)
             }
             other => Ok(other),
@@ -1140,10 +1526,7 @@ impl BoltV3OrderEconomicsHandle {
             .tracked_orders
             .read()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        Ok(registry
-            .records
-            .get(&client_order_id)
-            .and_then(|record| record.requote_budget.clone()))
+        Ok(registry.requote_budget(&client_order_id))
     }
 
     fn next_cancel_operation_generation(&self, client_order_id: ClientOrderId) -> Result<u64> {
@@ -1152,9 +1535,8 @@ impl BoltV3OrderEconomicsHandle {
             .read()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
         let cancellation = registry
-            .records
-            .get(&client_order_id)
-            .and_then(|record| record.cancellation.intent.as_ref())
+            .cancellation(&client_order_id)
+            .and_then(|cancellation| cancellation.intent.as_ref())
             .ok_or_else(|| anyhow::anyhow!("cancel participant lost its coordinator record"))?;
         cancellation
             .generation
@@ -1171,14 +1553,68 @@ impl BoltV3OrderEconomicsHandle {
             .tracked_orders
             .write()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
-        let Some(record) = registry.records.get_mut(&client_order_id) else {
+        Self::apply_cancel_reservation_event(&mut registry, client_order_id, event)
+    }
+
+    fn settle_cancel_reservation_with_lifecycle(
+        &self,
+        client_order_id: ClientOrderId,
+        event: CancelEvent<'_>,
+        identity: super::MakerQuoteLifecycleIdentity,
+        active: crate::bolt_v3_quote_lifecycle::MakerQuoteLifecycleHandle,
+    ) -> Result<CancelEffect> {
+        let mut registry = self
+            .tracked_orders
+            .write()
+            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
+        {
+            let Some(record) = registry.records.get(&client_order_id) else {
+                return Ok(CancelEffect::None);
+            };
+            let governed = record.governed().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "cancel lifecycle participant cannot bind an authority-less reopening"
+                )
+            })?;
+            anyhow::ensure!(
+                identity.client_order_id() == client_order_id.as_str(),
+                "cancel lifecycle identity does not match its tracked order"
+            );
+            let tracked = &governed.maker_lifecycle;
+            anyhow::ensure!(
+                tracked.lifecycle.shares_authority_with(&active),
+                "cancel lifecycle participant does not own the tracked lifecycle authority"
+            );
+        }
+        let effect = Self::apply_cancel_reservation_event(&mut registry, client_order_id, event)?;
+        anyhow::ensure!(
+            matches!(effect, CancelEffect::Cancel { generation } if generation == identity.generation()),
+            "cancel lifecycle identity did not match the armed coordinator attempt"
+        );
+        registry
+            .records
+            .get_mut(&client_order_id)
+            .expect("validated governed maker order must remain tracked")
+            .governed_mut()
+            .expect("validated governed maker order must retain exact authority")
+            .maker_lifecycle
+            .rebind_identity(identity)?;
+        Ok(effect)
+    }
+
+    fn apply_cancel_reservation_event(
+        registry: &mut TrackedMakerOrderRegistry,
+        client_order_id: ClientOrderId,
+        event: CancelEvent<'_>,
+    ) -> Result<CancelEffect> {
+        let Some(cancellation) = registry.cancellation_mut(&client_order_id) else {
             return Ok(CancelEffect::None);
         };
-        let TrackedOrderCancellation { query_seed, intent } = &mut record.cancellation;
-        let Some(cancellation) = intent.as_mut() else {
+        let TrackedOrderCancellation { query_seed, intent } = cancellation;
+        let Some(cancel) = intent.as_mut() else {
             return Ok(CancelEffect::None);
         };
-        let effect = cancellation.apply_event(query_seed, event)?;
+        let effect = cancel.apply_event(query_seed, event)?;
         if matches!(effect, CancelEffect::RetireIntent) {
             *intent = None;
         }
@@ -1195,9 +1631,8 @@ impl BoltV3OrderEconomicsHandle {
             .read()
             .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
         if let Some(error) = registry
-            .records
-            .get(&client_order_id)
-            .and_then(|record| record.cancellation.intent.as_ref())
+            .cancellation(&client_order_id)
+            .and_then(|cancellation| cancellation.intent.as_ref())
             .and_then(|cancel| cancel.health_snapshot(client_order_id).runtime_error())
         {
             failures.push(error.to_string());
@@ -1341,13 +1776,23 @@ mod tests {
     use nautilus_core::Params;
     use nautilus_core::{UUID4, UnixNanos};
     use nautilus_model::{
-        identifiers::{AccountId, InstrumentId, StrategyId, TraderId},
+        enums::{LiquiditySide, OrderSide, OrderType},
+        events::{OrderEventAny, OrderFilled},
+        identifiers::{AccountId, InstrumentId, StrategyId, TradeId, TraderId},
         orders::{LimitOrder, stubs::TestOrderEventStubs},
-        types::{Price, Quantity},
+        types::{Currency, Price, Quantity},
     };
 
     use crate::{
-        bolt_v3_order_execution::{BoltV3NtVenueMutationSink, BoltV3SubmitContext},
+        bolt_v3_order_execution::{
+            BoltV3NtVenueMutationSink, BoltV3RestingRegistrationRejectionKind,
+            BoltV3RestingSubmitTransactionOutcome, BoltV3SubmitContext,
+        },
+        bolt_v3_quote_lifecycle::{
+            Leg, LegEvent, LegState, LifecycleAction, MakerOrderLifecycleScopeIdentity,
+            MakerQuoteBudgetProposal, MakerQuoteLifecycleHandle, MakerQuoteLifecycleIdentity,
+            MarketAction, MarketQuote,
+        },
         bolt_v3_requote_budget::{RequoteBudget, RequoteBudgetPair},
     };
 
@@ -1415,25 +1860,32 @@ mod tests {
         let handle =
             crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
         let client_order_id = order.client_order_id();
-        handle
-            .tracked_orders
-            .write()
-            .expect("registry should lock")
-            .records
-            .insert(
-                client_order_id,
-                TrackedMakerOrderRecord {
-                    registration_generation: 1,
-                    registration_state: RestingRegistrationState::Committed,
-                    economics: None,
-                    requote_budget: Some(RequoteBudgetPair::new(
-                        RequoteBudget::new(1, 60_000, 0),
-                        RequoteBudget::new(rest_cap, 60_000, 0),
-                    )),
-                    maker_lifecycle: None,
-                    cancellation: TrackedOrderCancellation::new(order),
-                },
-            );
+        let strategy_id = order.strategy_id();
+        let maker_lifecycle = MakerQuoteOrderAuthority::new(
+            &order,
+            1,
+            MakerQuoteLifecycleHandle::new(MarketQuote::new_for_test(false), Leg::Yes),
+        );
+        let budget = RequoteBudgetPair::new(
+            RequoteBudget::new(1, 60_000, 0),
+            RequoteBudget::new(rest_cap, 60_000, 0),
+        );
+        let mut registry = handle.tracked_orders.write().expect("registry should lock");
+        registry
+            .requote_budgets_by_strategy
+            .insert(strategy_id, budget.clone());
+        registry.records.insert(
+            client_order_id,
+            TrackedMakerOrderRecord::new_governed(
+                1,
+                RestingRegistrationState::Committed,
+                None,
+                Some(budget),
+                maker_lifecycle,
+                TrackedOrderCancellation::new(order),
+            ),
+        );
+        drop(registry);
         handle
     }
 
@@ -1479,6 +1931,1355 @@ mod tests {
         );
         order.apply(event).unwrap();
         order
+    }
+
+    fn fill_canceled_order(order: &mut OrderAny, venue_order_id: &str) {
+        fill_canceled_order_with_quantity(order, venue_order_id, Quantity::new(1.0, 2));
+    }
+
+    fn fill_canceled_order_with_quantity(
+        order: &mut OrderAny,
+        venue_order_id: &str,
+        last_qty: Quantity,
+    ) {
+        let fill = OrderFilled::new(
+            order.trader_id(),
+            order.strategy_id(),
+            order.instrument_id(),
+            order.client_order_id(),
+            VenueOrderId::from(venue_order_id),
+            AccountId::from("ACCOUNT-001"),
+            TradeId::from("TRADE-LATE-FILL"),
+            OrderSide::Buy,
+            OrderType::Limit,
+            last_qty,
+            Price::new(0.50, 2),
+            Currency::USD(),
+            LiquiditySide::Maker,
+            UUID4::new(),
+            UnixNanos::from(2_u64),
+            UnixNanos::from(2_u64),
+            false,
+            None,
+            None,
+            None,
+        );
+        order
+            .apply(OrderEventAny::Filled(fill))
+            .expect("pinned NT must permit Canceled -> Filled");
+    }
+
+    fn retained_canceled_requote(
+        client_order_id: &str,
+        venue_order_id: &str,
+        lifecycle_generation: u64,
+    ) -> (
+        BoltV3OrderEconomicsHandle,
+        MarketQuote,
+        RequoteBudgetPair,
+        OrderAny,
+    ) {
+        let mut order = accepted_order(client_order_id, venue_order_id);
+        let client_order_id = order.client_order_id();
+        let mut market = MarketQuote::new_for_test(false);
+        market.on_leg_event(
+            Leg::Yes,
+            LegEvent::QuoteTrigger {
+                requote_needed: false,
+            },
+        );
+        market.on_leg_event(Leg::Yes, LegEvent::Accepted);
+        let budget = RequoteBudgetPair::new(
+            RequoteBudget::new(8, 60_000, 0),
+            RequoteBudget::new(8, 60_000, 0),
+        );
+        let cancel = market
+            .propose_leg_event(
+                Leg::Yes,
+                LegEvent::QuoteTrigger {
+                    requote_needed: true,
+                },
+            )
+            .expect("resting requote should propose a cancel");
+        let budget_proposal = MakerQuoteBudgetProposal::Reserve(
+            budget
+                .propose_cancel_resubmit(1)
+                .expect("requote budget should be available"),
+        );
+        market
+            .arm_leg_transaction(
+                cancel,
+                budget.clone(),
+                budget_proposal,
+                MakerQuoteLifecycleIdentity::new(client_order_id.as_str(), lifecycle_generation),
+            )
+            .expect("requote cancel should arm");
+        market
+            .mark_leg_transaction_sink_invoked(cancel, lifecycle_generation, 1)
+            .expect("requote cancel should reach the sink");
+        assert!(market.commit_leg_transaction(cancel, lifecycle_generation));
+
+        let handle = coordinator_handle_with_budget(order.clone(), 8);
+        handle
+            .tracked_orders
+            .write()
+            .expect("registry should lock")
+            .records
+            .get_mut(&client_order_id)
+            .expect("tracked record should exist")
+            .governed_mut()
+            .expect("tracked record should retain exact authority")
+            .maker_lifecycle = MakerQuoteOrderAuthority::new_at_lifecycle_generation(
+            &order,
+            1,
+            lifecycle_generation,
+            MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes),
+        );
+
+        let canceled = TestOrderEventStubs::canceled(
+            &order,
+            AccountId::from("ACCOUNT-001"),
+            Some(VenueOrderId::from(venue_order_id)),
+        );
+        order.apply(canceled).expect("cancel should apply");
+        handle
+            .reconcile_tracked_order_at(client_order_id, Some(order.clone()), 1)
+            .expect("cancel callback should retain refinable per-order truth");
+        (handle, market, budget, order)
+    }
+
+    fn arm_replacement(
+        market: &MarketQuote,
+        budget: RequoteBudgetPair,
+        client_order_id: ClientOrderId,
+        lifecycle_generation: u64,
+    ) -> crate::bolt_v3_quote_lifecycle::QuoteLegTransitionProposal {
+        let replacement = market
+            .propose_leg_event(
+                Leg::Yes,
+                LegEvent::QuoteTrigger {
+                    requote_needed: true,
+                },
+            )
+            .expect("retained replacement capacity should propose a submit");
+        let prepaid_generation = market
+            .prepaid_generation(Leg::Yes)
+            .expect("replacement capacity should remain prepaid");
+        market
+            .arm_leg_transaction(
+                replacement,
+                budget,
+                MakerQuoteBudgetProposal::Prepaid {
+                    generation: prepaid_generation,
+                    now_ms: 2,
+                },
+                MakerQuoteLifecycleIdentity::new(client_order_id.as_str(), lifecycle_generation),
+            )
+            .expect("replacement should arm");
+        replacement
+    }
+
+    fn track_order_with_lifecycle(
+        handle: &BoltV3OrderEconomicsHandle,
+        order: OrderAny,
+        registration_generation: u64,
+        lifecycle_generation: u64,
+        market: &MarketQuote,
+    ) {
+        let client_order_id = order.client_order_id();
+        handle
+            .tracked_orders
+            .write()
+            .expect("registry should lock")
+            .records
+            .insert(
+                client_order_id,
+                TrackedMakerOrderRecord::new_governed(
+                    registration_generation,
+                    RestingRegistrationState::Committed,
+                    None,
+                    None,
+                    MakerQuoteOrderAuthority::new_at_lifecycle_generation(
+                        &order,
+                        registration_generation,
+                        lifecycle_generation,
+                        MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes),
+                    ),
+                    TrackedOrderCancellation::new(order),
+                ),
+            );
+    }
+
+    #[test]
+    fn newer_terminal_order_cannot_evict_an_older_reopenable_order() {
+        let a_venue_order_id = "VENUE-REOPEN-A";
+        let (handle, mut market, budget, mut order_a) =
+            retained_canceled_requote("retained-reopen-a", a_venue_order_id, 7);
+        let order_a_id = order_a.client_order_id();
+        let mut order_b = accepted_order("newer-terminal-b", "VENUE-TERMINAL-B");
+        let order_b_id = order_b.client_order_id();
+        let replacement = arm_replacement(&market, budget, order_b_id, 8);
+        market
+            .mark_leg_transaction_sink_invoked(replacement, 8, 2)
+            .expect("replacement should reach the sink");
+        assert!(market.commit_leg_transaction(replacement, 8));
+        assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Accepted), None);
+        track_order_with_lifecycle(&handle, order_b.clone(), 2, 8, &market);
+
+        let canceled_b = TestOrderEventStubs::canceled(
+            &order_b,
+            AccountId::from("ACCOUNT-001"),
+            Some(VenueOrderId::from("VENUE-TERMINAL-B")),
+        );
+        order_b
+            .apply(canceled_b)
+            .expect("newer cancel should apply");
+        handle
+            .reconcile_tracked_order_at(order_b_id, Some(order_b), 2)
+            .expect("newer terminal callback should reconcile");
+
+        fill_canceled_order_with_quantity(&mut order_a, a_venue_order_id, Quantity::new(0.5, 2));
+        handle
+            .reconcile_tracked_order_at(order_a_id, Some(order_a), 3)
+            .expect("ordinary order-event reopening must restore cancel tracking");
+
+        let registry = handle.tracked_orders.read().expect("registry should lock");
+        let reopened = registry
+            .records
+            .get(&order_a_id)
+            .expect("older reopened order must return to active tracking");
+        assert_eq!(
+            reopened
+                .governed()
+                .expect("reopened order should retain exact authority")
+                .maker_lifecycle
+                .client_order_id,
+            order_a_id
+        );
+        assert!(reopened.cancellation.is_requested());
+        drop(registry);
+        assert_eq!(market.leg_state(Leg::Yes), LegState::CancelPending);
+    }
+
+    #[test]
+    fn replacement_sink_rejection_cannot_destroy_prior_order_reopening_truth() {
+        let venue_order_id = "VENUE-REOPEN-AFTER-REJECT";
+        let (handle, market, budget, mut order_a) =
+            retained_canceled_requote("retained-reopen-after-reject", venue_order_id, 7);
+        let order_a_id = order_a.client_order_id();
+        let replacement_id = ClientOrderId::from("sink-rejected-replacement-b");
+        let replacement = arm_replacement(&market, budget, replacement_id, 8);
+        market
+            .mark_leg_transaction_sink_invoked(replacement, 8, 2)
+            .expect("replacement should reach the sink");
+        assert!(market.reject_leg_transaction_at_sink(replacement, 8));
+
+        fill_canceled_order_with_quantity(&mut order_a, venue_order_id, Quantity::new(0.5, 2));
+        handle
+            .reconcile_tracked_order_at(order_a_id, Some(order_a), 3)
+            .expect("prior order truth must survive replacement sink rejection");
+
+        let registry = handle.tracked_orders.read().expect("registry should lock");
+        let reopened = registry
+            .records
+            .get(&order_a_id)
+            .expect("reopened order must return to active tracking");
+        assert_eq!(
+            reopened
+                .governed()
+                .expect("reopened order should retain exact authority")
+                .maker_lifecycle
+                .client_order_id,
+            order_a_id
+        );
+        assert!(reopened.cancellation.is_requested());
+        drop(registry);
+        assert_eq!(market.leg_state(Leg::Yes), LegState::CancelPending);
+    }
+
+    #[test]
+    fn late_fill_refines_its_own_retained_order_while_replacement_is_armed() {
+        let venue_order_id = "VENUE-LATE-FILL-OWN-RECORD";
+        let (handle, market, budget, mut order_a) =
+            retained_canceled_requote("late-fill-own-record-a", venue_order_id, 7);
+        let order_a_id = order_a.client_order_id();
+        let replacement = arm_replacement(
+            &market,
+            budget,
+            ClientOrderId::from("armed-replacement-b"),
+            8,
+        );
+        let before = (
+            market.leg_state(Leg::Yes),
+            market.prepaid_generation(Leg::Yes),
+        );
+
+        fill_canceled_order(&mut order_a, venue_order_id);
+        handle
+            .reconcile_tracked_order_at(order_a_id, Some(order_a), 3)
+            .expect("late fill must settle against order A's retained authority");
+
+        assert_eq!(
+            (
+                market.leg_state(Leg::Yes),
+                market.prepaid_generation(Leg::Yes),
+            ),
+            before,
+            "order A's refinement cannot mutate armed replacement B"
+        );
+        assert!(
+            handle
+                .tracked_orders
+                .read()
+                .expect("registry should lock")
+                .retained_terminal_orders
+                .contains_key(&order_a_id),
+            "Filled remains retained for the pinned Filled -> Voided refinement"
+        );
+        let _ = replacement;
+    }
+
+    #[test]
+    fn missing_money_moving_terminal_truth_poison_holds_the_affected_leg() {
+        let venue_order_id = "VENUE-MISSING-FILL-A";
+        let (handle, mut market, budget, mut order_a) =
+            retained_canceled_requote("missing-fill-a", venue_order_id, 7);
+        let order_a_id = order_a.client_order_id();
+        let order_b = accepted_order("affected-live-b", "VENUE-AFFECTED-LIVE-B");
+        let order_b_id = order_b.client_order_id();
+        let replacement = arm_replacement(&market, budget, order_b_id, 8);
+        market
+            .mark_leg_transaction_sink_invoked(replacement, 8, 2)
+            .expect("replacement should reach the sink");
+        assert!(market.commit_leg_transaction(replacement, 8));
+        assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Accepted), None);
+        track_order_with_lifecycle(&handle, order_b, 2, 8, &market);
+        handle
+            .tracked_orders
+            .write()
+            .expect("registry should lock")
+            .retained_terminal_orders
+            .remove(&order_a_id);
+
+        fill_canceled_order(&mut order_a, venue_order_id);
+        handle
+            .reconcile_tracked_order_at(order_a_id, Some(order_a), 3)
+            .expect_err("a fill with no surviving per-order truth must fail closed");
+
+        let registry = handle.tracked_orders.read().expect("registry should lock");
+        let affected = registry
+            .records
+            .get(&order_b_id)
+            .expect("the exact-scope live order must remain tracked");
+        assert!(
+            affected.cancellation.is_requested(),
+            "missing money-moving truth must request cancellation for the exact affected scope"
+        );
+        drop(registry);
+
+        assert_eq!(
+            market.leg_state(Leg::Yes),
+            LegState::PoisonedReconciliationHold
+        );
+        assert!(
+            market
+                .propose_leg_event(
+                    Leg::Yes,
+                    LegEvent::QuoteTrigger {
+                        requote_needed: true,
+                    },
+                )
+                .is_none(),
+            "typed unhealthy hold must reject the next quote trigger"
+        );
+        assert_ne!(
+            handle
+                .tracked_orders
+                .read()
+                .expect("registry should lock")
+                .health,
+            super::super::RestingRegistryHealth::Healthy
+        );
+        let rejected_order =
+            super::super::tests::post_only_limit_order("missing-truth-subsequent-submit");
+        let rejected = handle.route_resting_submit(
+            rejected_order.clone(),
+            super::super::tests::sealed_admission(&handle, &rejected_order),
+            super::super::tests::test_participant(),
+            |_| panic!("poisoned registry must reject before invoking the real route closure"),
+        );
+        assert!(matches!(
+            rejected,
+            BoltV3RestingSubmitTransactionOutcome::RegistrationRejected(rejection)
+                if rejection.kind() == BoltV3RestingRegistrationRejectionKind::RegistryUnavailable
+        ));
+    }
+
+    fn assert_post_horizon_reopening_without_authority_fails_closed(origin: CancelCallbackOrigin) {
+        let venue_order_id = "VENUE-MISSING-REOPEN-A";
+        let (handle, mut market, budget, mut order_a) =
+            retained_canceled_requote("missing-reopen-a", venue_order_id, 7);
+        let order_a_id = order_a.client_order_id();
+        let order_b = accepted_order("missing-reopen-live-b", "VENUE-MISSING-REOPEN-B");
+        let order_b_id = order_b.client_order_id();
+        let replacement = arm_replacement(&market, budget, order_b_id, 8);
+        market
+            .mark_leg_transaction_sink_invoked(replacement, 8, 2)
+            .expect("replacement should reach the sink");
+        assert!(market.commit_leg_transaction(replacement, 8));
+        assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Accepted), None);
+        track_order_with_lifecycle(&handle, order_b, 2, 8, &market);
+        handle
+            .tracked_orders
+            .write()
+            .expect("registry should lock")
+            .retained_terminal_orders
+            .remove(&order_a_id);
+
+        fill_canceled_order_with_quantity(&mut order_a, venue_order_id, Quantity::new(0.5, 2));
+        assert_eq!(order_a.status(), OrderStatus::PartiallyFilled);
+        let error = handle
+            .reconcile_tracked_order_inner(order_a_id, Some(order_a.clone()), 3, origin)
+            .expect_err("a live reopening without retained authority must fail closed");
+        assert!(error.to_string().contains("reopened maker order"));
+        assert!(error.to_string().contains(origin.as_str()));
+
+        assert!(
+            handle
+                .resting_order_ids()
+                .expect("cancellation tracking should remain readable")
+                .contains(&order_a_id),
+            "the authority-less reopened order itself must remain tracked for cancellation"
+        );
+        assert!(
+            handle
+                .resting_cancel_health()
+                .expect("cancellation health should remain readable")
+                .iter()
+                .any(|snapshot| snapshot.client_order_id() == order_a_id),
+            "the authority-less reopened order must own a real cancellation intent"
+        );
+        let mut sink = CoordinatorSink {
+            now_ns: 4,
+            cached: Some(order_a.clone()),
+            cancel_calls: 0,
+            query_calls: 0,
+        };
+        let _ = handle.drive_cancel_intent(
+            BoltV3OrderExecutionPolicy::live(),
+            &mut sink,
+            CancelDriveInput {
+                execution_client_id: "execution_client",
+                client_order_id: order_a_id,
+                cached: Some(&order_a),
+                now_ns: 4,
+                command_participant: None,
+            },
+        );
+        assert_eq!(
+            sink.cancel_calls, 1,
+            "the authority-less reopening must use the shared per-order cancellation route"
+        );
+
+        let registry = handle.tracked_orders.read().expect("registry should lock");
+        assert_eq!(
+            registry.health,
+            super::super::RestingRegistryHealth::MissingMoneyRelevantAuthority
+        );
+        let affected = registry
+            .records
+            .get(&order_b_id)
+            .expect("the same-scope live order must remain tracked for cancellation");
+        assert!(
+            affected.cancellation.is_requested(),
+            "the absent-authority reopening must request cancellation for its live scope"
+        );
+        drop(registry);
+
+        assert_eq!(
+            market.leg_state(Leg::Yes),
+            LegState::PoisonedReconciliationHold
+        );
+        assert!(
+            market
+                .propose_leg_event(
+                    Leg::Yes,
+                    LegEvent::QuoteTrigger {
+                        requote_needed: true,
+                    },
+                )
+                .is_none(),
+            "the poisoned lifecycle must reject the next quote trigger"
+        );
+    }
+
+    #[test]
+    fn post_horizon_order_and_fill_void_reopening_without_authority_fail_closed() {
+        assert_post_horizon_reopening_without_authority_fails_closed(
+            CancelCallbackOrigin::OrderEvent,
+        );
+        assert_post_horizon_reopening_without_authority_fails_closed(
+            CancelCallbackOrigin::FillVoid,
+        );
+    }
+
+    #[test]
+    fn stop_horizon_releases_retained_terminal_authority_and_prepaid_capacity() {
+        let (handle, market, budget, _order) =
+            retained_canceled_requote("stop-retained-a", "VENUE-STOP-RETAINED-A", 7);
+        assert!(market.prepaid_generation(Leg::Yes).is_some());
+        let (mut drain, active) = handle.latch_resting_order_drain_at_ns(10).unwrap();
+        assert_eq!(active, 0);
+        drain.finalize_retention_horizon().unwrap();
+
+        assert!(
+            handle
+                .tracked_orders
+                .read()
+                .expect("registry should lock")
+                .retained_terminal_orders
+                .is_empty(),
+            "stop is the final governed retention horizon"
+        );
+        assert_eq!(market.prepaid_generation(Leg::Yes), None);
+        assert_eq!(budget.outstanding_submit_cost(), 0);
+        assert_eq!(budget.outstanding_rest_cost(), 0);
+    }
+
+    #[test]
+    fn active_authority_survives_a_stop_horizon_until_the_drain_is_empty() {
+        let (handle, _market, _budget, _order) =
+            retained_canceled_requote("stop-retained-before-active", "VENUE-STOP-A", 7);
+        let retained_id = ClientOrderId::from("stop-retained-before-active");
+        let active = accepted_order("stop-active-b", "VENUE-STOP-B");
+        let active_id = active.client_order_id();
+        track_order_with_lifecycle(&handle, active, 2, 8, &MarketQuote::new_for_test(false));
+
+        let (mut drain, active) = handle
+            .latch_resting_order_drain_at_ns(10)
+            .expect("stop must latch before the horizon is available");
+        assert_eq!(active, 1);
+        let error = drain
+            .finalize_retention_horizon()
+            .expect_err("the retention horizon is unavailable while active authority exists");
+        assert!(error.to_string().contains("active"));
+        let registry = handle.tracked_orders.read().expect("registry should lock");
+        assert!(registry.records.contains_key(&active_id));
+        assert!(registry.retained_terminal_orders.contains_key(&retained_id));
+    }
+
+    #[test]
+    fn cadence_scope_horizon_finalizes_only_the_retired_lifecycle() {
+        let (retired, retired_market, retired_budget, _order) =
+            retained_canceled_requote("cadence-retired", "VENUE-CADENCE-RETIRED", 7);
+        let filled_order = accepted_order("cadence-retired-filled", "VENUE-CADENCE-FILLED");
+        let filled_id = filled_order.client_order_id();
+        let mut filled_authority = MakerQuoteOrderAuthority::new_at_lifecycle_generation(
+            &filled_order,
+            2,
+            8,
+            MakerQuoteLifecycleHandle::new(retired_market.clone(), Leg::No),
+        );
+        filled_authority.retained = Some(MakerQuoteRetainedTerminal::Terminal(
+            crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Filled,
+        ));
+        let live_order = accepted_order("cadence-live", "VENUE-CADENCE-LIVE");
+        let live_id = live_order.client_order_id();
+        let live_market = MarketQuote::new_for_test(false);
+        let mut live_authority = MakerQuoteOrderAuthority::new_at_lifecycle_generation(
+            &live_order,
+            2,
+            8,
+            MakerQuoteLifecycleHandle::new(live_market, Leg::Yes),
+        );
+        live_authority.retained = Some(MakerQuoteRetainedTerminal::Terminal(
+            crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Canceled,
+        ));
+        {
+            let mut registry = retired
+                .tracked_orders
+                .write()
+                .expect("registry should lock");
+            registry
+                .retained_terminal_orders
+                .insert(filled_id, filled_authority);
+            registry
+                .retained_terminal_orders
+                .insert(live_id, live_authority);
+        }
+
+        retired
+            .close_maker_quote_scope(&retired_market, 10)
+            .expect("cadence rollover should close the retired lifecycle scope");
+
+        let registry = retired.tracked_orders.read().expect("registry should lock");
+        assert_eq!(registry.retained_terminal_orders.len(), 1);
+        assert!(registry.retained_terminal_orders.contains_key(&live_id));
+        assert!(!registry.retained_terminal_orders.contains_key(&filled_id));
+        drop(registry);
+        assert_eq!(retired_market.prepaid_generation(Leg::Yes), None);
+        assert_eq!(retired_budget.outstanding_submit_cost(), 0);
+        assert_eq!(retired_budget.outstanding_rest_cost(), 0);
+    }
+
+    #[test]
+    fn cadence_scope_closure_requests_cancellation_for_a_working_order() {
+        let handle =
+            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
+        let market = MarketQuote::new_for_test(false);
+        let order = accepted_order("cadence-working", "VENUE-CADENCE-WORKING");
+        let client_order_id = order.client_order_id();
+        track_order_with_lifecycle(&handle, order, 1, 1, &market);
+
+        handle
+            .close_maker_quote_scope(&market, 10)
+            .expect("scope closure should latch and request cancellation");
+
+        let registry = handle.tracked_orders.read().expect("registry should lock");
+        let working = registry
+            .records
+            .get(&client_order_id)
+            .expect("the working order remains tracked until terminal");
+        assert!(
+            working.cancellation.is_requested(),
+            "scope closure must request cancellation before retaining finality"
+        );
+        drop(registry);
+        assert!(
+            MakerQuoteLifecycleHandle::new(market, Leg::Yes).retention_scope_is_closed(),
+            "replacement registration must remain gated while the old scope drains"
+        );
+    }
+
+    #[test]
+    fn cadence_scope_horizon_rejects_later_registration_for_the_retired_lifecycle() {
+        let (handle, retired_market, budget, _order) =
+            retained_canceled_requote("cadence-closed", "VENUE-CADENCE-CLOSED", 7);
+        let participant =
+            super::super::tests::maker_submit_participant(&retired_market, &budget, Leg::No);
+        handle
+            .close_maker_quote_scope(&retired_market, 10)
+            .expect("cadence rollover should close the retired lifecycle scope");
+
+        let order = super::super::tests::post_only_limit_order("cadence-after-close");
+        let rejected = handle.route_resting_submit(
+            order.clone(),
+            super::super::tests::sealed_admission(&handle, &order),
+            participant,
+            |_| panic!("a closed lifecycle must reject before invoking the route closure"),
+        );
+
+        assert!(matches!(
+            rejected,
+            BoltV3RestingSubmitTransactionOutcome::RegistrationRejected(rejection)
+                if rejection.kind()
+                    == BoltV3RestingRegistrationRejectionKind::RetentionScopeClosed
+        ));
+    }
+
+    #[test]
+    fn late_fill_refines_its_order_while_later_generation_occupancy_is_unchanged() {
+        const FILTER: &str = "bolt_v3_order_execution::tracked_order_economics::cancel_coordinator::tests::late_fill_refines_its_order_while_later_generation_occupancy_is_unchanged";
+        const CASE: &str = "late-maker-refinement-generation-fence";
+        if !crate::bolt_v3_test_log_capture::enter_isolated_log_capture(FILTER, CASE) {
+            return;
+        }
+
+        let client_order_id = "late-fill-after-remove";
+        let venue_order_id = "VENUE-LATE-FILL";
+        let mut order = accepted_order(client_order_id, venue_order_id);
+        let client_order_id = order.client_order_id();
+        let mut market = MarketQuote::new_for_test(false);
+        market.on_leg_event(
+            Leg::Yes,
+            LegEvent::QuoteTrigger {
+                requote_needed: false,
+            },
+        );
+        market.on_leg_event(Leg::Yes, LegEvent::Accepted);
+        let lifecycle_budget = RequoteBudgetPair::new(
+            RequoteBudget::new(8, 60_000, 0),
+            RequoteBudget::new(8, 60_000, 0),
+        );
+        let proposal = market
+            .propose_leg_event(
+                Leg::Yes,
+                LegEvent::QuoteTrigger {
+                    requote_needed: true,
+                },
+            )
+            .expect("resting requote should propose a cancel");
+        let budget_proposal = MakerQuoteBudgetProposal::Reserve(
+            lifecycle_budget
+                .propose_cancel_resubmit(1)
+                .expect("requote budget should be available"),
+        );
+        market
+            .arm_leg_transaction(
+                proposal,
+                lifecycle_budget.clone(),
+                budget_proposal,
+                MakerQuoteLifecycleIdentity::new(client_order_id.as_str(), 1),
+            )
+            .expect("requote cancel should arm");
+        market
+            .mark_leg_transaction_sink_invoked(proposal, 1, 1)
+            .expect("requote cancel should reach the sink");
+        assert!(market.commit_leg_transaction(proposal, 1));
+        assert_eq!(market.leg_state(Leg::Yes), LegState::RequotePending);
+
+        let handle = coordinator_handle_with_budget(order.clone(), 8);
+        handle
+            .tracked_orders
+            .write()
+            .expect("registry should lock")
+            .records
+            .get_mut(&client_order_id)
+            .expect("tracked record should exist")
+            .governed_mut()
+            .expect("tracked record should retain exact authority")
+            .maker_lifecycle = MakerQuoteOrderAuthority::new(
+            &order,
+            1,
+            MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes),
+        );
+
+        let canceled = TestOrderEventStubs::canceled(
+            &order,
+            AccountId::from("ACCOUNT-001"),
+            Some(VenueOrderId::from(venue_order_id)),
+        );
+        order.apply(canceled).expect("cancel should apply");
+        handle
+            .reconcile_tracked_order_at(client_order_id, Some(order.clone()), 1)
+            .expect("cancel callback should reconcile");
+        assert!(handle.resting_order_ids().unwrap().is_empty());
+        assert_eq!(
+            market.leg_state(Leg::Yes),
+            LegState::ReplacementPendingBackoff
+        );
+
+        let replacement = market
+            .propose_leg_event(
+                Leg::Yes,
+                LegEvent::QuoteTrigger {
+                    requote_needed: true,
+                },
+            )
+            .expect("the retained replacement capacity should propose the next submit");
+        let prepaid_generation = market
+            .prepaid_generation(Leg::Yes)
+            .expect("the replacement should retain prepaid capacity");
+        market
+            .arm_leg_transaction(
+                replacement,
+                lifecycle_budget,
+                MakerQuoteBudgetProposal::Prepaid {
+                    generation: prepaid_generation,
+                    now_ms: 2,
+                },
+                MakerQuoteLifecycleIdentity::new("later-generation-order", 2),
+            )
+            .expect("the later replacement generation should arm");
+        let before = (
+            market.leg_state(Leg::Yes),
+            market.prepaid_generation(Leg::Yes),
+        );
+
+        fill_canceled_order(&mut order, venue_order_id);
+        let (result, records) = crate::bolt_v3_test_log_capture::with_captured_logs(|| {
+            handle.reconcile_tracked_order_at(client_order_id, Some(order), 2)
+        });
+        result.expect("per-order refinement should not mutate the later leg occupancy");
+
+        assert_eq!(
+            (
+                market.leg_state(Leg::Yes),
+                market.prepaid_generation(Leg::Yes),
+            ),
+            before,
+            "removed order A cannot mutate armed generation B"
+        );
+        assert!(records.iter().any(|(level, message)| {
+            *level == log::Level::Info
+                && message.contains("per-order refinement left current leg occupancy unchanged")
+                && message.contains("client_order_id=late-fill-after-remove")
+                && message.contains("generation=1")
+        }));
+        assert!(
+            handle
+                .tracked_orders
+                .read()
+                .expect("registry should lock")
+                .retained_terminal_orders
+                .contains_key(&client_order_id)
+        );
+    }
+
+    #[test]
+    fn late_partial_fill_reopens_cancel_tracking_with_its_lifecycle() {
+        let client_order_id = "late-partial-after-remove";
+        let venue_order_id = "VENUE-LATE-PARTIAL";
+        let mut order = accepted_order(client_order_id, venue_order_id);
+        let client_order_id = order.client_order_id();
+        let mut market = MarketQuote::new_for_test(false);
+        market.on_leg_event(
+            Leg::Yes,
+            LegEvent::QuoteTrigger {
+                requote_needed: false,
+            },
+        );
+        market.on_leg_event(Leg::Yes, LegEvent::Accepted);
+        let lifecycle_budget = RequoteBudgetPair::new(
+            RequoteBudget::new(8, 60_000, 0),
+            RequoteBudget::new(8, 60_000, 0),
+        );
+        let proposal = market
+            .propose_leg_event(
+                Leg::Yes,
+                LegEvent::QuoteTrigger {
+                    requote_needed: true,
+                },
+            )
+            .expect("resting requote should propose a cancel");
+        let budget_proposal = MakerQuoteBudgetProposal::Reserve(
+            lifecycle_budget
+                .propose_cancel_resubmit(1)
+                .expect("requote budget should be available"),
+        );
+        market
+            .arm_leg_transaction(
+                proposal,
+                lifecycle_budget,
+                budget_proposal,
+                MakerQuoteLifecycleIdentity::new(client_order_id.as_str(), 7),
+            )
+            .expect("requote cancel should arm");
+        market
+            .mark_leg_transaction_sink_invoked(proposal, 7, 1)
+            .expect("requote cancel should reach the sink");
+        assert!(market.commit_leg_transaction(proposal, 7));
+
+        let handle = coordinator_handle_with_budget(order.clone(), 8);
+        handle
+            .tracked_orders
+            .write()
+            .expect("registry should lock")
+            .records
+            .get_mut(&client_order_id)
+            .expect("tracked record should exist")
+            .governed_mut()
+            .expect("tracked record should retain exact authority")
+            .maker_lifecycle = MakerQuoteOrderAuthority::new_at_lifecycle_generation(
+            &order,
+            1,
+            7,
+            MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes),
+        );
+
+        let canceled = TestOrderEventStubs::canceled(
+            &order,
+            AccountId::from("ACCOUNT-001"),
+            Some(VenueOrderId::from(venue_order_id)),
+        );
+        order.apply(canceled).expect("cancel should apply");
+        handle
+            .reconcile_tracked_order_at(client_order_id, Some(order.clone()), 1)
+            .expect("cancel callback should retire the resting record");
+        assert!(
+            handle
+                .tracked_orders
+                .read()
+                .expect("registry should lock")
+                .retained_terminal_orders
+                .contains_key(&client_order_id)
+        );
+
+        fill_canceled_order_with_quantity(&mut order, venue_order_id, Quantity::new(0.5, 2));
+        assert_eq!(order.status(), OrderStatus::PartiallyFilled);
+        assert!(order.leaves_qty().as_decimal() > Decimal::ZERO);
+        handle
+            .reconcile_tracked_order_at(client_order_id, Some(order), 2)
+            .expect("ordinary fill callback should restore cancellation tracking");
+
+        let registry = handle.tracked_orders.read().expect("registry should lock");
+        let reopened = registry
+            .records
+            .get(&client_order_id)
+            .expect("reopened working order must be tracked");
+        let governed = reopened
+            .governed()
+            .expect("reopened order should retain exact authority");
+        assert_eq!(governed.registration_generation, 1);
+        assert_eq!(governed.maker_lifecycle.client_order_id, client_order_id);
+        assert!(reopened.cancellation.is_requested());
+        assert!(
+            !registry
+                .retained_terminal_orders
+                .contains_key(&client_order_id)
+        );
+        drop(registry);
+        assert_eq!(market.leg_state(Leg::Yes), LegState::CancelPending);
+        assert!(
+            market
+                .propose_leg_event(
+                    Leg::Yes,
+                    LegEvent::QuoteTrigger {
+                        requote_needed: true,
+                    },
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cancel_arm_rebinds_the_tracked_lifecycle_generation() {
+        let order = accepted_order("cancel-lifecycle-rebind", "VENUE-CANCEL-REBIND");
+        let client_order_id = order.client_order_id();
+        let mut market = MarketQuote::new_for_test(false);
+        market.on_leg_event(
+            Leg::Yes,
+            LegEvent::QuoteTrigger {
+                requote_needed: false,
+            },
+        );
+        market.on_leg_event(Leg::Yes, LegEvent::Accepted);
+        let lifecycle_budget = RequoteBudgetPair::new(
+            RequoteBudget::new(8, 60_000, 0),
+            RequoteBudget::new(8, 60_000, 0),
+        );
+        let proposal = market
+            .propose_leg_event(
+                Leg::Yes,
+                LegEvent::QuoteTrigger {
+                    requote_needed: true,
+                },
+            )
+            .expect("resting requote should propose a cancel");
+        let budget_proposal = MakerQuoteBudgetProposal::Reserve(
+            lifecycle_budget
+                .propose_cancel_resubmit(1)
+                .expect("requote budget should be available"),
+        );
+        let identity = MakerQuoteLifecycleIdentity::new(client_order_id.as_str(), 7);
+        market
+            .arm_leg_transaction(
+                proposal,
+                lifecycle_budget,
+                budget_proposal,
+                identity.clone(),
+            )
+            .expect("requote cancel should arm");
+        market
+            .mark_leg_transaction_sink_invoked(proposal, 7, 1)
+            .expect("requote cancel should reach the sink");
+        assert!(market.commit_leg_transaction(proposal, 7));
+
+        let lifecycle = MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes);
+        let handle = coordinator_handle_with_budget(order.clone(), 8);
+        {
+            let mut registry = handle.tracked_orders.write().expect("registry should lock");
+            let record = registry
+                .records
+                .get_mut(&client_order_id)
+                .expect("tracked record should exist");
+            record
+                .governed_mut()
+                .expect("tracked record should retain exact authority")
+                .maker_lifecycle = MakerQuoteOrderAuthority::new(&order, 1, lifecycle.clone());
+            record.cancellation.request_intent(0);
+            record
+                .cancellation
+                .intent
+                .as_mut()
+                .expect("cancel intent should exist")
+                .generation = 6;
+        }
+
+        let effect = handle
+            .settle_cancel_reservation_with_lifecycle(
+                client_order_id,
+                CancelEvent::ReservationGranted {
+                    operation: CancelOperationKind::Cancel,
+                    now_ns: 1,
+                    retry_timeout_ns: 1,
+                    escalation_attempts: 1,
+                },
+                identity,
+                lifecycle,
+            )
+            .expect("cancel reservation should bind the exact lifecycle generation");
+        assert!(matches!(effect, CancelEffect::Cancel { generation: 7 }));
+
+        let removed = handle
+            .tracked_orders
+            .write()
+            .expect("registry should lock")
+            .remove_terminal_record(&client_order_id);
+        super::super::settle_maker_terminal(
+            &handle.tracked_orders,
+            client_order_id,
+            removed,
+            crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Canceled,
+        )
+        .expect("terminal callback should refine the exact cancel generation");
+        assert_eq!(
+            market.leg_state(Leg::Yes),
+            LegState::ReplacementPendingBackoff
+        );
+    }
+
+    #[test]
+    fn canceled_initial_terminal_callback_retains_per_order_refinement_authority() {
+        let client_order_id = "final-initial-terminal";
+        let venue_order_id = "VENUE-FINAL-INITIAL";
+        let mut order = accepted_order(client_order_id, venue_order_id);
+        let client_order_id = order.client_order_id();
+        let mut market = MarketQuote::new_for_test(false);
+        let lifecycle_budget = RequoteBudgetPair::new(
+            RequoteBudget::new(8, 60_000, 0),
+            RequoteBudget::new(8, 60_000, 0),
+        );
+        let proposal = market
+            .propose_leg_event(
+                Leg::Yes,
+                LegEvent::QuoteTrigger {
+                    requote_needed: false,
+                },
+            )
+            .expect("fresh submit should be proposed");
+        let budget_proposal = MakerQuoteBudgetProposal::Reserve(
+            lifecycle_budget
+                .propose_fresh_submit(1)
+                .expect("fresh submit budget should be available"),
+        );
+        market
+            .arm_leg_transaction(
+                proposal,
+                lifecycle_budget,
+                budget_proposal,
+                MakerQuoteLifecycleIdentity::new(client_order_id.as_str(), 1),
+            )
+            .expect("fresh submit should arm");
+        market
+            .mark_leg_transaction_sink_invoked(proposal, 1, 1)
+            .expect("fresh submit should reach the sink");
+        assert!(market.commit_leg_transaction(proposal, 1));
+        assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Accepted), None);
+        assert_eq!(
+            market.cancel_leg(Leg::Yes),
+            Some(MarketAction::Leg {
+                leg: Leg::Yes,
+                action: LifecycleAction::Cancel,
+            })
+        );
+        let handle = coordinator_handle_with_budget(order.clone(), 8);
+        handle
+            .tracked_orders
+            .write()
+            .expect("registry should lock")
+            .records
+            .get_mut(&client_order_id)
+            .expect("tracked record should exist")
+            .governed_mut()
+            .expect("tracked record should retain exact authority")
+            .maker_lifecycle = MakerQuoteOrderAuthority::new(
+            &order,
+            1,
+            MakerQuoteLifecycleHandle::new(market, Leg::Yes),
+        );
+
+        let canceled = TestOrderEventStubs::canceled(
+            &order,
+            AccountId::from("ACCOUNT-001"),
+            Some(VenueOrderId::from(venue_order_id)),
+        );
+        order.apply(canceled).expect("cancel should apply");
+        handle
+            .reconcile_tracked_order_at(client_order_id, Some(order), 1)
+            .expect("terminal callback should settle");
+
+        let registry = handle.tracked_orders.read().expect("registry should lock");
+        assert!(registry.records.is_empty());
+        assert!(
+            registry
+                .retained_terminal_orders
+                .contains_key(&client_order_id)
+        );
+    }
+
+    #[test]
+    fn finalized_registration_epoch_retires_older_refinable_truth() {
+        let first = accepted_order("retention-generation-one", "VENUE-RETENTION-ONE");
+        let first_id = first.client_order_id();
+        let second = accepted_order("retention-generation-two", "VENUE-RETENTION-TWO");
+        let second_id = second.client_order_id();
+        let market = MarketQuote::new_for_test(false);
+        let lifecycle = MakerQuoteLifecycleHandle::new(market, Leg::Yes);
+        let handle = coordinator_handle_with_budget(first.clone(), 8);
+        let mut registry = handle.tracked_orders.write().expect("registry should lock");
+        registry
+            .records
+            .get_mut(&first_id)
+            .expect("first generation should be tracked")
+            .governed_mut()
+            .expect("first generation should retain exact authority")
+            .maker_lifecycle = MakerQuoteOrderAuthority::new(&first, 1, lifecycle.clone());
+        let first_removed = registry
+            .remove_terminal_record(&first_id)
+            .expect("first generation should retire");
+        drop(registry);
+        super::super::settle_maker_terminal(
+            &handle.tracked_orders,
+            first_id,
+            Some(first_removed),
+            crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Canceled,
+        )
+        .expect("first refinable terminal should settle");
+
+        let mut registry = handle.tracked_orders.write().expect("registry should lock");
+        registry.records.insert(
+            second_id,
+            TrackedMakerOrderRecord::new_governed(
+                2,
+                RestingRegistrationState::Committed,
+                None,
+                None,
+                MakerQuoteOrderAuthority::new(&second, 2, lifecycle),
+                TrackedOrderCancellation::new(second.clone()),
+            ),
+        );
+        let lifecycle = registry
+            .records
+            .get(&second_id)
+            .expect("second generation should be tracked")
+            .governed()
+            .expect("second generation should retain exact authority")
+            .maker_lifecycle
+            .lifecycle
+            .clone();
+        drop(registry);
+        super::super::apply_retention_horizon(
+            &handle.tracked_orders,
+            super::super::RetentionHorizonCapability::RegistrationEpochFinal {
+                lifecycle: &lifecycle,
+                registration_generation: 2,
+                current_client_order_id: second_id,
+            },
+        )
+        .expect("final registration epoch should retire the prior refinable truth");
+        let mut registry = handle.tracked_orders.write().expect("registry should lock");
+        let second_removed = registry
+            .remove_terminal_record(&second_id)
+            .expect("second generation should retire");
+        drop(registry);
+        super::super::settle_maker_terminal(
+            &handle.tracked_orders,
+            second_id,
+            Some(second_removed),
+            crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Canceled,
+        )
+        .expect("second refinable terminal should settle");
+
+        let registry = handle.tracked_orders.read().expect("registry should lock");
+        assert_eq!(registry.retained_terminal_orders.len(), 1);
+        assert!(!registry.retained_terminal_orders.contains_key(&first_id));
+        assert!(registry.retained_terminal_orders.contains_key(&second_id));
+    }
+
+    #[test]
+    fn registration_finality_matches_distinct_authorities_by_their_sealed_scope() {
+        let scope = MakerOrderLifecycleScopeIdentity::new(
+            7,
+            InstrumentId::from("SEALED-SCOPE-YES.SIM"),
+            InstrumentId::from("SEALED-SCOPE-NO.SIM"),
+        );
+        let first = accepted_order("sealed-scope-generation-one", "VENUE-SEALED-SCOPE-ONE");
+        let first_id = first.client_order_id();
+        let second = accepted_order("sealed-scope-generation-two", "VENUE-SEALED-SCOPE-TWO");
+        let second_id = second.client_order_id();
+        let first_lifecycle =
+            MakerQuoteLifecycleHandle::new(MarketQuote::new(scope, false), Leg::Yes);
+        let second_lifecycle =
+            MakerQuoteLifecycleHandle::new(MarketQuote::new(scope, false), Leg::Yes);
+        assert!(
+            !first_lifecycle.shares_authority_with(&second_lifecycle),
+            "the fixture requires distinct Arc authorities"
+        );
+
+        let handle = coordinator_handle_with_budget(first.clone(), 8);
+        let mut registry = handle.tracked_orders.write().expect("registry should lock");
+        registry
+            .records
+            .get_mut(&first_id)
+            .expect("first generation should be tracked")
+            .governed_mut()
+            .expect("first generation should retain exact authority")
+            .maker_lifecycle = MakerQuoteOrderAuthority::new(&first, 1, first_lifecycle);
+        let first_removed = registry
+            .remove_terminal_record(&first_id)
+            .expect("first generation should retire");
+        drop(registry);
+        super::super::settle_maker_terminal(
+            &handle.tracked_orders,
+            first_id,
+            Some(first_removed),
+            crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Canceled,
+        )
+        .expect("first refinable terminal should settle");
+
+        let mut registry = handle.tracked_orders.write().expect("registry should lock");
+        registry.records.insert(
+            second_id,
+            TrackedMakerOrderRecord::new_governed(
+                2,
+                RestingRegistrationState::Committed,
+                None,
+                None,
+                MakerQuoteOrderAuthority::new(&second, 2, second_lifecycle.clone()),
+                TrackedOrderCancellation::new(second),
+            ),
+        );
+        drop(registry);
+
+        super::super::apply_retention_horizon(
+            &handle.tracked_orders,
+            super::super::RetentionHorizonCapability::RegistrationEpochFinal {
+                lifecycle: &second_lifecycle,
+                registration_generation: 2,
+                current_client_order_id: second_id,
+            },
+        )
+        .expect("sealed scope identity should finalize the older generation");
+
+        let registry = handle.tracked_orders.read().expect("registry should lock");
+        assert!(
+            !registry.retained_terminal_orders.contains_key(&first_id),
+            "Arc identity must not strand older truth in the same typed scope"
+        );
+        assert!(registry.records.contains_key(&second_id));
+    }
+
+    #[test]
+    fn old_terminal_cannot_retire_a_newer_winding_down_poison() {
+        let client_order_id = "old-terminal-new-poison";
+        let venue_order_id = "VENUE-OLD-TERMINAL";
+        let mut order = accepted_order(client_order_id, venue_order_id);
+        let client_order_id = order.client_order_id();
+        let mut market = MarketQuote::new_for_test(false);
+        market.on_leg_event(
+            Leg::Yes,
+            LegEvent::QuoteTrigger {
+                requote_needed: false,
+            },
+        );
+        market.on_leg_event(Leg::Yes, LegEvent::Accepted);
+        let lifecycle_budget = RequoteBudgetPair::new(
+            RequoteBudget::new(8, 60_000, 0),
+            RequoteBudget::new(8, 60_000, 0),
+        );
+        let cancel = market
+            .propose_leg_event(
+                Leg::Yes,
+                LegEvent::QuoteTrigger {
+                    requote_needed: true,
+                },
+            )
+            .expect("resting requote should propose a cancel");
+        let budget_proposal = MakerQuoteBudgetProposal::Reserve(
+            lifecycle_budget
+                .propose_cancel_resubmit(1)
+                .expect("requote budget should be available"),
+        );
+        market
+            .arm_leg_transaction(
+                cancel,
+                lifecycle_budget.clone(),
+                budget_proposal,
+                MakerQuoteLifecycleIdentity::new(client_order_id.as_str(), 1),
+            )
+            .expect("requote cancel should arm");
+        market
+            .mark_leg_transaction_sink_invoked(cancel, 1, 1)
+            .expect("requote cancel should reach the sink");
+        assert!(market.commit_leg_transaction(cancel, 1));
+
+        let handle = coordinator_handle_with_budget(order.clone(), 8);
+        handle
+            .tracked_orders
+            .write()
+            .expect("registry should lock")
+            .records
+            .get_mut(&client_order_id)
+            .expect("tracked record should exist")
+            .governed_mut()
+            .expect("tracked record should retain exact authority")
+            .maker_lifecycle = MakerQuoteOrderAuthority::new(
+            &order,
+            1,
+            MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes),
+        );
+        let canceled = TestOrderEventStubs::canceled(
+            &order,
+            AccountId::from("ACCOUNT-001"),
+            Some(VenueOrderId::from(venue_order_id)),
+        );
+        order.apply(canceled).expect("cancel should apply");
+        handle
+            .reconcile_tracked_order_at(client_order_id, Some(order.clone()), 1)
+            .expect("cancel callback should retire the resting record");
+
+        let replacement = market
+            .propose_leg_event(
+                Leg::Yes,
+                LegEvent::QuoteTrigger {
+                    requote_needed: true,
+                },
+            )
+            .expect("retained replacement capacity should propose a submit");
+        let prepaid_generation = market
+            .prepaid_generation(Leg::Yes)
+            .expect("replacement capacity should remain prepaid");
+        market
+            .arm_leg_transaction(
+                replacement,
+                lifecycle_budget,
+                MakerQuoteBudgetProposal::Prepaid {
+                    generation: prepaid_generation,
+                    now_ms: 2,
+                },
+                MakerQuoteLifecycleIdentity::new("new-poison-order", 2),
+            )
+            .expect("replacement should arm at a later generation");
+        market
+            .mark_leg_transaction_sink_invoked(replacement, 2, 2)
+            .expect("replacement should reach the sink");
+        assert_eq!(
+            market.cancel_leg(Leg::Yes),
+            Some(MarketAction::Leg {
+                leg: Leg::Yes,
+                action: LifecycleAction::Cancel,
+            })
+        );
+        assert!(market.unwind_post_sink_leg_transaction(replacement, 2));
+        let before = (
+            market.leg_state(Leg::Yes),
+            market.prepaid_generation(Leg::Yes),
+        );
+        assert_eq!(before.0, LegState::PoisonedReconciliationHold);
+
+        fill_canceled_order(&mut order, venue_order_id);
+        handle
+            .reconcile_tracked_order_at(client_order_id, Some(order), 2)
+            .expect("stale terminal should be dropped without retiring current poison");
+
+        assert_eq!(
+            (
+                market.leg_state(Leg::Yes),
+                market.prepaid_generation(Leg::Yes),
+            ),
+            before
+        );
     }
 
     fn apply_timer<'a>(

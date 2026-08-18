@@ -1493,13 +1493,13 @@ pub(super) fn set_managed_position(
         position.avg_px_open,
         OrderSide::Buy,
     );
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(managed_position_context(
                 position, origin, None,
             ))),
-        )));
+        )),
+    );
 }
 
 pub(super) fn set_managed_position_with_pending_entry(
@@ -1516,15 +1516,15 @@ pub(super) fn set_managed_position_with_pending_entry(
         position.avg_px_open,
         OrderSide::Buy,
     );
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(managed_position_context(
                 position,
                 origin,
                 Some(pending_entry),
             ))),
-        )));
+        )),
+    );
 }
 
 pub(super) fn materialize_managed_position_with_resting_pending_entry(

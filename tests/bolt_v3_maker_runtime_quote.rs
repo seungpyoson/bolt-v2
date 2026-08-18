@@ -4,9 +4,9 @@ use bolt_v2::{
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig, UsableMu},
     bolt_v3_maker_order_dispatch::{
-        MakerOrderCommandFailure, MakerOrderCommandFailureKind, MakerOrderCommandSink,
-        MakerOrderDispatchInput, MakerOrderDispatchOutcome, MakerQuoteTransactionContext,
-        dispatch_maker_order_command,
+        MakerOrderCommandAuthority, MakerOrderCommandFailure, MakerOrderCommandFailureKind,
+        MakerOrderCommandSink, MakerOrderDispatchInput, MakerOrderDispatchOutcome,
+        MakerQuoteTransactionContext, dispatch_maker_order_command,
     },
     bolt_v3_maker_order_plan::{
         MakerLegBinding, MakerMarketActionOrderInput, MakerOrderIntent,
@@ -25,11 +25,12 @@ use bolt_v2::{
     },
     bolt_v3_market_families::{FairProbabilityInputs, static_binary_event, updown},
     bolt_v3_order_execution::{
-        BoltV3RestingCommitDisposition, BoltV3RestingRegistrationCommitParticipant,
-        BoltV3RestingSubmitTransactionOutcome,
+        BoltV3RestingRegistrationCommitParticipant, BoltV3RestingSubmitTransactionOutcome,
     },
     bolt_v3_order_intent::NtOrderTemplate,
-    bolt_v3_quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketState},
+    bolt_v3_quote_lifecycle::{
+        Leg, LegEvent, LifecycleAction, MakerQuoteLifecycleIdentity, MarketAction, MarketState,
+    },
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
         RealizedVolSnapshot,
@@ -99,7 +100,7 @@ fn realized_vol_snapshot(as_of_ms: u64, realized_vol: f64, ready: bool) -> Reali
 
 #[test]
 fn runtime_quote_tick_uses_family_quote_plan_and_produces_order_intents() {
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
 
@@ -210,7 +211,7 @@ fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
     assert_eq!(fair.fair_probability_up, 0.63);
     assert!(!fair.failed_over);
 
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
     let decision = plan_maker_runtime_quote(
@@ -541,7 +542,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
 
 #[test]
 fn runtime_quote_tick_fails_closed_for_unsupported_family_without_mutation() {
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
 
@@ -569,7 +570,7 @@ fn runtime_quote_tick_fails_closed_for_unsupported_family_without_mutation() {
 
 #[test]
 fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
     let decision = plan_maker_runtime_quote(
@@ -610,7 +611,7 @@ fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
                 MakerOrderDispatchInput {
                     command,
                     submit_order_prefix,
-                    quote_transaction: Some(MakerQuoteTransactionContext {
+                    authority: MakerOrderCommandAuthority::Quote(MakerQuoteTransactionContext {
                         market: market.clone(),
                         budget: budget.clone(),
                         proposal,
@@ -687,7 +688,7 @@ fn runtime_quote_order_plan_reconciles_yes_then_surfaces_no_leg_command_failure(
     // carrying its command failure) so the caller can reconcile the YES identity before
     // failing loud, rather than orphaning it. Differential: under the prior `?`-abort
     // behavior the dispatcher returns Err and the `.expect` below panics.
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
     let decision = plan_maker_runtime_quote(
@@ -767,7 +768,7 @@ fn runtime_quote_order_plan_short_circuits_no_leg_when_yes_leg_command_fails() {
     // loud on. Differential: if the short-circuit were dropped (the NO leg routed
     // unconditionally) route_calls would be 2; if the YES error were `?`-aborted the
     // `.expect` below would panic.
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
     let decision = plan_maker_runtime_quote(
@@ -829,7 +830,7 @@ fn runtime_quote_order_plan_short_circuits_no_leg_when_yes_leg_command_fails() {
 
 #[test]
 fn canceled_callback_cannot_consume_an_uncommitted_requote_proposal() {
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     assert_eq!(
         market.on_leg_event(
             Leg::Yes,
@@ -993,7 +994,7 @@ fn cancel_all_runtime_order_plan_dispatches_both_leg_instruments() {
                 MakerOrderDispatchInput {
                     command,
                     submit_order_prefix,
-                    quote_transaction: None,
+                    authority: MakerOrderCommandAuthority::ScopeCancelAll,
                 },
                 &mut sink,
             )
@@ -1124,7 +1125,7 @@ fn gate_cleared_informed_fraction() -> UsableMu {
 }
 
 fn quote_targets() -> bolt_v2::bolt_v3_quoting::QuoteTargets {
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
     plan_maker_runtime_quote(
@@ -1278,14 +1279,17 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
         let generation = self.begin_generation();
         let actor_now_ns = self.clock.borrow().timestamp_ns().as_u64();
         participant
-            .arm_at_generation(generation)
+            .arm_at_identity(MakerQuoteLifecycleIdentity::new(
+                client_order_id.as_str(),
+                generation,
+            ))
             .expect("test submit participant must arm");
         participant
             .mark_sink_invoked(actor_now_ns)
             .expect("test submit participant must reach the sink");
         self.submitted.push(order);
         participant
-            .settle_at_generation(generation, BoltV3RestingCommitDisposition::Submitted)
+            .settle_submitted(generation)
             .expect("test submit participant must commit");
         BoltV3RestingSubmitTransactionOutcome::submitted_with_linkage_for_test(
             instrument_id,
@@ -1300,17 +1304,17 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
         &mut self,
         _leg: Leg,
         _instrument_id: InstrumentId,
-        _client_order_id: ClientOrderId,
+        client_order_id: ClientOrderId,
         mut participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
     ) -> Result<()> {
         let generation = self.begin_generation();
         let actor_now_ns = self.clock.borrow().timestamp_ns().as_u64();
-        participant.arm_at_generation(generation)?;
-        participant.mark_sink_invoked(actor_now_ns)?;
-        participant.settle_at_generation(
+        participant.arm_at_identity(MakerQuoteLifecycleIdentity::new(
+            client_order_id.as_str(),
             generation,
-            BoltV3RestingCommitDisposition::CommandIssuedRetainPrepaid,
-        )?;
+        ))?;
+        participant.mark_sink_invoked(actor_now_ns)?;
+        participant.settle_command_issued(generation)?;
         anyhow::bail!("test sink should not receive cancel commands")
     }
 

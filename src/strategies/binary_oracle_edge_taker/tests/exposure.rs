@@ -12,13 +12,15 @@ fn reduce_position_close_with_projection(
     episode: PositionEpisodeFingerprint,
     projection: FreshCanonicalPositionProjection,
 ) -> ExposureTransitionOutcome {
-    strategy.exposure.reduce(ExposureEvent::PositionClosed(
-        PositionClosedEvent::ObservedWithFreshProjection {
-            expected_generation: strategy.exposure.generation(),
-            episode,
-            projection,
-        },
-    ))
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionClosed(
+            PositionClosedEvent::ObservedWithFreshProjection {
+                expected_generation: strategy.exposure.generation(),
+                episode,
+                projection,
+            },
+        ),
+    )
 }
 
 #[test]
@@ -3445,7 +3447,7 @@ fn fresh_blind_recovery_classifies_an_unsupported_contract_before_adoption() {
         )),
     ));
 
-    strategy.reconcile_blind_recovery_from_fresh_probe();
+    strategy.reconcile_blind_recovery_from_fresh_probe(0);
 
     assert!(matches!(
         strategy.exposure.state(),
@@ -3473,9 +3475,22 @@ fn typed_blind_recovery_rejects_an_invalid_position_side() {
         .exposure
         .request_recovery_operation(strategy.exposure.generation())
         .expect("blind recovery should grant only the typed recovery operation");
-    let _ = grant.commit(FreshCanonicalPositionProjection::ExactlyOne(Box::new(
+    let RecoveryOperationCommit {
+        outcome,
+        replacement_adoption,
+        restart_adoption,
+    } = grant.commit(FreshCanonicalPositionProjection::ExactlyOne(Box::new(
         classified,
     )));
+    assert!(matches!(
+        outcome,
+        ExposureTransitionOutcome::Applied {
+            to: ExposureStateKind::BlindRecovery,
+            ..
+        }
+    ));
+    assert!(replacement_adoption.is_none());
+    assert!(!restart_adoption);
 
     assert!(matches!(
         strategy.exposure.state(),
@@ -4354,11 +4369,11 @@ fn same_episode_refresh_preserves_fingerprint_and_close_floor() {
         .expect("fixture position should be managed");
     refreshed.book.best_bid = Some(0.44);
     refreshed.episode_close_seen = false;
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(refreshed)),
-        )));
+        )),
+    );
 
     let preserved = strategy
         .exposure
@@ -4366,11 +4381,11 @@ fn same_episode_refresh_preserves_fingerprint_and_close_floor() {
         .expect("same episode must remain managed");
     assert_eq!(preserved.episode, episode);
     assert!(preserved.episode_close_seen);
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::None,
-        )));
+        )),
+    );
     assert!(matches!(strategy.exposure.state(), ExposureState::Flat));
 }
 
@@ -4402,11 +4417,11 @@ fn delayed_close_for_reused_position_id_cannot_release_new_episode() {
     strategy.exposure.reduce(ExposureEvent::SettlementEffect(
         SettlementEffectEvent::ReleaseFlat { episode: episode_a },
     ));
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(episode_b.clone())),
-        )));
+        )),
+    );
     reduce_position_close_with_projection(
         &strategy,
         PositionEpisodeFingerprint {
@@ -4419,11 +4434,11 @@ fn delayed_close_for_reused_position_id_cannot_release_new_episode() {
             episode_b.clone(),
         ))),
     );
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::None,
-        )));
+        )),
+    );
 
     assert!(matches!(
         strategy.exposure.state(),
@@ -4453,20 +4468,20 @@ fn replacement_conflict_requires_retained_episode_close_and_matching_candidate()
     candidate_b.episode.opening_order_id = ClientOrderId::from("ENTRY-REPLACEMENT-B");
     candidate_b.episode.ts_opened_ns = 2_000;
 
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(candidate_b.clone())),
-        )));
+        )),
+    );
     assert!(matches!(
         strategy.exposure.state(),
         ExposureState::ReplacementConflict(_)
     ));
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::None,
-        )));
+        )),
+    );
     assert!(matches!(
         strategy.exposure.state(),
         ExposureState::ReplacementConflict(_)
@@ -4477,11 +4492,11 @@ fn replacement_conflict_requires_retained_episode_close_and_matching_candidate()
         FreshCanonicalPositionProjection::None,
     );
     assert!(matches!(strategy.exposure.state(), ExposureState::Flat));
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(candidate_b.clone())),
-        )));
+        )),
+    );
     assert!(matches!(
         strategy.exposure.state(),
         ExposureState::Managed(context) if context.episode == candidate_b.episode
@@ -4515,16 +4530,16 @@ fn replacement_conflict_never_adopts_a_candidate_that_is_no_longer_canonical() {
     candidate_c.episode.opening_order_id = ClientOrderId::from("ENTRY-REPLACEMENT-CURRENT-C");
     candidate_c.episode.ts_opened_ns = 3_000;
 
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(candidate_b.clone())),
-        )));
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+        )),
+    );
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(candidate_c.clone())),
-        )));
+        )),
+    );
     let retained_episode = position_a.episode.clone();
     reduce_position_close_with_projection(
         &strategy,
@@ -4537,12 +4552,34 @@ fn replacement_conflict_never_adopts_a_candidate_that_is_no_longer_canonical() {
         strategy.exposure.state(),
         ExposureState::ReplacementConflict(_)
     ));
-    reduce_position_close_with_projection(
-        &strategy,
-        retained_episode,
-        FreshCanonicalPositionProjection::ExactlyOne(Box::new(ClassifiedOpenPosition::Managed(
-            candidate_b.clone(),
-        ))),
+    let ExposureAdoptionCommit {
+        outcome,
+        replacement_adoption,
+    } = strategy
+        .exposure
+        .reduce(AdoptionCapableExposureEvent::PositionClosed(
+            PositionClosedEvent::ObservedWithFreshProjection {
+                expected_generation: strategy.exposure.generation(),
+                episode: retained_episode.clone(),
+                projection: FreshCanonicalPositionProjection::ExactlyOne(Box::new(
+                    ClassifiedOpenPosition::Managed(candidate_b.clone()),
+                )),
+            },
+        ));
+    assert!(matches!(
+        outcome,
+        ExposureTransitionOutcome::Applied {
+            to: ExposureStateKind::Managed,
+            ..
+        }
+    ));
+    let adoption = replacement_adoption
+        .expect("the exact retained-close conjunction must return its replacement adoption");
+    assert_eq!(adoption.retained_episode, retained_episode);
+    assert_eq!(adoption.adopted.episode, candidate_b.episode);
+    assert_eq!(
+        adoption.cause,
+        ReplacementAdoptionCause::CanonicalCloseConjunction
     );
     let retained = strategy
         .exposure
@@ -4555,16 +4592,16 @@ fn replacement_conflict_never_adopts_a_candidate_that_is_no_longer_canonical() {
     stale_candidate.episode.opening_order_id =
         ClientOrderId::from("ENTRY-REPLACEMENT-DISAPPEARING-D");
     stale_candidate.episode.ts_opened_ns = 4_000;
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(stale_candidate)),
-        )));
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+        )),
+    );
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(retained.clone())),
-        )));
+        )),
+    );
     assert!(matches!(
         strategy.exposure.state(),
         ExposureState::Managed(context) if context.episode == retained.episode
@@ -4599,16 +4636,16 @@ fn replacement_conflict_keeps_the_original_candidate_across_unrelated_exactly_on
     unrelated_c.episode.opening_order_id = ClientOrderId::from("ENTRY-REPLACEMENT-UNRELATED");
     unrelated_c.episode.ts_opened_ns = 3_000;
 
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(candidate_b.clone())),
-        )));
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+        )),
+    );
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(unrelated_c)),
-        )));
+        )),
+    );
 
     assert!(matches!(
         strategy.exposure.state(),
@@ -4639,33 +4676,34 @@ fn stale_close_projection_cannot_discharge_a_replacement_conflict() {
     candidate.episode.opening_order_id =
         ClientOrderId::from("ENTRY-REPLACEMENT-STALE-GENERATION-B");
     candidate.episode.ts_opened_ns = 2_000;
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(candidate.clone())),
-        )));
+        )),
+    );
     let stale_generation = strategy.exposure.generation();
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::None,
-        )));
+        )),
+    );
 
-    strategy.exposure.reduce(ExposureEvent::PositionClosed(
-        PositionClosedEvent::ObservedWithFreshProjection {
-            expected_generation: stale_generation,
-            episode: retained.episode,
-            projection: FreshCanonicalPositionProjection::ExactlyOne(Box::new(
-                ClassifiedOpenPosition::Managed(candidate),
-            )),
-        },
-    ));
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionClosed(
+            PositionClosedEvent::ObservedWithFreshProjection {
+                expected_generation: stale_generation,
+                episode: retained.episode,
+                projection: FreshCanonicalPositionProjection::ExactlyOne(Box::new(
+                    ClassifiedOpenPosition::Managed(candidate),
+                )),
+            },
+        ),
+    );
 
     assert!(matches!(
         strategy.exposure.state(),
         ExposureState::ReplacementConflict(_)
     ));
-    assert!(strategy.exposure.replacement_adoption().is_none());
 }
 
 #[test]
@@ -4691,31 +4729,39 @@ fn occupied_replacement_conflict_recovers_after_multiple_with_close_and_matching
         ClientOrderId::from("ENTRY-REPLACEMENT-MULTIPLE-CANDIDATE");
     candidate.episode.ts_opened_ns = 2_000;
 
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(candidate.clone())),
-        )));
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+        )),
+    );
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::Multiple {
                 count: 2,
                 recovery: BlindRecoveryState::authority_free(
                     BlindRecoveryReason::MultipleOpenPositions { count: 2 },
                 ),
             },
-        )));
+        )),
+    );
     reduce_position_close_with_projection(
         &strategy,
         retained.episode,
         FreshCanonicalPositionProjection::Multiple { count: 2 },
     );
-    strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::ExactlyOne(
-            Box::new(ClassifiedOpenPosition::Managed(candidate.clone())),
-        )),
-    ));
+    let ExposureAdoptionCommit {
+        outcome: _,
+        replacement_adoption,
+    } = strategy
+        .exposure
+        .reduce(AdoptionCapableExposureEvent::PositionTruth(
+            AdoptionCapablePositionTruthEvent::AuthorizedRecovery(
+                FreshCanonicalPositionProjection::ExactlyOne(Box::new(
+                    ClassifiedOpenPosition::Managed(candidate.clone()),
+                )),
+            ),
+        ));
+    assert!(replacement_adoption.is_some());
 
     assert!(matches!(
         strategy.exposure.state(),
@@ -4745,24 +4791,24 @@ fn occupied_replacement_conflict_recovers_after_probe_failure_with_close_and_non
     candidate.episode.opening_order_id = ClientOrderId::from("ENTRY-REPLACEMENT-PROBE-CANDIDATE");
     candidate.episode.ts_opened_ns = 2_000;
 
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(candidate)),
-        )));
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+        )),
+    );
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::None,
-        )));
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+        )),
+    );
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ProbeFailed {
                 diagnostic: "replacement probe failed".to_string(),
                 recovery: BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
             },
-        )));
+        )),
+    );
     reduce_position_close_with_projection(
         &strategy,
         retained.episode,
@@ -4770,9 +4816,13 @@ fn occupied_replacement_conflict_recovers_after_probe_failure_with_close_and_non
             diagnostic: "replacement probe failed after close".to_string(),
         },
     );
-    strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::None),
-    ));
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(
+            AdoptionCapablePositionTruthEvent::AuthorizedRecovery(
+                FreshCanonicalPositionProjection::None,
+            ),
+        ),
+    );
 
     assert!(matches!(strategy.exposure.state(), ExposureState::Flat));
 }
@@ -4819,11 +4869,11 @@ fn unsupported_position_cannot_displace_a_working_entry_before_terminal_proof() 
         unsupported_episode,
         FreshCanonicalPositionProjection::None,
     );
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::None,
-        )));
+        )),
+    );
 
     assert!(matches!(
         strategy.exposure.pending_entry(),
@@ -4864,11 +4914,15 @@ fn unsupported_position_cannot_displace_a_working_entry_before_terminal_proof() 
             managed: managed_a.clone(),
         },
     ));
-    strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::ExactlyOne(
-            Box::new(ClassifiedOpenPosition::Managed(managed_a.clone())),
-        )),
-    ));
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(
+            AdoptionCapablePositionTruthEvent::AuthorizedRecovery(
+                FreshCanonicalPositionProjection::ExactlyOne(Box::new(
+                    ClassifiedOpenPosition::Managed(managed_a.clone()),
+                )),
+            ),
+        ),
+    );
     assert!(matches!(
         strategy.exposure.state(),
         ExposureState::Managed(managed) if managed.episode == managed_a.episode
@@ -5010,6 +5064,101 @@ fn close_first_replacement_adoption_emits_exact_prior_and_adopted_evidence() {
 }
 
 #[test]
+fn timer_recovery_replacement_adoption_emits_exact_prior_and_adopted_evidence() {
+    let evidence = recording_decision_evidence();
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+    let retained_instrument = selected_entry_instrument(&strategy);
+    let occluding_instrument = configured_instrument_except(&strategy, retained_instrument);
+    let retained_position = PositionId::from("P-EVIDENCE-TIMER-RETAINED-A");
+    let adopted_position = PositionId::from("P-EVIDENCE-TIMER-ADOPTED-B");
+    let occluding_position = PositionId::from("P-EVIDENCE-TIMER-OCCLUDING-C");
+    materialize_configured_position(
+        &mut strategy,
+        retained_instrument,
+        retained_position,
+        Quantity::new(10.0, 2),
+        0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
+    );
+    close_nt_position(&mut strategy, retained_position);
+    seed_nt_open_position(
+        &mut strategy,
+        retained_instrument,
+        adopted_position,
+        Quantity::new(7.0, 2),
+        0.47,
+        OrderSide::Buy,
+    );
+    strategy.on_position_opened(position_opened_event(
+        retained_instrument,
+        adopted_position,
+        Quantity::new(7.0, 2),
+        0.47,
+        OrderSide::Buy,
+        PositionSide::Long,
+    ));
+    assert!(matches!(
+        strategy.exposure.state(),
+        ExposureState::ReplacementConflict(_)
+    ));
+
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
+            CanonicalPositionProjection::ProbeFailed {
+                diagnostic: "replacement recovery probe failed".to_string(),
+                recovery: BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
+            },
+        )),
+    );
+    seed_nt_open_position(
+        &mut strategy,
+        occluding_instrument,
+        occluding_position,
+        Quantity::new(3.0, 2),
+        0.52,
+        OrderSide::Buy,
+    );
+    strategy.on_position_closed(position_closed_event(
+        retained_instrument,
+        retained_position,
+    ));
+    assert!(matches!(
+        strategy.exposure.state(),
+        ExposureState::BlindRecovery(_)
+    ));
+
+    close_nt_position(&mut strategy, occluding_position);
+    strategy.reconcile_blind_recovery_from_fresh_probe(3_000);
+
+    assert!(matches!(
+        strategy.exposure.state(),
+        ExposureState::Managed(context) if context.position_id == adopted_position
+    ));
+    let facts = evidence
+        .recorded_facts()
+        .expect("timer replacement evidence should decode");
+    let retained_entry = format!("ENTRY-{retained_position}");
+    let adopted_entry = format!("ENTRY-{adopted_position}");
+    assert!(facts.iter().any(|fact| matches!(
+        fact,
+        CurrentFact::OrderLifecycle(record)
+            if record.transition == OrderLifecycleTransition::ReplacementAdopted
+                && record.outcome == OrderLifecycleOutcome::Managed
+                && record.source == OrderLifecycleSource::ReconcilePass
+                && record.position_id.as_deref() == Some(adopted_position.as_str())
+                && record.client_order_id.as_deref() == Some(adopted_entry.as_str())
+                && record.prior_client_order_id.as_deref() == Some(retained_entry.as_str())
+    )));
+}
+
+#[test]
 fn pending_entry_identity_conflict_retains_entry_until_its_terminal_fill() {
     let mut strategy = ready_to_trade_strategy();
     let pending = pending_entry_state(&mut strategy, ClientOrderId::from("ENTRY-AUTHORITY-A"));
@@ -5030,11 +5179,11 @@ fn pending_entry_identity_conflict_retains_entry_until_its_terminal_fill() {
         ManagedPositionOrigin::RecoveryBootstrap,
         None,
     );
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(candidate)),
-        )));
+        )),
+    );
     assert!(matches!(
         strategy.exposure.state(),
         ExposureState::PendingEntry(current) if current.client_order_id == pending.client_order_id
@@ -5072,18 +5221,22 @@ fn pending_entry_identity_conflict_retains_entry_until_its_terminal_fill() {
 fn blind_recovery_raw_truth_never_clears_quarantine_but_fresh_probe_can() {
     let mut strategy = ready_to_trade_strategy();
     set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::None,
-        )));
+        )),
+    );
     assert!(matches!(
         strategy.exposure.state(),
         ExposureState::BlindRecovery(_)
     ));
-    strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::None),
-    ));
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(
+            AdoptionCapablePositionTruthEvent::AuthorizedRecovery(
+                FreshCanonicalPositionProjection::None,
+            ),
+        ),
+    );
     assert!(matches!(strategy.exposure.state(), ExposureState::Flat));
 }
 
@@ -5100,17 +5253,21 @@ fn occupied_source_blind_recovery_rejects_transient_fresh_none() {
         OrderSide::Buy,
         PositionSide::Long,
     );
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ProbeFailed {
                 diagnostic: "transient probe failure".to_string(),
                 recovery: BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
             },
-        )));
-    strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::None),
-    ));
+        )),
+    );
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(
+            AdoptionCapablePositionTruthEvent::AuthorizedRecovery(
+                FreshCanonicalPositionProjection::None,
+            ),
+        ),
+    );
     assert!(matches!(
         strategy.exposure.state(),
         ExposureState::BlindRecovery(BlindRecoveryState {
@@ -5120,14 +5277,14 @@ fn occupied_source_blind_recovery_rejects_transient_fresh_none() {
             ..
         })
     ));
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ProbeFailed {
                 diagnostic: "repeated transient probe failure".to_string(),
                 recovery: BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
             },
-        )));
+        )),
+    );
     assert!(matches!(
         strategy.exposure.state(),
         ExposureState::BlindRecovery(BlindRecoveryState {
@@ -5221,24 +5378,28 @@ fn every_blind_recovery_reason_rejects_raw_truth_and_uses_its_authorized_class()
         strategy.exposure.reduce(ExposureEvent::PositionTruth(
             PositionTruthEvent::BlindRecovery(recovery),
         ));
-        strategy
-            .exposure
-            .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-                CanonicalPositionProjection::ExactlyOne(Box::new(managed.clone())),
-            )));
-        strategy
-            .exposure
-            .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-                CanonicalPositionProjection::None,
-            )));
+        strategy.exposure.reduce_without_replacement_adoption(
+            AdoptionCapableExposureEvent::PositionTruth(
+                AdoptionCapablePositionTruthEvent::Canonical(
+                    CanonicalPositionProjection::ExactlyOne(Box::new(managed.clone())),
+                ),
+            ),
+        );
+        strategy.exposure.reduce_without_replacement_adoption(
+            AdoptionCapableExposureEvent::PositionTruth(
+                AdoptionCapablePositionTruthEvent::Canonical(CanonicalPositionProjection::None),
+            ),
+        );
         assert!(matches!(
             strategy.exposure.state(),
             ExposureState::BlindRecovery(_)
         ));
 
-        strategy.exposure.reduce(ExposureEvent::PositionTruth(
-            PositionTruthEvent::AuthorizedRecovery(authorized_projection),
-        ));
+        strategy.exposure.reduce_without_replacement_adoption(
+            AdoptionCapableExposureEvent::PositionTruth(
+                AdoptionCapablePositionTruthEvent::AuthorizedRecovery(authorized_projection),
+            ),
+        );
         assert!(matches!(
             strategy.exposure.state(),
             ExposureState::Flat | ExposureState::Managed(_)
@@ -5254,14 +5415,14 @@ fn occupied_blind_recovery_accumulates_matching_entry_and_exit_terminal_proofs()
         ClientOrderId::from("ENTRY-BLIND-RETAINED"),
     );
     set_pending_entry(&mut entry_strategy, pending);
-    entry_strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    entry_strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ProbeFailed {
                 diagnostic: "entry probe failed".to_string(),
                 recovery: BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
             },
-        )));
+        )),
+    );
     entry_strategy
         .exposure
         .reduce(ExposureEvent::EntryLifecycle(
@@ -5276,9 +5437,13 @@ fn occupied_blind_recovery_accumulates_matching_entry_and_exit_terminal_proofs()
             ..
         }) if matches!(**retained, ExposureState::Flat)
     ));
-    entry_strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::None),
-    ));
+    entry_strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(
+            AdoptionCapablePositionTruthEvent::AuthorizedRecovery(
+                FreshCanonicalPositionProjection::None,
+            ),
+        ),
+    );
     assert!(matches!(
         entry_strategy.exposure.state(),
         ExposureState::Flat
@@ -5305,14 +5470,14 @@ fn occupied_blind_recovery_accumulates_matching_entry_and_exit_terminal_proofs()
         .exposure
         .exit_pending_snapshot()
         .expect("fixture should retain exit authority");
-    exit_strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    exit_strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ProbeFailed {
                 diagnostic: "exit probe failed".to_string(),
                 recovery: BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
             },
-        )));
+        )),
+    );
     exit_strategy.exposure.reduce(ExposureEvent::ExitLifecycle(
         ExitLifecycleEvent::TerminalAwaitingPosition(exit),
     ));
@@ -5332,9 +5497,13 @@ fn occupied_blind_recovery_accumulates_matching_entry_and_exit_terminal_proofs()
         exit_strategy.exposure.state(),
         ExposureState::BlindRecovery(_)
     ));
-    exit_strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::None),
-    ));
+    exit_strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(
+            AdoptionCapablePositionTruthEvent::AuthorizedRecovery(
+                FreshCanonicalPositionProjection::None,
+            ),
+        ),
+    );
     assert!(matches!(
         exit_strategy.exposure.state(),
         ExposureState::Flat
@@ -5535,12 +5704,16 @@ fn sink_unknown_requires_proof_and_discharges_terminal_and_filled_outcomes() {
     drop(participant);
     quarantined_strategy
         .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ProbeFailed {
-                diagnostic: "sink-unknown probe failed".to_string(),
-                recovery: BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
-            },
-        )));
+        .reduce_without_replacement_adoption(AdoptionCapableExposureEvent::PositionTruth(
+            AdoptionCapablePositionTruthEvent::Canonical(
+                CanonicalPositionProjection::ProbeFailed {
+                    diagnostic: "sink-unknown probe failed".to_string(),
+                    recovery: BlindRecoveryState::authority_free(
+                        BlindRecoveryReason::CacheProbeFailed,
+                    ),
+                },
+            ),
+        ));
     quarantined_strategy
         .exposure
         .reduce(ExposureEvent::TimerReconciliation(
@@ -5557,8 +5730,10 @@ fn sink_unknown_requires_proof_and_discharges_terminal_and_filled_outcomes() {
     ));
     quarantined_strategy
         .exposure
-        .reduce(ExposureEvent::PositionTruth(
-            PositionTruthEvent::AuthorizedRecovery(FreshCanonicalPositionProjection::None),
+        .reduce_without_replacement_adoption(AdoptionCapableExposureEvent::PositionTruth(
+            AdoptionCapablePositionTruthEvent::AuthorizedRecovery(
+                FreshCanonicalPositionProjection::None,
+            ),
         ));
     assert!(matches!(
         quarantined_strategy.exposure.state(),
@@ -6110,7 +6285,7 @@ fn exit_sink_unknown_terminal_callbacks_use_sealed_fill_authority_before_remanag
 fn bootstrap_and_correction_grants_commit_atomically_and_unwind_exactly() {
     let mut strategy = ready_to_trade_strategy();
     let instrument_id = selected_entry_instrument(&strategy);
-    let position = materialize_configured_position(
+    materialize_configured_position(
         &mut strategy,
         instrument_id,
         PositionId::from("P-GOVERNED-COMMITS"),
@@ -6180,36 +6355,19 @@ fn bootstrap_and_correction_grants_commit_atomically_and_unwind_exactly() {
         .exposure
         .request_correction_operation(generation)
         .expect("correction unwind should restore exact generation");
-    let close_generation = strategy.exposure.generation();
-    let close_projection = strategy
-        .exposure
-        .managed_position_context()
-        .expect("provisional correction retains managed authority");
-    correction.commit(ExposureEvent::PositionClosed(
-        PositionClosedEvent::ObservedWithFreshProjection {
-            expected_generation: close_generation,
-            episode: position.episode,
-            projection: FreshCanonicalPositionProjection::ExactlyOne(Box::new(
-                ClassifiedOpenPosition::Managed(close_projection),
-            )),
-        },
+    let preserved = correction.commit(ExitLifecycleEvent::ReleaseFlat);
+    assert!(matches!(
+        preserved,
+        ExposureTransitionOutcome::Preserved {
+            state: ExposureStateKind::Managed
+        }
     ));
-    assert!(
-        strategy
-            .exposure
-            .managed_position_context()
-            .is_some_and(|context| context.episode_close_seen)
-    );
     let generation = strategy.exposure.generation();
     let correction = strategy
         .exposure
         .request_correction_operation(generation)
-        .expect("managed exposure should provisionally grant correction");
-    let preserved = correction.commit(ExposureEvent::UntrackedOrder(
-        UntrackedOrderEvent::ResolveHistoricalExitCorrection {
-            client_order_id: ClientOrderId::from("ABSENT-CORRECTION"),
-        },
-    ));
+        .expect("preserved correction should unwind its provisional arm");
+    let preserved = correction.commit(ExitLifecycleEvent::ReleaseFlat);
     assert!(matches!(
         preserved,
         ExposureTransitionOutcome::Preserved {
@@ -6232,17 +6390,12 @@ fn bootstrap_and_correction_grants_commit_atomically_and_unwind_exactly() {
         .exposure
         .managed_position_context()
         .expect("managed context should remain available");
-    let refreshed_episode = refreshed.episode.clone();
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(refreshed)),
-        )));
-    let stale = correction.commit(ExposureEvent::SettlementEffect(
-        SettlementEffectEvent::ReleaseFlat {
-            episode: refreshed_episode,
-        },
-    ));
+        )),
+    );
+    let stale = correction.commit(ExitLifecycleEvent::ReleaseFlat);
     assert!(matches!(
         stale,
         ExposureTransitionOutcome::Preserved {
@@ -7100,14 +7253,16 @@ fn authenticated_opening_fill_void_rebases_a_continuous_episode_and_refloors_clo
     rebased.episode.opening_order_id = ClientOrderId::from("ENTRY-REBASE-SURVIVOR");
     rebased.episode.ts_opened_ns = 2_000;
     rebased.episode_fill_ids = BTreeSet::from([surviving_fill_id]);
-    strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthenticatedEpisodeRebase {
-            before: before.episode.clone(),
-            authenticated_order_id: before.episode.opening_order_id,
-            authenticated_fill_id: opening_fill_id,
-            rebased: Some(rebased.clone()),
-        },
-    ));
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(
+            AdoptionCapablePositionTruthEvent::AuthenticatedEpisodeRebase {
+                before: before.episode.clone(),
+                authenticated_order_id: before.episode.opening_order_id,
+                authenticated_fill_id: opening_fill_id,
+                rebased: Some(Box::new(rebased.clone())),
+            },
+        ),
+    );
 
     let current = strategy
         .exposure
@@ -7116,11 +7271,11 @@ fn authenticated_opening_fill_void_rebases_a_continuous_episode_and_refloors_clo
     assert_eq!(current.episode, rebased.episode);
     assert!(!current.episode_close_seen);
     assert!(!current.canonical_none_seen);
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::None,
-        )));
+        )),
+    );
     assert!(matches!(
         strategy.exposure.state(),
         ExposureState::Managed(_)
@@ -7133,8 +7288,15 @@ fn split_flip_fill_void_fixture(
     BinaryOracleEdgeTaker,
     PositionEpisodeFingerprint,
     PositionEpisodeFingerprint,
+    Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
 ) {
-    let mut strategy = ready_to_trade_strategy();
+    let evidence = recording_decision_evidence();
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+        ),
+    );
     let instrument_id = selected_entry_instrument(&strategy);
     let position_id = PositionId::from("P-SPLIT-FLIP-VOID");
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
@@ -7235,12 +7397,12 @@ fn split_flip_fill_void_fixture(
         opening_order_id: position.opening_order_id,
         ts_opened_ns: position.ts_opened.as_u64(),
     };
-    (strategy, episode_b, corrected_episode)
+    (strategy, episode_b, corrected_episode, evidence)
 }
 
 #[test]
 fn pinned_nt_split_flip_void_cannot_transfer_exit_authority_across_flat_segment() {
-    let (strategy, episode_b, corrected_episode_a) =
+    let (strategy, episode_b, corrected_episode_a, evidence) =
         split_flip_fill_void_fixture(Quantity::new(12.0, 2));
 
     assert_ne!(episode_b, corrected_episode_a);
@@ -7249,21 +7411,32 @@ fn pinned_nt_split_flip_void_cannot_transfer_exit_authority_across_flat_segment(
         strategy.exposure.state(),
         ExposureState::Managed(current) if current.episode == corrected_episode_a
     ));
-    let adoption = strategy
-        .exposure
-        .replacement_adoption()
-        .expect("flat-crossing replay must adopt the later authoritative segment explicitly");
-    assert_eq!(adoption.retained_episode, episode_b);
-    assert_eq!(adoption.adopted.episode, corrected_episode_a);
-    assert_eq!(
-        adoption.cause,
-        ReplacementAdoptionCause::AuthenticatedCorrection
-    );
+    let corrected_instrument_id = corrected_episode_a.instrument_id.to_string();
+    let facts = evidence
+        .recorded_facts()
+        .expect("flat-crossing replay adoption evidence should decode");
+    assert!(facts.iter().any(|fact| matches!(
+        fact,
+        CurrentFact::OrderLifecycle(record)
+            if record.transition == OrderLifecycleTransition::ReplacementAdopted
+                && record.outcome == OrderLifecycleOutcome::Managed
+                && record.source == OrderLifecycleSource::OrderFillVoided
+                && record.instrument_id.as_deref()
+                    == Some(corrected_instrument_id.as_str())
+                && record.position_id.as_deref()
+                    == Some(corrected_episode_a.position_id.as_str())
+                && record.client_order_id.as_deref()
+                    == Some(corrected_episode_a.opening_order_id.as_str())
+                && record.prior_client_order_id.as_deref()
+                    == Some(episode_b.opening_order_id.as_str())
+                && record.raw_reason_text.as_deref()
+                    == Some("authenticated_fill_void_correction")
+    )));
 }
 
 #[test]
 fn pinned_nt_partial_split_fragment_void_preserves_same_segment_exit_authority() {
-    let (strategy, episode_b, corrected_episode) =
+    let (strategy, episode_b, corrected_episode, evidence) =
         split_flip_fill_void_fixture(Quantity::new(2.0, 2));
 
     assert_eq!(episode_b, corrected_episode);
@@ -7271,7 +7444,14 @@ fn pinned_nt_partial_split_fragment_void_preserves_same_segment_exit_authority()
         strategy.exposure.exit_pending_snapshot(),
         Some(exit) if exit.episode() == episode_b
     ));
-    assert!(strategy.exposure.replacement_adoption().is_none());
+    let facts = evidence
+        .recorded_facts()
+        .expect("same-segment replay evidence should decode");
+    assert!(!facts.iter().any(|fact| matches!(
+        fact,
+        CurrentFact::OrderLifecycle(record)
+            if record.transition == OrderLifecycleTransition::ReplacementAdopted
+    )));
 }
 
 #[test]
@@ -7297,27 +7477,31 @@ fn authenticated_sole_opening_fill_void_uses_correction_specific_release_proof()
         .next()
         .expect("cache-derived episode must record its opening fill");
 
-    strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthenticatedEpisodeRebase {
-            before: before.episode.clone(),
-            authenticated_order_id: before.episode.opening_order_id,
-            authenticated_fill_id: TradeId::from("TRADE-NOT-IN-EPISODE"),
-            rebased: None,
-        },
-    ));
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(
+            AdoptionCapablePositionTruthEvent::AuthenticatedEpisodeRebase {
+                before: before.episode.clone(),
+                authenticated_order_id: before.episode.opening_order_id,
+                authenticated_fill_id: TradeId::from("TRADE-NOT-IN-EPISODE"),
+                rebased: None,
+            },
+        ),
+    );
     assert!(matches!(
         strategy.exposure.state(),
         ExposureState::Managed(_)
     ));
 
-    strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthenticatedEpisodeRebase {
-            before: before.episode.clone(),
-            authenticated_order_id: before.episode.opening_order_id,
-            authenticated_fill_id: opening_fill_id,
-            rebased: None,
-        },
-    ));
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(
+            AdoptionCapablePositionTruthEvent::AuthenticatedEpisodeRebase {
+                before: before.episode.clone(),
+                authenticated_order_id: before.episode.opening_order_id,
+                authenticated_fill_id: opening_fill_id,
+                rebased: None,
+            },
+        ),
+    );
     assert!(matches!(strategy.exposure.state(), ExposureState::Flat));
 }
 
@@ -7359,14 +7543,16 @@ fn authenticated_rebase_updates_the_sealed_exit_authority_and_position_atomicall
     rebased.episode.ts_opened_ns = 3_000;
     rebased.episode_fill_ids = BTreeSet::from([surviving_fill_id]);
 
-    strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthenticatedEpisodeRebase {
-            before: before.episode.clone(),
-            authenticated_order_id: before.episode.opening_order_id,
-            authenticated_fill_id: opening_fill_id,
-            rebased: Some(rebased.clone()),
-        },
-    ));
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(
+            AdoptionCapablePositionTruthEvent::AuthenticatedEpisodeRebase {
+                before: before.episode.clone(),
+                authenticated_order_id: before.episode.opening_order_id,
+                authenticated_fill_id: opening_fill_id,
+                rebased: Some(Box::new(rebased.clone())),
+            },
+        ),
+    );
     let exit = strategy
         .exposure
         .exit_pending_snapshot()
@@ -7417,19 +7603,21 @@ fn correction_closing_episode_a_never_rebases_reopened_episode_b_with_the_same_p
     context_b.episode.ts_opened_ns = 4_000;
     context_b.episode_fill_ids = BTreeSet::from([TradeId::from("TRADE-REBASE-B")]);
     context_b.replay_segment.clear();
-    strategy
-        .exposure
-        .reduce(ExposureEvent::PositionTruth(PositionTruthEvent::Canonical(
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ExactlyOne(Box::new(context_b.clone())),
-        )));
-    strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::AuthenticatedEpisodeRebase {
-            before: context_a.episode.clone(),
-            authenticated_order_id: context_a.episode.opening_order_id,
-            authenticated_fill_id: opening_fill_a,
-            rebased: Some(context_b.clone()),
-        },
-    ));
+        )),
+    );
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(
+            AdoptionCapablePositionTruthEvent::AuthenticatedEpisodeRebase {
+                before: context_a.episode.clone(),
+                authenticated_order_id: context_a.episode.opening_order_id,
+                authenticated_fill_id: opening_fill_a,
+                rebased: Some(Box::new(context_b.clone())),
+            },
+        ),
+    );
 
     assert!(matches!(
         strategy.exposure.state(),

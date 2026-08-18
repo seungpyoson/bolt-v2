@@ -3338,30 +3338,6 @@ impl BoltV3EconomicsSubmitAdmission {
         &self.economics
     }
 
-    pub fn validate_remaining_margin_at(
-        &self,
-        now_ns: u64,
-    ) -> Result<(), BoltV3SubmitAdmissionError> {
-        validate_economics_remaining_margin_at(
-            &self.economics,
-            self.required_remaining_margin_ns,
-            now_ns,
-        )
-    }
-
-    pub fn validate_final_order(
-        &self,
-        order: &OrderAny,
-        execution_client_id: &str,
-    ) -> Result<(), BoltV3SubmitAdmissionError> {
-        validate_economics_submit_authority(
-            &self.request,
-            &self.economics,
-            order,
-            execution_client_id,
-        )
-    }
-
     pub(crate) fn into_parts(self) -> (BoltV3SubmitAdmissionRequest, EconomicsAdmission, u64) {
         (
             self.request,

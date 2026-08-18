@@ -109,11 +109,6 @@ forced_flat_thin_book_min_liquidity = 5.0
 lead_agreement_min_corr = 0.8
 lead_jitter_max_ms = 250
 
-[parameters.runtime.exposure_obligations]
-max_count = 64
-max_history_events_per_obligation = 256
-max_released_exit_provenance_count = 256
-
 [parameters.entry_order]
 side = "buy"
 position_side = "long"

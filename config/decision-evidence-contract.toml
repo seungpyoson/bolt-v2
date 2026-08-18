@@ -800,7 +800,7 @@ gate_id = "bolt_v3.exit_decision"
 id = "exit_hold_decision_v1"
 purpose = "exit_hold_decision"
 kind = "exit_hold_decision"
-schema_version = 3
+schema_version = 2
 gate_id = "bolt_v3.exit_decision"
 
 [[identities]]
@@ -828,7 +828,7 @@ gate_id = "bolt_v3.order_reject"
 id = "order_lifecycle_v1"
 purpose = "order_lifecycle"
 kind = "order_lifecycle"
-schema_version = 17
+schema_version = 16
 gate_id = "bolt_v3.order_lifecycle"
 
 [[identities]]
@@ -849,7 +849,7 @@ gate_id = "bolt_v3.settlement"
 id = "terminal_settlement_v1"
 purpose = "terminal_settlement"
 kind = "terminal_settlement"
-schema_version = 17
+schema_version = 16
 gate_id = "bolt_v3.settlement"
 
 [[identities]]

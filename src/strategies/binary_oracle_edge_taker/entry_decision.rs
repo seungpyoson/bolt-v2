@@ -219,7 +219,6 @@ pub(super) struct EntryEvaluation {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct EntrySubmissionDecision {
     pub(super) evaluation: EntryEvaluation,
-    pub(super) operation_generation: u64,
     pub(super) instrument_id: Option<InstrumentId>,
     pub(super) order_side: Option<OrderSide>,
     pub(super) price: Option<f64>,
@@ -354,7 +353,7 @@ pub(super) const fn blocked_strategy_input_canonical_state(
 /// The entry-skip producer's semantic state, from the closed registry.
 ///
 /// The novelty axis is the skip reason itself, which is what the registry's
-/// twenty-one-state domain enumerates. Exhaustive for the same reason as above.
+/// nineteen-state domain enumerates. Exhaustive for the same reason as above.
 pub(super) const fn entry_skip_canonical_state(
     reason: EvidenceEntrySkipReason,
 ) -> EvidenceCanonicalState {
@@ -404,12 +403,6 @@ pub(super) const fn entry_skip_canonical_state(
         }
         EvidenceEntrySkipReason::OnePositionInvariantViolation => {
             EvidenceCanonicalState::EntrySkipOnePositionInvariantViolation
-        }
-        EvidenceEntrySkipReason::EntryOperationStaleGeneration => {
-            EvidenceCanonicalState::EntrySkipEntryOperationStaleGeneration
-        }
-        EvidenceEntrySkipReason::EntryOperationAlreadyArmed => {
-            EvidenceCanonicalState::EntrySkipEntryOperationAlreadyArmed
         }
         EvidenceEntrySkipReason::EntryMalformedRejected => {
             EvidenceCanonicalState::EntrySkipEntryMalformedRejected
@@ -619,10 +612,6 @@ pub(super) const fn entry_skip_reason_label(reason: EvidenceEntrySkipReason) -> 
         EvidenceEntrySkipReason::OnePositionInvariantViolation => {
             "one_position_invariant_violation"
         }
-        EvidenceEntrySkipReason::EntryOperationStaleGeneration => {
-            "entry_operation_stale_generation"
-        }
-        EvidenceEntrySkipReason::EntryOperationAlreadyArmed => "entry_operation_already_armed",
         EvidenceEntrySkipReason::EntryMalformedRejected => "entry_malformed_rejected",
         EvidenceEntrySkipReason::EntryBalanceRejected => "entry_balance_rejected",
         EvidenceEntrySkipReason::EntryUnfillableRejectedUnchangedBook => {

@@ -507,7 +507,7 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
         },
         KnownIdentity::ExitHoldDecisionV1 => IdentityDescriptor {
             kind: "exit_hold_decision",
-            schema_version: 3,
+            schema_version: 2,
             gate_id: "bolt_v3.exit_decision",
         },
         KnownIdentity::ExitEvaluationV1 => IdentityDescriptor {
@@ -527,7 +527,7 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
         },
         KnownIdentity::OrderLifecycleV1 => IdentityDescriptor {
             kind: "order_lifecycle",
-            schema_version: 17,
+            schema_version: 16,
             gate_id: "bolt_v3.order_lifecycle",
         },
         KnownIdentity::RequoteThrottleObservationV1 => IdentityDescriptor {
@@ -542,7 +542,7 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
         },
         KnownIdentity::TerminalSettlementV1 => IdentityDescriptor {
             kind: "terminal_settlement",
-            schema_version: 17,
+            schema_version: 16,
             gate_id: "bolt_v3.settlement",
         },
         KnownIdentity::ProviderCollateralAllowanceCaptureFailureV1 => IdentityDescriptor {
@@ -971,7 +971,7 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     if kind == "exit_prepared_order" && schema_version == 2 {
         return Some(KnownIdentity::ExitPreparedOrderV1);
     }
-    if kind == "exit_hold_decision" && schema_version == 3 {
+    if kind == "exit_hold_decision" && schema_version == 2 {
         return Some(KnownIdentity::ExitHoldDecisionV1);
     }
     if kind == "exit_evaluation" && schema_version == 17 {
@@ -983,7 +983,7 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     if kind == "order_reject" && schema_version == 17 {
         return Some(KnownIdentity::OrderRejectV1);
     }
-    if kind == "order_lifecycle" && schema_version == 17 {
+    if kind == "order_lifecycle" && schema_version == 16 {
         return Some(KnownIdentity::OrderLifecycleV1);
     }
     if kind == "requote_throttle" && schema_version == 16 {
@@ -992,7 +992,7 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     if kind == "settlement" && schema_version == 16 {
         return Some(KnownIdentity::SettlementV1);
     }
-    if kind == "terminal_settlement" && schema_version == 17 {
+    if kind == "terminal_settlement" && schema_version == 16 {
         return Some(KnownIdentity::TerminalSettlementV1);
     }
     if kind == "provider_collateral_allowance_capture_failure" && schema_version == 17 {

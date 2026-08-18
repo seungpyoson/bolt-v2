@@ -32,30 +32,6 @@ mod shared_fixture;
 
 use shared_fixture::*;
 
-trait GovernedExposureAdoptionTestExt {
-    fn reduce_without_replacement_adoption(
-        &self,
-        event: AdoptionCapableExposureEvent,
-    ) -> ExposureTransitionOutcome;
-}
-
-impl GovernedExposureAdoptionTestExt for GovernedExposure {
-    fn reduce_without_replacement_adoption(
-        &self,
-        event: AdoptionCapableExposureEvent,
-    ) -> ExposureTransitionOutcome {
-        let ExposureAdoptionCommit {
-            outcome,
-            replacement_adoption,
-        } = self.reduce(event);
-        assert!(
-            replacement_adoption.is_none(),
-            "test must handle replacement adoption explicitly"
-        );
-        outcome
-    }
-}
-
 mod adverse_path_harness;
 mod book_sizing;
 mod config;

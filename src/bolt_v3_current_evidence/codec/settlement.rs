@@ -174,14 +174,11 @@ fn validate_terminal(fact: &TerminalSettlementFact) -> Result<(), RecordFailure>
         )));
     }
     if fact.lifecycle.transition != OrderLifecycleTransition::SettlementBookingTerminal
-        || !matches!(
-            fact.lifecycle.outcome,
-            OrderLifecycleOutcome::ExitPending | OrderLifecycleOutcome::Flat
-        )
+        || fact.lifecycle.outcome != OrderLifecycleOutcome::Flat
         || fact.lifecycle.source != OrderLifecycleSource::SettlementBookingTerminal
     {
         return Err(RecordFailure::Rejected(anyhow::anyhow!(
-            "terminal settlement lifecycle must be settlement-booking-terminal with exit-pending or flat outcome"
+            "terminal settlement lifecycle must be settlement-booking-terminal/flat"
         )));
     }
     let booking_error = &fact.booking_error;
@@ -467,8 +464,6 @@ enum TerminalLifecycleSourceV1 {
     SettlementEvidenceRecovery,
     SettlementBookingTerminal,
     ReconcilePass,
-    OrderFillVoided,
-    PositionClosed,
 }
 
 impl TerminalLifecycleSourceV1 {
@@ -485,8 +480,6 @@ impl TerminalLifecycleSourceV1 {
             OrderLifecycleSource::SettlementEvidenceRecovery => Self::SettlementEvidenceRecovery,
             OrderLifecycleSource::SettlementBookingTerminal => Self::SettlementBookingTerminal,
             OrderLifecycleSource::ReconcilePass => Self::ReconcilePass,
-            OrderLifecycleSource::OrderFillVoided => Self::OrderFillVoided,
-            OrderLifecycleSource::PositionClosed => Self::PositionClosed,
         }
     }
 
@@ -503,8 +496,6 @@ impl TerminalLifecycleSourceV1 {
             Self::SettlementEvidenceRecovery => OrderLifecycleSource::SettlementEvidenceRecovery,
             Self::SettlementBookingTerminal => OrderLifecycleSource::SettlementBookingTerminal,
             Self::ReconcilePass => OrderLifecycleSource::ReconcilePass,
-            Self::OrderFillVoided => OrderLifecycleSource::OrderFillVoided,
-            Self::PositionClosed => OrderLifecycleSource::PositionClosed,
         }
     }
 }
@@ -613,15 +604,6 @@ enum LifecycleTransitionV1 {
     OrderExpired,
     OrderFilled,
     ReconcileQueryFailed,
-    ExposureQuarantined,
-    PositionIdentityConflict,
-    ReplacementAdopted,
-    CanonicalPositionAwaiting,
-    CanonicalPositionMultiplicity,
-    OperationSinkUnknownEntered,
-    OperationSinkUnknownResolved,
-    HistoricalExitCorrectionDeferred,
-    ExposureObligationSaturated,
 }
 
 impl LifecycleTransitionV1 {
@@ -649,25 +631,6 @@ impl LifecycleTransitionV1 {
             OrderLifecycleTransition::OrderExpired => Self::OrderExpired,
             OrderLifecycleTransition::OrderFilled => Self::OrderFilled,
             OrderLifecycleTransition::ReconcileQueryFailed => Self::ReconcileQueryFailed,
-            OrderLifecycleTransition::ExposureQuarantined => Self::ExposureQuarantined,
-            OrderLifecycleTransition::PositionIdentityConflict => Self::PositionIdentityConflict,
-            OrderLifecycleTransition::ReplacementAdopted => Self::ReplacementAdopted,
-            OrderLifecycleTransition::CanonicalPositionAwaiting => Self::CanonicalPositionAwaiting,
-            OrderLifecycleTransition::CanonicalPositionMultiplicity => {
-                Self::CanonicalPositionMultiplicity
-            }
-            OrderLifecycleTransition::OperationSinkUnknownEntered => {
-                Self::OperationSinkUnknownEntered
-            }
-            OrderLifecycleTransition::OperationSinkUnknownResolved => {
-                Self::OperationSinkUnknownResolved
-            }
-            OrderLifecycleTransition::HistoricalExitCorrectionDeferred => {
-                Self::HistoricalExitCorrectionDeferred
-            }
-            OrderLifecycleTransition::ExposureObligationSaturated => {
-                Self::ExposureObligationSaturated
-            }
         }
     }
 
@@ -695,25 +658,6 @@ impl LifecycleTransitionV1 {
             Self::OrderExpired => OrderLifecycleTransition::OrderExpired,
             Self::OrderFilled => OrderLifecycleTransition::OrderFilled,
             Self::ReconcileQueryFailed => OrderLifecycleTransition::ReconcileQueryFailed,
-            Self::ExposureQuarantined => OrderLifecycleTransition::ExposureQuarantined,
-            Self::PositionIdentityConflict => OrderLifecycleTransition::PositionIdentityConflict,
-            Self::ReplacementAdopted => OrderLifecycleTransition::ReplacementAdopted,
-            Self::CanonicalPositionAwaiting => OrderLifecycleTransition::CanonicalPositionAwaiting,
-            Self::CanonicalPositionMultiplicity => {
-                OrderLifecycleTransition::CanonicalPositionMultiplicity
-            }
-            Self::OperationSinkUnknownEntered => {
-                OrderLifecycleTransition::OperationSinkUnknownEntered
-            }
-            Self::OperationSinkUnknownResolved => {
-                OrderLifecycleTransition::OperationSinkUnknownResolved
-            }
-            Self::HistoricalExitCorrectionDeferred => {
-                OrderLifecycleTransition::HistoricalExitCorrectionDeferred
-            }
-            Self::ExposureObligationSaturated => {
-                OrderLifecycleTransition::ExposureObligationSaturated
-            }
         }
     }
 }
@@ -728,10 +672,6 @@ enum LifecycleOutcomeV1 {
     UnsupportedObserved,
     BlindRecovery,
     Flat,
-    Quarantined,
-    ReplacementConflict,
-    OperationSinkUnknown,
-    ObligationSaturated,
 }
 
 impl LifecycleOutcomeV1 {
@@ -744,10 +684,6 @@ impl LifecycleOutcomeV1 {
             OrderLifecycleOutcome::UnsupportedObserved => Self::UnsupportedObserved,
             OrderLifecycleOutcome::BlindRecovery => Self::BlindRecovery,
             OrderLifecycleOutcome::Flat => Self::Flat,
-            OrderLifecycleOutcome::Quarantined => Self::Quarantined,
-            OrderLifecycleOutcome::ReplacementConflict => Self::ReplacementConflict,
-            OrderLifecycleOutcome::OperationSinkUnknown => Self::OperationSinkUnknown,
-            OrderLifecycleOutcome::ObligationSaturated => Self::ObligationSaturated,
         }
     }
 
@@ -760,10 +696,6 @@ impl LifecycleOutcomeV1 {
             Self::UnsupportedObserved => OrderLifecycleOutcome::UnsupportedObserved,
             Self::BlindRecovery => OrderLifecycleOutcome::BlindRecovery,
             Self::Flat => OrderLifecycleOutcome::Flat,
-            Self::Quarantined => OrderLifecycleOutcome::Quarantined,
-            Self::ReplacementConflict => OrderLifecycleOutcome::ReplacementConflict,
-            Self::OperationSinkUnknown => OrderLifecycleOutcome::OperationSinkUnknown,
-            Self::ObligationSaturated => OrderLifecycleOutcome::ObligationSaturated,
         }
     }
 }

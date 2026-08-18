@@ -13,7 +13,7 @@ fn switch_resets_only_active_market_state() {
             churn_count: 2,
         },
     );
-    set_blind_probe_recovery(&mut strategy);
+    set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
     strategy
         .pricing
         .set_selected_pricing_spot(Some(fast_spot("bybit", 3_100.5, 1_200)));
@@ -86,8 +86,7 @@ fn fill_arms_cooldown_for_filled_market_not_current_selection() {
     strategy.on_order_filled(&order_filled_event(
         entry_client_order_id,
         instrument_a,
-        Some(position_id),
-        OrderSide::Buy,
+        position_id,
     ));
 
     assert!(strategy.market_in_cooldown("MKT-1", 1_000));
@@ -108,8 +107,6 @@ fn exit_fill_arms_cooldown_for_position_market_not_current_selection() {
         position_id,
         Quantity::new(10.0, 2),
         0.450,
-        OrderSide::Buy,
-        PositionSide::Long,
     );
     set_exit_pending(
         &mut strategy,
@@ -122,8 +119,7 @@ fn exit_fill_arms_cooldown_for_position_market_not_current_selection() {
     strategy.on_order_filled(&order_filled_event(
         exit_client_order_id,
         tracked_instrument,
-        Some(position_id),
-        OrderSide::Buy,
+        position_id,
     ));
 
     assert!(strategy.market_in_cooldown("MKT-1", 1_000));
@@ -144,8 +140,6 @@ fn exit_fill_without_known_position_market_does_not_cool_down_active_selection()
         position_id,
         Quantity::new(10.0, 2),
         0.450,
-        OrderSide::Buy,
-        PositionSide::Long,
     );
     open_position.lifecycle = BoltV3PositionMarketLifecycle::missing();
     set_exit_pending(
@@ -159,8 +153,7 @@ fn exit_fill_without_known_position_market_does_not_cool_down_active_selection()
     strategy.on_order_filled(&order_filled_event(
         exit_client_order_id,
         tracked_instrument,
-        Some(position_id),
-        OrderSide::Buy,
+        position_id,
     ));
 
     assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
@@ -178,8 +171,6 @@ fn position_close_keeps_exit_fenced_until_delayed_fill_authority_converges() {
         position_id,
         Quantity::new(10.0, 2),
         0.450,
-        OrderSide::Buy,
-        PositionSide::Long,
     );
     set_exit_pending(
         &mut strategy,
@@ -197,7 +188,7 @@ fn position_close_keeps_exit_fenced_until_delayed_fill_authority_converges() {
     );
     assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
 
-    let mut delayed_fill = order_filled_event(
+    let mut delayed_fill = order_filled_event_with_details(
         exit_client_order_id,
         tracked_instrument,
         Some(position_id),
@@ -213,11 +204,11 @@ fn position_close_keeps_exit_fenced_until_delayed_fill_authority_converges() {
     strategy.on_order_filled(&delayed_fill);
 
     assert!(matches!(
-        strategy.exposure.state(),
+        strategy.exposure,
         ExposureState::TerminalExitAwaitingPosition(_)
     ));
     assert_eq!(
-        pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id()),
+        pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id),
         Some(exit_client_order_id),
         "the delayed terminal fill must remain correlated until position authority converges"
     );
@@ -706,7 +697,6 @@ fn tracked_market_lifecycle_is_retained_after_cooldown_expiry() {
     let mut strategy = ready_to_trade_strategy();
     let tracked_instrument = strategy.active.books.up.instrument_id.unwrap();
     let open_position = OpenPositionState {
-        episode: position_episode_for_test(tracked_instrument, PositionId::from("P-LIFECYCLE-001")),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
             Some(OutcomeSide::Up),

@@ -127,8 +127,7 @@ fn real_market_change_preserves_retained_instrument_trade_flow() {
     strategy.on_order_filled(&order_filled_event(
         entry_client_order_id,
         retained_instrument,
-        Some(position_id),
-        OrderSide::Buy,
+        position_id,
     ));
     assert_eq!(
         strategy.book_subscriptions.tracked_position_instrument_id,

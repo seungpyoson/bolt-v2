@@ -151,7 +151,6 @@ fn rotated_position_uses_position_book_for_thin_book_forced_flat() {
     tracked_book.best_ask = Some(0.450);
     tracked_book.liquidity_available = Some(5.0);
     let open_position = OpenPositionState {
-        episode: position_episode_for_test(position_instrument, PositionId::from("P-THIN-001")),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-A".to_string()),
             Some(position_outcome_side),

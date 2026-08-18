@@ -1,4 +1,8 @@
-use std::{cell::RefMut, collections::BTreeSet, rc::Rc};
+use std::{
+    cell::{RefCell, RefMut},
+    collections::BTreeSet,
+    rc::Rc,
+};
 
 use anyhow::{Context, Result};
 use nautilus_common::actor::DataActorNative;
@@ -386,24 +390,14 @@ pub(crate) struct BoltV3PositionReductionFence {
     proof_floor_generation: u64,
 }
 
-#[derive(Clone)]
 struct BoltV3ExitOrderAuthorityState {
     client_order_id: ClientOrderId,
     instrument_id: InstrumentId,
     position_id: PositionId,
-    episode: BoltV3PositionEpisodeFingerprint,
     latest_effective_filled_quantity: Decimal,
     latest_fill_ids: BTreeSet<TradeId>,
-    lease: Rc<BoltV3PositionAuthorityLease>,
+    lease: BoltV3PositionAuthorityLease,
     progress: BoltV3ExitOrderAuthorityProgress,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) struct BoltV3PositionEpisodeFingerprint {
-    pub(crate) instrument_id: InstrumentId,
-    pub(crate) position_id: PositionId,
-    pub(crate) opening_order_id: ClientOrderId,
-    pub(crate) ts_opened_ns: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -418,7 +412,6 @@ enum BoltV3RecoveredExitBaseline {
     },
 }
 
-#[derive(Clone)]
 enum BoltV3ExitOrderAuthorityProgress {
     Working,
     WorkingFenced(BoltV3PositionReductionFence),
@@ -437,7 +430,6 @@ enum BoltV3FillSetProof {
     RequiresPostEventReport,
 }
 
-#[derive(Clone)]
 enum BoltV3ExitOrderAuthority {
     LocallySubmitted {
         state: BoltV3ExitOrderAuthorityState,
@@ -468,12 +460,12 @@ pub(crate) enum BoltV3ExitOrderAuthorityOrigin {
 
 #[derive(Clone)]
 pub(crate) struct BoltV3ExitOrderAuthorityHandle {
-    inner: Rc<BoltV3ExitOrderAuthority>,
+    inner: Rc<RefCell<BoltV3ExitOrderAuthority>>,
 }
 
 impl std::fmt::Debug for BoltV3ExitOrderAuthorityHandle {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let authority = self.inner.as_ref();
+        let authority = self.inner.borrow();
         let state = authority.state();
         formatter
             .debug_struct("BoltV3ExitOrderAuthorityHandle")
@@ -499,46 +491,18 @@ impl PartialEq for BoltV3ExitOrderAuthorityHandle {
 }
 
 impl BoltV3ExitOrderAuthorityHandle {
-    pub(crate) fn client_order_id(&self) -> ClientOrderId {
-        self.inner.state().client_order_id
-    }
-
     pub(crate) fn instrument_id(&self) -> InstrumentId {
-        self.inner.state().instrument_id
+        self.inner.borrow().state().instrument_id
     }
 
     pub(crate) fn position_id(&self) -> PositionId {
-        self.inner.state().position_id
-    }
-
-    pub(crate) fn episode(&self) -> BoltV3PositionEpisodeFingerprint {
-        self.inner.state().episode.clone()
-    }
-
-    pub(crate) fn observed_fill_ids(&self) -> BTreeSet<TradeId> {
-        self.inner.state().latest_fill_ids.clone()
-    }
-
-    pub(crate) fn rebase_episode(
-        &mut self,
-        expected: &BoltV3PositionEpisodeFingerprint,
-        rebased: BoltV3PositionEpisodeFingerprint,
-    ) -> bool {
-        let authority = Rc::make_mut(&mut self.inner);
-        let state = authority.state_mut();
-        if &state.episode != expected {
-            return false;
-        }
-        state.episode = rebased;
-        state.progress = BoltV3ExitOrderAuthorityProgress::Working;
-        true
+        self.inner.borrow().state().position_id
     }
 
     pub(crate) fn locally_submitted(
         client_order_id: ClientOrderId,
         instrument_id: InstrumentId,
         position_id: PositionId,
-        episode: BoltV3PositionEpisodeFingerprint,
         compiled_quantity: Quantity,
         position_authority: BoltV3SealedPositionAuthority,
     ) -> Result<Self> {
@@ -551,7 +515,6 @@ impl BoltV3ExitOrderAuthorityHandle {
             client_order_id,
             instrument_id,
             position_id,
-            episode,
             BoltV3LocallySubmittedExitBaseline {
                 signed_quantity: canonical.signed_quantity(),
                 side: canonical.side(),
@@ -566,7 +529,6 @@ impl BoltV3ExitOrderAuthorityHandle {
         client_order_id: ClientOrderId,
         instrument_id: InstrumentId,
         position_id: PositionId,
-        episode: BoltV3PositionEpisodeFingerprint,
         baseline_signed_quantity: Decimal,
         baseline_side: PositionSideSpecified,
         compiled_quantity: Quantity,
@@ -576,7 +538,6 @@ impl BoltV3ExitOrderAuthorityHandle {
             client_order_id,
             instrument_id,
             position_id,
-            episode,
             BoltV3LocallySubmittedExitBaseline {
                 signed_quantity: baseline_signed_quantity,
                 side: baseline_side,
@@ -590,7 +551,6 @@ impl BoltV3ExitOrderAuthorityHandle {
         client_order_id: ClientOrderId,
         instrument_id: InstrumentId,
         position_id: PositionId,
-        episode: BoltV3PositionEpisodeFingerprint,
         baseline: BoltV3LocallySubmittedExitBaseline,
         compiled_quantity: Quantity,
         lease: BoltV3PositionAuthorityLease,
@@ -607,30 +567,32 @@ impl BoltV3ExitOrderAuthorityHandle {
             "local exit authority requires positive compiled quantity"
         );
         Ok(Self {
-            inner: Rc::new(BoltV3ExitOrderAuthority::LocallySubmitted {
+            inner: Rc::new(RefCell::new(BoltV3ExitOrderAuthority::LocallySubmitted {
                 state: BoltV3ExitOrderAuthorityState {
                     client_order_id,
                     instrument_id,
                     position_id,
-                    episode,
                     latest_effective_filled_quantity: Decimal::ZERO,
                     latest_fill_ids: BTreeSet::new(),
-                    lease: Rc::new(lease),
+                    lease,
                     progress: BoltV3ExitOrderAuthorityProgress::Working,
                 },
                 baseline,
                 compiled_quantity,
-            }),
+            })),
         })
     }
 
     pub(crate) fn observe_order(
-        &mut self,
+        &self,
         order: &OrderAny,
         latest_terminal_or_correction_ns: u64,
         correction: BoltV3ExitOrderCorrection,
     ) -> Result<BoltV3ExitOrderLifecycleReduction> {
-        let state = self.inner.state();
+        let mut authority = self.inner.borrow_mut();
+        let quantity_ceiling = authority.quantity_ceiling();
+        let fence_basis = authority.fence_basis();
+        let state = authority.state_mut();
         anyhow::ensure!(
             order.client_order_id() == state.client_order_id
                 && order.instrument_id() == state.instrument_id,
@@ -643,35 +605,19 @@ impl BoltV3ExitOrderAuthorityHandle {
             );
         }
         anyhow::ensure!(
-            order.quantity() == self.inner.quantity_ceiling(),
+            order.quantity() == quantity_ceiling,
             "exit authority order quantity changed after authority construction"
         );
-        self.observe_recovery_snapshot(
-            order.filled_qty(),
-            order.trade_ids().into_iter().copied().collect(),
-            order.is_closed(),
-            latest_terminal_or_correction_ns,
-            correction,
-        )
-    }
-
-    pub(crate) fn observe_recovery_snapshot(
-        &mut self,
-        effective_filled_quantity: Quantity,
-        required_trade_ids: BTreeSet<TradeId>,
-        terminal: bool,
-        latest_terminal_or_correction_ns: u64,
-        correction: BoltV3ExitOrderCorrection,
-    ) -> Result<BoltV3ExitOrderLifecycleReduction> {
-        let authority = Rc::make_mut(&mut self.inner);
-        let quantity_ceiling = authority.quantity_ceiling();
-        let fence_basis = authority.fence_basis();
-        let state = authority.state_mut();
-        let effective_filled_quantity = effective_filled_quantity.as_decimal();
+        let effective_filled_quantity = order.filled_qty().as_decimal();
         anyhow::ensure!(
             effective_filled_quantity <= quantity_ceiling.as_decimal(),
             "exit authority cumulative fills exceed the authorized quantity ceiling"
         );
+        let required_trade_ids = order
+            .trade_ids()
+            .into_iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
         let order_authority_changed = effective_filled_quantity
             != state.latest_effective_filled_quantity
             || required_trade_ids != state.latest_fill_ids;
@@ -680,21 +626,12 @@ impl BoltV3ExitOrderAuthorityHandle {
             BoltV3ExitOrderAuthorityProgress::Working => {}
             BoltV3ExitOrderAuthorityProgress::WorkingFenced(fence)
             | BoltV3ExitOrderAuthorityProgress::TerminalFenced(fence) => {
-                anyhow::ensure!(
-                    terminal
-                        || !matches!(
-                            &state.progress,
-                            BoltV3ExitOrderAuthorityProgress::TerminalFenced(_)
-                        )
-                        || correction == BoltV3ExitOrderCorrection::FillAuthorityChanged,
-                    "exit authority terminal observation regressed without a correction"
-                );
                 let mut next_fence = fence.clone();
                 let (fence_filled_quantity, fence_trade_ids) = fence_basis
                     .reduction_authority(effective_filled_quantity, &required_trade_ids)?;
                 if correction == BoltV3ExitOrderCorrection::FillAuthorityChanged
                     || order_authority_changed
-                    || terminal
+                    || order.is_closed()
                 {
                     next_fence.observe_terminal_or_correction(
                         &state.lease,
@@ -706,19 +643,19 @@ impl BoltV3ExitOrderAuthorityHandle {
                 }
                 state.latest_effective_filled_quantity = effective_filled_quantity;
                 state.latest_fill_ids = required_trade_ids;
-                state.progress = if terminal {
+                state.progress = if order.is_closed() {
                     BoltV3ExitOrderAuthorityProgress::TerminalFenced(next_fence)
                 } else {
                     BoltV3ExitOrderAuthorityProgress::WorkingFenced(next_fence)
                 };
-                return Ok(if terminal {
+                return Ok(if order.is_closed() {
                     BoltV3ExitOrderLifecycleReduction::TerminalAwaitingPosition
                 } else {
                     BoltV3ExitOrderLifecycleReduction::Working
                 });
             }
         }
-        if !terminal {
+        if !order.is_closed() {
             state.latest_effective_filled_quantity = effective_filled_quantity;
             state.latest_fill_ids = required_trade_ids;
             return Ok(BoltV3ExitOrderLifecycleReduction::Working);
@@ -784,49 +721,57 @@ impl BoltV3ExitOrderAuthorityHandle {
             baseline_signed_quantity,
             baseline_side,
             fill_delta,
-            required_trade_ids.clone(),
+            required_trade_ids,
             fill_set_proof,
             latest_terminal_or_correction_ns,
             minimum_proof_floor_generation,
         )?;
         state.latest_effective_filled_quantity = effective_filled_quantity;
-        state.latest_fill_ids = required_trade_ids;
+        state.latest_fill_ids = order
+            .trade_ids()
+            .into_iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
         state.progress = BoltV3ExitOrderAuthorityProgress::TerminalFenced(fence);
         Ok(BoltV3ExitOrderLifecycleReduction::TerminalAwaitingPosition)
     }
 
     pub(crate) fn refresh_recovered_baseline(
-        &mut self,
+        &self,
         capability: &BoltV3PositionAuthorityCapability,
     ) -> Result<()> {
-        let authority = self.inner.as_ref();
+        let authority = self.inner.borrow();
         let state = authority.state();
         let canonical = capability.canonical_position(state.position_id, state.instrument_id)?;
+        drop(authority);
         self.refresh_recovered_baseline_with_canonical(canonical.as_ref())
     }
 
     #[cfg(test)]
     pub(crate) fn refresh_recovered_baseline_with_canonical_for_test(
-        &mut self,
+        &self,
         canonical: Option<&BoltV3CanonicalPositionAuthority>,
     ) -> Result<()> {
         self.refresh_recovered_baseline_with_canonical(canonical)
     }
 
     fn refresh_recovered_baseline_with_canonical(
-        &mut self,
+        &self,
         canonical: Option<&BoltV3CanonicalPositionAuthority>,
     ) -> Result<()> {
-        Rc::make_mut(&mut self.inner).establish_recovered_baseline(canonical)
+        self.inner
+            .borrow_mut()
+            .establish_recovered_baseline(canonical)
     }
 
     pub(crate) fn release(
         &self,
         capability: &BoltV3PositionAuthorityCapability,
     ) -> Result<BoltV3PositionReductionRelease> {
-        let authority = self.inner.as_ref();
+        let authority = self.inner.borrow();
         let state = authority.state();
         let canonical = capability.canonical_position(state.position_id, state.instrument_id)?;
+        drop(authority);
         self.release_with_canonical(canonical.as_ref())
     }
 
@@ -842,7 +787,7 @@ impl BoltV3ExitOrderAuthorityHandle {
         &self,
         canonical: Option<&BoltV3CanonicalPositionAuthority>,
     ) -> Result<BoltV3PositionReductionRelease> {
-        let authority = self.inner.as_ref();
+        let authority = self.inner.borrow();
         let state = authority.state();
         let BoltV3ExitOrderAuthorityProgress::TerminalFenced(fence) = &state.progress else {
             return Ok(BoltV3PositionReductionRelease::AwaitingAuthority);
@@ -855,7 +800,6 @@ impl BoltV3ExitOrderAuthorityHandle {
         client_order_id: ClientOrderId,
         instrument_id: InstrumentId,
         position_id: PositionId,
-        episode: BoltV3PositionEpisodeFingerprint,
         order: &OrderAny,
         position_authority: BoltV3SealedPositionAuthority,
     ) -> Result<Self> {
@@ -865,7 +809,6 @@ impl BoltV3ExitOrderAuthorityHandle {
             client_order_id,
             instrument_id,
             position_id,
-            episode,
             canonical.signed_quantity(),
             canonical.side(),
             order,
@@ -880,7 +823,6 @@ impl BoltV3ExitOrderAuthorityHandle {
         client_order_id: ClientOrderId,
         instrument_id: InstrumentId,
         position_id: PositionId,
-        episode: BoltV3PositionEpisodeFingerprint,
         adopted_signed_ceiling: Decimal,
         adopted_side: PositionSideSpecified,
         order: &OrderAny,
@@ -891,7 +833,6 @@ impl BoltV3ExitOrderAuthorityHandle {
             client_order_id,
             instrument_id,
             position_id,
-            episode,
             adopted_signed_ceiling,
             adopted_side,
             order,
@@ -905,7 +846,6 @@ impl BoltV3ExitOrderAuthorityHandle {
         client_order_id: ClientOrderId,
         instrument_id: InstrumentId,
         position_id: PositionId,
-        episode: BoltV3PositionEpisodeFingerprint,
         adopted_signed_ceiling: Decimal,
         adopted_side: PositionSideSpecified,
         order: &OrderAny,
@@ -920,15 +860,14 @@ impl BoltV3ExitOrderAuthorityHandle {
             "recovered exit authority requires positive order quantity"
         );
         Ok(Self {
-            inner: Rc::new(BoltV3ExitOrderAuthority::Recovered {
+            inner: Rc::new(RefCell::new(BoltV3ExitOrderAuthority::Recovered {
                 state: BoltV3ExitOrderAuthorityState {
                     client_order_id,
                     instrument_id,
                     position_id,
-                    episode,
                     latest_effective_filled_quantity: order.filled_qty().as_decimal(),
                     latest_fill_ids: order.trade_ids().into_iter().copied().collect(),
-                    lease: Rc::new(lease),
+                    lease,
                     progress: BoltV3ExitOrderAuthorityProgress::Working,
                 },
                 cause,
@@ -936,7 +875,7 @@ impl BoltV3ExitOrderAuthorityHandle {
                 adopted_side,
                 adopted_order_quantity: order.quantity(),
                 baseline: BoltV3RecoveredExitBaseline::AwaitingAuthoritativeBaseline,
-            }),
+            })),
         })
     }
 }
@@ -2955,18 +2894,6 @@ mod tests {
         )
     }
 
-    fn position_episode(
-        instrument_id: InstrumentId,
-        position_id: PositionId,
-    ) -> BoltV3PositionEpisodeFingerprint {
-        BoltV3PositionEpisodeFingerprint {
-            instrument_id,
-            position_id,
-            opening_order_id: ClientOrderId::from("ENTRY-EPISODE-001"),
-            ts_opened_ns: 1,
-        }
-    }
-
     #[derive(Clone, Copy)]
     enum NettingPositionFixtureState {
         Open,
@@ -3141,8 +3068,8 @@ mod tests {
         BoltV3ExitOrderLifecycleReduction, BoltV3FillSetProof, BoltV3FinalOrderEconomicsInput,
         BoltV3FinalOrderEconomicsScenario, BoltV3MakerOrderRoutingContext, BoltV3MakerOrderRuntime,
         BoltV3ModifyRoutingOutcome, BoltV3NtVenueMutationSink, BoltV3OrderExecutionMode,
-        BoltV3OrderExecutionPolicy, BoltV3PlannedFillLeg, BoltV3PositionEpisodeFingerprint,
-        BoltV3PositionReductionFence, BoltV3PositionReductionRelease, BoltV3RecoveredExitCause,
+        BoltV3OrderExecutionPolicy, BoltV3PlannedFillLeg, BoltV3PositionReductionFence,
+        BoltV3PositionReductionRelease, BoltV3RecoveredExitCause,
         BoltV3RestingSubmitTransactionOutcome, BoltV3RouteAttemptCompletion,
         BoltV3RouteAttemptParticipant, BoltV3SubmitAttemptKind, BoltV3SubmitContext,
         BoltV3SubmitRoutingRequest, BoltV3TakerEconomicsSizingInput, BoltV3TerminalValueEntry,
@@ -5495,11 +5422,10 @@ mod tests {
 
         let mut terminal_order =
             accepted_exit_order("O-19700101-000000-001-THIN-IOC-1", Quantity::new(5.0, 2));
-        let mut authority = BoltV3ExitOrderAuthorityHandle::locally_submitted(
+        let authority = BoltV3ExitOrderAuthorityHandle::locally_submitted(
             terminal_order.client_order_id(),
             terminal_order.instrument_id(),
             PositionId::from("1"),
-            position_episode(terminal_order.instrument_id(), PositionId::from("1")),
             terminal_order.quantity(),
             sealed_position_authority,
         )
@@ -5961,11 +5887,10 @@ mod tests {
         let lease = capability
             .acquire_for_position(position_id, instrument_id)
             .expect("local exit lease should acquire");
-        let mut authority = BoltV3ExitOrderAuthorityHandle::locally_submitted_for_test(
+        let authority = BoltV3ExitOrderAuthorityHandle::locally_submitted_for_test(
             ClientOrderId::from("EXIT-LOCAL-1"),
             instrument_id,
             position_id,
-            position_episode(instrument_id, position_id),
             Decimal::new(10, 0),
             PositionSideSpecified::Long,
             Quantity::new(5.0, 2),
@@ -6059,11 +5984,10 @@ mod tests {
         let lease = capability
             .acquire_for_position(position_id, instrument_id)
             .expect("local exit lease should acquire");
-        let mut authority = BoltV3ExitOrderAuthorityHandle::locally_submitted_for_test(
+        let authority = BoltV3ExitOrderAuthorityHandle::locally_submitted_for_test(
             ClientOrderId::from("EXIT-DENIED-ZERO-FILL"),
             instrument_id,
             position_id,
-            position_episode(instrument_id, position_id),
             Decimal::new(10, 0),
             PositionSideSpecified::Long,
             Quantity::new(5.0, 2),
@@ -6125,12 +6049,11 @@ mod tests {
         ))
         .expect("recovered baseline report should be observed");
         let mut order = accepted_exit_order("EXIT-RECOVERED-1", Quantity::new(5.0, 2));
-        let mut authority = BoltV3ExitOrderAuthorityHandle::recovered_for_test(
+        let authority = BoltV3ExitOrderAuthorityHandle::recovered_for_test(
             BoltV3RecoveredExitCause::StartupAdoption,
             order.client_order_id(),
             instrument_id,
             position_id,
-            position_episode(instrument_id, position_id),
             Decimal::new(10, 0),
             PositionSideSpecified::Long,
             &order,
@@ -6201,12 +6124,11 @@ mod tests {
             .acquire_for_position(position_id, instrument_id)
             .expect("recovered exit lease should acquire");
         let mut order = accepted_exit_order("EXIT-RECOVERED-2", Quantity::new(5.0, 2));
-        let mut authority = BoltV3ExitOrderAuthorityHandle::recovered_for_test(
+        let authority = BoltV3ExitOrderAuthorityHandle::recovered_for_test(
             BoltV3RecoveredExitCause::StartupAdoption,
             order.client_order_id(),
             instrument_id,
             position_id,
-            position_episode(instrument_id, position_id),
             Decimal::new(10, 0),
             PositionSideSpecified::Long,
             &order,
@@ -6280,11 +6202,10 @@ mod tests {
         let lease = capability
             .acquire_for_position(position_id, instrument_id)
             .expect("fill-void exit lease should acquire");
-        let mut authority = BoltV3ExitOrderAuthorityHandle::locally_submitted_for_test(
+        let authority = BoltV3ExitOrderAuthorityHandle::locally_submitted_for_test(
             ClientOrderId::from("EXIT-FILL-VOID-1"),
             instrument_id,
             position_id,
-            position_episode(instrument_id, position_id),
             Decimal::new(10, 0),
             PositionSideSpecified::Long,
             Quantity::new(5.0, 2),

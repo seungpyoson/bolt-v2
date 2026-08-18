@@ -31,7 +31,6 @@ use super::{
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ExitEvaluation {
     pub(super) realized_volatility_receipt: ExitRealizedVolatilityGateReceipt,
-    pub(super) operation_generation: u64,
     pub(super) position_outcome_side: Option<OutcomeSide>,
     pub(super) forced_flat_reasons: Vec<ForcedFlatReason>,
     pub(super) hold_ev_bps: Option<f64>,
@@ -344,8 +343,6 @@ pub(super) const fn exit_block_reason_label(reason: EvidenceExitBlockedReason) -
         }
         EvidenceExitBlockedReason::ExitPriceMissing => "exit_price_missing",
         EvidenceExitBlockedReason::ExitQuantityNotPositive => "exit_quantity_not_positive",
-        EvidenceExitBlockedReason::RecoveryHoldOccupied => "recovery_hold_occupied",
-        EvidenceExitBlockedReason::StaleGeneration => "stale_generation",
     }
 }
 
@@ -388,6 +385,7 @@ pub(super) fn evaluate_exit_decision(
     if !exit_hysteresis_bps.is_finite() {
         return ExitDecision::Hold;
     }
+
     let Some(hold_ev_bps) = Decimal::from_f64(hold_ev_bps) else {
         return ExitDecision::Hold;
     };

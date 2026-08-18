@@ -1258,7 +1258,7 @@ fn rv_clock_domain_amendment_submit_evidence_cannot_veto_admitted_order() {
         "the admitted order must reach submit routing"
     );
     assert!(
-        matches!(strategy.exposure.state(), ExposureState::PendingEntry(_)),
+        matches!(&strategy.exposure, ExposureState::PendingEntry(_)),
         "submitted routing must retain pending entry exposure"
     );
     let events = evidence
@@ -1356,7 +1356,7 @@ fn submit_snapshot_failure_clears_pending_entry_and_never_reaches_submit_admissi
         "{error:#}"
     );
     assert!(
-        !matches!(strategy.exposure.state(), ExposureState::PendingEntry(_)),
+        !matches!(strategy.exposure, ExposureState::PendingEntry(_)),
         "snapshot failure must clear strategy-local pending-entry state"
     );
     assert_eq!(
@@ -1400,7 +1400,7 @@ fn final_basis_failure_precedes_edge_evidence_exposure_and_admission_mutation() 
             .contains("planned fill level must be positive")
     );
     assert!(
-        !matches!(strategy.exposure.state(), ExposureState::PendingEntry(_)),
+        !matches!(strategy.exposure, ExposureState::PendingEntry(_)),
         "basis failure must precede pending-entry exposure"
     );
     assert_eq!(submit_admission.admitted_order_count(), 0);
@@ -1875,8 +1875,6 @@ fn shadow_policy_exit_restores_managed_and_allows_a_later_attempt() {
         PositionId::from("P-SHADOW-EXIT-001"),
         position_quantity,
         0.45,
-        OrderSide::Buy,
-        PositionSide::Long,
     );
     set_managed_position(
         &mut strategy,
@@ -2005,8 +2003,6 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
         PositionId::from(stringify!(P_SHADOW_EXIT_FUTURE_RV)),
         position_quantity,
         up_best_ask,
-        OrderSide::Buy,
-        PositionSide::Long,
     );
     set_managed_position(
         &mut strategy,
@@ -2913,7 +2909,6 @@ fn minimal_entry_evaluation() -> EntryEvaluation {
 fn minimal_entry_submission_decision() -> EntrySubmissionDecision {
     EntrySubmissionDecision {
         evaluation: minimal_entry_evaluation(),
-        operation_generation: 0,
         instrument_id: None,
         order_side: None,
         price: None,
@@ -2949,7 +2944,6 @@ fn minimal_exit_prepared_order() -> ExitIntentDecision {
                 fair_probability_down: None,
                 uncertainty_band_probability: None,
             },
-            operation_generation: 0,
             position_outcome_side: None,
             forced_flat_reasons: vec![],
             hold_ev_bps: None,
@@ -3043,11 +3037,8 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
 #[test]
 fn terminal_close_reclaims_exit_decision_for_reused_position_identity() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
-    let reused_context = strategy
-        .exposure
-        .managed_position_context()
-        .expect("exit fixture must begin managed");
-    let (instrument_id, position_id) = match strategy.exposure.state() {
+    let reused_exposure = strategy.exposure.clone();
+    let (instrument_id, position_id) = match &reused_exposure {
         ExposureState::Managed(position) => (position.instrument_id, position.position_id),
         other => panic!("exit fixture must begin managed, got {other:?}"),
     };
@@ -3076,11 +3067,7 @@ fn terminal_close_reclaims_exit_decision_for_reused_position_identity() {
     // NT netting reuses `{instrument}-{strategy}` as PositionId. Recreate the
     // same logical position identity and prove its first decision is not
     // suppressed by the predecessor's last one.
-    strategy.exposure.reduce_without_replacement_adoption(
-        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(Box::new(reused_context)),
-        )),
-    );
+    strategy.exposure = reused_exposure;
     strategy
         .record_exit_intent_or_hold_once(1_202, trigger, &decision)
         .expect("the reused position identity should record its first decision");
@@ -3136,8 +3123,6 @@ fn exit_evidence_strategy_with_open_position_using_writer(
         PositionId::from("P-EXIT-EVIDENCE-001"),
         position_quantity,
         0.45,
-        OrderSide::Buy,
-        PositionSide::Long,
     );
     set_managed_position(
         &mut strategy,
@@ -3548,18 +3533,15 @@ fn executable_liquidity_failure_records_rejection_before_exposure_admission_or_r
     strategy
         .pricing
         .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 1_200);
-    let mut managed = strategy
+    let managed = strategy
         .exposure
-        .managed_position_context()
+        .managed_position_context_mut()
         .expect("exit evidence fixture should start with managed exposure");
     managed.book.bid_levels.clear();
     assert!(
         managed.book.best_bid.is_some(),
         "the fixture must retain a decision price while executable depth is absent"
     );
-    strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::RefreshContext(managed),
-    ));
 
     let error = strategy
         .try_submit_exit_order_for_trigger(
@@ -4175,21 +4157,10 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
     hold.blocked_reason = None;
     decisions.push(strategy.exit_intent_decision_from_evaluation(hold));
 
-    let saved_exposure = strategy
-        .exposure
-        .managed_position_context()
-        .expect("fixture should retain managed exposure");
-    strategy.exposure.reduce(ExposureEvent::SettlementEffect(
-        SettlementEffectEvent::ReleaseFlat {
-            episode: saved_exposure.episode.clone(),
-        },
-    ));
+    let saved_exposure = strategy.exposure.clone();
+    strategy.exposure = ExposureState::Flat;
     decisions.push(strategy.exit_intent_decision_from_evaluation(base.clone()));
-    strategy.exposure.reduce_without_replacement_adoption(
-        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
-            CanonicalPositionProjection::ExactlyOne(Box::new(saved_exposure)),
-        )),
-    );
+    strategy.exposure = saved_exposure;
 
     let saved_exit_order = strategy.config.exit_order.clone();
     strategy.config.exit_order.side = "not-an-order-side".to_string();
@@ -4925,11 +4896,11 @@ fn rv_clock_domain_amendment_entry_skip_records_each_registered_reason_once() {
     // twelve RV gate/watermark bits, which is not its axis under the frozen
     // registry -- that domain belongs to the blocked-snapshot producer, whose
     // own twelve-bit test still stands beside this one. Entry skip's registered
-    // domain is the twenty-one skip reasons, so that is what is exercised here, and
+    // domain is the nineteen skip reasons, so that is what is exercised here, and
     // exhaustively: a reason added to the enum without a registry state fails
     // the mapping's exhaustive match at compile time, and a reason that stops
     // recording fails the count below.
-    const REGISTERED_REASONS: [EntrySkipReason; 21] = [
+    const REGISTERED_REASONS: [EntrySkipReason; 19] = [
         EntrySkipReason::StrategyCoreNotRegistered,
         EntrySkipReason::EntryGateBlocked,
         EntrySkipReason::EntryPricingBlocked,
@@ -4946,8 +4917,6 @@ fn rv_clock_domain_amendment_entry_skip_records_each_registered_reason_once() {
         EntrySkipReason::PositionContractInvalid,
         EntrySkipReason::EntryPositionContractUnsupported,
         EntrySkipReason::OnePositionInvariantViolation,
-        EntrySkipReason::EntryOperationStaleGeneration,
-        EntrySkipReason::EntryOperationAlreadyArmed,
         EntrySkipReason::EntryMalformedRejected,
         EntrySkipReason::EntryBalanceRejected,
         EntrySkipReason::EntryUnfillableRejectedUnchangedBook,

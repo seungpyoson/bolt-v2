@@ -139,7 +139,6 @@ pub struct RuntimeParametersBlock {
     pub forced_flat_thin_book_min_liquidity: f64,
     pub lead_agreement_min_corr: f64,
     pub lead_jitter_max_ms: u64,
-    pub exposure_obligations: crate::bolt_v3_config::ExposureObligationLimits,
 }
 
 impl<'de> Deserialize<'de> for RuntimeParametersBlock {
@@ -168,7 +167,6 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             forced_flat_thin_book_min_liquidity: f64,
             lead_agreement_min_corr: f64,
             lead_jitter_max_ms: u64,
-            exposure_obligations: crate::bolt_v3_config::ExposureObligationLimits,
             price_to_beat_source: Option<toml::Value>,
             price_to_beat_feed_id: Option<toml::Value>,
             price_to_beat_report_schema_version: Option<toml::Value>,
@@ -228,7 +226,6 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             forced_flat_thin_book_min_liquidity: wire.forced_flat_thin_book_min_liquidity,
             lead_agreement_min_corr: wire.lead_agreement_min_corr,
             lead_jitter_max_ms: wire.lead_jitter_max_ms,
-            exposure_obligations: wire.exposure_obligations,
         })
     }
 }
@@ -960,15 +957,6 @@ pub fn raw_taker_config(
         "lead_jitter_max_ms",
         parameters.runtime.lead_jitter_max_ms,
     )?;
-    table.insert(
-        "exposure_obligations".to_string(),
-        Value::try_from(parameters.runtime.exposure_obligations).map_err(|error| {
-            BinaryOracleEdgeTakerRuntimeConfigError::Parameters {
-                strategy_instance_id: strategy_instance_id.to_string(),
-                message: error.to_string(),
-            }
-        })?,
-    );
 
     Ok(Value::Table(table))
 }

@@ -1108,8 +1108,6 @@ mod tests {
             PositionContractInvalid => "position_contract_invalid",
             EntryPositionContractUnsupported => "entry_position_contract_unsupported",
             OnePositionInvariantViolation => "one_position_invariant_violation",
-            EntryOperationStaleGeneration => "entry_operation_stale_generation",
-            EntryOperationAlreadyArmed => "entry_operation_already_armed",
             EntryMalformedRejected => "entry_malformed_rejected",
             EntryBalanceRejected => "entry_balance_rejected",
             EntryUnfillableRejectedUnchangedBook =>
@@ -1308,8 +1306,6 @@ mod tests {
             ExitQuoteQuantityUnsupported => "exit_quote_quantity_unsupported",
             ExitPriceMissing => "exit_price_missing",
             ExitQuantityNotPositive => "exit_quantity_not_positive"
-            , RecoveryHoldOccupied => "recovery_hold_occupied"
-            , StaleGeneration => "stale_generation"
         ]
     );
     unit_wire_coverage!(
@@ -1400,15 +1396,6 @@ mod tests {
             OrderExpired => "order_expired",
             OrderFilled => "order_filled",
             ReconcileQueryFailed => "reconcile_query_failed"
-            , ExposureQuarantined => "exposure_quarantined"
-            , PositionIdentityConflict => "position_identity_conflict"
-            , ReplacementAdopted => "replacement_adopted"
-            , CanonicalPositionAwaiting => "canonical_position_awaiting"
-            , CanonicalPositionMultiplicity => "canonical_position_multiplicity"
-            , OperationSinkUnknownEntered => "operation_sink_unknown_entered"
-            , OperationSinkUnknownResolved => "operation_sink_unknown_resolved"
-            , HistoricalExitCorrectionDeferred => "historical_exit_correction_deferred"
-            , ExposureObligationSaturated => "exposure_obligation_saturated"
         ]
     );
     unit_wire_coverage!(
@@ -1421,10 +1408,6 @@ mod tests {
             UnsupportedObserved => "unsupported_observed",
             BlindRecovery => "blind_recovery",
             Flat => "flat"
-            , Quarantined => "quarantined"
-            , ReplacementConflict => "replacement_conflict"
-            , OperationSinkUnknown => "operation_sink_unknown"
-            , ObligationSaturated => "obligation_saturated"
         ]
     );
 

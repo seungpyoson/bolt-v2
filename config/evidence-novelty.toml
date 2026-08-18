@@ -262,17 +262,3 @@ producer_kind = "entry_skip"
 semantic_state = "entry_skip.entry_unfillable_rejected_unchanged_book"
 allocation = "strategy_input_pricing_blocker"
 id = 175
-
-[[state]]
-rust_variant = "EntrySkipEntryOperationStaleGeneration"
-producer_kind = "entry_skip"
-semantic_state = "entry_skip.entry_operation_stale_generation"
-allocation = "strategy_input_pricing_blocker"
-id = 176
-
-[[state]]
-rust_variant = "EntrySkipEntryOperationAlreadyArmed"
-producer_kind = "entry_skip"
-semantic_state = "entry_skip.entry_operation_already_armed"
-allocation = "strategy_input_pricing_blocker"
-id = 177

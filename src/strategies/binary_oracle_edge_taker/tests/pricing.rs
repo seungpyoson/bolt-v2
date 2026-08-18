@@ -1977,10 +1977,6 @@ fn entry_evaluation_log_fields_capture_parameters_and_omissions() {
 fn exit_hold_ev_does_not_require_uncertainty_band_components() {
     let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let open_position = OpenPositionState {
-        episode: position_episode_for_test(
-            strategy.active.books.up.instrument_id.unwrap(),
-            PositionId::from("P-UP-MISSING-UNCERTAINTY"),
-        ),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
             Some(OutcomeSide::Up),
@@ -2022,10 +2018,6 @@ fn exit_hold_ev_does_not_require_uncertainty_band_components() {
 fn exit_hold_ev_uses_raw_fair_probability_symmetrically_with_exit_ev() {
     let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let open_position = OpenPositionState {
-        episode: position_episode_for_test(
-            strategy.active.books.up.instrument_id.unwrap(),
-            PositionId::from("P-UP-SYMMETRIC-HOLD"),
-        ),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
             Some(OutcomeSide::Up),
@@ -2074,10 +2066,6 @@ fn exit_hold_ev_uses_raw_fair_probability_symmetrically_with_exit_ev() {
 fn position_probability_and_hold_ev_accept_ready_surfaced_zero_realized_volatility() {
     let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let open_position = OpenPositionState {
-        episode: position_episode_for_test(
-            strategy.active.books.up.instrument_id.unwrap(),
-            PositionId::from("P-UP-ZERO-RV"),
-        ),
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
             Some(OutcomeSide::Up),

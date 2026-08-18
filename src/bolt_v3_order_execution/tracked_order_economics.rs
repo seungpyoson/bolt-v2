@@ -251,42 +251,26 @@ impl MakerQuoteOrderAuthority {
         disposition: MakerQuoteTerminalDisposition,
     ) -> MakerQuoteLifecycleRefinementEvent {
         let prior = self.retained;
-        let next = match prior {
-            None => MakerQuoteRetainedTerminal::Terminal(disposition),
+        let authoritative = match prior {
+            None | Some(MakerQuoteRetainedTerminal::ReopenedFrom(_)) => disposition,
             Some(MakerQuoteRetainedTerminal::Terminal(previous)) => {
-                MakerQuoteRetainedTerminal::Terminal(previous.refine_terminal_with(disposition))
-            }
-            Some(MakerQuoteRetainedTerminal::ReopenedFrom(_)) => {
-                MakerQuoteRetainedTerminal::Terminal(disposition)
+                previous.refine_terminal_with(disposition)
             }
         };
-        let (stable_effect, closes_reopened) = match (prior, next) {
-            (None, MakerQuoteRetainedTerminal::Terminal(authoritative)) => {
-                (Some(authoritative), false)
+        let (stable_effect, closes_reopened) = match (prior, authoritative) {
+            (None, authoritative) => (Some(authoritative), false),
+            (Some(MakerQuoteRetainedTerminal::Terminal(previous)), authoritative) => {
+                ((previous != authoritative).then_some(authoritative), false)
             }
-            (
-                Some(MakerQuoteRetainedTerminal::Terminal(previous)),
-                MakerQuoteRetainedTerminal::Terminal(authoritative),
-            ) if previous != authoritative => (Some(authoritative), false),
             (
                 Some(MakerQuoteRetainedTerminal::ReopenedFrom(
                     MakerQuoteTerminalDisposition::Canceled,
                 )),
-                MakerQuoteRetainedTerminal::Terminal(MakerQuoteTerminalDisposition::Filled),
+                MakerQuoteTerminalDisposition::Filled,
             ) => (Some(MakerQuoteTerminalDisposition::Filled), true),
-            (
-                Some(
-                    MakerQuoteRetainedTerminal::Terminal(_)
-                    | MakerQuoteRetainedTerminal::ReopenedFrom(_),
-                ),
-                MakerQuoteRetainedTerminal::Terminal(_),
-            ) => (
-                None,
-                matches!(prior, Some(MakerQuoteRetainedTerminal::ReopenedFrom(_))),
-            ),
-            (_, MakerQuoteRetainedTerminal::ReopenedFrom(_)) => unreachable!(),
+            (Some(MakerQuoteRetainedTerminal::ReopenedFrom(_)), _) => (None, true),
         };
-        self.retained = Some(next);
+        self.retained = Some(MakerQuoteRetainedTerminal::Terminal(authoritative));
         MakerQuoteLifecycleRefinementEvent::new(
             self.identity.clone(),
             MakerQuoteLifecycleRefinement::Terminal {
@@ -1022,7 +1006,13 @@ impl BoltV3OrderEconomicsHandle {
             )?;
             let removed = registry.remove_terminal_record(&client_order_id);
             drop(registry);
-            settle_maker_terminal(&self.tracked_orders, client_order_id, removed, disposition)?;
+            settle_maker_terminal(
+                &self.tracked_orders,
+                client_order_id,
+                removed,
+                disposition,
+                now_ns,
+            )?;
             return Ok(());
         }
         let Some(record) = registry.records.get_mut(&client_order_id) else {
@@ -1055,7 +1045,13 @@ impl BoltV3OrderEconomicsHandle {
                 let disposition = maker_terminal_disposition(order)?;
                 let removed = registry.remove_terminal_record(&client_order_id);
                 drop(registry);
-                settle_maker_terminal(&self.tracked_orders, client_order_id, removed, disposition)?;
+                settle_maker_terminal(
+                    &self.tracked_orders,
+                    client_order_id,
+                    removed,
+                    disposition,
+                    now_ns,
+                )?;
                 return Ok(());
             }
             RestingOrderEconomicsRefresh::Refreshed {
@@ -1579,6 +1575,7 @@ fn settle_maker_terminal(
     client_order_id: ClientOrderId,
     record: Option<TrackedMakerOrderRecord>,
     disposition: MakerQuoteTerminalDisposition,
+    now_ns: u64,
 ) -> Result<()> {
     let Some(record) = record else {
         return Ok(());
@@ -1591,6 +1588,7 @@ fn settle_maker_terminal(
         client_order_id,
         governed.maker_lifecycle,
         disposition,
+        now_ns,
     )
 }
 
@@ -1599,6 +1597,7 @@ fn settle_maker_terminal_authority(
     client_order_id: ClientOrderId,
     mut authority: MakerQuoteOrderAuthority,
     disposition: MakerQuoteTerminalDisposition,
+    now_ns: u64,
 ) -> Result<()> {
     anyhow::ensure!(
         authority.client_order_id == client_order_id,
@@ -1626,7 +1625,7 @@ fn settle_maker_terminal_authority(
             registry_state,
             RetentionHorizonCapability::ScopeClosure {
                 lifecycles: &lifecycle,
-                now_ns: 0,
+                now_ns,
             },
         )?;
         return Ok(());
@@ -1988,10 +1987,39 @@ mod tests {
             BoltV3PlannedFillLeg, BoltV3TerminalValueEntry, BoltV3TerminalValueEntryPolicy,
             order_intent_details_from_compiled_order,
         },
-        bolt_v3_quote_lifecycle::{Leg, LegEvent, MakerQuoteLifecycleHandle, MarketQuote},
+        bolt_v3_quote_lifecycle::{
+            Leg, LegEvent, MakerQuoteLifecycleHandle, MakerQuoteTerminalDisposition, MarketQuote,
+        },
         bolt_v3_requote_budget::{RequoteBudget, RequoteBudgetPair},
         bolt_v3_submit_admission::OrderValuationContext,
     };
+
+    #[test]
+    fn terminal_refinement_retains_only_the_authoritative_disposition() {
+        use super::MakerQuoteRetainedTerminal::{ReopenedFrom, Terminal};
+        use MakerQuoteTerminalDisposition::{Canceled, Filled};
+
+        let cases = [
+            (None, Canceled, Terminal(Canceled)),
+            (Some(Terminal(Canceled)), Filled, Terminal(Filled)),
+            (Some(ReopenedFrom(Canceled)), Filled, Terminal(Filled)),
+            (Some(Terminal(Canceled)), Canceled, Terminal(Canceled)),
+        ];
+        let order = post_only_limit_order("MAKER-TERMINAL-REFINEMENT");
+
+        for (prior, observed, expected) in cases {
+            let mut authority = super::MakerQuoteOrderAuthority::new(
+                &order,
+                1,
+                MakerQuoteLifecycleHandle::new(MarketQuote::new_for_test(false), Leg::Yes),
+            );
+            authority.retained = prior;
+
+            let _event = authority.terminal_event(observed);
+
+            assert_eq!(authority.retained, Some(expected));
+        }
+    }
 
     pub(super) fn maker_submit_participant(
         market: &MarketQuote,

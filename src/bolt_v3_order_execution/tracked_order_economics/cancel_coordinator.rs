@@ -972,6 +972,7 @@ impl BoltV3OrderEconomicsHandle {
                     client_order_id,
                     authority,
                     disposition,
+                    now_ns,
                 )
             }
             None => match disposition {
@@ -1099,7 +1100,7 @@ impl BoltV3OrderEconomicsHandle {
             (
                 None | Some(CancelEffect::Remove),
                 CachedMakerOrderObservation::Terminal { disposition, .. },
-            ) => self.settle_tracked_terminal(registry, client_order_id, disposition),
+            ) => self.settle_tracked_terminal(registry, client_order_id, disposition, now_ns),
             (None | Some(CancelEffect::None), _) => Ok(()),
             (Some(CancelEffect::Remove), _) => {
                 anyhow::bail!("callback reconciliation removed a non-terminal order")
@@ -1121,10 +1122,17 @@ impl BoltV3OrderEconomicsHandle {
         mut registry: RwLockWriteGuard<'_, TrackedMakerOrderRegistry>,
         client_order_id: ClientOrderId,
         disposition: crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition,
+        now_ns: u64,
     ) -> Result<()> {
         let removed = registry.remove_terminal_record(&client_order_id);
         drop(registry);
-        super::settle_maker_terminal(&self.tracked_orders, client_order_id, removed, disposition)
+        super::settle_maker_terminal(
+            &self.tracked_orders,
+            client_order_id,
+            removed,
+            disposition,
+            now_ns,
+        )
     }
 
     pub(super) fn drive_cancel_intent<S>(
@@ -1377,12 +1385,12 @@ impl BoltV3OrderEconomicsHandle {
         retry_timeout_ns: u64,
     ) -> Result<()> {
         let mut failures = Vec::new();
-        let terminal_disposition = match &completion {
+        let terminal_observation = match &completion {
             CancelOperationCompletion::Observed {
                 cached: Some(cached),
-                ..
+                now_ns,
             } if cached.is_closed() || cached.leaves_qty().as_decimal() == Decimal::ZERO => {
-                Some(super::maker_terminal_disposition(cached)?)
+                Some((super::maker_terminal_disposition(cached)?, *now_ns))
             }
             CancelOperationCompletion::Observed { cached: None, .. }
             | CancelOperationCompletion::Observed {
@@ -1442,13 +1450,14 @@ impl BoltV3OrderEconomicsHandle {
             Err(error) => failures.push(error.to_string()),
         }
         drop(registry);
-        match (removed, terminal_disposition) {
-            (Some(record), Some(disposition)) => {
+        match (removed, terminal_observation) {
+            (Some(record), Some((disposition, now_ns))) => {
                 if let Err(error) = super::settle_maker_terminal(
                     &self.tracked_orders,
                     client_order_id,
                     Some(record),
                     disposition,
+                    now_ns,
                 ) {
                     failures.push(error.to_string());
                 }
@@ -1512,6 +1521,7 @@ impl BoltV3OrderEconomicsHandle {
                         client_order_id,
                         Some(removed),
                         disposition,
+                        now_ns,
                     )?;
                 }
                 Ok(CancelEffect::Remove)
@@ -2602,6 +2612,40 @@ mod tests {
     }
 
     #[test]
+    fn scope_closure_uses_observed_actor_time_for_new_cancel_deadline() {
+        let handle =
+            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
+        let mut market = MarketQuote::new_for_test(false);
+        let mut terminal = accepted_order("cadence-terminal", "VENUE-CADENCE-TERMINAL");
+        let terminal_id = terminal.client_order_id();
+        let working = accepted_order("cadence-sibling", "VENUE-CADENCE-SIBLING");
+        let working_id = working.client_order_id();
+        track_order_with_lifecycle(&handle, terminal.clone(), 1, 1, &market);
+        track_order_with_lifecycle(&handle, working.clone(), 2, 2, &market);
+        let _ = market.close_retention_scope();
+
+        let canceled = TestOrderEventStubs::canceled(
+            &terminal,
+            AccountId::from("ACCOUNT-001"),
+            Some(VenueOrderId::from("VENUE-CADENCE-TERMINAL")),
+        );
+        terminal.apply(canceled).expect("cancel should apply");
+        handle
+            .reconcile_tracked_order_at(terminal_id, Some(terminal), 100)
+            .expect("terminal observation should close the retained scope");
+        handle
+            .reconcile_tracked_order_at(working_id, Some(working), 50)
+            .expect("pre-deadline observation should remain healthy");
+
+        let health = handle
+            .resting_cancel_health()
+            .expect("cancel health should remain available");
+        assert_eq!(health.len(), 1);
+        assert_eq!(health[0].client_order_id(), working_id);
+        assert_eq!(health[0].liveness(), None);
+    }
+
+    #[test]
     fn cadence_scope_horizon_rejects_later_registration_for_the_retired_lifecycle() {
         let (handle, retired_market, budget, _order) =
             retained_canceled_requote("cadence-closed", "VENUE-CADENCE-CLOSED", 7);
@@ -2971,6 +3015,7 @@ mod tests {
             client_order_id,
             removed,
             crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Canceled,
+            1,
         )
         .expect("terminal callback should refine the exact cancel generation");
         assert_eq!(
@@ -3084,6 +3129,7 @@ mod tests {
             first_id,
             Some(first_removed),
             crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Canceled,
+            1,
         )
         .expect("first refinable terminal should settle");
 
@@ -3128,6 +3174,7 @@ mod tests {
             second_id,
             Some(second_removed),
             crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Canceled,
+            2,
         )
         .expect("second refinable terminal should settle");
 
@@ -3175,6 +3222,7 @@ mod tests {
             first_id,
             Some(first_removed),
             crate::bolt_v3_quote_lifecycle::MakerQuoteTerminalDisposition::Canceled,
+            1,
         )
         .expect("first refinable terminal should settle");
 

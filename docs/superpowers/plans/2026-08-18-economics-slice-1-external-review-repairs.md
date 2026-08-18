@@ -735,11 +735,11 @@ git commit -m "refactor(maker): type requote liability phases"
 - Changes: `settle_maker_terminal(..., disposition, now_ns)` and `settle_maker_terminal_authority(..., disposition, now_ns)`.
 - Produces: terminal disposition first, then `MakerQuoteRetainedTerminal::Terminal(disposition)`.
 
-- [ ] **Step 1: Add terminal-refinement and deadline tests**
+- [x] **Step 1: Add terminal-refinement and deadline tests**
 
 Add a table covering no prior terminal, refinable terminal, reopened canceled to filled, and idempotent terminal. Add `scope_closure_uses_observed_actor_time_for_new_cancel_deadline`: close at nonzero `now_ns`, observe before the configured deadline, and assert no immediate `CancellationDeadlineExceeded`.
 
-- [ ] **Step 2: Run the deadline regression and verify current failure**
+- [x] **Step 2: Run the deadline regression and verify current failure**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib scope_closure_uses_observed_actor_time_for_new_cancel_deadline -- --test-threads=1
@@ -747,7 +747,7 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: FAIL when the closure fallback deadline is created from zero.
 
-- [ ] **Step 3: Compute terminal disposition before wrapping**
+- [x] **Step 3: Compute terminal disposition before wrapping**
 
 ```rust
 let authoritative = match self.retained {
@@ -762,11 +762,11 @@ let next = MakerQuoteRetainedTerminal::Terminal(authoritative);
 
 Match `(prior, authoritative)` for refinement effects, assign `next` afterward, and delete the impossible `ReopenedFrom` arm and `unreachable!`.
 
-- [ ] **Step 4: Thread `now_ns` through every terminal path**
+- [x] **Step 4: Thread `now_ns` through every terminal path**
 
 Pass the existing `refresh_tracked_economics` and cancel-reconciliation observation time through `settle_maker_terminal`, `settle_maker_terminal_authority`, and `settle_tracked_terminal`. Build `RetentionHorizonCapability::ScopeClosure { now_ns, .. }` from that value. Remove the `now_ns: 0` sentinel.
 
-- [ ] **Step 5: Run terminal, horizon, and cancellation tests**
+- [x] **Step 5: Run terminal, horizon, and cancellation tests**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib terminal -- --test-threads=1
@@ -775,7 +775,7 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: PASS; no zero closure deadline exists.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/bolt_v3_order_execution/tracked_order_economics.rs src/bolt_v3_order_execution/tracked_order_economics/cancel_coordinator.rs

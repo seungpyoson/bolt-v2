@@ -20,7 +20,7 @@
 - Missing fee authority, stale generation, malformed leg authority, and recovery payloads fail before mutation.
 - An NT mutation invocation remains conservatively charged even when its synchronous result is `Err`.
 - Keep historical forced-reduction codecs readable, but remove all current producers, submit permits, recovery authorizations, and execution scenarios.
-- Use `CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs'` and `CARGO_BUILD_JOBS=2` for local Cargo commands. Run Cargo commands sequentially and append `-- --test-threads=1` to tests.
+- Use the repository-configured `/Volumes/CargoBuild/bolt-v2` target and `CARGO_BUILD_JOBS=2` for focused local Cargo commands. The `/Volumes/T9/bolt-v2-target-1544-review-repairs` cache does not support incremental hard links; use it only with `CARGO_INCREMENTAL=0` when exact comparison with prior review artifacts is required. Run Cargo commands sequentially and append `-- --test-threads=1` to tests.
 - During implementation, run the smallest named tests. At final head run formatting/static checks and rely on advisory CI for the compile-heavy workspace evidence; do not wait on CI.
 - Commit each task only after its named checks pass. Do not push with unresolved findings or uncommitted changes.
 - Never merge. A merge still requires explicit user authorization and approval from reviewer node `U_kgDOEZMFhA` (currently `sp-reviewer`).
@@ -56,7 +56,7 @@
 - Produces: `ReplacementConflictState::observe_projection`, `ReplacementConflictState::resolve`, and `ReplacementConflictResolution { state, adoption }`.
 - Consumes: existing `ReplacementCandidateProjection`, `FreshCanonicalPositionProjection`, and `ReplacementAdoption`.
 
-- [ ] **Step 1: Add the close-then-projection regression test**
+- [x] **Step 1: Add the close-then-projection regression test**
 
 Add a fixture that creates a partially filled position with a working entry remainder, then enters `ReplacementConflict`:
 
@@ -98,7 +98,7 @@ fn replacement_conflict_with_working_remainder(
 
 Add `replacement_conflict_close_then_canonical_none_preserves_working_remainder`: close the retained episode with `FreshCanonicalPositionProjection::ProbeFailed`, then apply `CanonicalPositionProjection::None`. Assert `ExposureState::PendingEntry` retains the exact client order ID and `request_entry_operation` returns `PendingEntryOccupied`.
 
-- [ ] **Step 2: Run the regression and verify the current head fails**
+- [x] **Step 2: Run the regression and verify the current head fails**
 
 Run:
 
@@ -108,11 +108,11 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: FAIL because the later canonical `None` changes the conflict to `Flat`.
 
-- [ ] **Step 3: Add the reverse-order behavior test**
+- [x] **Step 3: Add the reverse-order behavior test**
 
 Add `replacement_conflict_canonical_none_then_close_preserves_working_remainder`: apply canonical `None` first, close with fresh `None` second, and assert the identical `PendingEntry` state and denied new entry grant.
 
-- [ ] **Step 4: Implement the single discharge owner**
+- [x] **Step 4: Implement the single discharge owner**
 
 Move projection storage and discharge into `ReplacementConflictState`:
 
@@ -170,7 +170,7 @@ impl ReplacementConflictState {
 
 Both `reduce_canonical_projection` and `reduce_position_closed` must update the conflict and call `resolve`; delete `resolve_replacement_close` so no second discharge policy remains.
 
-- [ ] **Step 5: Run the replacement-conflict test slice**
+- [x] **Step 5: Run the replacement-conflict test slice**
 
 Run:
 
@@ -180,7 +180,7 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected: PASS, including both event orderings and candidate adoption.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/strategies/binary_oracle_edge_taker/exposure.rs src/strategies/binary_oracle_edge_taker/tests/exposure.rs

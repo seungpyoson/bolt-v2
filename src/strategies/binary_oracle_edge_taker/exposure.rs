@@ -845,7 +845,7 @@ pub(super) struct ReplacementConflictState {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum ReplacementRetainedCloseProof {
     Awaiting,
-    Observed { episode: PositionEpisodeFingerprint },
+    Observed,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -855,29 +855,164 @@ pub(super) enum ReplacementCandidateProjection {
     Divergent { episode: PositionEpisodeFingerprint },
     Multiple { count: usize },
     ProbeFailed { diagnostic: String },
+    RecoveryHeld,
+}
+
+enum ReplacementProjectionObservation {
+    None,
+    Managed(ManagedPositionContext),
+    Divergent(PositionEpisodeFingerprint),
+    Multiple(usize),
+    ProbeFailed(String),
+    RecoveryHeld,
+}
+
+enum ReplacementConflictEvent {
+    Canonical(ReplacementProjectionObservation),
+    RetainedClosed {
+        episode: PositionEpisodeFingerprint,
+        projection: ReplacementProjectionObservation,
+    },
+}
+
+impl From<FreshCanonicalPositionProjection> for ReplacementProjectionObservation {
+    fn from(projection: FreshCanonicalPositionProjection) -> Self {
+        match projection {
+            FreshCanonicalPositionProjection::None => Self::None,
+            FreshCanonicalPositionProjection::ExactlyOne(classified) => match *classified {
+                ClassifiedOpenPosition::Managed(managed) => Self::Managed(managed),
+                ClassifiedOpenPosition::Unsupported(unsupported) => {
+                    Self::Divergent(unsupported.context.episode)
+                }
+                ClassifiedOpenPosition::BlindRecovery(_) => Self::RecoveryHeld,
+            },
+            FreshCanonicalPositionProjection::Multiple { count } => Self::Multiple(count),
+            FreshCanonicalPositionProjection::ProbeFailed { diagnostic } => {
+                Self::ProbeFailed(diagnostic)
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ReplacementConflictResolution {
+    state: ExposureState,
+    adoption: Option<ReplacementAdoption>,
 }
 
 impl ReplacementConflictState {
     fn retained_is_closed(&self) -> bool {
-        matches!(
-            &self.retained_close,
-            ReplacementRetainedCloseProof::Observed { episode }
-                if episode == &self.retained.episode
-        )
+        matches!(self.retained_close, ReplacementRetainedCloseProof::Observed)
     }
 
     fn observe_retained_close(&mut self, episode: &PositionEpisodeFingerprint) -> bool {
-        if episode != &self.retained.episode {
-            return false;
+        match (episode == &self.retained.episode, self.retained_is_closed()) {
+            (false, _) | (true, true) => false,
+            (true, false) => {
+                self.retained_close = ReplacementRetainedCloseProof::Observed;
+                true
+            }
         }
-        let next = ReplacementRetainedCloseProof::Observed {
-            episode: episode.clone(),
+    }
+
+    fn observe_projection(&mut self, projection: ReplacementCandidateProjection) {
+        self.candidate_projection = projection;
+    }
+
+    fn transition(mut self, event: ReplacementConflictEvent) -> ReplacementConflictResolution {
+        let projection = match event {
+            ReplacementConflictEvent::Canonical(projection) => projection,
+            ReplacementConflictEvent::RetainedClosed {
+                episode,
+                projection,
+            } => match episode == self.retained.episode {
+                false => return self.unresolved(),
+                true => {
+                    self.retained_close = ReplacementRetainedCloseProof::Observed;
+                    projection
+                }
+            },
         };
-        if self.retained_close == next {
-            return false;
+        match projection {
+            ReplacementProjectionObservation::None => {
+                self.observe_projection(ReplacementCandidateProjection::None);
+            }
+            ReplacementProjectionObservation::Managed(managed) => match (
+                managed.episode == self.retained.episode,
+                managed.episode == self.candidate.episode,
+            ) {
+                (true, _) => {
+                    return ReplacementConflictResolution {
+                        state: ExposureState::Managed(refresh_replacement_candidate(
+                            self.retained,
+                            managed,
+                        )),
+                        adoption: None,
+                    };
+                }
+                (false, true) => {
+                    self.candidate = refresh_replacement_candidate(self.candidate, managed);
+                    self.observe_projection(ReplacementCandidateProjection::Matching);
+                }
+                (false, false) => {
+                    self.observe_projection(ReplacementCandidateProjection::Divergent {
+                        episode: managed.episode,
+                    })
+                }
+            },
+            ReplacementProjectionObservation::Divergent(episode) => {
+                self.observe_projection(ReplacementCandidateProjection::Divergent { episode })
+            }
+            ReplacementProjectionObservation::Multiple(count) => {
+                self.observe_projection(ReplacementCandidateProjection::Multiple { count });
+            }
+            ReplacementProjectionObservation::ProbeFailed(diagnostic) => {
+                self.observe_projection(ReplacementCandidateProjection::ProbeFailed { diagnostic });
+            }
+            ReplacementProjectionObservation::RecoveryHeld => {
+                self.observe_projection(ReplacementCandidateProjection::RecoveryHeld);
+            }
         }
-        self.retained_close = next;
-        true
+        self.resolve()
+    }
+
+    fn resolve(self) -> ReplacementConflictResolution {
+        match (self.retained_is_closed(), &self.candidate_projection) {
+            (false, _) => self.unresolved(),
+            (true, ReplacementCandidateProjection::Matching) => {
+                let adoption = ReplacementAdoption {
+                    retained_episode: self.retained.episode.clone(),
+                    adopted: self.candidate.clone(),
+                    cause: ReplacementAdoptionCause::CanonicalCloseConjunction,
+                };
+                ReplacementConflictResolution {
+                    state: ExposureState::Managed(self.candidate),
+                    adoption: Some(adoption),
+                }
+            }
+            (true, ReplacementCandidateProjection::None) => ReplacementConflictResolution {
+                state: self
+                    .retained
+                    .pending_entry
+                    .clone()
+                    .map_or(ExposureState::Flat, ExposureState::PendingEntry),
+                adoption: None,
+            },
+            (
+                true,
+                ReplacementCandidateProjection::Divergent { .. }
+                | ReplacementCandidateProjection::Multiple { .. }
+                | ReplacementCandidateProjection::ProbeFailed { .. }
+                | ReplacementCandidateProjection::RecoveryHeld,
+            ) => self.unresolved(),
+        }
+    }
+
+    fn unresolved(self) -> ReplacementConflictResolution {
+        ReplacementConflictResolution {
+            state: ExposureState::ReplacementConflict(Box::new(self)),
+            adoption: None,
+        }
     }
 }
 
@@ -1769,10 +1904,14 @@ impl GovernedExposureInner {
                     true
                 }
                 ExposureState::ReplacementConflict(conflict) => {
-                    conflict.candidate_projection = ReplacementCandidateProjection::None;
-                    if conflict.retained_is_closed() {
-                        self.state = ExposureState::Flat;
-                    }
+                    let resolution =
+                        (**conflict)
+                            .clone()
+                            .transition(ReplacementConflictEvent::Canonical(
+                                ReplacementProjectionObservation::None,
+                            ));
+                    self.state = resolution.state;
+                    *replacement_adoption = resolution.adoption;
                     true
                 }
                 ExposureState::Flat
@@ -1789,27 +1928,15 @@ impl GovernedExposureInner {
             CanonicalPositionProjection::ExactlyOne(managed) => {
                 let managed = *managed;
                 match &mut self.state {
-                    ExposureState::ReplacementConflict(conflict)
-                        if conflict.retained.episode == managed.episode =>
-                    {
-                        let mut retained = managed;
-                        retained.episode_close_seen = conflict.retained.episode_close_seen;
-                        retained.canonical_none_seen = conflict.retained.canonical_none_seen;
-                        self.state = ExposureState::Managed(retained);
-                        true
-                    }
-                    ExposureState::ReplacementConflict(conflict)
-                        if conflict.candidate.episode == managed.episode =>
-                    {
-                        conflict.candidate =
-                            refresh_replacement_candidate(conflict.candidate.clone(), managed);
-                        conflict.candidate_projection = ReplacementCandidateProjection::Matching;
-                        true
-                    }
                     ExposureState::ReplacementConflict(conflict) => {
-                        conflict.candidate_projection = ReplacementCandidateProjection::Divergent {
-                            episode: managed.episode,
-                        };
+                        let resolution =
+                            (**conflict)
+                                .clone()
+                                .transition(ReplacementConflictEvent::Canonical(
+                                    ReplacementProjectionObservation::Managed(managed),
+                                ));
+                        self.state = resolution.state;
+                        *replacement_adoption = resolution.adoption;
                         true
                     }
                     ExposureState::BlindRecovery(_) => false,
@@ -1830,8 +1957,7 @@ impl GovernedExposureInner {
             }
             CanonicalPositionProjection::Multiple { count, recovery } => {
                 if let ExposureState::ReplacementConflict(conflict) = &mut self.state {
-                    conflict.candidate_projection =
-                        ReplacementCandidateProjection::Multiple { count };
+                    conflict.observe_projection(ReplacementCandidateProjection::Multiple { count });
                 }
                 self.enter_blind_recovery(recovery)
             }
@@ -1840,8 +1966,9 @@ impl GovernedExposureInner {
                 recovery,
             } => {
                 if let ExposureState::ReplacementConflict(conflict) = &mut self.state {
-                    conflict.candidate_projection =
-                        ReplacementCandidateProjection::ProbeFailed { diagnostic };
+                    conflict.observe_projection(ReplacementCandidateProjection::ProbeFailed {
+                        diagnostic,
+                    });
                 }
                 self.enter_blind_recovery(recovery)
             }
@@ -2356,10 +2483,13 @@ impl GovernedExposureInner {
         }
 
         if let ExposureState::ReplacementConflict(conflict) = self.state.clone() {
-            let (state, adoption) = resolve_replacement_close(*conflict, &episode, projection);
-            let changed = state != self.state;
-            self.state = state;
-            *replacement_adoption = adoption;
+            let resolution = (*conflict).transition(ReplacementConflictEvent::RetainedClosed {
+                episode,
+                projection: projection.into(),
+            });
+            let changed = resolution.state != self.state;
+            self.state = resolution.state;
+            *replacement_adoption = resolution.adoption;
             return changed;
         }
 
@@ -2367,20 +2497,23 @@ impl GovernedExposureInner {
             && let Some(ExposureState::ReplacementConflict(conflict)) =
                 recovery.retained_authority().cloned()
         {
-            let (state, adoption) = resolve_replacement_close(*conflict, &episode, projection);
-            if matches!(state, ExposureState::ReplacementConflict(_)) {
+            let resolution = (*conflict).transition(ReplacementConflictEvent::RetainedClosed {
+                episode,
+                projection: projection.into(),
+            });
+            if matches!(resolution.state, ExposureState::ReplacementConflict(_)) {
                 if let Some(retained) = recovery.retained_authority_mut() {
-                    **retained = state;
+                    **retained = resolution.state;
                 }
                 let next = ExposureState::BlindRecovery(recovery);
                 let changed = next != self.state;
                 self.state = next;
-                *replacement_adoption = adoption;
+                *replacement_adoption = resolution.adoption;
                 return changed;
             }
-            let changed = state != self.state;
-            self.state = state;
-            *replacement_adoption = adoption;
+            let changed = resolution.state != self.state;
+            self.state = resolution.state;
+            *replacement_adoption = resolution.adoption;
             return changed;
         }
 
@@ -3334,65 +3467,6 @@ impl CorrectionOperationGrant {
     pub(super) fn commit(mut self, event: ExitLifecycleEvent) -> ExposureTransitionOutcome {
         self.0
             .commit_reducer_event(ExposureEvent::ExitLifecycle(event))
-    }
-}
-
-fn resolve_replacement_close(
-    mut conflict: ReplacementConflictState,
-    episode: &PositionEpisodeFingerprint,
-    projection: FreshCanonicalPositionProjection,
-) -> (ExposureState, Option<ReplacementAdoption>) {
-    if conflict.retained.episode != *episode {
-        return (ExposureState::ReplacementConflict(Box::new(conflict)), None);
-    }
-    conflict.observe_retained_close(episode);
-    match projection {
-        FreshCanonicalPositionProjection::None => (
-            conflict
-                .retained
-                .pending_entry
-                .clone()
-                .map_or(ExposureState::Flat, ExposureState::PendingEntry),
-            None,
-        ),
-        FreshCanonicalPositionProjection::ExactlyOne(classified) => match *classified {
-            ClassifiedOpenPosition::Managed(candidate)
-                if candidate.episode == conflict.candidate.episode =>
-            {
-                conflict.candidate = refresh_replacement_candidate(conflict.candidate, candidate);
-                conflict.candidate_projection = ReplacementCandidateProjection::Matching;
-                let adoption = ReplacementAdoption {
-                    retained_episode: conflict.retained.episode,
-                    adopted: conflict.candidate.clone(),
-                    cause: ReplacementAdoptionCause::CanonicalCloseConjunction,
-                };
-                (ExposureState::Managed(conflict.candidate), Some(adoption))
-            }
-            ClassifiedOpenPosition::Managed(candidate) => {
-                conflict.candidate_projection = ReplacementCandidateProjection::Divergent {
-                    episode: candidate.episode,
-                };
-                (ExposureState::ReplacementConflict(Box::new(conflict)), None)
-            }
-            ClassifiedOpenPosition::Unsupported(unsupported) => {
-                conflict.candidate_projection = ReplacementCandidateProjection::Divergent {
-                    episode: unsupported.context.episode,
-                };
-                (ExposureState::ReplacementConflict(Box::new(conflict)), None)
-            }
-            ClassifiedOpenPosition::BlindRecovery(_) => {
-                (ExposureState::ReplacementConflict(Box::new(conflict)), None)
-            }
-        },
-        FreshCanonicalPositionProjection::Multiple { count } => {
-            conflict.candidate_projection = ReplacementCandidateProjection::Multiple { count };
-            (ExposureState::ReplacementConflict(Box::new(conflict)), None)
-        }
-        FreshCanonicalPositionProjection::ProbeFailed { diagnostic } => {
-            conflict.candidate_projection =
-                ReplacementCandidateProjection::ProbeFailed { diagnostic };
-            (ExposureState::ReplacementConflict(Box::new(conflict)), None)
-        }
     }
 }
 

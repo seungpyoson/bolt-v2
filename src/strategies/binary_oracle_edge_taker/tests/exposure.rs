@@ -4446,6 +4446,113 @@ fn delayed_close_for_reused_position_id_cannot_release_new_episode() {
     ));
 }
 
+fn replacement_conflict_with_working_remainder(
+    strategy: &mut BinaryOracleEdgeTaker,
+) -> (PositionEpisodeFingerprint, PendingEntryState) {
+    let instrument_id = selected_entry_instrument(strategy);
+    let position_id = PositionId::from("P-REPLACEMENT-WITH-WORKING-REMAINDER");
+    let client_order_id = ClientOrderId::from("ENTRY-P-REPLACEMENT-WITH-WORKING-REMAINDER");
+    let open_position = materialize_configured_position(
+        strategy,
+        instrument_id,
+        position_id,
+        Quantity::new(5.0, 2),
+        0.45,
+        OrderSide::Buy,
+        PositionSide::Long,
+    );
+    let mut pending = pending_entry_state(strategy, client_order_id);
+    pending.instrument_id = instrument_id;
+    set_managed_position_with_pending_entry(
+        strategy,
+        open_position,
+        ManagedPositionOrigin::StrategyEntry,
+        pending.clone(),
+    );
+    let retained = strategy
+        .exposure
+        .managed_position_context()
+        .expect("working remainder fixture should be managed");
+    assert_eq!(retained.pending_entry.as_ref(), Some(&pending));
+    let retained_episode = retained.episode.clone();
+    let mut candidate = retained;
+    candidate.position_id = PositionId::from("P-REPLACEMENT-CANDIDATE-WITH-REMAINDER");
+    candidate.episode.position_id = candidate.position_id;
+    candidate.episode.opening_order_id =
+        ClientOrderId::from("ENTRY-REPLACEMENT-CANDIDATE-WITH-REMAINDER");
+    candidate.episode.ts_opened_ns = 2_000;
+
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
+            CanonicalPositionProjection::ExactlyOne(Box::new(candidate)),
+        )),
+    );
+    assert!(matches!(
+        strategy.exposure.state(),
+        ExposureState::ReplacementConflict(_)
+    ));
+    (retained_episode, pending)
+}
+
+fn assert_working_remainder_stays_occupied(
+    strategy: &BinaryOracleEdgeTaker,
+    pending: &PendingEntryState,
+) {
+    assert!(matches!(
+        strategy.exposure.state(),
+        ExposureState::PendingEntry(current)
+            if current.client_order_id == pending.client_order_id
+    ));
+    assert_eq!(
+        strategy
+            .exposure
+            .request_entry_operation(strategy.exposure.generation())
+            .expect_err("the working entry remainder must keep entry occupied")
+            .reason,
+        ExposureOperationBlockedReason::PendingEntryOccupied
+    );
+}
+
+#[test]
+fn replacement_conflict_close_then_canonical_none_preserves_working_remainder() {
+    let mut strategy = ready_to_trade_strategy();
+    let (retained_episode, pending) = replacement_conflict_with_working_remainder(&mut strategy);
+
+    reduce_position_close_with_projection(
+        &strategy,
+        retained_episode,
+        FreshCanonicalPositionProjection::ProbeFailed {
+            diagnostic: "replacement projection unavailable after close".to_string(),
+        },
+    );
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
+            CanonicalPositionProjection::None,
+        )),
+    );
+
+    assert_working_remainder_stays_occupied(&strategy, &pending);
+}
+
+#[test]
+fn replacement_conflict_canonical_none_then_close_preserves_working_remainder() {
+    let mut strategy = ready_to_trade_strategy();
+    let (retained_episode, pending) = replacement_conflict_with_working_remainder(&mut strategy);
+
+    strategy.exposure.reduce_without_replacement_adoption(
+        AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
+            CanonicalPositionProjection::None,
+        )),
+    );
+    reduce_position_close_with_projection(
+        &strategy,
+        retained_episode,
+        FreshCanonicalPositionProjection::None,
+    );
+
+    assert_working_remainder_stays_occupied(&strategy, &pending);
+}
+
 #[test]
 fn replacement_conflict_requires_retained_episode_close_and_matching_candidate() {
     let mut strategy = ready_to_trade_strategy();

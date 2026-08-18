@@ -1542,7 +1542,7 @@ fn production_outcome_side_inference_does_not_parse_instrument_suffixes() {
 fn untracked_position_close_keeps_recovery_fail_closed() {
     let mut strategy = ready_to_trade_strategy();
     let instrument_id = strategy.active.books.up.instrument_id.unwrap();
-    set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
+    set_blind_probe_recovery(&mut strategy);
 
     strategy.on_position_closed(position_closed_event(
         instrument_id,
@@ -3171,10 +3171,8 @@ fn pending_entry_short_position_event_stays_fail_closed_without_materializing_po
     assert!(strategy.managed_position().is_none());
     assert!(matches!(
         strategy.exposure.state(),
-        ExposureState::BlindRecovery(BlindRecoveryState {
-            reason: BlindRecoveryReason::DivergentUnsupportedPosition,
-            ..
-        })
+        ExposureState::BlindRecovery(recovery)
+            if recovery.reason() == BlindRecoveryReason::DivergentUnsupportedPosition
     ));
     assert!(strategy.tracked_observed_position().is_none());
     assert_eq!(
@@ -3226,10 +3224,8 @@ fn live_position_event_quarantines_foreign_venue_position() {
     assert!(
         matches!(
             strategy.exposure.state(),
-            ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::ForeignVenuePosition { .. },
-                ..
-            })
+            ExposureState::BlindRecovery(recovery)
+                if matches!(recovery.reason(), BlindRecoveryReason::ForeignVenuePosition { .. })
         ),
         "foreign-venue live position event must be quarantined to blind recovery, got {:?}",
         strategy.exposure,
@@ -3420,10 +3416,8 @@ fn recovery_bootstrap_quarantines_foreign_venue_position() {
     assert!(
         matches!(
             quarantined,
-            ClassifiedOpenPosition::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::ForeignVenuePosition { .. },
-                ..
-            })
+            ClassifiedOpenPosition::BlindRecovery(ref recovery)
+                if matches!(recovery.reason(), BlindRecoveryReason::ForeignVenuePosition { .. })
         ),
         "foreign-venue position must be quarantined to blind recovery, got {quarantined:?}",
     );
@@ -3442,8 +3436,8 @@ fn fresh_blind_recovery_classifies_an_unsupported_contract_before_adoption() {
         OrderSide::Sell,
     );
     strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::BlindRecovery(BlindRecoveryState::authority_free(
-            BlindRecoveryReason::CacheProbeFailed,
+        PositionTruthEvent::BlindRecovery(BlindRecoveryState::probe(
+            BlindRecoveryProbeReason::CacheProbeFailed,
         )),
     ));
 
@@ -3467,8 +3461,8 @@ fn typed_blind_recovery_rejects_an_invalid_position_side() {
     let classified =
         strategy.bootstrapped_exposure_for(invalid, strategy.context.execution_venue());
     strategy.exposure.reduce(ExposureEvent::PositionTruth(
-        PositionTruthEvent::BlindRecovery(BlindRecoveryState::authority_free(
-            BlindRecoveryReason::CacheProbeFailed,
+        PositionTruthEvent::BlindRecovery(BlindRecoveryState::probe(
+            BlindRecoveryProbeReason::CacheProbeFailed,
         )),
     ));
     let grant = strategy
@@ -3494,10 +3488,11 @@ fn typed_blind_recovery_rejects_an_invalid_position_side() {
 
     assert!(matches!(
         strategy.exposure.state(),
-        ExposureState::BlindRecovery(BlindRecoveryState {
-            reason: BlindRecoveryReason::InvalidBootstrappedPosition { .. },
-            ..
-        })
+        ExposureState::BlindRecovery(recovery)
+            if matches!(
+                recovery.reason(),
+                BlindRecoveryReason::InvalidBootstrappedPosition { .. }
+            )
     ));
 }
 
@@ -3785,7 +3780,7 @@ fn entry_gate_reports_one_position_invariant_only_on_occupancy_change() {
 #[test]
 fn entry_gate_reports_only_unexpected_occupancies_as_invariant_violations() {
     let mut strategy = ready_to_trade_strategy();
-    set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
+    set_blind_probe_recovery(&mut strategy);
 
     let decision = strategy.entry_gate_decision_at(2_000);
 
@@ -3888,7 +3883,7 @@ fn task5_cooldown_is_per_market_and_recovery_blocks_new_entries() {
     assert!(strategy.market_in_cooldown("MKT-1", 30_999));
     assert!(!strategy.market_in_cooldown("MKT-2", 30_999));
 
-    set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
+    set_blind_probe_recovery(&mut strategy);
     let decision = strategy.entry_gate_decision_at(2_000);
 
     assert!(
@@ -4845,8 +4840,8 @@ fn occupied_replacement_conflict_recovers_after_multiple_with_close_and_matching
         AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::Multiple {
                 count: 2,
-                recovery: BlindRecoveryState::authority_free(
-                    BlindRecoveryReason::MultipleOpenPositions { count: 2 },
+                recovery: BlindRecoveryState::probe(
+                    BlindRecoveryProbeReason::MultipleOpenPositions { count: 2 },
                 ),
             },
         )),
@@ -4912,7 +4907,7 @@ fn occupied_replacement_conflict_recovers_after_probe_failure_with_close_and_non
         AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ProbeFailed {
                 diagnostic: "replacement probe failed".to_string(),
-                recovery: BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
+                recovery: BlindRecoveryState::probe(BlindRecoveryProbeReason::CacheProbeFailed),
             },
         )),
     );
@@ -5220,7 +5215,7 @@ fn timer_recovery_replacement_adoption_emits_exact_prior_and_adopted_evidence() 
         AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ProbeFailed {
                 diagnostic: "replacement recovery probe failed".to_string(),
-                recovery: BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
+                recovery: BlindRecoveryState::probe(BlindRecoveryProbeReason::CacheProbeFailed),
             },
         )),
     );
@@ -5327,7 +5322,7 @@ fn pending_entry_identity_conflict_retains_entry_until_its_terminal_fill() {
 #[test]
 fn blind_recovery_raw_truth_never_clears_quarantine_but_fresh_probe_can() {
     let mut strategy = ready_to_trade_strategy();
-    set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
+    set_blind_probe_recovery(&mut strategy);
     strategy.exposure.reduce_without_replacement_adoption(
         AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::None,
@@ -5364,7 +5359,7 @@ fn occupied_source_blind_recovery_rejects_transient_fresh_none() {
         AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ProbeFailed {
                 diagnostic: "transient probe failure".to_string(),
-                recovery: BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
+                recovery: BlindRecoveryState::probe(BlindRecoveryProbeReason::CacheProbeFailed),
             },
         )),
     );
@@ -5377,30 +5372,79 @@ fn occupied_source_blind_recovery_rejects_transient_fresh_none() {
     );
     assert!(matches!(
         strategy.exposure.state(),
-        ExposureState::BlindRecovery(BlindRecoveryState {
-            provenance: BlindRecoveryProvenance::ProbeClass {
-                retained_authority: Some(_),
-            },
-            ..
-        })
+        ExposureState::BlindRecovery(recovery) if recovery.retained_authority().is_some()
     ));
     strategy.exposure.reduce_without_replacement_adoption(
         AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ProbeFailed {
                 diagnostic: "repeated transient probe failure".to_string(),
-                recovery: BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
+                recovery: BlindRecoveryState::probe(BlindRecoveryProbeReason::CacheProbeFailed),
             },
         )),
     );
     assert!(matches!(
         strategy.exposure.state(),
-        ExposureState::BlindRecovery(BlindRecoveryState {
-            provenance: BlindRecoveryProvenance::ProbeClass {
-                retained_authority: Some(ref retained),
-            },
-            ..
-        }) if matches!(**retained, ExposureState::Managed(_))
+        ExposureState::BlindRecovery(recovery)
+            if matches!(recovery.retained_authority(), Some(ExposureState::Managed(_)))
     ));
+}
+
+#[test]
+fn blind_recovery_causes_derive_evidence_and_retain_authority() {
+    let mut strategy = ready_to_trade_strategy();
+    let instrument_id = selected_entry_instrument(&strategy);
+    let pending = pending_entry_state(
+        &mut strategy,
+        ClientOrderId::from("ENTRY-BLIND-CAUSE-AUTHORITY"),
+    );
+    let episode =
+        position_episode_for_test(instrument_id, PositionId::from("P-BLIND-CAUSE-IDENTITY"));
+    let instrument_venue = instrument_id.venue;
+    let execution_venue = Venue::from("OTHER");
+    let restart_recovery = BlindRecoveryState::restart_adoption(
+        BlindRecoveryRestartReason::UnattributedOpenExitOrder,
+        instrument_id,
+        ClientOrderId::from("EXIT-BLIND-CAUSE-FIRST"),
+        Vec::new(),
+    );
+    assert_eq!(restart_recovery.restart_order_count(), Some(1));
+    let mut cases = vec![
+        (
+            BlindRecoveryState::probe(BlindRecoveryProbeReason::CacheProbeFailed),
+            BlindRecoveryReason::CacheProbeFailed,
+            true,
+        ),
+        (
+            BlindRecoveryState::identity_bearing(
+                BlindRecoveryIdentityReason::DivergentUnsupportedPosition,
+                episode,
+            ),
+            BlindRecoveryReason::DivergentUnsupportedPosition,
+            false,
+        ),
+        (
+            restart_recovery,
+            BlindRecoveryReason::UnattributedRestartOpenExitOrder { instrument_id },
+            false,
+        ),
+        (
+            BlindRecoveryState::foreign_venue(instrument_id, instrument_venue, execution_venue),
+            BlindRecoveryReason::ForeignVenuePosition {
+                instrument_id,
+                instrument_venue,
+                execution_venue,
+            },
+            true,
+        ),
+    ];
+
+    for (recovery, expected_reason, authority_free_none) in &mut cases {
+        assert_eq!(recovery.reason(), *expected_reason);
+        assert_eq!(recovery.authorizes_none(), *authority_free_none);
+        recovery.retain_authority(ExposureState::PendingEntry(pending.clone()));
+        assert!(recovery.retained_authority().is_some());
+        assert!(!recovery.authorizes_none());
+    }
 }
 
 #[test]
@@ -5424,63 +5468,50 @@ fn every_blind_recovery_reason_rejects_raw_truth_and_uses_its_authorized_class()
         None,
     );
     let recoveries = vec![
-        BlindRecoveryState::with_recorded_episode(
-            BlindRecoveryReason::InvalidBootstrappedPosition {
+        BlindRecoveryState::identity_bearing(
+            BlindRecoveryIdentityReason::InvalidBootstrappedPosition {
                 entry_order_side: OrderSide::Buy,
                 side: PositionSide::Flat,
             },
             episode.clone(),
         ),
-        BlindRecoveryState::with_recorded_episode(
-            BlindRecoveryReason::InvalidLivePosition {
+        BlindRecoveryState::identity_bearing(
+            BlindRecoveryIdentityReason::InvalidLivePosition {
                 entry_order_side: OrderSide::Buy,
                 side: Some(PositionSide::Flat),
             },
             episode.clone(),
         ),
-        BlindRecoveryState::with_recorded_episode(
-            BlindRecoveryReason::DivergentUnsupportedPosition,
+        BlindRecoveryState::identity_bearing(
+            BlindRecoveryIdentityReason::DivergentUnsupportedPosition,
             episode.clone(),
         ),
-        BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
-        BlindRecoveryState::authority_free(BlindRecoveryReason::MultipleOpenPositions { count: 2 }),
-        BlindRecoveryState::authority_free(BlindRecoveryReason::SettlementEvidenceRecoveryFailed),
+        BlindRecoveryState::probe(BlindRecoveryProbeReason::CacheProbeFailed),
+        BlindRecoveryState::probe(BlindRecoveryProbeReason::MultipleOpenPositions { count: 2 }),
+        BlindRecoveryState::probe(BlindRecoveryProbeReason::SettlementEvidenceRecoveryFailed),
         BlindRecoveryState::restart_adoption(
-            BlindRecoveryReason::AmbiguousRestartOpenExitOrders {
-                instrument_id,
-                count: 2,
-            },
+            BlindRecoveryRestartReason::AmbiguousOpenExitOrders { count: 2 },
             instrument_id,
-            vec![
-                ClientOrderId::from("EXIT-BLIND-AMBIGUOUS-A"),
-                ClientOrderId::from("EXIT-BLIND-AMBIGUOUS-B"),
-            ],
+            ClientOrderId::from("EXIT-BLIND-AMBIGUOUS-A"),
+            vec![ClientOrderId::from("EXIT-BLIND-AMBIGUOUS-B")],
         ),
         BlindRecoveryState::restart_adoption(
-            BlindRecoveryReason::UnattributedRestartOpenExitOrder { instrument_id },
+            BlindRecoveryRestartReason::UnattributedOpenExitOrder,
             instrument_id,
-            vec![ClientOrderId::from("EXIT-BLIND-UNATTRIBUTED")],
+            ClientOrderId::from("EXIT-BLIND-UNATTRIBUTED"),
+            Vec::new(),
         ),
-        BlindRecoveryState::authority_free(BlindRecoveryReason::ForeignVenuePosition {
-            instrument_id,
-            instrument_venue: instrument_id.venue,
-            execution_venue: Venue::from("OTHER"),
-        }),
+        BlindRecoveryState::foreign_venue(instrument_id, instrument_id.venue, Venue::from("OTHER")),
     ];
 
     for recovery in recoveries {
         let strategy = ready_to_trade_strategy();
-        let authorized_projection = match recovery.provenance {
-            BlindRecoveryProvenance::IdentityBearing { .. }
-            | BlindRecoveryProvenance::RestartAdoption { .. } => {
-                FreshCanonicalPositionProjection::ExactlyOne(Box::new(
-                    ClassifiedOpenPosition::Managed(managed.clone()),
-                ))
-            }
-            BlindRecoveryProvenance::ProbeClass { .. }
-            | BlindRecoveryProvenance::ForeignVenue { .. } => {
-                FreshCanonicalPositionProjection::None
-            }
+        let authorized_projection = if recovery.authorizes_none() {
+            FreshCanonicalPositionProjection::None
+        } else {
+            FreshCanonicalPositionProjection::ExactlyOne(Box::new(ClassifiedOpenPosition::Managed(
+                managed.clone(),
+            )))
         };
         strategy.exposure.reduce(ExposureEvent::PositionTruth(
             PositionTruthEvent::BlindRecovery(recovery),
@@ -5526,7 +5557,7 @@ fn occupied_blind_recovery_accumulates_matching_entry_and_exit_terminal_proofs()
         AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ProbeFailed {
                 diagnostic: "entry probe failed".to_string(),
-                recovery: BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
+                recovery: BlindRecoveryState::probe(BlindRecoveryProbeReason::CacheProbeFailed),
             },
         )),
     );
@@ -5537,12 +5568,8 @@ fn occupied_blind_recovery_accumulates_matching_entry_and_exit_terminal_proofs()
         ));
     assert!(matches!(
         entry_strategy.exposure.state(),
-        ExposureState::BlindRecovery(BlindRecoveryState {
-            provenance: BlindRecoveryProvenance::ProbeClass {
-                retained_authority: Some(ref retained),
-            },
-            ..
-        }) if matches!(**retained, ExposureState::Flat)
+        ExposureState::BlindRecovery(recovery)
+            if matches!(recovery.retained_authority(), Some(ExposureState::Flat))
     ));
     entry_strategy.exposure.reduce_without_replacement_adoption(
         AdoptionCapableExposureEvent::PositionTruth(
@@ -5581,7 +5608,7 @@ fn occupied_blind_recovery_accumulates_matching_entry_and_exit_terminal_proofs()
         AdoptionCapableExposureEvent::PositionTruth(AdoptionCapablePositionTruthEvent::Canonical(
             CanonicalPositionProjection::ProbeFailed {
                 diagnostic: "exit probe failed".to_string(),
-                recovery: BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
+                recovery: BlindRecoveryState::probe(BlindRecoveryProbeReason::CacheProbeFailed),
             },
         )),
     );
@@ -5590,12 +5617,11 @@ fn occupied_blind_recovery_accumulates_matching_entry_and_exit_terminal_proofs()
     ));
     assert!(matches!(
         exit_strategy.exposure.state(),
-        ExposureState::BlindRecovery(BlindRecoveryState {
-            provenance: BlindRecoveryProvenance::ProbeClass {
-                retained_authority: Some(ref retained),
-            },
-            ..
-        }) if matches!(**retained, ExposureState::TerminalExitAwaitingPosition(_))
+        ExposureState::BlindRecovery(recovery)
+            if matches!(
+                recovery.retained_authority(),
+                Some(ExposureState::TerminalExitAwaitingPosition(_))
+            )
     ));
     exit_strategy.exposure.reduce(ExposureEvent::ExitLifecycle(
         ExitLifecycleEvent::ReleaseFlat,
@@ -5815,9 +5841,7 @@ fn sink_unknown_requires_proof_and_discharges_terminal_and_filled_outcomes() {
             AdoptionCapablePositionTruthEvent::Canonical(
                 CanonicalPositionProjection::ProbeFailed {
                     diagnostic: "sink-unknown probe failed".to_string(),
-                    recovery: BlindRecoveryState::authority_free(
-                        BlindRecoveryReason::CacheProbeFailed,
-                    ),
+                    recovery: BlindRecoveryState::probe(BlindRecoveryProbeReason::CacheProbeFailed),
                 },
             ),
         ));
@@ -5828,12 +5852,8 @@ fn sink_unknown_requires_proof_and_discharges_terminal_and_filled_outcomes() {
         ));
     assert!(matches!(
         quarantined_strategy.exposure.state(),
-        ExposureState::BlindRecovery(BlindRecoveryState {
-            provenance: BlindRecoveryProvenance::ProbeClass {
-                retained_authority: Some(ref retained),
-            },
-            ..
-        }) if matches!(**retained, ExposureState::Flat)
+        ExposureState::BlindRecovery(recovery)
+            if matches!(recovery.retained_authority(), Some(ExposureState::Flat))
     ));
     quarantined_strategy
         .exposure

@@ -13,7 +13,7 @@ fn switch_resets_only_active_market_state() {
             churn_count: 2,
         },
     );
-    set_blind_recovery(&mut strategy, BlindRecoveryReason::CacheProbeFailed);
+    set_blind_probe_recovery(&mut strategy);
     strategy
         .pricing
         .set_selected_pricing_spot(Some(fast_spot("bybit", 3_100.5, 1_200)));

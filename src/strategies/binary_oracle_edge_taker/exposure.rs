@@ -556,188 +556,271 @@ pub(super) struct UnsupportedObservedState {
     pub(super) reason: UnsupportedObservedReason,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct BlindRecoveryState {
-    pub(super) reason: BlindRecoveryReason,
-    pub(super) provenance: BlindRecoveryProvenance,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BlindRecoveryProbeReason {
+    CacheProbeFailed,
+    MultipleOpenPositions { count: usize },
+    SettlementEvidenceRecoveryFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BlindRecoveryIdentityReason {
+    InvalidBootstrappedPosition {
+        entry_order_side: OrderSide,
+        side: PositionSide,
+    },
+    InvalidLivePosition {
+        entry_order_side: OrderSide,
+        side: Option<PositionSide>,
+    },
+    DivergentUnsupportedPosition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BlindRecoveryRestartReason {
+    AmbiguousOpenExitOrders { count: usize },
+    UnattributedOpenExitOrder,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) enum BlindRecoveryProvenance {
+enum BlindRecoveryAuthority {
+    AuthorityFree,
+    Retained(Box<ExposureState>),
+}
+
+impl BlindRecoveryAuthority {
+    fn retain(&mut self, state: ExposureState) {
+        match (self, state) {
+            (Self::AuthorityFree, ExposureState::Flat) | (Self::Retained(_), _) => {}
+            (slot @ Self::AuthorityFree, retained) => {
+                *slot = Self::Retained(Box::new(retained));
+            }
+        }
+    }
+
+    fn retained(&self) -> Option<&ExposureState> {
+        match self {
+            Self::AuthorityFree => None,
+            Self::Retained(retained) => Some(retained),
+        }
+    }
+
+    fn retained_mut(&mut self) -> Option<&mut Box<ExposureState>> {
+        match self {
+            Self::AuthorityFree => None,
+            Self::Retained(retained) => Some(retained),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct NonEmptyRestartOrderIds {
+    first: ClientOrderId,
+    remaining: Vec<ClientOrderId>,
+}
+
+impl NonEmptyRestartOrderIds {
+    fn new(first: ClientOrderId, remaining: Vec<ClientOrderId>) -> Self {
+        Self { first, remaining }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        std::iter::once(&self.first)
+            .chain(self.remaining.iter())
+            .count()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum BlindRecoveryCause {
+    Probe(BlindRecoveryProbeReason),
     IdentityBearing {
+        reason: BlindRecoveryIdentityReason,
         recorded_episode: PositionEpisodeFingerprint,
-        retained_authority: Option<Box<ExposureState>>,
-    },
-    ProbeClass {
-        retained_authority: Option<Box<ExposureState>>,
     },
     RestartAdoption {
+        reason: BlindRecoveryRestartReason,
         instrument_id: InstrumentId,
-        order_ids: Vec<ClientOrderId>,
-        retained_authority: Option<Box<ExposureState>>,
+        order_ids: NonEmptyRestartOrderIds,
     },
     ForeignVenue {
         instrument_id: InstrumentId,
-        retained_authority: Option<Box<ExposureState>>,
+        instrument_venue: Venue,
+        execution_venue: Venue,
     },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct BlindRecoveryState {
+    cause: BlindRecoveryCause,
+    authority: BlindRecoveryAuthority,
+}
+
 impl BlindRecoveryState {
-    pub(super) fn authority_free(reason: BlindRecoveryReason) -> Self {
-        let provenance = match &reason {
-            BlindRecoveryReason::InvalidBootstrappedPosition { .. }
-            | BlindRecoveryReason::InvalidLivePosition { .. }
-            | BlindRecoveryReason::DivergentUnsupportedPosition => {
-                panic!("identity-bearing recovery requires a recorded episode")
-            }
-            BlindRecoveryReason::CacheProbeFailed
-            | BlindRecoveryReason::MultipleOpenPositions { .. }
-            | BlindRecoveryReason::SettlementEvidenceRecoveryFailed => {
-                BlindRecoveryProvenance::ProbeClass {
-                    retained_authority: None,
-                }
-            }
-            BlindRecoveryReason::AmbiguousRestartOpenExitOrders { instrument_id, .. }
-            | BlindRecoveryReason::UnattributedRestartOpenExitOrder { instrument_id } => {
-                panic!(
-                    "restart-adoption recovery for {instrument_id} requires the observed order identities"
-                )
-            }
-            BlindRecoveryReason::ForeignVenuePosition { instrument_id, .. } => {
-                BlindRecoveryProvenance::ForeignVenue {
-                    instrument_id: *instrument_id,
-                    retained_authority: None,
-                }
-            }
-        };
-        Self { reason, provenance }
+    pub(super) fn probe(reason: BlindRecoveryProbeReason) -> Self {
+        Self {
+            cause: BlindRecoveryCause::Probe(reason),
+            authority: BlindRecoveryAuthority::AuthorityFree,
+        }
+    }
+
+    pub(super) fn identity_bearing(
+        reason: BlindRecoveryIdentityReason,
+        recorded_episode: PositionEpisodeFingerprint,
+    ) -> Self {
+        Self {
+            cause: BlindRecoveryCause::IdentityBearing {
+                reason,
+                recorded_episode,
+            },
+            authority: BlindRecoveryAuthority::AuthorityFree,
+        }
     }
 
     pub(super) fn restart_adoption(
-        reason: BlindRecoveryReason,
+        reason: BlindRecoveryRestartReason,
         instrument_id: InstrumentId,
-        order_ids: Vec<ClientOrderId>,
+        first_order_id: ClientOrderId,
+        remaining_order_ids: Vec<ClientOrderId>,
     ) -> Self {
-        assert!(
-            !order_ids.is_empty(),
-            "restart-adoption recovery requires at least one observed order identity"
-        );
-        assert!(
-            matches!(
+        Self {
+            cause: BlindRecoveryCause::RestartAdoption {
                 reason,
-                BlindRecoveryReason::AmbiguousRestartOpenExitOrders {
-                    instrument_id: reason_instrument_id,
-                    ..
-                } | BlindRecoveryReason::UnattributedRestartOpenExitOrder {
-                    instrument_id: reason_instrument_id,
-                } if reason_instrument_id == instrument_id
-            ),
-            "restart-adoption reason must match its recorded instrument"
-        );
-        Self {
-            reason,
-            provenance: BlindRecoveryProvenance::RestartAdoption {
                 instrument_id,
-                order_ids,
-                retained_authority: None,
+                order_ids: NonEmptyRestartOrderIds::new(first_order_id, remaining_order_ids),
             },
+            authority: BlindRecoveryAuthority::AuthorityFree,
         }
     }
 
-    pub(super) fn with_recorded_episode(
-        reason: BlindRecoveryReason,
-        episode: PositionEpisodeFingerprint,
+    pub(super) fn foreign_venue(
+        instrument_id: InstrumentId,
+        instrument_venue: Venue,
+        execution_venue: Venue,
     ) -> Self {
         Self {
-            reason,
-            provenance: BlindRecoveryProvenance::IdentityBearing {
-                recorded_episode: episode,
-                retained_authority: None,
+            cause: BlindRecoveryCause::ForeignVenue {
+                instrument_id,
+                instrument_venue,
+                execution_venue,
+            },
+            authority: BlindRecoveryAuthority::AuthorityFree,
+        }
+    }
+
+    pub(super) fn reason(&self) -> BlindRecoveryReason {
+        match &self.cause {
+            BlindRecoveryCause::Probe(BlindRecoveryProbeReason::CacheProbeFailed) => {
+                BlindRecoveryReason::CacheProbeFailed
+            }
+            BlindRecoveryCause::Probe(BlindRecoveryProbeReason::MultipleOpenPositions {
+                count,
+            }) => BlindRecoveryReason::MultipleOpenPositions { count: *count },
+            BlindRecoveryCause::Probe(
+                BlindRecoveryProbeReason::SettlementEvidenceRecoveryFailed,
+            ) => BlindRecoveryReason::SettlementEvidenceRecoveryFailed,
+            BlindRecoveryCause::IdentityBearing {
+                reason:
+                    BlindRecoveryIdentityReason::InvalidBootstrappedPosition {
+                        entry_order_side,
+                        side,
+                    },
+                ..
+            } => BlindRecoveryReason::InvalidBootstrappedPosition {
+                entry_order_side: *entry_order_side,
+                side: *side,
+            },
+            BlindRecoveryCause::IdentityBearing {
+                reason:
+                    BlindRecoveryIdentityReason::InvalidLivePosition {
+                        entry_order_side,
+                        side,
+                    },
+                ..
+            } => BlindRecoveryReason::InvalidLivePosition {
+                entry_order_side: *entry_order_side,
+                side: *side,
+            },
+            BlindRecoveryCause::IdentityBearing {
+                reason: BlindRecoveryIdentityReason::DivergentUnsupportedPosition,
+                ..
+            } => BlindRecoveryReason::DivergentUnsupportedPosition,
+            BlindRecoveryCause::RestartAdoption {
+                reason: BlindRecoveryRestartReason::AmbiguousOpenExitOrders { count },
+                instrument_id,
+                ..
+            } => BlindRecoveryReason::AmbiguousRestartOpenExitOrders {
+                instrument_id: *instrument_id,
+                count: *count,
+            },
+            BlindRecoveryCause::RestartAdoption {
+                reason: BlindRecoveryRestartReason::UnattributedOpenExitOrder,
+                instrument_id,
+                ..
+            } => BlindRecoveryReason::UnattributedRestartOpenExitOrder {
+                instrument_id: *instrument_id,
+            },
+            BlindRecoveryCause::ForeignVenue {
+                instrument_id,
+                instrument_venue,
+                execution_venue,
+            } => BlindRecoveryReason::ForeignVenuePosition {
+                instrument_id: *instrument_id,
+                instrument_venue: *instrument_venue,
+                execution_venue: *execution_venue,
             },
         }
     }
 
-    fn retain_authority(&mut self, state: ExposureState) {
-        let retained = match &mut self.provenance {
-            BlindRecoveryProvenance::IdentityBearing {
-                retained_authority, ..
-            }
-            | BlindRecoveryProvenance::ProbeClass { retained_authority }
-            | BlindRecoveryProvenance::RestartAdoption {
-                retained_authority, ..
-            }
-            | BlindRecoveryProvenance::ForeignVenue {
-                retained_authority, ..
-            } => retained_authority,
-        };
-        if retained.is_none() && !matches!(state, ExposureState::Flat) {
-            *retained = Some(Box::new(state));
-        }
+    pub(super) fn retain_authority(&mut self, state: ExposureState) {
+        self.authority.retain(state);
     }
 
-    fn retained_authority(&self) -> Option<&ExposureState> {
-        match &self.provenance {
-            BlindRecoveryProvenance::IdentityBearing {
-                retained_authority, ..
-            }
-            | BlindRecoveryProvenance::ProbeClass { retained_authority }
-            | BlindRecoveryProvenance::RestartAdoption {
-                retained_authority, ..
-            }
-            | BlindRecoveryProvenance::ForeignVenue {
-                retained_authority, ..
-            } => retained_authority.as_deref(),
-        }
+    pub(super) fn retained_authority(&self) -> Option<&ExposureState> {
+        self.authority.retained()
     }
 
     fn retained_authority_mut(&mut self) -> Option<&mut Box<ExposureState>> {
-        match &mut self.provenance {
-            BlindRecoveryProvenance::IdentityBearing {
-                retained_authority, ..
-            }
-            | BlindRecoveryProvenance::ProbeClass { retained_authority }
-            | BlindRecoveryProvenance::RestartAdoption {
-                retained_authority, ..
-            }
-            | BlindRecoveryProvenance::ForeignVenue {
-                retained_authority, ..
-            } => retained_authority.as_mut(),
-        }
+        self.authority.retained_mut()
     }
 
     fn authorizes_exactly_one(&self, managed: &ManagedPositionContext) -> bool {
-        if let Some(retained) = self.retained_authority() {
-            if let ExposureState::ReplacementConflict(conflict) = retained {
-                return conflict.retained.episode == managed.episode
-                    || (conflict.candidate.episode == managed.episode
-                        && conflict.retained_is_closed());
-            }
-            return retained
-                .tracked_position_context()
-                .is_some_and(|context| context.episode == managed.episode)
-                || retained.pending_entry().is_some_and(|pending| {
-                    pending.instrument_id == managed.instrument_id
-                        && pending.client_order_id == managed.episode.opening_order_id
-                });
-        }
-        match &self.provenance {
-            BlindRecoveryProvenance::ProbeClass { .. } => true,
-            BlindRecoveryProvenance::IdentityBearing {
-                recorded_episode: episode,
-                ..
-            } => episode == &managed.episode,
-            BlindRecoveryProvenance::ForeignVenue { instrument_id, .. } => {
-                instrument_id != &managed.instrument_id
-            }
-            BlindRecoveryProvenance::RestartAdoption { instrument_id, .. } => {
-                instrument_id == &managed.instrument_id
-            }
+        match &self.authority {
+            BlindRecoveryAuthority::Retained(retained) => match retained.as_ref() {
+                ExposureState::ReplacementConflict(conflict) => {
+                    conflict.retained.episode == managed.episode
+                        || (conflict.candidate.episode == managed.episode
+                            && conflict.retained_is_closed())
+                }
+                retained => {
+                    retained
+                        .tracked_position_context()
+                        .is_some_and(|context| context.episode == managed.episode)
+                        || retained.pending_entry().is_some_and(|pending| {
+                            pending.instrument_id == managed.instrument_id
+                                && pending.client_order_id == managed.episode.opening_order_id
+                        })
+                }
+            },
+            BlindRecoveryAuthority::AuthorityFree => match &self.cause {
+                BlindRecoveryCause::Probe(_) => true,
+                BlindRecoveryCause::IdentityBearing {
+                    recorded_episode, ..
+                } => recorded_episode == &managed.episode,
+                BlindRecoveryCause::RestartAdoption { instrument_id, .. } => {
+                    instrument_id == &managed.instrument_id
+                }
+                BlindRecoveryCause::ForeignVenue { instrument_id, .. } => {
+                    instrument_id != &managed.instrument_id
+                }
+            },
         }
     }
 
-    fn authorizes_none(&self) -> bool {
-        if let Some(retained) = self.retained_authority() {
-            return match retained {
+    pub(super) fn authorizes_none(&self) -> bool {
+        match &self.authority {
+            BlindRecoveryAuthority::Retained(retained) => match retained.as_ref() {
                 ExposureState::Flat => true,
                 ExposureState::Managed(context) => context.episode_close_seen,
                 ExposureState::UnsupportedObserved(observed) => observed.context.episode_close_seen,
@@ -751,13 +834,26 @@ impl BlindRecoveryState {
                 | ExposureState::BlindRecovery(_)
                 | ExposureState::OperationSinkUnknown(_)
                 | ExposureState::ObligationSaturated(_) => false,
-            };
+            },
+            BlindRecoveryAuthority::AuthorityFree => matches!(
+                &self.cause,
+                BlindRecoveryCause::Probe(_) | BlindRecoveryCause::ForeignVenue { .. }
+            ),
         }
-        matches!(
-            self.provenance,
-            BlindRecoveryProvenance::ProbeClass { .. }
-                | BlindRecoveryProvenance::ForeignVenue { .. }
-        )
+    }
+
+    fn is_restart_adoption(&self) -> bool {
+        matches!(&self.cause, BlindRecoveryCause::RestartAdoption { .. })
+    }
+
+    #[cfg(test)]
+    pub(super) fn restart_order_count(&self) -> Option<usize> {
+        match &self.cause {
+            BlindRecoveryCause::RestartAdoption { order_ids, .. } => Some(order_ids.len()),
+            BlindRecoveryCause::Probe(_)
+            | BlindRecoveryCause::IdentityBearing { .. }
+            | BlindRecoveryCause::ForeignVenue { .. } => None,
+        }
     }
 }
 
@@ -1834,8 +1930,8 @@ impl GovernedExposureInner {
                         .tracked_position_context()
                         .map(|context| context.episode.clone());
                     let retained = self.state.clone();
-                    let mut recovery = BlindRecoveryState::with_recorded_episode(
-                        BlindRecoveryReason::DivergentUnsupportedPosition,
+                    let mut recovery = BlindRecoveryState::identity_bearing(
+                        BlindRecoveryIdentityReason::DivergentUnsupportedPosition,
                         candidate.episode.clone(),
                     );
                     recovery.retain_authority(retained);
@@ -2072,12 +2168,12 @@ impl GovernedExposureInner {
                 },
             },
             FreshCanonicalPositionProjection::Multiple { count } => {
-                self.enter_blind_recovery(BlindRecoveryState::authority_free(
-                    BlindRecoveryReason::MultipleOpenPositions { count },
+                self.enter_blind_recovery(BlindRecoveryState::probe(
+                    BlindRecoveryProbeReason::MultipleOpenPositions { count },
                 ))
             }
             FreshCanonicalPositionProjection::ProbeFailed { .. } => self.enter_blind_recovery(
-                BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
+                BlindRecoveryState::probe(BlindRecoveryProbeReason::CacheProbeFailed),
             ),
         }
     }
@@ -2594,8 +2690,8 @@ impl GovernedExposureInner {
                 .reduce_canonical_projection(
                     CanonicalPositionProjection::Multiple {
                         count,
-                        recovery: BlindRecoveryState::authority_free(
-                            BlindRecoveryReason::MultipleOpenPositions { count },
+                        recovery: BlindRecoveryState::probe(
+                            BlindRecoveryProbeReason::MultipleOpenPositions { count },
                         ),
                     },
                     replacement_adoption,
@@ -2604,8 +2700,8 @@ impl GovernedExposureInner {
                 .reduce_canonical_projection(
                     CanonicalPositionProjection::ProbeFailed {
                         diagnostic,
-                        recovery: BlindRecoveryState::authority_free(
-                            BlindRecoveryReason::CacheProbeFailed,
+                        recovery: BlindRecoveryState::probe(
+                            BlindRecoveryProbeReason::CacheProbeFailed,
                         ),
                     },
                     replacement_adoption,
@@ -3031,11 +3127,8 @@ impl GovernedExposure {
         expected_generation: u64,
     ) -> Result<RecoveryOperationGrant, ExposureOperationRejection> {
         let restart_adoption = matches!(
-            self.inner.borrow().state,
-            ExposureState::BlindRecovery(BlindRecoveryState {
-                provenance: BlindRecoveryProvenance::RestartAdoption { .. },
-                ..
-            })
+            &self.inner.borrow().state,
+            ExposureState::BlindRecovery(recovery) if recovery.is_restart_adoption()
         );
         self.request_operation(ExposureOperationKind::Recovery, expected_generation)
             .map(|grant| RecoveryOperationGrant {
@@ -4236,6 +4329,40 @@ fn released_exit_provenance(state: &ExposureState) -> Option<ReleasedExitProvena
     })
 }
 
+#[derive(Default)]
+struct ExposureProjection<'a> {
+    pending_entry: Option<&'a PendingEntryState>,
+    managed: Option<&'a ManagedPositionContext>,
+    tracked: Option<&'a ManagedPositionContext>,
+    exit: Option<ExitProjection<'a>>,
+    recovery_hold: Option<&'a ExitAuthorityRecoveryHoldState>,
+    sink_unknown: Option<&'a OperationSinkUnknownState>,
+    occupancy: Option<ExposureOccupancy>,
+}
+
+#[derive(Clone, Copy)]
+enum ExitProjection<'a> {
+    Attempting(&'a ExitAttemptingState),
+    Working(&'a ExitPendingState),
+    TerminalAwaitingPosition(&'a ExitPendingState),
+}
+
+impl ExitProjection<'_> {
+    fn lifecycle(self) -> (ExitLifecyclePhase, ExitPendingState) {
+        match self {
+            Self::Attempting(attempt) => (ExitLifecyclePhase::Attempting, attempt.snapshot()),
+            Self::Working(exit) => (ExitLifecyclePhase::Working, exit.clone()),
+            Self::TerminalAwaitingPosition(exit) => {
+                (ExitLifecyclePhase::TerminalAwaitingPosition, exit.clone())
+            }
+        }
+    }
+
+    fn snapshot(self) -> ExitPendingState {
+        self.lifecycle().1
+    }
+}
+
 impl ExposureState {
     pub(super) const fn kind(&self) -> ExposureStateKind {
         match self {
@@ -4258,47 +4385,15 @@ impl ExposureState {
     }
 
     pub(super) fn pending_entry(&self) -> Option<&PendingEntryState> {
-        match self {
-            Self::PendingEntry(pending) | Self::EntryReconcilePending { pending, .. } => {
-                Some(pending)
-            }
-            Self::Managed(position) => position.pending_entry.as_ref(),
-            Self::ExitAttempting(attempt) => attempt.managed.pending_entry.as_ref(),
-            Self::ExitPending(exit) | Self::TerminalExitAwaitingPosition(exit) => {
-                exit.position.pending_entry.as_ref()
-            }
-            Self::ExitAuthorityRecoveryHold(hold) => hold.position.pending_entry.as_ref(),
-            Self::BlindRecovery(recovery) => recovery
-                .retained_authority()
-                .and_then(ExposureState::pending_entry),
-            Self::ObligationSaturated(saturated) => saturated.retained.pending_entry(),
-            Self::ReplacementConflict(conflict) => conflict.retained.pending_entry.as_ref(),
-            _ => None,
-        }
+        self.projection().pending_entry
     }
 
     pub(super) fn managed_position_context(&self) -> Option<&ManagedPositionContext> {
-        match self {
-            Self::Managed(position) => Some(position),
-            Self::ExitAttempting(attempt) => Some(&attempt.managed),
-            Self::ExitPending(exit) | Self::TerminalExitAwaitingPosition(exit) => {
-                Some(&exit.position)
-            }
-            Self::ExitAuthorityRecoveryHold(hold) => Some(&hold.position),
-            _ => None,
-        }
+        self.projection().managed
     }
 
     pub(super) fn tracked_position_context(&self) -> Option<&ManagedPositionContext> {
-        self.managed_position_context().or(match self {
-            Self::UnsupportedObserved(observed) => Some(&observed.context),
-            Self::BlindRecovery(recovery) => recovery
-                .retained_authority()
-                .and_then(ExposureState::tracked_position_context),
-            Self::ObligationSaturated(saturated) => saturated.retained.tracked_position_context(),
-            Self::ReplacementConflict(conflict) => Some(&conflict.retained),
-            _ => None,
-        })
+        self.projection().tracked
     }
 
     pub(super) fn held_instrument_id(&self) -> Option<InstrumentId> {
@@ -4308,85 +4403,96 @@ impl ExposureState {
     }
 
     pub(super) fn exit_pending_snapshot(&self) -> Option<ExitPendingState> {
-        match self {
-            Self::ExitAttempting(attempt) => Some(attempt.snapshot()),
-            Self::ExitPending(exit) | Self::TerminalExitAwaitingPosition(exit) => {
-                Some(exit.clone())
-            }
-            Self::BlindRecovery(recovery) => recovery
-                .retained_authority()
-                .and_then(ExposureState::exit_pending_snapshot),
-            Self::ObligationSaturated(saturated) => saturated.retained.exit_pending_snapshot(),
-            _ => None,
-        }
+        self.projection().exit.map(ExitProjection::snapshot)
     }
 
     pub(super) fn exit_lifecycle(&self) -> Option<(ExitLifecyclePhase, ExitPendingState)> {
-        match self {
-            Self::ExitAttempting(attempt) => {
-                Some((ExitLifecyclePhase::Attempting, attempt.snapshot()))
-            }
-            Self::ExitPending(exit) => Some((ExitLifecyclePhase::Working, exit.clone())),
-            Self::TerminalExitAwaitingPosition(exit) => {
-                Some((ExitLifecyclePhase::TerminalAwaitingPosition, exit.clone()))
-            }
-            Self::BlindRecovery(recovery) => recovery
-                .retained_authority()
-                .and_then(ExposureState::exit_lifecycle),
-            Self::ObligationSaturated(saturated) => saturated.retained.exit_lifecycle(),
-            _ => None,
-        }
+        self.projection().exit.map(ExitProjection::lifecycle)
     }
 
     pub(super) fn exit_authority_recovery_hold(&self) -> Option<&ExitAuthorityRecoveryHoldState> {
-        match self {
-            Self::ExitAuthorityRecoveryHold(hold) => Some(hold),
-            Self::BlindRecovery(recovery) => recovery
-                .retained_authority()
-                .and_then(ExposureState::exit_authority_recovery_hold),
-            Self::ObligationSaturated(saturated) => {
-                saturated.retained.exit_authority_recovery_hold()
-            }
-            _ => None,
-        }
+        self.projection().recovery_hold
     }
 
     pub(super) fn operation_sink_unknown(&self) -> Option<&OperationSinkUnknownState> {
-        match self {
-            Self::OperationSinkUnknown(unknown) => Some(unknown),
-            Self::BlindRecovery(recovery) => recovery
-                .retained_authority()
-                .and_then(ExposureState::operation_sink_unknown),
-            Self::ObligationSaturated(saturated) => saturated.retained.operation_sink_unknown(),
-            Self::Flat
-            | Self::PendingEntry(_)
-            | Self::EntryReconcilePending { .. }
-            | Self::Managed(_)
-            | Self::ExitAttempting(_)
-            | Self::ExitPending(_)
-            | Self::TerminalExitAwaitingPosition(_)
-            | Self::ExitAuthorityRecoveryHold(_)
-            | Self::UnsupportedObserved(_)
-            | Self::ReplacementConflict(_) => None,
-        }
+        self.projection().sink_unknown
     }
 
     pub(super) fn occupancy(&self) -> Option<ExposureOccupancy> {
+        self.projection().occupancy
+    }
+
+    fn projection(&self) -> ExposureProjection<'_> {
+        let mut projection = ExposureProjection::default();
         match self {
-            Self::Flat => None,
-            Self::PendingEntry(_) => Some(ExposureOccupancy::PendingEntry),
-            Self::EntryReconcilePending { .. } => Some(ExposureOccupancy::EntryReconcilePending),
-            Self::Managed(_) => Some(ExposureOccupancy::ManagedPosition),
-            Self::ExitAttempting(_)
-            | Self::ExitPending(_)
-            | Self::TerminalExitAwaitingPosition(_)
-            | Self::ExitAuthorityRecoveryHold(_) => Some(ExposureOccupancy::ExitPending),
-            Self::UnsupportedObserved(_) => Some(ExposureOccupancy::UnsupportedObserved),
-            Self::BlindRecovery(_)
-            | Self::OperationSinkUnknown(_)
-            | Self::ObligationSaturated(_)
-            | Self::ReplacementConflict(_) => Some(ExposureOccupancy::BlindRecovery),
+            Self::Flat => {}
+            Self::PendingEntry(pending) => {
+                projection.pending_entry = Some(pending);
+                projection.occupancy = Some(ExposureOccupancy::PendingEntry);
+            }
+            Self::EntryReconcilePending { pending, .. } => {
+                projection.pending_entry = Some(pending);
+                projection.occupancy = Some(ExposureOccupancy::EntryReconcilePending);
+            }
+            Self::Managed(position) => {
+                projection.pending_entry = position.pending_entry.as_ref();
+                projection.managed = Some(position);
+                projection.tracked = Some(position);
+                projection.occupancy = Some(ExposureOccupancy::ManagedPosition);
+            }
+            Self::ExitAttempting(attempt) => {
+                projection.pending_entry = attempt.managed.pending_entry.as_ref();
+                projection.managed = Some(&attempt.managed);
+                projection.tracked = Some(&attempt.managed);
+                projection.exit = Some(ExitProjection::Attempting(attempt));
+                projection.occupancy = Some(ExposureOccupancy::ExitPending);
+            }
+            Self::ExitPending(exit) => {
+                projection.pending_entry = exit.position.pending_entry.as_ref();
+                projection.managed = Some(&exit.position);
+                projection.tracked = Some(&exit.position);
+                projection.exit = Some(ExitProjection::Working(exit));
+                projection.occupancy = Some(ExposureOccupancy::ExitPending);
+            }
+            Self::TerminalExitAwaitingPosition(exit) => {
+                projection.pending_entry = exit.position.pending_entry.as_ref();
+                projection.managed = Some(&exit.position);
+                projection.tracked = Some(&exit.position);
+                projection.exit = Some(ExitProjection::TerminalAwaitingPosition(exit));
+                projection.occupancy = Some(ExposureOccupancy::ExitPending);
+            }
+            Self::ExitAuthorityRecoveryHold(hold) => {
+                projection.pending_entry = hold.position.pending_entry.as_ref();
+                projection.managed = Some(&hold.position);
+                projection.tracked = Some(&hold.position);
+                projection.recovery_hold = Some(hold);
+                projection.occupancy = Some(ExposureOccupancy::ExitPending);
+            }
+            Self::UnsupportedObserved(observed) => {
+                projection.tracked = Some(&observed.context);
+                projection.occupancy = Some(ExposureOccupancy::UnsupportedObserved);
+            }
+            Self::BlindRecovery(recovery) => {
+                projection = recovery
+                    .retained_authority()
+                    .map_or_else(ExposureProjection::default, ExposureState::projection);
+                projection.occupancy = Some(ExposureOccupancy::BlindRecovery);
+            }
+            Self::OperationSinkUnknown(unknown) => {
+                projection.sink_unknown = Some(unknown);
+                projection.occupancy = Some(ExposureOccupancy::BlindRecovery);
+            }
+            Self::ObligationSaturated(saturated) => {
+                projection = saturated.retained.projection();
+                projection.occupancy = Some(ExposureOccupancy::BlindRecovery);
+            }
+            Self::ReplacementConflict(conflict) => {
+                projection.pending_entry = conflict.retained.pending_entry.as_ref();
+                projection.tracked = Some(&conflict.retained);
+                projection.occupancy = Some(ExposureOccupancy::BlindRecovery);
+            }
         }
+        projection
     }
 
     #[cfg(test)]

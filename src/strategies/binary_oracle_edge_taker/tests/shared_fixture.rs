@@ -1805,12 +1805,11 @@ pub(super) fn recovered_exit_order(
     )
 }
 
-pub(super) fn set_blind_recovery(
-    strategy: &mut BinaryOracleEdgeTaker,
-    reason: BlindRecoveryReason,
-) {
+pub(super) fn set_blind_probe_recovery(strategy: &mut BinaryOracleEdgeTaker) {
     strategy.exposure.reduce(ExposureEvent::BootstrapAdoption(
-        BootstrapAdoptionEvent::BlindRecovery(BlindRecoveryState::authority_free(reason)),
+        BootstrapAdoptionEvent::BlindRecovery(BlindRecoveryState::probe(
+            BlindRecoveryProbeReason::CacheProbeFailed,
+        )),
     ));
 }
 
@@ -1853,10 +1852,8 @@ pub(super) fn assert_foreign_venue_blind_recovery(strategy: &BinaryOracleEdgeTak
     assert!(
         matches!(
             strategy.exposure.state(),
-            ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::ForeignVenuePosition { .. },
-                ..
-            })
+            ExposureState::BlindRecovery(recovery)
+                if matches!(recovery.reason(), BlindRecoveryReason::ForeignVenuePosition { .. })
         ),
         "foreign-venue terminal event must be quarantined to blind recovery, got {:?}",
         strategy.exposure,

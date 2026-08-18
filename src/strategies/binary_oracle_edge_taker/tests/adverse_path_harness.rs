@@ -2039,10 +2039,8 @@ fn loss_reducer_failure_after_settled_key_insert_enters_blind_recovery() {
     assert!(
         matches!(
             strategy.exposure.state(),
-            ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::SettlementEvidenceRecoveryFailed,
-                ..
-            })
+            ExposureState::BlindRecovery(recovery)
+                if recovery.reason() == BlindRecoveryReason::SettlementEvidenceRecoveryFailed
         ),
         "post-settled-key loss-reducer failure must enter blind settlement recovery; exposure={:?}",
         strategy.exposure

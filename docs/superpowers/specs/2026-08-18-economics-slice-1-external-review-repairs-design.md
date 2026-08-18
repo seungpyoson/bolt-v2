@@ -92,7 +92,8 @@ Replace `BlindRecoveryState { reason, provenance }` with one cause-shaped value:
 - `ForeignVenue`: instrument and both venue identities plus optional retained
   authority.
 
-Authority presence is also typed as `AuthorityFree` or `Retained`, rather than
+Authority presence is typed once on `BlindRecoveryState` as `AuthorityFree` or
+`Retained`, orthogonal to the cause, rather than repeated in every cause arm or
 interpreted from `Option<Box<ExposureState>>`. Fresh canonical `None` can release
 only `AuthorityFree`; `Retained` recovery requires its class-specific continuity
 proof. Thus a probe-class cause does not silently discard authority merely

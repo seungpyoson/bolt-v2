@@ -199,7 +199,7 @@ git commit -m "fix(exposure): preserve working entry through replacement conflic
 - Produces: `BlindRecoveryCause`, `BlindRecoveryAuthority`, `NonEmptyRestartOrderIds`, and `ExposureProjection<'a>`.
 - Preserves: `BlindRecoveryState::reason()`, retained-authority behavior, and existing query method return types.
 
-- [ ] **Step 1: Add cause/authority behavior coverage**
+- [x] **Step 1: Add cause/authority behavior coverage**
 
 Replace the current invalid-combination matrix with behavior cases for each constructible class:
 
@@ -222,7 +222,7 @@ let cases = [
 
 For every case, assert the derived `BlindRecoveryReason`, authority-free release rule, and behavior after `retain_authority`. Do not add a test that calls an invalid constructor; those constructors will not exist.
 
-- [ ] **Step 2: Run the blind-recovery tests as a baseline**
+- [x] **Step 2: Run the blind-recovery tests as a baseline**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib blind_recovery -- --test-threads=1
@@ -230,7 +230,7 @@ CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JO
 
 Expected before the refactor: existing behavior tests pass; the new constructor names fail to compile until Step 3.
 
-- [ ] **Step 3: Replace reason/provenance correlation with cause variants**
+- [x] **Step 3: Replace reason/provenance correlation with cause variants**
 
 Use payload-owning types:
 
@@ -249,38 +249,33 @@ struct NonEmptyRestartOrderIds {
 
 #[derive(Debug, Clone, PartialEq)]
 enum BlindRecoveryCause {
-    Probe {
-        reason: BlindRecoveryProbeReason,
-        authority: BlindRecoveryAuthority,
-    },
+    Probe(BlindRecoveryProbeReason),
     IdentityBearing {
         reason: BlindRecoveryIdentityReason,
         recorded_episode: PositionEpisodeFingerprint,
-        authority: BlindRecoveryAuthority,
     },
     RestartAdoption {
         reason: BlindRecoveryRestartReason,
         instrument_id: InstrumentId,
         order_ids: NonEmptyRestartOrderIds,
-        authority: BlindRecoveryAuthority,
     },
     ForeignVenue {
         instrument_id: InstrumentId,
         instrument_venue: Venue,
         execution_venue: Venue,
-        authority: BlindRecoveryAuthority,
     },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct BlindRecoveryState {
     cause: BlindRecoveryCause,
+    authority: BlindRecoveryAuthority,
 }
 ```
 
-Construct restart recovery with `(first_order_id, remaining_order_ids)` so empty identity sets are unrepresentable. Derive the evidence-facing `BlindRecoveryReason` in one exhaustive `reason()` match. Implement retained authority through `BlindRecoveryAuthority`; delete `authority_free(reason)`, `restart_adoption(reason, ...)`, and every reason/provenance assertion or panic.
+Construct restart recovery with `(first_order_id, remaining_order_ids)` so empty identity sets are unrepresentable. Derive the evidence-facing `BlindRecoveryReason` in one exhaustive `reason()` match. Store the orthogonal authority once on `BlindRecoveryState`, implement it through `BlindRecoveryAuthority`, and delete `authority_free(reason)`, `restart_adoption(reason, ...)`, and every reason/provenance assertion or panic.
 
-- [ ] **Step 4: Add one exhaustive exposure projection**
+- [x] **Step 4: Add one exhaustive exposure projection**
 
 Create a borrowed view and one exhaustive match:
 
@@ -304,7 +299,7 @@ enum ExitProjection<'a> {
 
 `ExposureState::projection()` must explicitly name all 13 variants. `BlindRecovery` and `ObligationSaturated` recursively project retained authority, then override wrapper occupancy. Convert `pending_entry`, `managed_position_context`, `tracked_position_context`, `exit_pending_snapshot`, `exit_lifecycle`, `exit_authority_recovery_hold`, `operation_sink_unknown`, and `occupancy` to projection accessors. Remove their independent matches and all six `_ => None` arms.
 
-- [ ] **Step 5: Migrate constructors and patterns**
+- [x] **Step 5: Migrate constructors and patterns**
 
 Update every production/test call site to the cause-specific constructor. Where restart discovery currently owns `Vec<ClientOrderId>`, split it before construction:
 
@@ -323,7 +318,7 @@ let recovery = BlindRecoveryState::restart_adoption(
 
 The error is returned at the discovery boundary; no recovery constructor asserts.
 
-- [ ] **Step 6: Run exposure and formatting checks**
+- [x] **Step 6: Run exposure and formatting checks**
 
 ```bash
 CARGO_TARGET_DIR='/Volumes/T9/bolt-v2-target-1544-review-repairs' CARGO_BUILD_JOBS=2 cargo test --locked --features test-current-evidence-inspection --lib binary_oracle_edge_taker::tests::exposure -- --test-threads=1
@@ -332,7 +327,7 @@ cargo fmt --all -- --check
 
 Expected: PASS and compiler-exhaustive projection/cause matches.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/strategies/binary_oracle_edge_taker/exposure.rs src/strategies/binary_oracle_edge_taker/mod.rs src/strategies/binary_oracle_edge_taker/tests/exposure.rs src/strategies/binary_oracle_edge_taker/tests/shared_fixture.rs

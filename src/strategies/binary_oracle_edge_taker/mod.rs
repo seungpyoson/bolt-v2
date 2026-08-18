@@ -330,28 +330,26 @@ use self::config::{BinaryOracleEdgeTakerConfig, BinaryOracleEdgeTakerFieldType};
 mod exposure;
 
 use self::exposure::{
-    AdoptionCapableExposureEvent, AdoptionCapablePositionTruthEvent, BlindRecoveryReason,
-    BlindRecoveryState, BootstrapAdoptionEvent, CanonicalPositionProjection,
-    ClassifiedOpenPosition, ConfiguredPositionContract, EntryLifecycleEvent, EntryReconcileReason,
-    ExitAttemptingState, ExitAuthorityFlatRecovery, ExitAuthorityRecoveryHoldState,
-    ExitAuthorityRecoveryPlan, ExitLifecycleEvent, ExitLifecyclePhase, ExitPendingState,
-    ExitRecoveryObservation, ExitWorkingObservation, ExposureAdoptionCommit, ExposureEvent,
-    ExposureOccupancy, ExposureOperationBlockedReason, ExposureOperationKind, ExposureState,
-    ExposureStateKind, ExposureTransitionOutcome, FreshCanonicalPositionProjection,
-    GovernedExposure, HistoricalExitCorrection, HistoricalExitObservation,
-    HistoricalExitObservationKey, ManagedPositionContext, ManagedPositionOrigin,
-    ManagedPositionState, OpenPositionState, PendingEntryState, PendingExitState,
-    PositionClosedEvent, PositionEpisodeFingerprint, PositionReplayFragmentIdentity,
-    PositionTruthEvent, RecoveryOperationCommit, ReplacementAdoption, ReplacementAdoptionCause,
-    RouteOperationPayload, SettlementEffectEvent, SinkUnknownResolution, TimerReconciliationEvent,
-    UnsupportedObservedReason, UnsupportedObservedState, UntrackedOrderEvent,
-    infer_strategy_position_side_from_entry_fill, managed_position_effective_entry_cost,
-    supports_strategy_managed_position,
+    AdoptionCapableExposureEvent, AdoptionCapablePositionTruthEvent, BlindRecoveryIdentityReason,
+    BlindRecoveryProbeReason, BlindRecoveryReason, BlindRecoveryRestartReason, BlindRecoveryState,
+    BootstrapAdoptionEvent, CanonicalPositionProjection, ClassifiedOpenPosition,
+    ConfiguredPositionContract, EntryLifecycleEvent, EntryReconcileReason, ExitAttemptingState,
+    ExitAuthorityFlatRecovery, ExitAuthorityRecoveryHoldState, ExitAuthorityRecoveryPlan,
+    ExitLifecycleEvent, ExitLifecyclePhase, ExitPendingState, ExitRecoveryObservation,
+    ExitWorkingObservation, ExposureAdoptionCommit, ExposureEvent, ExposureOccupancy,
+    ExposureOperationBlockedReason, ExposureOperationKind, ExposureState, ExposureStateKind,
+    ExposureTransitionOutcome, FreshCanonicalPositionProjection, GovernedExposure,
+    HistoricalExitCorrection, HistoricalExitObservation, HistoricalExitObservationKey,
+    ManagedPositionContext, ManagedPositionOrigin, ManagedPositionState, OpenPositionState,
+    PendingEntryState, PendingExitState, PositionClosedEvent, PositionEpisodeFingerprint,
+    PositionReplayFragmentIdentity, PositionTruthEvent, RecoveryOperationCommit,
+    ReplacementAdoption, ReplacementAdoptionCause, RouteOperationPayload, SettlementEffectEvent,
+    SinkUnknownResolution, TimerReconciliationEvent, UnsupportedObservedReason,
+    UnsupportedObservedState, UntrackedOrderEvent, infer_strategy_position_side_from_entry_fill,
+    managed_position_effective_entry_cost, supports_strategy_managed_position,
 };
 #[cfg(test)]
-use self::exposure::{
-    BlindRecoveryProvenance, ObligationSaturatedState, OperationSinkUnknownState,
-};
+use self::exposure::{ObligationSaturatedState, OperationSinkUnknownState};
 use crate::bolt_v3_feed_health::{
     ForcedFlatInputs, ForcedFlatReason, evaluate_forced_flat_predicates,
 };
@@ -2545,7 +2543,7 @@ impl BinaryOracleEdgeTaker {
                     SettlementRecoveryEntryDecision::EnterBlindCacheProbe
                 ));
                 self.apply_bootstrap_adoption(BootstrapAdoptionEvent::BlindRecovery(
-                    BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
+                    BlindRecoveryState::probe(BlindRecoveryProbeReason::CacheProbeFailed),
                 ));
                 self.record_canonical_recovery_blocked(
                     OrderLifecycleTransition::ReconcileQueryFailed,
@@ -2589,7 +2587,7 @@ impl BinaryOracleEdgeTaker {
             )
         {
             self.apply_bootstrap_adoption(BootstrapAdoptionEvent::BlindRecovery(
-                BlindRecoveryState::authority_free(BlindRecoveryReason::MultipleOpenPositions {
+                BlindRecoveryState::probe(BlindRecoveryProbeReason::MultipleOpenPositions {
                     count,
                 }),
             ));
@@ -2778,8 +2776,8 @@ impl BinaryOracleEdgeTaker {
         };
         let position = self.settlement_position_candidate();
         self.exposure.reduce(ExposureEvent::SettlementEffect(
-            SettlementEffectEvent::BlindRecovery(BlindRecoveryState::authority_free(
-                BlindRecoveryReason::SettlementEvidenceRecoveryFailed,
+            SettlementEffectEvent::BlindRecovery(BlindRecoveryState::probe(
+                BlindRecoveryProbeReason::SettlementEvidenceRecoveryFailed,
             )),
         ));
         self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
@@ -2905,7 +2903,7 @@ impl BinaryOracleEdgeTaker {
             Ok(open_exit_order_attribution) => open_exit_order_attribution,
             Err(_) => {
                 self.apply_bootstrap_adoption(BootstrapAdoptionEvent::BlindRecovery(
-                    BlindRecoveryState::authority_free(BlindRecoveryReason::CacheProbeFailed),
+                    BlindRecoveryState::probe(BlindRecoveryProbeReason::CacheProbeFailed),
                 ));
                 self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
                     transition: OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
@@ -2934,14 +2932,15 @@ impl BinaryOracleEdgeTaker {
             .into_iter()
             .filter_map(|(order, attributed_to_position)| attributed_to_position.then_some(order))
             .collect::<Vec<_>>();
-        if !unattributed_open_exit_order_ids.is_empty() {
+        if let Some((first_order_id, remaining_order_ids)) =
+            unattributed_open_exit_order_ids.split_first()
+        {
             self.apply_bootstrap_adoption(BootstrapAdoptionEvent::BlindRecovery(
                 BlindRecoveryState::restart_adoption(
-                    BlindRecoveryReason::UnattributedRestartOpenExitOrder {
-                        instrument_id: position.instrument_id,
-                    },
+                    BlindRecoveryRestartReason::UnattributedOpenExitOrder,
                     position.instrument_id,
-                    unattributed_open_exit_order_ids,
+                    *first_order_id,
+                    remaining_order_ids.to_vec(),
                 ),
             ));
             self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
@@ -2965,18 +2964,21 @@ impl BinaryOracleEdgeTaker {
             return;
         }
         if attributed_open_exit_orders.len() > 1 {
-            let attributed_open_exit_order_ids = attributed_open_exit_orders
-                .iter()
-                .map(|order| order.client_order_id())
-                .collect();
+            let Some((first_order, remaining_orders)) = attributed_open_exit_orders.split_first()
+            else {
+                return;
+            };
             self.apply_bootstrap_adoption(BootstrapAdoptionEvent::BlindRecovery(
                 BlindRecoveryState::restart_adoption(
-                    BlindRecoveryReason::AmbiguousRestartOpenExitOrders {
-                        instrument_id: position.instrument_id,
+                    BlindRecoveryRestartReason::AmbiguousOpenExitOrders {
                         count: attributed_open_exit_orders.len(),
                     },
                     position.instrument_id,
-                    attributed_open_exit_order_ids,
+                    first_order.client_order_id(),
+                    remaining_orders
+                        .iter()
+                        .map(|order| order.client_order_id())
+                        .collect(),
                 ),
             ));
             self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
@@ -3092,12 +3094,10 @@ impl BinaryOracleEdgeTaker {
                 open_position.instrument_id.venue,
                 execution_venue,
             );
-            return ClassifiedOpenPosition::BlindRecovery(BlindRecoveryState::authority_free(
-                BlindRecoveryReason::ForeignVenuePosition {
-                    instrument_id: open_position.instrument_id,
-                    instrument_venue: open_position.instrument_id.venue,
-                    execution_venue,
-                },
+            return ClassifiedOpenPosition::BlindRecovery(BlindRecoveryState::foreign_venue(
+                open_position.instrument_id,
+                open_position.instrument_id.venue,
+                execution_venue,
             ));
         }
         if self
@@ -3154,8 +3154,8 @@ impl BinaryOracleEdgeTaker {
                 open_position.entry_order_side,
                 open_position.side,
             );
-            ClassifiedOpenPosition::BlindRecovery(BlindRecoveryState::with_recorded_episode(
-                BlindRecoveryReason::InvalidBootstrappedPosition {
+            ClassifiedOpenPosition::BlindRecovery(BlindRecoveryState::identity_bearing(
+                BlindRecoveryIdentityReason::InvalidBootstrappedPosition {
                     entry_order_side: open_position.entry_order_side,
                     side: open_position.side,
                 },
@@ -5049,12 +5049,10 @@ impl BinaryOracleEdgeTaker {
             execution_venue,
         );
         self.exposure.reduce(ExposureEvent::PositionTruth(
-            PositionTruthEvent::BlindRecovery(BlindRecoveryState::authority_free(
-                BlindRecoveryReason::ForeignVenuePosition {
-                    instrument_id,
-                    instrument_venue: instrument_id.venue,
-                    execution_venue,
-                },
+            PositionTruthEvent::BlindRecovery(BlindRecoveryState::foreign_venue(
+                instrument_id,
+                instrument_id.venue,
+                execution_venue,
             )),
         ));
         self.refresh_book_subscriptions_for_current_state();
@@ -5137,8 +5135,8 @@ impl BinaryOracleEdgeTaker {
                         AdoptionCapablePositionTruthEvent::Canonical(
                             CanonicalPositionProjection::Multiple {
                                 count,
-                                recovery: BlindRecoveryState::authority_free(
-                                    BlindRecoveryReason::MultipleOpenPositions { count },
+                                recovery: BlindRecoveryState::probe(
+                                    BlindRecoveryProbeReason::MultipleOpenPositions { count },
                                 ),
                             },
                         ),
@@ -5170,8 +5168,8 @@ impl BinaryOracleEdgeTaker {
                         AdoptionCapablePositionTruthEvent::Canonical(
                             CanonicalPositionProjection::ProbeFailed {
                                 diagnostic,
-                                recovery: BlindRecoveryState::authority_free(
-                                    BlindRecoveryReason::CacheProbeFailed,
+                                recovery: BlindRecoveryState::probe(
+                                    BlindRecoveryProbeReason::CacheProbeFailed,
                                 ),
                             },
                         ),
@@ -5321,8 +5319,8 @@ impl BinaryOracleEdgeTaker {
                 });
             } else {
                 self.exposure.reduce(ExposureEvent::PositionTruth(
-                    PositionTruthEvent::BlindRecovery(BlindRecoveryState::with_recorded_episode(
-                        BlindRecoveryReason::InvalidLivePosition {
+                    PositionTruthEvent::BlindRecovery(BlindRecoveryState::identity_bearing(
+                        BlindRecoveryIdentityReason::InvalidLivePosition {
                             entry_order_side,
                             side: Some(side),
                         },
@@ -5873,8 +5871,8 @@ impl BinaryOracleEdgeTaker {
         }
         if let Err(error) = nt_residual {
             self.exposure.reduce(ExposureEvent::TimerReconciliation(
-                TimerReconciliationEvent::BlindRecovery(BlindRecoveryState::authority_free(
-                    BlindRecoveryReason::CacheProbeFailed,
+                TimerReconciliationEvent::BlindRecovery(BlindRecoveryState::probe(
+                    BlindRecoveryProbeReason::CacheProbeFailed,
                 )),
             ));
             log::error!(

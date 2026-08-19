@@ -4525,6 +4525,7 @@ mod tests {
         assert!(
             admission
                 .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1)
+                .expect("capital admission fixture rebuild should preserve invariants")
                 .accepted
         );
         let mut sink = RecordingVenueMutationSink::default();
@@ -4568,6 +4569,7 @@ mod tests {
         assert!(
             admission
                 .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1)
+                .expect("capital admission fixture rebuild should preserve invariants")
                 .accepted
         );
         let mut sink = RecordingVenueMutationSink {
@@ -4927,8 +4929,9 @@ mod tests {
             capital_admission_config(),
         ));
         admission.update_capital_admission_nt_components(capital_admission_components());
-        let rebuild =
-            admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1);
+        let rebuild = admission
+            .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1)
+            .expect("capital admission fixture rebuild should preserve invariants");
         assert!(rebuild.accepted);
 
         let mut sink = RecordingVenueMutationSink {
@@ -5374,8 +5377,9 @@ mod tests {
         product.source = POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE.to_string();
         product.yes_position = Decimal::new(7, 0);
         admission.update_capital_admission_nt_components(shrunken);
-        let rebuild =
-            admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 2);
+        let rebuild = admission
+            .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 2)
+            .expect("capital admission fixture rebuild should preserve invariants");
         assert!(rebuild.accepted);
         let facts_before_seal = writer
             .recorded_facts()
@@ -6445,8 +6449,9 @@ mod tests {
         product.source = POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE.to_string();
         product.yes_position = yes_position;
         admission.update_capital_admission_nt_components(components);
-        let rebuild =
-            admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1);
+        let rebuild = admission
+            .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1)
+            .expect("capital admission fixture rebuild should preserve invariants");
         assert!(rebuild.accepted);
         admission
     }

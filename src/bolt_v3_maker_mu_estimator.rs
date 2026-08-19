@@ -172,12 +172,8 @@ fn classified_samples_within(
     flow: &SignedTradeFlow,
     now_ms: u64,
 ) -> impl Iterator<Item = &SignedTrade> {
-    flow.samples_within(now_ms).filter(|sample| {
-        matches!(
-            sample.aggressor,
-            AggressorSide::Buyer | AggressorSide::Seller
-        )
-    })
+    flow.samples_within(now_ms)
+        .filter(|sample| matches!(sample.aggressor, AggressorSide::Buy | AggressorSide::Sell))
 }
 
 /// Estimate the informed-fraction μ ∈ [0, 1] from the signed flow inside the
@@ -201,11 +197,11 @@ pub fn estimate_informed_fraction(
     }
 
     let buy_volume: f64 = classified_samples_within(flow, now_ms)
-        .filter(|sample| matches!(sample.aggressor, AggressorSide::Buyer))
+        .filter(|sample| matches!(sample.aggressor, AggressorSide::Buy))
         .map(|sample| sample.size)
         .sum();
     let sell_volume: f64 = classified_samples_within(flow, now_ms)
-        .filter(|sample| matches!(sample.aggressor, AggressorSide::Seller))
+        .filter(|sample| matches!(sample.aggressor, AggressorSide::Sell))
         .map(|sample| sample.size)
         .sum();
 
@@ -374,10 +370,10 @@ mod tests {
     #[test]
     fn balanced_flow_yields_zero() {
         let flow = flow_with(&[
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Seller, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Seller, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Sell, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Sell, TEST_UNIT_SIZE),
         ]);
         assert_eq!(
             estimate_informed_fraction(&flow, TEST_NOW_MS, &estimator_config()),
@@ -388,10 +384,10 @@ mod tests {
     #[test]
     fn one_sided_flow_yields_one() {
         let flow = flow_with(&[
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
         ]);
         assert_eq!(
             estimate_informed_fraction(&flow, TEST_NOW_MS, &estimator_config()),
@@ -402,10 +398,10 @@ mod tests {
     #[test]
     fn skewed_flow_yields_imbalance_magnitude() {
         let flow = flow_with(&[
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Seller, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Sell, TEST_UNIT_SIZE),
         ]);
         assert_eq!(
             estimate_informed_fraction(&flow, TEST_NOW_MS, &estimator_config()),
@@ -416,8 +412,8 @@ mod tests {
     #[test]
     fn below_minimum_classified_samples_is_none() {
         let flow = flow_with(&[
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Seller, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Sell, TEST_UNIT_SIZE),
         ]);
         assert_eq!(
             estimate_informed_fraction(&flow, TEST_NOW_MS, &estimator_config()),
@@ -442,12 +438,12 @@ mod tests {
     #[test]
     fn no_aggressor_does_not_change_classified_result() {
         let flow = flow_with(&[
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
             (AggressorSide::NoAggressor, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
             (AggressorSide::NoAggressor, TEST_UNIT_SIZE),
-            (AggressorSide::Seller, TEST_UNIT_SIZE),
+            (AggressorSide::Sell, TEST_UNIT_SIZE),
         ]);
         // Four classified (3 Buyer, 1 Seller), two NoAggressor excluded → 0.5.
         assert_eq!(
@@ -459,10 +455,10 @@ mod tests {
     #[test]
     fn aged_out_samples_yield_none() {
         let flow = flow_with(&[
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
         ]);
         assert_eq!(
             estimate_informed_fraction(&flow, TEST_AGED_OUT_NOW_MS, &estimator_config()),
@@ -575,10 +571,10 @@ mod tests {
         // the newest in-window sample (ts 4_000, age 46_000ms), the gate now
         // correctly reports `Stale` and no caller-supplied timestamp can override it.
         let flow = flow_with(&[
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
         ]);
         // Sanity: μ is producible for this flow at TEST_NOW_MS (one-sided → 1.0),
         // so the only thing blocking the mint is the derived staleness anchor.
@@ -616,19 +612,19 @@ mod tests {
         // stale_window → `Err(Stale)`. μ and the anchor share one classified
         // definition, so they cannot drift.
         let flow = flow_with_ts(&[
-            (AggressorSide::Buyer, TEST_UNIT_SIZE, TEST_FIRST_TRADE_TS_MS),
+            (AggressorSide::Buy, TEST_UNIT_SIZE, TEST_FIRST_TRADE_TS_MS),
             (
-                AggressorSide::Buyer,
+                AggressorSide::Buy,
                 TEST_UNIT_SIZE,
                 TEST_FIRST_TRADE_TS_MS + TEST_TRADE_TS_STEP_MS,
             ),
             (
-                AggressorSide::Buyer,
+                AggressorSide::Buy,
                 TEST_UNIT_SIZE,
                 TEST_FIRST_TRADE_TS_MS + 2 * TEST_TRADE_TS_STEP_MS,
             ),
             (
-                AggressorSide::Buyer,
+                AggressorSide::Buy,
                 TEST_UNIT_SIZE,
                 TEST_FIRST_TRADE_TS_MS + 3 * TEST_TRADE_TS_STEP_MS,
             ),
@@ -662,10 +658,10 @@ mod tests {
         // gate-cleared μ. `now_ms` is one stale-window past the newest sample
         // (ts 4_000) so the derived anchor reads fresh and the gate passes.
         let flow = flow_with(&[
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
-            (AggressorSide::Buyer, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
+            (AggressorSide::Buy, TEST_UNIT_SIZE),
         ]);
         let newest_ts_ms = TEST_FIRST_TRADE_TS_MS + 3 * TEST_TRADE_TS_STEP_MS;
         let fresh_now_ms = newest_ts_ms + TEST_STALE_WINDOW_MS;

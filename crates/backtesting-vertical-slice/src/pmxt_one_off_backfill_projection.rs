@@ -36,9 +36,7 @@ use nautilus_polymarket::{
         parse::{create_instrument_from_def, parse_gamma_market},
     },
     websocket::{
-        messages::{
-            PolymarketBookLevel, PolymarketBookSnapshot, PolymarketQuote, PolymarketQuotes,
-        },
+        messages::{PolymarketBookLevel, PolymarketBookSnapshot, PolymarketQuote},
         parse::{
             parse_book_deltas, parse_book_snapshot, parse_quote_from_price_change,
             parse_timestamp_ms,
@@ -928,7 +926,8 @@ pub fn project_pmxt_one_off_rows_to_nt(
 
     let instrument = create_instrument_from_def(&selected_def, UnixNanos::default())
         .context("create NT Polymarket BinaryOption from selected Gamma definition")?;
-    let (instrument_id, price_precision, size_precision) = binary_option_l2_metadata(&instrument)?;
+    let (instrument_id, price_precision, size_precision, price_increment) =
+        binary_option_l2_metadata(&instrument)?;
 
     let mut order_book_deltas = Vec::new();
     let mut reconstructed_levels = ReconBookLevels::default();
@@ -955,6 +954,10 @@ pub fn project_pmxt_one_off_rows_to_nt(
                     asks: row.asks.into_iter().map(Into::into).collect(),
                     timestamp: row.timestamp_ms,
                     hash: None,
+                    min_order_size: None,
+                    tick_size: None,
+                    neg_risk: None,
+                    last_trade_price: None,
                 };
                 let parsed = parse_book_snapshot(
                     &snapshot,
@@ -998,6 +1001,7 @@ pub fn project_pmxt_one_off_rows_to_nt(
                     instrument_id,
                     price_precision,
                     size_precision,
+                    price_increment,
                     request.drop_quotes_missing_side,
                     quote_ticks.last(),
                     ts_event,
@@ -1017,18 +1021,16 @@ pub fn project_pmxt_one_off_rows_to_nt(
                 );
                 let authoritative_best_bid = quote.best_bid.clone();
                 let authoritative_best_ask = quote.best_ask.clone();
-                let quotes = PolymarketQuotes {
-                    market: Ustr::from(row.market.as_str()),
-                    price_changes: vec![quote],
-                    timestamp: row.timestamp_ms,
-                };
                 let parsed = parse_book_deltas(
-                    &quotes,
+                    &[&quote],
                     instrument_id,
                     price_precision,
                     size_precision,
+                    ts_event,
                     row.ts_init,
                 )
+                .into_iter()
+                .collect::<Result<Vec<_>>>()
                 .context("parse PMXT one-off price_change with NT Polymarket parser")?;
                 // The PMXT archive replays per-level `price_change` rows but is
                 // snapshot-sparse and almost never carries explicit removals, so
@@ -1040,7 +1042,7 @@ pub fn project_pmxt_one_off_rows_to_nt(
                 // rebuilt book consistent with the venue's own top-of-book. The
                 // pruning deltas share the originating event's timestamps so the
                 // stable sort below keeps them in the same atomic book update.
-                let mut event_deltas = parsed.deltas;
+                let mut event_deltas = parsed;
                 for delta in &event_deltas {
                     reconstructed_levels.apply(delta);
                 }
@@ -1980,12 +1982,13 @@ fn read_json_artifact<T: DeserializeOwned>(path: &Path) -> Result<T> {
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
-fn binary_option_l2_metadata(instrument: &InstrumentAny) -> Result<(InstrumentId, u8, u8)> {
+fn binary_option_l2_metadata(instrument: &InstrumentAny) -> Result<(InstrumentId, u8, u8, Price)> {
     match instrument {
         InstrumentAny::BinaryOption(binary_option) => Ok((
             binary_option.id(),
             binary_option.price_precision(),
             binary_option.size_precision(),
+            binary_option.price_increment(),
         )),
         other => bail!("expected NT Polymarket parser to produce BinaryOption, got {other:?}"),
     }

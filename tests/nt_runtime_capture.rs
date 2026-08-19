@@ -620,6 +620,7 @@ async fn captures_execution_state_jsonl_records_for_order_and_position_events() 
                     last_px: Price::from("0.51"),
                     currency: Currency::USD(),
                     avg_px_open: 0.51,
+                    realized_pnl: None,
                     event_id: UUID4::default(),
                     ts_event: 21.into(),
                     ts_init: 22.into(),
@@ -1040,7 +1041,7 @@ async fn captures_trade_tick_to_per_instrument_feather_spool() {
                     instrument_id,
                     Price::from("0.50"),
                     Quantity::from("100"),
-                    AggressorSide::Buyer,
+                    AggressorSide::Buy,
                     TradeId::from("T-T01"),
                     1.into(),
                     1.into(),
@@ -1073,7 +1074,7 @@ async fn captures_trade_tick_to_per_instrument_feather_spool() {
                 vec![Quantity::from("100").raw.to_le_bytes().to_vec()],
             );
             assert_eq!(str_col(batch, "trade_id"), vec!["T-T01".to_string()]);
-            // AggressorSide::Buyer = 1
+            // AggressorSide::Buy = 1
             assert_eq!(u8_col(batch, "aggressor_side"), vec![1u8]);
             assert_eq!(u64_col(batch, "ts_event"), vec![1u64]);
             assert_eq!(u64_col(batch, "ts_init"), vec![1u64]);

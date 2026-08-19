@@ -533,6 +533,7 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     assert_eq!(data.resolve_poll_grace_secs, 10);
     assert_eq!(data.resolve_poll_max_wait_secs, 1800);
     assert!(!data.auto_load_missing_instruments);
+    assert!(!data.compute_effective_deltas);
     assert_eq!(data.auto_load_debounce_ms, 250);
     assert_eq!(data.transport_backend, TransportBackend::Sockudo);
     assert_eq!(

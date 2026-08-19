@@ -524,6 +524,7 @@ impl ExecutionClient for MockExecutionClient {
         _margins: Vec<MarginBalance>,
         _reported: bool,
         _ts_event: nautilus_core::UnixNanos,
+        _info: Option<nautilus_core::Params>,
     ) -> anyhow::Result<()> {
         Ok(())
     }

@@ -680,8 +680,8 @@ fn catalog_trades(
 
 fn aggressor_side(value: &str) -> anyhow::Result<AggressorSide> {
     match value {
-        "buyer" => Ok(AggressorSide::Buyer),
-        "seller" => Ok(AggressorSide::Seller),
+        "buyer" => Ok(AggressorSide::Buy),
+        "seller" => Ok(AggressorSide::Sell),
         other => bail!("unsupported aggressor_side {other:?}"),
     }
 }

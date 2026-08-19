@@ -269,14 +269,14 @@ mod tests {
             instrument_id.as_str(),
             TEST_FIRST_APPENDED_TRADE_PRICE,
             TEST_FIRST_APPENDED_TRADE_SIZE,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             TEST_FIRST_APPENDED_TRADE_TS_MS,
         ));
         flow.observe(&trade_tick_with_aggressor(
             instrument_id.as_str(),
             TEST_SECOND_APPENDED_TRADE_PRICE,
             TEST_SECOND_APPENDED_TRADE_SIZE,
-            AggressorSide::Seller,
+            AggressorSide::Sell,
             TEST_SECOND_APPENDED_TRADE_TS_MS,
         ));
         flow.observe(&trade_tick_with_aggressor(
@@ -297,7 +297,7 @@ mod tests {
             vec![
                 SignedTrade {
                     ts_ms: TEST_FIRST_APPENDED_TRADE_TS_MS,
-                    aggressor: AggressorSide::Buyer,
+                    aggressor: AggressorSide::Buy,
                     price: Price::new(TEST_FIRST_APPENDED_TRADE_PRICE, TEST_TRADE_PRICE_PRECISION)
                         .as_f64(),
                     size: Quantity::new(TEST_FIRST_APPENDED_TRADE_SIZE, TEST_TRADE_SIZE_PRECISION)
@@ -305,7 +305,7 @@ mod tests {
                 },
                 SignedTrade {
                     ts_ms: TEST_SECOND_APPENDED_TRADE_TS_MS,
-                    aggressor: AggressorSide::Seller,
+                    aggressor: AggressorSide::Sell,
                     price: Price::new(TEST_SECOND_APPENDED_TRADE_PRICE, TEST_TRADE_PRICE_PRECISION)
                         .as_f64(),
                     size: Quantity::new(TEST_SECOND_APPENDED_TRADE_SIZE, TEST_TRADE_SIZE_PRECISION)
@@ -334,14 +334,14 @@ mod tests {
             instrument_id.as_str(),
             TEST_FIRST_SAME_MS_TRADE_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             TEST_FIRST_APPENDED_TRADE_TS_MS,
         ));
         flow.observe(&trade_tick_with_aggressor(
             instrument_id.as_str(),
             TEST_SECOND_SAME_MS_TRADE_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             TEST_THIRD_APPENDED_TRADE_TS_MS,
         ));
         // Out-of-order: an earlier timestamp than the latest retained sample.
@@ -349,7 +349,7 @@ mod tests {
             instrument_id.as_str(),
             TEST_REJECTED_EQUAL_NS_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Seller,
+            AggressorSide::Sell,
             TEST_OUT_OF_ORDER_TS_MS,
         ));
         // Duplicate: equal to the latest retained timestamp.
@@ -357,7 +357,7 @@ mod tests {
             instrument_id.as_str(),
             TEST_REJECTED_OLDER_NS_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Seller,
+            AggressorSide::Sell,
             TEST_DUPLICATE_TS_MS,
         ));
 
@@ -388,14 +388,14 @@ mod tests {
             instrument_id.as_str(),
             TEST_FIRST_SAME_MS_TRADE_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             TEST_FIRST_SAME_MS_TRADE_NS,
         ));
         flow.observe(&trade_tick_with_aggressor_ns(
             instrument_id.as_str(),
             TEST_SECOND_SAME_MS_TRADE_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Seller,
+            AggressorSide::Sell,
             TEST_SECOND_SAME_MS_TRADE_NS,
         ));
 
@@ -421,21 +421,21 @@ mod tests {
             instrument_id.as_str(),
             TEST_SECOND_SAME_MS_TRADE_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             TEST_EQUAL_NS_WATERMARK,
         ));
         flow.observe(&trade_tick_with_aggressor_ns(
             instrument_id.as_str(),
             TEST_REJECTED_EQUAL_NS_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Seller,
+            AggressorSide::Sell,
             TEST_EQUAL_NS_WATERMARK,
         ));
         flow.observe(&trade_tick_with_aggressor_ns(
             instrument_id.as_str(),
             TEST_REJECTED_OLDER_NS_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Seller,
+            AggressorSide::Sell,
             TEST_OLDER_NS_THAN_WATERMARK,
         ));
 
@@ -458,14 +458,14 @@ mod tests {
             instrument_id.as_str(),
             TEST_FIRST_SAME_MS_TRADE_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             TEST_WINDOW_FIRST_TS_MS,
         ));
         flow.observe(&trade_tick_with_aggressor(
             instrument_id.as_str(),
             TEST_SECOND_SAME_MS_TRADE_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             TEST_WINDOW_SECOND_TS_MS,
         ));
 
@@ -503,14 +503,14 @@ mod tests {
             instrument_id.as_str(),
             TEST_FUTURE_WINDOW_PAST_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             TEST_PAST_SAMPLE_TS_MS,
         ));
         flow.observe(&trade_tick_with_aggressor(
             instrument_id.as_str(),
             TEST_FUTURE_WINDOW_FUTURE_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             TEST_FUTURE_SAMPLE_TS_MS,
         ));
 
@@ -534,14 +534,14 @@ mod tests {
             instrument_id.as_str(),
             TEST_FIRST_SAME_MS_TRADE_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             TEST_WINDOW_FIRST_TS_MS,
         ));
         windowed.observe(&trade_tick_with_aggressor(
             instrument_id.as_str(),
             TEST_SECOND_SAME_MS_TRADE_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             TEST_WINDOW_SECOND_TS_MS,
         ));
         // Latest trade makes the window cutoff equal to the second trade; the
@@ -550,7 +550,7 @@ mod tests {
             instrument_id.as_str(),
             TEST_REJECTED_EQUAL_NS_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Seller,
+            AggressorSide::Sell,
             TEST_WINDOW_LATEST_TS_MS,
         ));
 
@@ -574,7 +574,7 @@ mod tests {
                 instrument_id.as_str(),
                 TEST_FIRST_SAME_MS_TRADE_PRICE,
                 TEST_TRADE_SIZE,
-                AggressorSide::Buyer,
+                AggressorSide::Buy,
                 TEST_CAP_FIRST_TS_MS + index,
             ));
         }
@@ -606,14 +606,14 @@ mod tests {
             instrument_id.as_str(),
             TEST_DISABLED_WINDOW_RETAINED_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             TEST_DISABLED_WINDOW_FIRST_TS_MS,
         ));
         zero_window.observe(&trade_tick_with_aggressor(
             instrument_id.as_str(),
             TEST_DISABLED_WINDOW_REPLACEMENT_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Seller,
+            AggressorSide::Sell,
             TEST_DISABLED_WINDOW_SECOND_TS_MS,
         ));
 
@@ -636,7 +636,7 @@ mod tests {
             instrument_id.as_str(),
             TEST_DISABLED_SAMPLE_PRICE,
             TEST_TRADE_SIZE,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             TEST_DISABLED_SAMPLE_TS_MS,
         ));
 

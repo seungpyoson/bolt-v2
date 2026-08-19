@@ -69,7 +69,9 @@ use nautilus_model::{
     },
     types::{AccountBalance, Currency, Money, Price, Quantity},
 };
-use nautilus_polymarket::http::query::BalanceAllowance;
+use nautilus_polymarket::{
+    http::query::BalanceAllowance, signing::eip712::COLLATERAL_APPROVAL_TARGETS,
+};
 use rust_decimal::Decimal;
 use ustr::Ustr;
 
@@ -2862,6 +2864,15 @@ fn polymarket_provider_collateral_allowance_snapshot(
     balance: Decimal,
     allowance: Decimal,
 ) -> ProviderCollateralAllowanceSnapshot {
+    let required_spenders = COLLATERAL_APPROVAL_TARGETS
+        .iter()
+        .map(|address| format!("{address:#x}"))
+        .collect::<Vec<_>>();
+    let allowances = required_spenders
+        .iter()
+        .cloned()
+        .map(|spender| (spender, allowance.to_string()))
+        .collect();
     build_polymarket_provider_collateral_allowance_snapshot(
         PolymarketProviderCollateralAllowanceInput {
             captured_at: UnixNanos::from(captured_at),
@@ -2869,8 +2880,10 @@ fn polymarket_provider_collateral_allowance_snapshot(
             collateral_currency: Currency::from("USD"),
             collateral: BalanceAllowance {
                 balance,
-                allowance: Some(allowance),
+                allowance: None,
+                allowances,
             },
+            required_spenders,
         },
     )
     .expect("test provider collateral allowance snapshot should be valid")

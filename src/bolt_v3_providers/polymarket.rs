@@ -71,6 +71,7 @@ use nautilus_polymarket::{
         SearchFilter,
     },
     http::query::{GetGammaMarketsParams, GetSearchParams},
+    signing::eip712::COLLATERAL_APPROVAL_TARGETS,
 };
 use rust_decimal::{Decimal, RoundingStrategy};
 use serde::Deserialize;
@@ -244,6 +245,7 @@ pub struct PolymarketExecutionConfig {
     pub retry_delay_initial_ms: u64,
     pub retry_delay_max_ms: u64,
     pub provider_collateral_allowance_poll_interval_ms: Option<u64>,
+    pub provider_collateral_allowance_spenders: Option<Vec<String>>,
     pub transport_backend: TransportBackend,
     pub on_chain_collateral: Option<PolymarketOnChainCollateralConfig>,
     pub economics: Option<crate::bolt_v3_config::ExecutionEconomicsConfig>,
@@ -438,6 +440,39 @@ fn check_evm_address_syntax(value: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn normalize_provider_collateral_allowance_spenders(
+    spenders: &[String],
+) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::with_capacity(spenders.len());
+    for spender in spenders {
+        if spender.trim() != spender {
+            return Err(format!(
+                "spender address must not contain surrounding whitespace: `{spender}`"
+            ));
+        }
+        check_evm_address_syntax(spender)
+            .map_err(|message| format!("invalid spender address `{spender}` ({message})"))?;
+        normalized.push(spender.to_ascii_lowercase());
+    }
+
+    let configured = normalized.iter().cloned().collect::<BTreeSet<_>>();
+    if configured.len() != normalized.len() {
+        return Err("spender addresses must be unique by EVM identity".to_string());
+    }
+    let required = COLLATERAL_APPROVAL_TARGETS
+        .iter()
+        .map(|address| format!("{address:#x}"))
+        .collect::<BTreeSet<_>>();
+    if configured != required {
+        return Err(format!(
+            "spender identities must equal the pinned NT Polymarket collateral approval target set: {}",
+            required.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+
+    Ok(normalized)
+}
+
 fn validate_data_bounds(key: &str, data: &PolymarketDataConfig) -> Vec<String> {
     let mut errors = Vec::new();
     let positive_fields: &[(&str, u64)] = &[
@@ -533,6 +568,25 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
         errors.push(format!(
             "clients.{key}.execution.provider_collateral_allowance_poll_interval_ms must be a positive integer"
         ));
+    }
+    match (
+        execution.provider_collateral_allowance_poll_interval_ms,
+        execution.provider_collateral_allowance_spenders.as_ref(),
+    ) {
+        (Some(_), None) => errors.push(format!(
+            "clients.{key}.execution.provider_collateral_allowance_spenders must be configured when provider collateral allowance polling is enabled"
+        )),
+        (None, Some(_)) => errors.push(format!(
+            "clients.{key}.execution.provider_collateral_allowance_spenders requires provider_collateral_allowance_poll_interval_ms"
+        )),
+        (_, Some(spenders)) => {
+            if let Err(message) = normalize_provider_collateral_allowance_spenders(spenders) {
+                errors.push(format!(
+                    "clients.{key}.execution.provider_collateral_allowance_spenders is invalid: {message}"
+                ));
+            }
+        }
+        (None, None) => {}
     }
     if execution.retry_delay_initial_ms > execution.retry_delay_max_ms {
         errors.push(format!(
@@ -895,6 +949,7 @@ fn map_data(
         update_instruments_interval_mins: Some(cfg.update_instruments_interval_mins),
         subscribe_new_markets: cfg.subscribe_new_markets,
         drop_quotes_missing_side: cfg.drop_quotes_missing_side,
+        compute_effective_deltas: false,
         new_market_fetch_max_concurrency,
         auto_load_missing_instruments: cfg.auto_load_missing_instruments,
         auto_load_debounce_ms: cfg.auto_load_debounce_ms,

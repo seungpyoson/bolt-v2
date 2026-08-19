@@ -389,6 +389,7 @@ mod tests {
                             update_instruments_interval_mins: Some(60),
                             subscribe_new_markets: false,
                             drop_quotes_missing_side: true,
+                            compute_effective_deltas: false,
                             new_market_fetch_max_concurrency: 8,
                             auto_load_missing_instruments: false,
                             auto_load_debounce_ms: 250,

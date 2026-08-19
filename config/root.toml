@@ -279,6 +279,11 @@ max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 provider_collateral_allowance_poll_interval_ms = 1000
+provider_collateral_allowance_spenders = [
+  "0xE111180000d2663C0091e4f400237545B87B996B",
+  "0xe2222d279d744050d28e00520010520000310F59",
+  "0xadA2005600Dec949baf300f4C6120000bDB6eAab",
+]
 transport_backend = "sockudo"
 
 [clients.polymarket_main.execution.economics]
@@ -670,6 +675,7 @@ websocket_endpoint = "wss://ws.testnet-dataengine.chain.link"
 websocket_path = "/api/v1/ws"
 transport_backend = "sockudo"
 heartbeat_secs = 5
+heartbeat_timeout_secs = 15
 reconnect_timeout_ms = 101000
 reconnect_delay_initial_ms = 250
 reconnect_delay_max_ms = 5000
@@ -691,6 +697,7 @@ venue = "POLYRESEARCH_REFERENCE_PRICE"
 websocket_endpoint = "wss://3j5lx6otd8.execute-api.eu-west-1.amazonaws.com/prod"
 transport_backend = "sockudo"
 heartbeat_secs = 5
+heartbeat_timeout_secs = 15
 heartbeat_message = "{\"action\":\"ping\"}"
 reconnect_timeout_ms = 101000
 reconnect_delay_initial_ms = 250

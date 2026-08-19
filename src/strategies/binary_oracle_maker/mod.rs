@@ -822,13 +822,13 @@ impl BinaryOracleMaker {
         } else {
             None
         };
-        if let Some(orders) = orders.as_ref() {
-            if let Err(error) = self.runtime.apply_dispatch_outcome(market_key, orders) {
-                self.context
-                    .order_economics()
-                    .mark_resting_registry_unhealthy();
-                return Err(error.into());
-            }
+        if let Some(orders) = orders.as_ref()
+            && let Err(error) = self.runtime.apply_dispatch_outcome(market_key, orders)
+        {
+            self.context
+                .order_economics()
+                .mark_resting_registry_unhealthy();
+            return Err(error.into());
         }
 
         Ok(BinaryOracleMakerRuntimeQuoteRouteOutcome {

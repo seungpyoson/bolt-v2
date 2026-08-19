@@ -3169,13 +3169,11 @@ pub(crate) struct BoltV3PreparedCapitalSinkInvocation<'a> {
 
 impl BoltV3PreparedCapitalSinkInvocation<'_> {
     pub(crate) fn commit(&mut self) {
-        match self.prepared.take() {
-            Some(prepared) => commit_capital_sink_invocation(&mut self.inner, prepared),
-            None => {}
+        if let Some(prepared) = self.prepared.take() {
+            commit_capital_sink_invocation(&mut self.inner, prepared);
         }
-        match self.evidence_authority.take() {
-            Some(authority) => authority.consume(),
-            None => {}
+        if let Some(authority) = self.evidence_authority.take() {
+            authority.consume();
         }
         *self.committed = true;
     }

@@ -231,7 +231,7 @@ enum ExposureState {
         pending: PendingEntryState,
         reason: EntryReconcileReason,
     },
-    EntryRemainder(EntryRemainderState),
+    EntryRemainder(Box<EntryRemainderState>),
     Managed(ManagedPositionContext),
     ExitAttempting(ExitAttemptingState),
     ExitPending(ExitPendingState),
@@ -408,11 +408,11 @@ impl ExposureState {
                 if pending.instrument_id == instrument_id =>
             {
                 let next = match keep_entry_remainder {
-                    true => Self::EntryRemainder(EntryRemainderState {
+                    true => Self::EntryRemainder(Box::new(EntryRemainderState {
                         pending_entry: pending,
                         position: EntryRemainderPosition::Supported(managed),
                         cancellation: EntryCancellation::Working,
-                    }),
+                    })),
                     false => Self::Managed(managed),
                 };
                 (next, true)
@@ -538,7 +538,7 @@ impl ExposureState {
                     cancellation: EntryCancellation::Working,
                 };
                 let effect = Self::entry_cancellation_effect(&mut remainder);
-                (Self::EntryRemainder(remainder), effect)
+                (Self::EntryRemainder(Box::new(remainder)), effect)
             }
             Self::Managed(position)
                 if position.position_id == position_id
@@ -676,21 +676,14 @@ impl ExposureState {
                 exit.position.as_ref()
             }
             Self::UnsupportedObserved(observed) => Some(&observed.context),
-            Self::EntryRemainder(EntryRemainderState {
-                position: EntryRemainderPosition::Supported(position),
-                ..
-            }) => Some(position),
-            Self::EntryRemainder(EntryRemainderState {
-                position: EntryRemainderPosition::Unsupported(observed),
-                ..
-            }) => Some(&observed.context),
+            Self::EntryRemainder(remainder) => match &remainder.position {
+                EntryRemainderPosition::Supported(position) => Some(position),
+                EntryRemainderPosition::Unsupported(observed) => Some(&observed.context),
+                EntryRemainderPosition::CanonicallyFlat => None,
+            },
             Self::Flat
             | Self::PendingEntry(_)
             | Self::EntryReconcilePending { .. }
-            | Self::EntryRemainder(EntryRemainderState {
-                position: EntryRemainderPosition::CanonicallyFlat,
-                ..
-            })
             | Self::BlindRecovery(_) => None,
         }
     }
@@ -703,21 +696,14 @@ impl ExposureState {
                 exit.position.as_mut()
             }
             Self::UnsupportedObserved(observed) => Some(&mut observed.context),
-            Self::EntryRemainder(EntryRemainderState {
-                position: EntryRemainderPosition::Supported(position),
-                ..
-            }) => Some(position),
-            Self::EntryRemainder(EntryRemainderState {
-                position: EntryRemainderPosition::Unsupported(observed),
-                ..
-            }) => Some(&mut observed.context),
+            Self::EntryRemainder(remainder) => match &mut remainder.position {
+                EntryRemainderPosition::Supported(position) => Some(position),
+                EntryRemainderPosition::Unsupported(observed) => Some(&mut observed.context),
+                EntryRemainderPosition::CanonicallyFlat => None,
+            },
             Self::Flat
             | Self::PendingEntry(_)
             | Self::EntryReconcilePending { .. }
-            | Self::EntryRemainder(EntryRemainderState {
-                position: EntryRemainderPosition::CanonicallyFlat,
-                ..
-            })
             | Self::BlindRecovery(_) => None,
         }
     }
@@ -863,7 +849,7 @@ enum ExposureReleaseObservation {
     EntryArmAborted(EntryArmCapability),
     EntryTerminal {
         client_order_id: ClientOrderId,
-        truth: EntryTerminalPositionTruth,
+        truth: Box<EntryTerminalPositionTruth>,
     },
     PositionClosed {
         position_id: PositionId,
@@ -1121,7 +1107,7 @@ impl ExposureOwner {
                 client_order_id,
                 truth,
             } => {
-                let (next, retired_entry) = prior.resolve_entry_terminal(client_order_id, truth);
+                let (next, retired_entry) = prior.resolve_entry_terminal(client_order_id, *truth);
                 (
                     next,
                     ExposureReleaseEffects {
@@ -1195,9 +1181,8 @@ impl ExposureOwner {
         &mut self,
         pending: PendingEntryState,
     ) -> Result<EntryArmCapability, EntryArmError> {
-        match self.state.occupancy() {
-            Some(occupancy) => return Err(EntryArmError::Occupied(occupancy)),
-            None => {}
+        if let Some(occupancy) = self.state.occupancy() {
+            return Err(EntryArmError::Occupied(occupancy));
         }
         let Some(generation) = self.next_entry_generation.checked_add(1) else {
             return Err(EntryArmError::GenerationExhausted);
@@ -1264,7 +1249,7 @@ impl ExposureOwner {
     ) -> Option<PendingEntryState> {
         self.reduce_release(ExposureReleaseObservation::EntryTerminal {
             client_order_id,
-            truth,
+            truth: Box::new(truth),
         })
         .retired_entry
     }
@@ -1292,11 +1277,11 @@ impl ExposureOwner {
             | ExposureState::EntryReconcilePending { pending, .. }
                 if pending.instrument_id == instrument_id && keep_entry_remainder =>
             {
-                ExposureState::EntryRemainder(EntryRemainderState {
+                ExposureState::EntryRemainder(Box::new(EntryRemainderState {
                     pending_entry: pending,
                     position: EntryRemainderPosition::Unsupported(unsupported),
                     cancellation: EntryCancellation::Working,
-                })
+                }))
             }
             ExposureState::PendingEntry(PendingEntryArmState { pending, .. })
             | ExposureState::EntryReconcilePending { pending, .. }
@@ -1515,11 +1500,11 @@ impl ExposureOwner {
         pending_entry: PendingEntryState,
         position: EntryRemainderPosition,
     ) {
-        self.state = ExposureState::EntryRemainder(EntryRemainderState {
+        self.state = ExposureState::EntryRemainder(Box::new(EntryRemainderState {
             pending_entry,
             position,
             cancellation: EntryCancellation::Working,
-        });
+        }));
     }
 
     #[cfg(test)]

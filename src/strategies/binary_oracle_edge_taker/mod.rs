@@ -930,7 +930,12 @@ impl ExitAttemptExecution {
         match state {
             BoltV3SubmitAttemptState::Submitted(submitted_order) => (
                 ExitAttemptDisposition::RetainAuthority,
-                Self::completed(decision, ExitAttemptOutcome::Submitted { submitted_order }),
+                Self::completed(
+                    decision,
+                    ExitAttemptOutcome::Submitted {
+                        submitted_order: *submitted_order,
+                    },
+                ),
             ),
             BoltV3SubmitAttemptState::PolicySkipped => (
                 ExitAttemptDisposition::AbortPreSink,
@@ -999,7 +1004,7 @@ impl ExitAttemptExecution {
                 Self::rejected(
                     decision,
                     ExitAttemptOutcome::SinkInvokedUnknown {
-                        submitted_order: linkage,
+                        submitted_order: *linkage,
                         diagnostic: diagnostic.clone(),
                     },
                     anyhow::anyhow!(
@@ -2425,7 +2430,7 @@ impl BinaryOracleEdgeTaker {
         match cached_positions.as_slice() {
             [] => self.exposure.observe_clean_start(),
             [open_position] => {
-                let reason = self.bootstrapped_recovery_reason(&open_position, execution_venue);
+                let reason = self.bootstrapped_recovery_reason(open_position, execution_venue);
                 self.exposure.enter_blind_recovery(reason);
             }
             open_positions => {
@@ -4251,12 +4256,11 @@ impl BinaryOracleEdgeTaker {
                 side: Some(side),
             },
         );
-        if materialized {
-            if let Some((ExitLifecyclePhase::TerminalAwaitingPosition, exit_pending)) =
+        if materialized
+            && let Some((ExitLifecyclePhase::TerminalAwaitingPosition, exit_pending)) =
                 self.exposure.exit_lifecycle()
-            {
-                self.try_release_terminal_exit(&exit_pending, source, None, ts_event_ns);
-            }
+        {
+            self.try_release_terminal_exit(&exit_pending, source, None, ts_event_ns);
         }
         self.sync_exposure_context_from_active();
         self.refresh_book_subscriptions_for_current_state();

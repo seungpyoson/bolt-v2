@@ -2976,6 +2976,9 @@ mod tests {
             "c": condition_id,
             "mos": "1",
             "mts": "1",
+            // The replay fixture's provider snapshot is the zero-fee authority;
+            // production config must not manufacture this value when `fd` is absent.
+            "fd": { "r": 0, "e": 1, "to": true },
         })
         .to_string();
         let valuation_observations = vec![

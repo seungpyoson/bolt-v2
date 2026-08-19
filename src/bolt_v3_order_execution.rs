@@ -1786,10 +1786,10 @@ pub(crate) enum BoltV3SubmitAttemptState {
     PolicySkipped,
     PreSinkRejected(String),
     SinkInvokedUnknown {
-        linkage: SubmittedOrderLinkage,
+        linkage: Box<SubmittedOrderLinkage>,
         diagnostic: String,
     },
-    Submitted(SubmittedOrderLinkage),
+    Submitted(Box<SubmittedOrderLinkage>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1800,7 +1800,7 @@ pub struct BoltV3SubmitAttemptOutcome {
 impl BoltV3SubmitAttemptOutcome {
     fn submitted(prepared_order: PreparedOrderLinkage) -> Self {
         Self {
-            state: BoltV3SubmitAttemptState::Submitted(prepared_order.into()),
+            state: BoltV3SubmitAttemptState::Submitted(Box::new(prepared_order.into())),
         }
     }
 
@@ -1816,7 +1816,7 @@ impl BoltV3SubmitAttemptOutcome {
     ) -> Self {
         Self {
             state: BoltV3SubmitAttemptState::SinkInvokedUnknown {
-                linkage: prepared_order.into(),
+                linkage: Box::new(prepared_order.into()),
                 diagnostic: error.to_string(),
             },
         }
@@ -1887,7 +1887,9 @@ impl BoltV3SubmitAttemptOutcome {
     pub fn submitted_order(&self) -> Option<&SubmittedOrderLinkage> {
         match &self.state {
             BoltV3SubmitAttemptState::Submitted(linkage)
-            | BoltV3SubmitAttemptState::SinkInvokedUnknown { linkage, .. } => Some(linkage),
+            | BoltV3SubmitAttemptState::SinkInvokedUnknown { linkage, .. } => {
+                Some(linkage.as_ref())
+            }
             BoltV3SubmitAttemptState::RouteValidationRejected(_)
             | BoltV3SubmitAttemptState::IntentEvidenceRejected(_)
             | BoltV3SubmitAttemptState::AdmissionRejected(_)

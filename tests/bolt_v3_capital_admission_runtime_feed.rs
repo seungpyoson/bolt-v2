@@ -500,10 +500,6 @@ fn exhausted_state_revision_rejects_candidate_without_mutating_live_state() {
     assert_eq!(after.portfolio, before.portfolio);
     assert_eq!(after.product_state, before.product_state);
     assert_eq!(admission.capital_admission_reconciled(), Some(false));
-    assert!(
-        admission.capital_admission_state_revision_for_test() > expected_revision,
-        "an evidence-rejected rebuild must invalidate every projection captured at its predecessor revision"
-    );
 }
 
 #[test]
@@ -1473,6 +1469,10 @@ fn rebuild_evidence_failure_does_not_publish_candidate_nt_components() {
     assert_eq!(after.portfolio, before.portfolio);
     assert_eq!(after.product_state, before.product_state);
     assert_eq!(admission.capital_admission_reconciled(), Some(false));
+    assert!(
+        admission.capital_admission_state_revision_for_test() > expected_revision,
+        "an evidence-rejected rebuild must invalidate every projection captured at its predecessor revision"
+    );
 }
 
 #[test]

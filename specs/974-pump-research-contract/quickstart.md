@@ -11,21 +11,22 @@ Create a strict fixture TOML from the contract in
 synthetic admitted observations, separated fixture roles, a fixture timestamp
 verifier, and the test artifact root. Do not place credentials in the file.
 
-## 2. Validate and Register
+## 2. Validate the Synthetic Contract
 
 ```bash
-cargo run --manifest-path crates/backtesting-vertical-slice/Cargo.toml \
-  --bin pump_research -- validate \
-  --experiment config/research/pump-research-synthetic.toml
-
-cargo run --manifest-path crates/backtesting-vertical-slice/Cargo.toml \
-  --bin pump_research -- register-version \
-  --experiment config/research/pump-research-synthetic.toml
+cargo test --manifest-path crates/backtesting-vertical-slice/Cargo.toml \
+  --test backtesting_vertical_slice_tests synthetic_zero_spend_acceptance
 ```
 
 Expected evidence: strict validation succeeds, one canonical semantic hash is
 reported, and the registered artifact has the expected parent and Artifact Index
 lineage. No provider adapter or network acquisition runs.
+
+Synthetic registration occurs only inside the test harness. Non-test mutation
+commands reject fixture principals, timestamp verifiers, and artifact roots. A
+real `register-version` run remains blocked until the user approves concrete AWS
+STS role bindings, an independent timestamp authority, and the remaining
+experiment values.
 
 ## 3. Exercise G and D
 

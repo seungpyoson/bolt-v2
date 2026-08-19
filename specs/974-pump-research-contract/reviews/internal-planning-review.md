@@ -40,6 +40,10 @@ provider, spend, a canonical experiment, deployment, or trading.
 9. **Generated governance drift**: a manual SpecKit block had been appended to
    `AGENTS.md` despite the repository's adapter rule. It and the local feature
    pointer were removed; repository governance remains unchanged.
+10. **Fixture authority leakage**: the quickstart attempted non-test registration
+    with a fixture authority. Synthetic registration now runs only in the Rust
+    test harness; non-test mutation remains fail closed until real user-approved
+    STS and timestamp bindings exist.
 
 ## Coverage Result
 

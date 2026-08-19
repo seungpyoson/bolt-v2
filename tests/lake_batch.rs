@@ -562,7 +562,7 @@ fn converts_all_seven_stream_classes_with_multi_batch_feather() {
                 instrument_id,
                 price: Price::from("0.50"),
                 size: Quantity::from("10"),
-                aggressor_side: AggressorSide::Buyer,
+                aggressor_side: AggressorSide::Buy,
                 trade_id: TradeId::new("t-1"),
                 ts_event: 2.into(),
                 ts_init: 2.into(),

@@ -56,9 +56,9 @@ fn proof_instrument() -> CurrencyPair {
 
 fn trade(instrument_id: InstrumentId, index: usize, ts: u64) -> TradeTick {
     let aggressor = if index % 2 == 0 {
-        AggressorSide::Buyer
+        AggressorSide::Buy
     } else {
-        AggressorSide::Seller
+        AggressorSide::Sell
     };
     let ts = UnixNanos::from(ts);
     TradeTick::new(

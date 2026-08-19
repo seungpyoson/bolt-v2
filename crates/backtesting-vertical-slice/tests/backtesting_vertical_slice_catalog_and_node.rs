@@ -90,9 +90,9 @@ fn synthetic_trades(instrument_id: InstrumentId) -> Vec<TradeTick> {
         .map(|index| {
             let price = 50_000.0 + (index as f64);
             let aggressor = if index % 2 == 0 {
-                AggressorSide::Buyer
+                AggressorSide::Buy
             } else {
-                AggressorSide::Seller
+                AggressorSide::Sell
             };
             let ts = UnixNanos::from(BASE_TIMESTAMP_NANOS + (index as u64) * TRADE_INTERVAL_NANOS);
             TradeTick::new(

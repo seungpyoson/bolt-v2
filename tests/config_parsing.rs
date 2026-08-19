@@ -458,6 +458,12 @@ fn shipped_chainlink_reference_config_uses_control_ping_heartbeat() {
             Some(5),
             "{relative_path} should keep a configured heartbeat interval"
         );
+        assert_eq!(
+            data.get("heartbeat_timeout_secs")
+                .and_then(toml::Value::as_integer),
+            Some(15),
+            "{relative_path} should own the heartbeat timeout instead of inheriting NT's default"
+        );
         assert!(
             !data.contains_key("heartbeat_message"),
             "{relative_path} Chainlink reference WS must omit heartbeat_message so NT sends protocol Ping frames instead of text"
@@ -479,11 +485,16 @@ fn shipped_polyresearch_reference_config_uses_verified_gateway_endpoint() {
             .unwrap_or_else(|error| panic!("{relative_path} should be readable: {error}"));
         let parsed = toml::from_str::<toml::Value>(&source)
             .unwrap_or_else(|error| panic!("{relative_path} should parse: {error}"));
-        let endpoint = parsed
+        let data = parsed
             .get("clients")
             .and_then(|value| value.get("polyresearch_reference"))
             .and_then(|value| value.get("data"))
-            .and_then(|value| value.get("websocket_endpoint"))
+            .and_then(toml::Value::as_table)
+            .unwrap_or_else(|| {
+                panic!("{relative_path} should declare clients.polyresearch_reference.data")
+            });
+        let endpoint = data
+            .get("websocket_endpoint")
             .and_then(toml::Value::as_str)
             .unwrap_or_else(|| {
                 panic!(
@@ -498,6 +509,12 @@ fn shipped_polyresearch_reference_config_uses_verified_gateway_endpoint() {
         assert_ne!(
             endpoint, RETIRED_ENDPOINT,
             "{relative_path} must not point PolyResearch at the retired endpoint that returns 401"
+        );
+        assert_eq!(
+            data.get("heartbeat_timeout_secs")
+                .and_then(toml::Value::as_integer),
+            Some(15),
+            "{relative_path} should own the heartbeat timeout instead of inheriting NT's default"
         );
     }
 }
@@ -7300,6 +7317,80 @@ fn enforced_polymarket_submit_admission_uses_registered_live_allowance_source() 
             !message.contains("registered live provider collateral allowance source")
         }),
         "Polymarket submit admission should use its registered live allowance source: {messages:#?}"
+    );
+}
+
+#[test]
+fn polymarket_allowance_polling_accepts_only_the_pinned_nt_spender_set() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    const SPENDER_C: &str = "0xadA2005600Dec949baf300f4C6120000bDB6eAab";
+    const SPENDER_A_LOWER: &str = "0xe111180000d2663c0091e4f400237545b87b996b";
+    const UNEXPECTED_SPENDER: &str = "0xdddddddddddddddddddddddddddddddddddddddd";
+
+    let fixture = support::repo_text("tests/fixtures/bolt_v3/root.toml");
+    let valid: BoltV3RootConfig =
+        toml::from_str(&fixture).expect("canonical spender fixture should parse");
+    let valid_messages = validate_root_only(&valid);
+    assert!(
+        valid_messages
+            .iter()
+            .all(|message| !message.contains("provider_collateral_allowance_spenders")),
+        "the pinned NT spender set should validate: {valid_messages:#?}"
+    );
+
+    for replacement in [SPENDER_A_LOWER, UNEXPECTED_SPENDER] {
+        let mutated = fixture.replace(SPENDER_C, replacement);
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("invalid spender identity fixture should parse");
+        let messages = validate_root_only(&root);
+        assert!(
+            messages.iter().any(|message| {
+                message.contains("provider_collateral_allowance_spenders")
+                    && message.contains("invalid")
+            }),
+            "duplicate or unexpected spender identity must fail closed: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn polymarket_allowance_polling_requires_spenders_and_poll_interval_together() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    const SPENDER_BLOCK: &str = r#"provider_collateral_allowance_spenders = [
+  "0xE111180000d2663C0091e4f400237545B87B996B",
+  "0xe2222d279d744050d28e00520010520000310F59",
+  "0xadA2005600Dec949baf300f4C6120000bDB6eAab",
+]
+"#;
+    let fixture = support::repo_text("tests/fixtures/bolt_v3/root.toml");
+
+    let without_spenders = fixture.replace(SPENDER_BLOCK, "");
+    let root: BoltV3RootConfig =
+        toml::from_str(&without_spenders).expect("missing-spender fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("provider_collateral_allowance_spenders")
+                && message.contains("must be configured")
+        }),
+        "polling without spender authority must fail closed: {messages:#?}"
+    );
+
+    let without_poll = fixture.replace(
+        "provider_collateral_allowance_poll_interval_ms = 1000\n",
+        "",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&without_poll).expect("missing-poll fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("provider_collateral_allowance_spenders")
+                && message.contains("requires provider_collateral_allowance_poll_interval_ms")
+        }),
+        "spender authority without polling must fail closed: {messages:#?}"
     );
 }
 

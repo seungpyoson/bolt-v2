@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn one_sided_flow_is_healthy() {
         let mut state = state();
-        observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buyer; 4]);
+        observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buy; 4]);
         // The gate passes and returns the cleared μ (one-sided buy flow → 1.0).
         assert_eq!(
             state
@@ -179,10 +179,10 @@ mod tests {
             &mut state,
             INSTRUMENT_A,
             &[
-                AggressorSide::Buyer,
-                AggressorSide::Seller,
-                AggressorSide::Buyer,
-                AggressorSide::Seller,
+                AggressorSide::Buy,
+                AggressorSide::Sell,
+                AggressorSide::Buy,
+                AggressorSide::Sell,
             ],
         );
         // A balanced flow's μ collapses to 0.0; the gate blocks it as degenerate
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn instruments_are_tracked_independently() {
         let mut state = state();
-        observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buyer; 4]);
+        observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buy; 4]);
         // B was never observed → its gate fails closed Absent; A's gate clears.
         assert_eq!(
             state.usable_mu_for(&InstrumentId::from(INSTRUMENT_B), NOW_MS),
@@ -221,7 +221,7 @@ mod tests {
         // window) that the 60s staleness gate must still block.
         let mut state = state();
         let id = InstrumentId::from(INSTRUMENT_A);
-        observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buyer; 4]);
+        observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buy; 4]);
         assert_eq!(
             state.usable_mu_for(&id, STALE_NOW_MS),
             Err(MuHealthReason::Stale)
@@ -239,9 +239,9 @@ mod tests {
         // passes on the `samples_within(now).last()` anchor `mint_usable_mu` derives.
         let mut state = state();
         let id = InstrumentId::from(INSTRUMENT_A);
-        observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buyer; 4]);
+        observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buy; 4]);
         // ts 200_000 > STALE_NOW_MS (100_000): newest in the raw buffer, future.
-        state.observe(&trade(INSTRUMENT_A, AggressorSide::Buyer, 200_000));
+        state.observe(&trade(INSTRUMENT_A, AggressorSide::Buy, 200_000));
         assert_eq!(
             state.usable_mu_for(&id, STALE_NOW_MS),
             Err(MuHealthReason::Stale)
@@ -257,11 +257,11 @@ mod tests {
         let mut state = state();
         let id = InstrumentId::from(INSTRUMENT_A);
         let now_ms = 70_000;
-        state.observe(&trade(INSTRUMENT_A, AggressorSide::Buyer, 1_000));
+        state.observe(&trade(INSTRUMENT_A, AggressorSide::Buy, 1_000));
         for index in 0..4u64 {
             state.observe(&trade(
                 INSTRUMENT_A,
-                AggressorSide::Buyer,
+                AggressorSide::Buy,
                 65_000 + index * 1_000,
             ));
         }
@@ -276,7 +276,7 @@ mod tests {
         // (the field is private and has no public constructor), which is what makes
         // routing a raw, ungated `f64` into the quote planner a compile error.
         let mut state = state();
-        observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buyer; 4]);
+        observe_sides(&mut state, INSTRUMENT_A, &[AggressorSide::Buy; 4]);
         let usable = state
             .usable_mu_for(&InstrumentId::from(INSTRUMENT_A), NOW_MS)
             .expect("one-sided warmup flow clears the μ gate");

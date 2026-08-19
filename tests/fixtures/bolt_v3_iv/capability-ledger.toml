@@ -2959,6 +2959,37 @@ symbol = "stub_gen_config"
 matched_terms = ["option", "options"]
 classification = "not_iv_options"
 
+# --- NautilusTrader develop-head (rev c9732b47) reviewed additions ---
+[[surfaces]]
+surface_id = "nt.crates.adapters.deribit.src.http.client.request_book_summaries"
+evidence_path = "crates/adapters/deribit/src/http/client.rs"
+symbol = "request_book_summaries"
+matched_terms = ["iv", "option"]
+seed_family = "adapter"
+classification = "supported"
+engine_mapping = { mapping_kind = "source_kind", target = "iv_nt_option_greeks_source" }
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.types.price.e_r_r_o_r__p_r_i_c_e"
+evidence_path = "crates/model/src/types/price.rs"
+symbol = "ERROR_PRICE"
+matched_terms = ["option"]
+classification = "not_iv_options"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.identifiers.option_series_id.from_expiry_ns"
+evidence_path = "crates/model/src/identifiers/option_series_id.rs"
+symbol = "from_expiry_ns"
+matched_terms = ["expiration", "expiry", "option", "options"]
+classification = "supported"
+
+[[surfaces]]
+surface_id = "nt.crates.model.src.accounts.wallet.update_balances"
+evidence_path = "crates/model/src/accounts/wallet.rs"
+symbol = "update_balances"
+matched_terms = ["chain"]
+classification = "not_iv_options"
+
 [[engine_mapping_rules]]
 surface_id_prefix = "nt.model.option_greeks"
 engine_mapping = { mapping_kind = "product_kind", target = "iv_option_greeks" }

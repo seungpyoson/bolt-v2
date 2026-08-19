@@ -330,7 +330,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 
 ### `[nautilus]`
 
-The fields below map to top-level NautilusTrader `LiveNodeConfig` values. Top-level `LiveNodeConfig` surfaces not represented here are intentionally disabled or empty in the Bolt-v3 builder path (`instance_id`, `cache`, `msgbus`, `portfolio`, `emulator`, `streaming`, `loop_debug`, `data_clients`, and `exec_clients`). They are not inherited from `LiveNodeConfig::default()`. Duration-valued TOML fields use explicit `_secs` suffixes because the operator file stores integer seconds; the Rust mapper converts those integers into NautilusTrader `Duration` fields such as `delay_post_stop` and `timeout_shutdown`.
+The fields below map to top-level NautilusTrader `LiveNodeConfig` values. Top-level `LiveNodeConfig` surfaces not represented here are intentionally disabled or empty in the Bolt-v3 builder path (`instance_id`, `cache`, `msgbus`, `portfolio`, `emulator`, `streaming`, `queue_monitor`, `loop_debug`, `data_clients`, and `exec_clients`). They are not inherited from `LiveNodeConfig::default()`. Duration-valued TOML fields use explicit `_secs` suffixes because the operator file stores integer seconds; the Rust mapper converts those integers into NautilusTrader `Duration` fields such as `delay_post_stop` and `timeout_shutdown`.
 
 #### `load_state`
 
@@ -394,7 +394,7 @@ All pinned `LiveDataEngineConfig` fields are explicit in TOML and mapped into th
 
 Runtime-support guard fields are still required in TOML at the only accepted value so upstream default drift cannot silently change the built node:
 
-- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
+- `qsize` must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `c9732b4704a09f2dbc8a4d442fb78da27039bf04`
 
 | Field | Type / Rule | Maps to |
 |---|---|---|
@@ -410,7 +410,7 @@ Runtime-support guard fields are still required in TOML at the only accepted val
 | `emit_quotes_from_book_depths` | boolean | `LiveDataEngineConfig.emit_quotes_from_book_depths` |
 | `external_clients` | array of valid NT client IDs; empty maps to `None` | `LiveDataEngineConfig.external_clients` |
 | `debug` | boolean | `LiveDataEngineConfig.debug` |
-| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6` | `LiveDataEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveDataEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `c9732b4704a09f2dbc8a4d442fb78da27039bf04` | `LiveDataEngineConfig.qsize` |
 
 ### `[nautilus.exec_engine]`
 
@@ -421,7 +421,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 - `snapshot_orders = false`
 - `snapshot_positions = false`
 - `purge_from_database = false`
-- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
+- `qsize` must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `c9732b4704a09f2dbc8a4d442fb78da27039bf04`
 
 Every Bolt live configuration must give NT an unbounded, unfiltered startup reconciliation scope;
 this requirement is unconditional because NT owns order and position lifecycle even when Bolt capital
@@ -507,7 +507,7 @@ continuous-reconciliation authority mode.
 | `purge_account_events_lookback_mins` | non-negative integer; `0` maps to `None` | `LiveExecEngineConfig.purge_account_events_lookback_mins` |
 | `purge_from_database` | must be `false` | `LiveExecEngineConfig.purge_from_database` |
 | `own_books_audit_interval_secs` | non-negative integer; `0` disables the timer | `LiveExecEngineConfig.own_books_audit_interval_secs` |
-| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6` | `LiveExecEngineConfig.qsize` |
+| `qsize` | must equal the pinned NT `LiveExecEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `c9732b4704a09f2dbc8a4d442fb78da27039bf04` | `LiveExecEngineConfig.qsize` |
 | `allow_overfills` | boolean | `LiveExecEngineConfig.allow_overfills` |
 | `manage_own_order_books` | boolean | `LiveExecEngineConfig.manage_own_order_books` |
 
@@ -594,7 +594,7 @@ This section owns both Bolt-v3 strategy-sizing limits and the configurable pinne
 - type: positive integer
 - required: yes
 - maps to Nautilus `LiveRiskEngineConfig.qsize`
-- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
+- must equal the pinned NT `LiveRiskEngineConfig::default().qsize` value, verified as `100000` at pinned NT rev `c9732b4704a09f2dbc8a4d442fb78da27039bf04`
 
 ### `[logging]`
 
@@ -920,6 +920,8 @@ Presence of `[data]` means a data client is configured.
 - maps directly to the pinned NT adapter `transport_backend` field
 
 No other Polymarket data-client fields are exposed in the current schema unless they are confirmed on the pinned NautilusTrader Rust adapter surface.
+The additive NT `compute_effective_deltas` field is not operator-configurable in
+this slice and the mapper sets it explicitly to `false`.
 
 For current reference-data clients other than Polymarket, each client's `venue` defines its own allowed `[data]` field set.
 Unknown fields fail validation against the venue-specific set in Section 8.
@@ -982,6 +984,13 @@ The current schema also requires these pinned adapter fields to be explicit:
 - `base_url_data_api`
 - `http_timeout_secs`
 - `transport_backend`
+
+`provider_collateral_allowance_poll_interval_ms` is optional and must be a
+positive integer when present. `provider_collateral_allowance_spenders` is an
+optional array of EVM addresses. The two fields must appear together, and the
+normalized address set must equal the collateral-approval targets exported by
+the exact pinned NT revision. No fixed spender count or fallback identity is
+owned by Bolt.
 
 `transport_backend` is a string enum with current allowed value `sockudo` and maps directly to the pinned NT adapter field.
 

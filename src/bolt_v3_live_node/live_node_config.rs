@@ -168,6 +168,7 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         portfolio: None,
         emulator: None,
         streaming: None,
+        queue_monitor: None,
         event_store: None,
         loop_debug: false,
         data_engine,

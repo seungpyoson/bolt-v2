@@ -987,8 +987,8 @@ pub fn canonical_rows_to_trade_ticks<I: Instrument + ?Sized>(
             let size = Quantity::from_str(&size_str)
                 .map_err(|error| anyhow::anyhow!("invalid rescaled size {size_str:?}: {error}"))?;
             let aggressor = match row.aggressor_side.as_str() {
-                s if s == TradeAggressorSide::Buyer.as_str() => AggressorSide::Buyer,
-                s if s == TradeAggressorSide::Seller.as_str() => AggressorSide::Seller,
+                s if s == TradeAggressorSide::Buyer.as_str() => AggressorSide::Buy,
+                s if s == TradeAggressorSide::Seller.as_str() => AggressorSide::Sell,
                 other => anyhow::bail!("unknown aggressor side {other:?}"),
             };
             let trade_id = TradeId::new_checked(&row.trade_id)
@@ -2151,7 +2151,7 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update([5u8]);
         hasher.update(tick.size.as_decimal().to_string().as_bytes());
         hasher.update([6u8]);
-        hasher.update(tick.aggressor_side.to_string().as_bytes());
+        hasher.update(stable_aggressor_side_hash_token(tick.aggressor_side));
         hasher.update([7u8]);
         hasher.update(tick.ts_event.as_u64().to_string().as_bytes());
         hasher.update([8u8]);
@@ -2283,6 +2283,14 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(funding_rate.ts_init.as_u64().to_string().as_bytes());
     }
     Ok(hex::encode(hasher.finalize()))
+}
+
+fn stable_aggressor_side_hash_token(aggressor_side: AggressorSide) -> &'static [u8] {
+    match aggressor_side {
+        AggressorSide::NoAggressor => b"NO_AGGRESSOR",
+        AggressorSide::Buy => b"BUYER",
+        AggressorSide::Sell => b"SELLER",
+    }
 }
 
 fn catalog_files_for_instruments<T: CatalogPathPrefix>(
@@ -5356,7 +5364,7 @@ max_notional = "200000"
             instrument_id,
             Price::from("0.51"),
             Quantity::from("2"),
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             TradeId::new_checked("pmxt-trade-1").unwrap(),
             UnixNanos::from(1_772_323_201_665_000_000u64),
             ts_init,
@@ -5604,7 +5612,11 @@ max_notional = "200000"
             hasher.update([5u8]);
             hasher.update(tick.size.as_decimal().to_string().as_bytes());
             hasher.update([6u8]);
-            hasher.update(tick.aggressor_side.to_string().as_bytes());
+            hasher.update(match tick.aggressor_side {
+                AggressorSide::NoAggressor => b"NO_AGGRESSOR".as_slice(),
+                AggressorSide::Buy => b"BUYER".as_slice(),
+                AggressorSide::Sell => b"SELLER".as_slice(),
+            });
             hasher.update([7u8]);
             hasher.update(tick.ts_event.as_u64().to_string().as_bytes());
             hasher.update([8u8]);

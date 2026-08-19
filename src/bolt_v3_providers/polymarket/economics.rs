@@ -970,6 +970,7 @@ mod tests {
                 "{:.5}",
                 compute_commission(
                     Decimal::new(3, 2),
+                    1.0,
                     Decimal::ONE,
                     price,
                     LiquiditySide::Taker,

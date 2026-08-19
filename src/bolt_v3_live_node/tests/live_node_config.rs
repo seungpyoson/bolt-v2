@@ -661,6 +661,7 @@ fn live_node_config_top_level_residuals_are_disabled_or_empty() {
     assert!(cfg.portfolio.is_none());
     assert!(cfg.emulator.is_none());
     assert!(cfg.streaming.is_none());
+    assert!(cfg.queue_monitor.is_none());
     assert!(!cfg.loop_debug);
     assert!(cfg.data_clients.is_empty());
     assert!(cfg.exec_clients.is_empty());

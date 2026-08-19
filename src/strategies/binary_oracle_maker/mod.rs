@@ -1609,7 +1609,7 @@ mod tests {
         // themselves are exercised directly in `mu`'s own tests.
         let mut state = build_mu_state(&maker_config(600, 1000, 4));
         let instrument = InstrumentId::from("MAKER.SIM");
-        observe_sides(&mut state, instrument, &[AggressorSide::Buyer; 4]);
+        observe_sides(&mut state, instrument, &[AggressorSide::Buy; 4]);
         assert_eq!(
             state
                 .usable_mu_for(&instrument, QUERY_NOW_MS)
@@ -1628,7 +1628,7 @@ mod tests {
         // both μ and the staleness anchor absent, so the gate fails closed Absent.
         let mut state = build_mu_state(&maker_config(5, 1000, 1));
         let instrument = InstrumentId::from("MAKER.SIM");
-        observe_sides(&mut state, instrument, &[AggressorSide::Buyer; 4]);
+        observe_sides(&mut state, instrument, &[AggressorSide::Buy; 4]);
         assert_eq!(
             state.usable_mu_for(&instrument, QUERY_NOW_MS),
             Err(MuHealthReason::Absent)
@@ -1649,10 +1649,10 @@ mod tests {
             &mut state,
             instrument,
             &[
-                AggressorSide::Seller,
-                AggressorSide::Seller,
-                AggressorSide::Buyer,
-                AggressorSide::Buyer,
+                AggressorSide::Sell,
+                AggressorSide::Sell,
+                AggressorSide::Buy,
+                AggressorSide::Buy,
             ],
         );
         assert_eq!(
@@ -1683,7 +1683,7 @@ mod tests {
                 instrument,
                 Price::new(0.5, 2),
                 Quantity::new(1.0, 0),
-                AggressorSide::Buyer,
+                AggressorSide::Buy,
                 TradeId::from(format!("T{ts_ns}").as_str()),
                 UnixNanos::from(ts_ns),
                 UnixNanos::from(ts_ns),

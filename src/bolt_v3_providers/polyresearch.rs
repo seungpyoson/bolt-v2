@@ -88,6 +88,7 @@ pub struct PolyResearchReferencePriceDataConfig {
     pub websocket_endpoint: String,
     pub transport_backend: TransportBackend,
     pub heartbeat_secs: Option<u64>,
+    pub heartbeat_timeout_secs: u64,
     pub heartbeat_message: Option<String>,
     pub reconnect_timeout_ms: u64,
     pub reconnect_delay_initial_ms: u64,
@@ -182,6 +183,7 @@ pub struct PolyResearchReferencePriceClientConfig {
     pub websocket_endpoint: String,
     pub transport_backend: TransportBackend,
     pub heartbeat_secs: Option<u64>,
+    pub heartbeat_timeout_secs: u64,
     pub heartbeat_message: Option<String>,
     pub reconnect_timeout_ms: u64,
     pub reconnect_delay_initial_ms: u64,
@@ -200,6 +202,7 @@ impl std::fmt::Debug for PolyResearchReferencePriceClientConfig {
             .field("websocket_endpoint", &self.websocket_endpoint)
             .field("transport_backend", &self.transport_backend)
             .field("heartbeat_secs", &self.heartbeat_secs)
+            .field("heartbeat_timeout_secs", &self.heartbeat_timeout_secs)
             .field("heartbeat_message", &self.heartbeat_message)
             .field("reconnect_timeout_ms", &self.reconnect_timeout_ms)
             .field(
@@ -1298,14 +1301,15 @@ pub(crate) fn polyresearch_websocket_client_config(
     WebSocketConfig {
         url: url.to_string(),
         headers: vec![],
-        heartbeat: config.heartbeat_secs,
-        heartbeat_msg: config.heartbeat_message.clone(),
-        reconnect_timeout_ms: Some(config.reconnect_timeout_ms),
+        heartbeat_interval_secs: config.heartbeat_secs,
+        heartbeat_payload: config.heartbeat_message.clone(),
+        connect_timeout_ms: Some(config.reconnect_timeout_ms),
         reconnect_delay_initial_ms: Some(config.reconnect_delay_initial_ms),
         reconnect_delay_max_ms: Some(config.reconnect_delay_max_ms),
         reconnect_backoff_factor: Some(config.reconnect_backoff_factor),
         reconnect_jitter_ms: Some(config.reconnect_jitter_ms),
         reconnect_max_attempts: config.reconnect_max_attempts.as_websocket_config(),
+        heartbeat_timeout_secs: Some(config.heartbeat_timeout_secs),
         idle_timeout_ms: Some(config.idle_timeout_ms),
         backend: config.transport_backend,
         proxy_url: None,
@@ -1375,6 +1379,11 @@ fn validate_data_bounds(key: &str, data: &PolyResearchReferencePriceDataConfig) 
     validate_positive_optional_u64(
         &format!("clients.{key}.data.heartbeat_secs"),
         data.heartbeat_secs,
+        &mut errors,
+    );
+    validate_positive_u64(
+        &format!("clients.{key}.data.heartbeat_timeout_secs"),
+        data.heartbeat_timeout_secs,
         &mut errors,
     );
     validate_positive_u64(
@@ -1575,6 +1584,7 @@ fn map_data(
         websocket_endpoint: cfg.websocket_endpoint,
         transport_backend: cfg.transport_backend,
         heartbeat_secs: cfg.heartbeat_secs,
+        heartbeat_timeout_secs: cfg.heartbeat_timeout_secs,
         heartbeat_message: cfg.heartbeat_message,
         reconnect_timeout_ms: cfg.reconnect_timeout_ms,
         reconnect_delay_initial_ms: cfg.reconnect_delay_initial_ms,
@@ -1616,6 +1626,7 @@ mod tests {
             websocket_endpoint: "wss://ws.polyresearch.xyz/reference".to_string(),
             transport_backend: TransportBackend::Sockudo,
             heartbeat_secs: Some(5),
+            heartbeat_timeout_secs: 15,
             heartbeat_message: Some("ping".to_string()),
             reconnect_timeout_ms: 5_000,
             reconnect_delay_initial_ms: 250,
@@ -1639,6 +1650,10 @@ mod tests {
                 .expect("fixture URL should parse"),
         );
         assert_eq!(websocket.reconnect_max_attempts, Some(3));
+        assert_eq!(websocket.heartbeat_interval_secs, Some(5));
+        assert_eq!(websocket.heartbeat_payload.as_deref(), Some("ping"));
+        assert_eq!(websocket.heartbeat_timeout_secs, Some(15));
+        assert_eq!(websocket.connect_timeout_ms, Some(5_000));
 
         config.reconnect_max_attempts = PolyResearchReconnectMaxAttempts::Unlimited;
         let websocket = polyresearch_websocket_client_config(

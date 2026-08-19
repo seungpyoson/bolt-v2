@@ -1738,6 +1738,15 @@ fn capture_account_terminal(account: &AccountAny) -> AccountTerminalRecord {
                 .collect(),
         ),
         AccountAny::Betting(_) => (AccountType::Betting, Vec::new(), Vec::new()),
+        AccountAny::Wallet(account) => (
+            AccountType::Wallet,
+            account
+                .balances_locked
+                .iter()
+                .map(|((instrument_id, currency), money)| (*instrument_id, *currency, *money))
+                .collect(),
+            Vec::new(),
+        ),
     };
     let mut balances = account.balances().into_values().collect::<Vec<_>>();
     balances.sort_by_key(|balance| balance.currency.to_string());
@@ -2207,8 +2216,8 @@ pub(crate) fn assert_read_back_matches(
 /// read-back tick's side can be compared to the canonical row's string.
 fn aggressor_label(side: AggressorSide) -> &'static str {
     match side {
-        AggressorSide::Buyer => TradeAggressorSide::Buyer.as_str(),
-        AggressorSide::Seller => TradeAggressorSide::Seller.as_str(),
+        AggressorSide::Buy => TradeAggressorSide::Buyer.as_str(),
+        AggressorSide::Sell => TradeAggressorSide::Seller.as_str(),
         AggressorSide::NoAggressor => "NO_AGGRESSOR",
     }
 }
@@ -3258,7 +3267,7 @@ mod tests {
             TradeAggressorSide::Buyer,
             1000,
         )];
-        let ticks = vec![tick("t1", "100.5", "2.0", AggressorSide::Buyer, 1000)];
+        let ticks = vec![tick("t1", "100.5", "2.0", AggressorSide::Buy, 1000)];
         assert_read_back_matches(&ticks, &rows, TEST_INSTRUMENT)
             .expect("faithful read-back must be admitted");
     }
@@ -3272,7 +3281,7 @@ mod tests {
             TradeAggressorSide::Buyer,
             1000,
         )];
-        let ticks = vec![tick("t1", "999.5", "2.0", AggressorSide::Buyer, 1000)];
+        let ticks = vec![tick("t1", "999.5", "2.0", AggressorSide::Buy, 1000)];
         let err = assert_read_back_matches(&ticks, &rows, TEST_INSTRUMENT).unwrap_err();
         assert!(err.to_string().contains("price"), "{err}");
     }
@@ -3286,7 +3295,7 @@ mod tests {
             TradeAggressorSide::Buyer,
             1000,
         )];
-        let ticks = vec![tick("t1", "100.5", "9.0", AggressorSide::Buyer, 1000)];
+        let ticks = vec![tick("t1", "100.5", "9.0", AggressorSide::Buy, 1000)];
         let err = assert_read_back_matches(&ticks, &rows, TEST_INSTRUMENT).unwrap_err();
         assert!(err.to_string().contains("size"), "{err}");
     }
@@ -3300,7 +3309,7 @@ mod tests {
             TradeAggressorSide::Buyer,
             1000,
         )];
-        let ticks = vec![tick("t1", "100.5", "2.0", AggressorSide::Seller, 1000)];
+        let ticks = vec![tick("t1", "100.5", "2.0", AggressorSide::Sell, 1000)];
         let err = assert_read_back_matches(&ticks, &rows, TEST_INSTRUMENT).unwrap_err();
         assert!(err.to_string().contains("side"), "{err}");
     }
@@ -3314,7 +3323,7 @@ mod tests {
             TradeAggressorSide::Buyer,
             1000,
         )];
-        let ticks = vec![tick("t1", "100.5", "2.0", AggressorSide::Buyer, 2000)];
+        let ticks = vec![tick("t1", "100.5", "2.0", AggressorSide::Buy, 2000)];
         let err = assert_read_back_matches(&ticks, &rows, TEST_INSTRUMENT).unwrap_err();
         assert!(err.to_string().contains("ts_event"), "{err}");
     }
@@ -3596,7 +3605,7 @@ mod tests {
                 &[maker_smoke_trade(
                     yes_id,
                     "maker-smoke-yes-1",
-                    AggressorSide::Buyer,
+                    AggressorSide::Buy,
                     MAKER_SMOKE_TS_NS,
                 )],
                 None,
@@ -3609,7 +3618,7 @@ mod tests {
                 &[maker_smoke_trade(
                     no_id,
                     "maker-smoke-no-1",
-                    AggressorSide::Seller,
+                    AggressorSide::Sell,
                     MAKER_SMOKE_TS_NS + 1_000_000,
                 )],
                 None,
@@ -3633,13 +3642,13 @@ mod tests {
                     maker_smoke_trade(
                         instrument_id,
                         "execution-contract-entry",
-                        AggressorSide::Buyer,
+                        AggressorSide::Buy,
                         MAKER_SMOKE_TS_NS,
                     ),
                     maker_smoke_trade(
                         instrument_id,
                         "execution-contract-exit",
-                        AggressorSide::Seller,
+                        AggressorSide::Sell,
                         MAKER_SMOKE_TS_NS + 1_000_000,
                     ),
                 ],
@@ -6557,6 +6566,39 @@ mod tests {
     }
 
     #[test]
+    fn terminal_capture_preserves_wallet_account_identity_balances_and_locks() {
+        let state = AccountState::new(
+            AccountId::from("WALLET-001"),
+            AccountType::Wallet,
+            vec![AccountBalance::new(
+                Money::from("2.00000000 USDC"),
+                Money::from("0.00000000 USDC"),
+                Money::from("2.00000000 USDC"),
+            )],
+            Vec::new(),
+            true,
+            UUID4::default(),
+            UnixNanos::from(1),
+            UnixNanos::from(1),
+            None,
+        );
+        let mut account = nautilus_model::accounts::WalletAccount::new(state, true);
+        account.balances_locked.insert(
+            (InstrumentId::from("YES.POLYMARKET"), Currency::USDC()),
+            Money::from("0.50000000 USDC"),
+        );
+
+        let terminal =
+            super::capture_account_terminal(&nautilus_model::accounts::AccountAny::Wallet(account));
+
+        assert_eq!(terminal.account_type, AccountType::Wallet);
+        assert_eq!(terminal.base_currency, None);
+        assert_eq!(terminal.balances.len(), 1);
+        assert_eq!(terminal.cash_locks.len(), 1);
+        assert!(terminal.margins.is_empty());
+    }
+
+    #[test]
     fn issue_789_terminal_account_rejects_extra_locked_currency() {
         let terminal = super::AccountTerminalRecord {
             account_id: AccountId::from("POLYMARKET-001"),
@@ -7838,6 +7880,7 @@ mod tests {
   "endDate": "2026-04-22T00:05:00Z",
   "active": true,
   "closed": false,
+  "negRisk": false,
   "acceptingOrders": true,
   "enableOrderBook": true,
   "orderPriceMinTickSize": 0.001,

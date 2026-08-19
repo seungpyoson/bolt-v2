@@ -6,7 +6,12 @@
 //! before the excess bytes are ever loaded.
 
 use anyhow::{Context, Result, ensure};
-use std::{fmt::Display, fs, io::Read, path::Path};
+use std::{
+    fmt::Display,
+    fs::{self, File},
+    io::Read,
+    path::Path,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ByteLimit {
@@ -40,11 +45,39 @@ pub fn ensure_within_limit(label: impl Display, size: u64, limit: ByteLimit) -> 
     Ok(())
 }
 
+/// Open a regular file without first blocking on a special-file open.
+///
+/// The path-level check rejects static FIFOs and other special files before
+/// [`File::open`]. The descriptor-level check preserves the invariant after
+/// opening and catches ordinary path replacement races.
+pub fn open_regular_file(path: &Path, label: impl Display) -> Result<File> {
+    let label = label.to_string();
+    let path_metadata =
+        fs::metadata(path).with_context(|| format!("open {label} {}", path.display()))?;
+    ensure!(
+        path_metadata.is_file(),
+        "{label} {} is not a regular file",
+        path.display()
+    );
+    let file = File::open(path).with_context(|| format!("open {label} {}", path.display()))?;
+    let opened_metadata = file
+        .metadata()
+        .with_context(|| format!("inspect opened {label} {}", path.display()))?;
+    ensure!(
+        opened_metadata.is_file(),
+        "opened {label} {} is not a regular file",
+        path.display()
+    );
+    Ok(file)
+}
+
 pub fn read_file_with_limit(path: &Path, limit: ByteLimit) -> Result<Vec<u8>> {
-    let metadata =
-        fs::metadata(path).with_context(|| format!("get metadata for {}", path.display()))?;
+    let file = open_regular_file(path, "bounded input")?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("get metadata for {}", path.display()))?;
     ensure_within_limit(path.display(), metadata.len(), limit)?;
-    fs::read(path).with_context(|| format!("read {}", path.display()))
+    read_to_vec_with_limit(file, limit, format!("read {}", path.display()))
 }
 
 pub fn read_to_vec_with_limit<R: Read>(
@@ -85,7 +118,8 @@ pub fn read_to_string_with_limit<R: Read>(
 #[cfg(test)]
 mod tests {
     use super::{
-        ByteLimit, read_file_with_limit, read_to_string_with_limit, read_to_vec_with_limit,
+        ByteLimit, open_regular_file, read_file_with_limit, read_to_string_with_limit,
+        read_to_vec_with_limit,
     };
     use std::{
         cell::RefCell,
@@ -116,6 +150,26 @@ mod tests {
 
         assert!(
             format!("{err:#}").contains("exceeds configured byte limit"),
+            "{err:#}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_file_rejects_fifo_before_opening() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("control.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("create FIFO");
+        assert!(status.success(), "mkfifo must create the test FIFO");
+
+        let err = open_regular_file(&path, "pinned control")
+            .expect_err("a FIFO must be rejected without opening it");
+
+        assert!(
+            format!("{err:#}").contains("is not a regular file"),
             "{err:#}"
         );
     }

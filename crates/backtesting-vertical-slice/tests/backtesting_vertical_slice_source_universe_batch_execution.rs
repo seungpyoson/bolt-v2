@@ -191,6 +191,26 @@ fn non_regular_control_file_rejects_before_fetch_or_output_creation() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn fifo_control_file_rejects_before_fetch_or_output_creation() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, accepted_tranche_path, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, b"accepted object bytes".to_vec())]);
+    fs::remove_file(&accepted_tranche_path).expect("remove accepted tranche file");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&accepted_tranche_path)
+        .status()
+        .expect("create accepted tranche FIFO");
+    assert!(status.success(), "mkfifo must create the test FIFO");
+
+    assert_control_admission_rejects_before_side_effects(
+        &pack_path,
+        &temp_dir.path().join("batch-output"),
+        "pinned accepted_tranche",
+    );
+}
+
 #[test]
 fn duplicate_selected_sequence_rejects_before_fetch_or_output_creation() {
     let temp_dir = tempfile::tempdir().expect("temp dir");

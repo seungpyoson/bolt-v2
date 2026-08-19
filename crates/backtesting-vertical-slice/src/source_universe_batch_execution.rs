@@ -7,7 +7,8 @@
 
 use std::{
     collections::BTreeMap,
-    fs::{self, File},
+    fs,
+    io::Read,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -33,7 +34,7 @@ use crate::catalog_projection::logical_catalog_hash;
 use crate::conversion_boundary::{
     CATALOG_METADATA_FILE, CATALOG_METADATA_VERSION, ConversionCatalogMetadata,
 };
-use crate::io_safety::{ByteLimit, ensure_within_limit, read_to_vec_with_limit};
+use crate::io_safety::{ByteLimit, ensure_within_limit, open_regular_file, read_to_vec_with_limit};
 use crate::path_resolution::resolve_existing_path;
 use crate::source_proof::{SourceBindingRegistry, resolve_source_bindings_path};
 use crate::{
@@ -186,20 +187,8 @@ impl SourceUniverseControlAdmissionPolicy {
                     declared_source_bindings_path.display()
                 )
             })?;
-        let source_bindings_file = File::open(&source_bindings_path).with_context(|| {
-            format!(
-                "open trusted source-bindings registry {}",
-                source_bindings_path.display()
-            )
-        })?;
-        ensure!(
-            source_bindings_file
-                .metadata()
-                .with_context(|| format!("inspect {}", source_bindings_path.display()))?
-                .is_file(),
-            "trusted source-bindings registry {} is not a regular file",
-            source_bindings_path.display()
-        );
+        let source_bindings_file =
+            open_regular_file(&source_bindings_path, "trusted source-bindings registry")?;
         let source_bindings_bytes = read_to_vec_with_limit(
             source_bindings_file,
             max_source_bindings_bytes,
@@ -234,7 +223,10 @@ impl SourceUniverseControlAdmissionPolicy {
 pub fn load_source_universe_control_admission_policy(
     policy_path: &Path,
 ) -> Result<SourceUniverseControlAdmissionPolicy> {
-    let bytes = fs::read(policy_path).with_context(|| {
+    let mut policy_file =
+        open_regular_file(policy_path, "source-universe control admission policy")?;
+    let mut bytes = Vec::new();
+    policy_file.read_to_end(&mut bytes).with_context(|| {
         format!(
             "read source-universe control admission policy {}",
             policy_path.display()
@@ -1080,8 +1072,7 @@ fn read_pinned_control(
     )
     .context("construct effective control byte limit")?;
     let resolved_path = resolve_existing_path(pack_base_dir, declared_path);
-    let file = File::open(&resolved_path)
-        .with_context(|| format!("open pinned {role} {}", resolved_path.display()))?;
+    let file = open_regular_file(&resolved_path, format!("pinned {role}"))?;
     let metadata = file
         .metadata()
         .with_context(|| format!("inspect pinned {role} {}", resolved_path.display()))?;

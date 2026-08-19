@@ -77,7 +77,7 @@ mod tests {
         assert_eq!(
             capabilities["binary_oracle_maker"],
             crate::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
-                realized_volatility: true,
+                realized_volatility: false,
                 settlement: false,
             }
         );

@@ -49,7 +49,7 @@ enum CachedExitOrderLifecycle {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExitOrderAuthorityObservation {
     Lifecycle,
-    Correction { cause: BoltV3RecoveredExitCause },
+    FillAuthorityChanged,
 }
 
 struct ExitOrderLifecycleObservationInput {
@@ -62,54 +62,15 @@ struct ExitOrderLifecycleObservationInput {
     authority: ExitOrderAuthorityObservation,
 }
 
-#[derive(Debug)]
-enum ExitAuthorityRecoveryBlock {
-    Construction(anyhow::Error),
-    InvalidTerminalZeroFill,
-    CachedOrderMissing,
-    Observation(anyhow::Error),
-}
-
-impl std::fmt::Display for ExitAuthorityRecoveryBlock {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Construction(error) => write!(formatter, "construction failed: {error:#}"),
-            Self::InvalidTerminalZeroFill => {
-                formatter.write_str("recovered authority produced an invalid zero-fill shortcut")
-            }
-            Self::CachedOrderMissing => {
-                formatter.write_str("authoritative cached order is missing")
-            }
-            Self::Observation(error) => write!(formatter, "order observation failed: {error:#}"),
-        }
-    }
-}
-
-enum ExitAuthorityRecoveryAttempt {
-    Working(ExitPendingState),
-    TerminalAwaitingPosition(ExitPendingState),
-    Blocked(ExitAuthorityRecoveryBlock),
-}
-
 impl ExitOrderAuthorityObservation {
     const fn is_correction(self) -> bool {
-        matches!(self, Self::Correction { .. })
+        matches!(self, Self::FillAuthorityChanged)
     }
 
     const fn correction(self) -> BoltV3ExitOrderCorrection {
         match self {
             Self::Lifecycle => BoltV3ExitOrderCorrection::Unchanged,
-            Self::Correction { .. } => BoltV3ExitOrderCorrection::FillAuthorityChanged,
-        }
-    }
-
-    fn recovery_plan(
-        self,
-        authority: &BoltV3ExitOrderAuthorityHandle,
-    ) -> ExitAuthorityRecoveryPlan {
-        match self {
-            Self::Lifecycle => ExitAuthorityRecoveryPlan::Resume(authority.clone()),
-            Self::Correction { cause } => ExitAuthorityRecoveryPlan::Reconstruct(cause),
+            Self::FillAuthorityChanged => BoltV3ExitOrderCorrection::FillAuthorityChanged,
         }
     }
 }
@@ -190,10 +151,9 @@ use crate::{
         ForcedFlatReason as EvidenceForcedFlatReason, NonBlockingRecordOutcome,
         ObservationRecordOutcome, OrderIntentDetails, OrderLifecycleFact, OrderLifecycleOutcome,
         OrderLifecycleSource, OrderLifecycleTransition, OutcomeSide as EvidenceOutcomeSide,
-        PreparedOrderLinkage, RecoveredSettlementOutcome, RvGateResult as EvidenceRvGateResult,
-        SettlementBookingErrorFact, SettlementBookingErrorReason, SettlementFact,
-        StrategyInputDetails, StrategyInputRvState, SubmissionLinkage,
-        SubmitLinkedStrategyInputSnapshotFact, TerminalSettlementFact,
+        PreparedOrderLinkage, RvGateResult as EvidenceRvGateResult, SettlementBookingErrorFact,
+        SettlementBookingErrorReason, SettlementFact, StrategyInputDetails, StrategyInputRvState,
+        SubmissionLinkage, SubmitLinkedStrategyInputSnapshotFact, TerminalSettlementFact,
         realized_vol_diagnostic_fact, settlement_kind,
     },
     bolt_v3_evidence_values::{
@@ -213,11 +173,10 @@ use crate::{
     },
     bolt_v3_operator_health::BoltV3SettlementHealthTransition,
     bolt_v3_order_execution::{
-        BoltV3CompileAndSealRiskReducingIocInput, BoltV3ExitAuthorityRecoveryHandle,
-        BoltV3ExitAuthorityRecoveryRelease, BoltV3ExitOrderAuthorityHandle,
-        BoltV3ExitOrderCorrection, BoltV3ExitOrderLifecycleReduction,
-        BoltV3FinalOrderEconomicsInput, BoltV3FinalOrderEconomicsScenario, BoltV3PlannedFillLeg,
-        BoltV3PositionReductionRelease, BoltV3RecoveredExitCause,
+        BoltV3CancelRoutingOutcome, BoltV3CompileAndSealRiskReducingIocInput,
+        BoltV3ExitOrderAuthorityHandle, BoltV3ExitOrderCorrection,
+        BoltV3ExitOrderLifecycleReduction, BoltV3FinalOrderEconomicsInput,
+        BoltV3FinalOrderEconomicsScenario, BoltV3PlannedFillLeg, BoltV3PositionReductionRelease,
         BoltV3RiskReducingIocPreparationStage, BoltV3SubmitAttemptKind, BoltV3SubmitAttemptOutcome,
         BoltV3SubmitAttemptState, BoltV3SubmitContext, BoltV3SubmitRoutingRequest,
         BoltV3TakerEconomicsSizingInput, BoltV3TerminalValueEntry, BoltV3TerminalValueEntryPolicy,
@@ -243,9 +202,7 @@ use crate::{
     },
     bolt_v3_settlement_booking::{
         ResolutionSettlementDecision, ResolutionSettlementInput, SettlementPositionKey,
-        SettlementPositionOrigin, SettlementRecoveryEntryDecision, SettlementTerminalKeyDelta,
-        TerminalSettlementEligibility,
-        bootstrap_recovery_from_cache as decide_bootstrap_recovery_from_cache,
+        SettlementTerminalKeyDelta, TerminalSettlementEligibility,
         enter_blind_settlement_recovery as decide_blind_settlement_recovery,
         record_settlement_booking_error as decide_settlement_booking_error, recover_booking_facts,
         recover_settlement_facts, try_book_resolution_settlement,
@@ -316,14 +273,17 @@ use self::config::{BinaryOracleEdgeTakerConfig, BinaryOracleEdgeTakerFieldType};
 mod exposure;
 
 use self::exposure::{
-    BlindRecoveryReason, BlindRecoveryState, ConfiguredPositionContract, EntryReconcileReason,
-    ExitAttemptingState, ExitAuthorityFlatRecovery, ExitAuthorityRecoveryHoldState,
-    ExitAuthorityRecoveryPlan, ExitLifecyclePhase, ExitPendingState, ExposureOccupancy,
-    ExposureState, ManagedPositionContext, ManagedPositionOrigin, ManagedPositionState,
-    OpenPositionState, PendingEntryState, PendingExitState, UnsupportedObservedReason,
-    UnsupportedObservedState, infer_strategy_position_side_from_entry_fill,
-    managed_position_effective_entry_cost, supports_strategy_managed_position,
+    BlindRecoveryReason, ConfiguredPositionContract, EntryArmError, EntryArmSettlement,
+    EntryCancellationEffect, EntryCancellationSettlement, EntryReconcileReason,
+    EntryTerminalPositionTruth, ExitAttemptSettlement, ExitLifecyclePhase, ExitPendingState,
+    ExitRouteAvailability, ExposureEntryGate, ExposureMarketDataRoute, ExposureOccupancy,
+    ExposureOwner, ManagedPositionContext, ManagedPositionState, OpenPositionState,
+    PendingEntryState, PendingExitState, UnsupportedObservedReason, UnsupportedObservedState,
+    infer_strategy_position_side_from_entry_fill, managed_position_effective_entry_cost,
+    supports_strategy_managed_position,
 };
+#[cfg(test)]
+use self::exposure::{EntryRemainderPosition, ExposureKind};
 use crate::bolt_v3_feed_health::{
     ForcedFlatInputs, ForcedFlatReason, evaluate_forced_flat_predicates,
 };
@@ -395,8 +355,6 @@ const ORDER_LIFECYCLE_SOURCE_SELECTION_BOUNDARY: OrderLifecycleSource =
 const ORDER_LIFECYCLE_SOURCE_ENTRY_FILL: OrderLifecycleSource = OrderLifecycleSource::EntryFill;
 const ORDER_LIFECYCLE_SOURCE_POSITION_EVENT: OrderLifecycleSource =
     OrderLifecycleSource::PositionEvent;
-const ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP: OrderLifecycleSource =
-    OrderLifecycleSource::RestartBootstrap;
 const ORDER_LIFECYCLE_SOURCE_ORDER_DENIED: OrderLifecycleSource = OrderLifecycleSource::OrderDenied;
 const ORDER_LIFECYCLE_SOURCE_ORDER_REJECTED: OrderLifecycleSource =
     OrderLifecycleSource::OrderRejected;
@@ -452,6 +410,13 @@ struct PendingEntryTerminalEventInput {
     terminal_proves_zero_fill: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryTerminalOrderTruth {
+    ZeroFill,
+    Filled { position_id: Option<PositionId> },
+    Unresolved,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PositionMaterializationSpec {
     instrument_id: InstrumentId,
@@ -462,17 +427,9 @@ struct PositionMaterializationSpec {
     avg_px_open: f64,
 }
 
-#[derive(Debug, Clone)]
-struct FlatTerminalEntryOverride {
-    client_order_id: ClientOrderId,
-    market_id: Option<String>,
-    instrument_id: InstrumentId,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TerminalEvidenceState {
     PersistCanonical,
-    CanonicalAlreadyDurable,
 }
 
 /// Project the strategy's trade-flow TOML knobs into the buffer's runtime config
@@ -824,9 +781,7 @@ pub struct BinaryOracleEdgeTaker {
     active: ActiveMarketState,
     book_subscriptions: OutcomeBookSubscriptions,
     market_lifecycle: BTreeMap<String, MarketLifecycleLedger>,
-    exposure: ExposureState,
-    next_exit_attempt_generation: u64,
-    last_flat_terminal_entry_override: Option<FlatTerminalEntryOverride>,
+    exposure: ExposureOwner,
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
     /// Suppression for the three producers that record once per semantic
     /// episode. The identity is each producer's own; only the mask arithmetic
@@ -907,8 +862,8 @@ enum ExitAttemptExecution {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ExitAttemptDisposition {
-    Submitted,
-    NonSubmitted,
+    RetainAuthority,
+    AbortPreSink,
 }
 
 impl ExitAttemptExecution {
@@ -955,10 +910,15 @@ impl ExitAttemptExecution {
                     | ExitAttemptOutcome::IntentEvidenceRejected { .. }
                     | ExitAttemptOutcome::AdmissionRejected { .. }
                     | ExitAttemptOutcome::PolicySkipped { .. }
-                    | ExitAttemptOutcome::PreSinkRejected { .. }
-                    | ExitAttemptOutcome::SinkRejected { .. },
+                    | ExitAttemptOutcome::PreSinkRejected { .. },
                 ..
             } => Ok(None),
+            Self::Completed {
+                outcome: ExitAttemptOutcome::SinkInvokedUnknown { diagnostic, .. },
+                ..
+            } => Err(anyhow::anyhow!(
+                "exit submit returned after NT invocation with unknown lifecycle outcome: diagnostic={diagnostic}"
+            )),
         }
     }
 
@@ -969,18 +929,18 @@ impl ExitAttemptExecution {
     ) -> (ExitAttemptDisposition, Self) {
         match state {
             BoltV3SubmitAttemptState::Submitted(submitted_order) => (
-                ExitAttemptDisposition::Submitted,
+                ExitAttemptDisposition::RetainAuthority,
                 Self::completed(decision, ExitAttemptOutcome::Submitted { submitted_order }),
             ),
             BoltV3SubmitAttemptState::PolicySkipped => (
-                ExitAttemptDisposition::NonSubmitted,
+                ExitAttemptDisposition::AbortPreSink,
                 Self::completed(
                     decision,
                     ExitAttemptOutcome::PolicySkipped { prepared_order },
                 ),
             ),
             BoltV3SubmitAttemptState::RouteValidationRejected(reason) => (
-                ExitAttemptDisposition::NonSubmitted,
+                ExitAttemptDisposition::AbortPreSink,
                 Self::rejected(
                     decision,
                     ExitAttemptOutcome::RouteRejected {
@@ -993,7 +953,7 @@ impl ExitAttemptExecution {
                 ),
             ),
             BoltV3SubmitAttemptState::IntentEvidenceRejected(reason) => (
-                ExitAttemptDisposition::NonSubmitted,
+                ExitAttemptDisposition::AbortPreSink,
                 Self::rejected(
                     decision,
                     ExitAttemptOutcome::IntentEvidenceRejected {
@@ -1006,7 +966,7 @@ impl ExitAttemptExecution {
                 ),
             ),
             BoltV3SubmitAttemptState::AdmissionRejected(reason) => (
-                ExitAttemptDisposition::NonSubmitted,
+                ExitAttemptDisposition::AbortPreSink,
                 Self::rejected(
                     decision,
                     ExitAttemptOutcome::AdmissionRejected {
@@ -1019,7 +979,7 @@ impl ExitAttemptExecution {
                 ),
             ),
             BoltV3SubmitAttemptState::PreSinkRejected(reason) => (
-                ExitAttemptDisposition::NonSubmitted,
+                ExitAttemptDisposition::AbortPreSink,
                 Self::rejected(
                     decision,
                     ExitAttemptOutcome::PreSinkRejected {
@@ -1031,16 +991,19 @@ impl ExitAttemptExecution {
                     ),
                 ),
             ),
-            BoltV3SubmitAttemptState::SinkRejected(reason) => (
-                ExitAttemptDisposition::NonSubmitted,
+            BoltV3SubmitAttemptState::SinkInvokedUnknown {
+                linkage,
+                diagnostic,
+            } => (
+                ExitAttemptDisposition::RetainAuthority,
                 Self::rejected(
                     decision,
-                    ExitAttemptOutcome::SinkRejected {
-                        prepared_order,
-                        reason: reason.clone(),
+                    ExitAttemptOutcome::SinkInvokedUnknown {
+                        submitted_order: linkage,
+                        diagnostic: diagnostic.clone(),
                     },
                     anyhow::anyhow!(
-                        "exit submit did not reach the venue: outcome=SinkRejected diagnostic={reason}"
+                        "exit submit returned after NT invocation with unknown lifecycle outcome: diagnostic={diagnostic}"
                     ),
                 ),
             ),
@@ -1149,9 +1112,7 @@ impl BinaryOracleEdgeTaker {
             active: ActiveMarketState::idle(),
             book_subscriptions: OutcomeBookSubscriptions::empty(),
             market_lifecycle: BTreeMap::new(),
-            exposure: ExposureState::Flat,
-            next_exit_attempt_generation: 0,
-            last_flat_terminal_entry_override: None,
+            exposure: ExposureOwner::new(),
             last_reported_exposure_occupancy: Cell::new(None),
             blocked_strategy_input_novelty: production_novelty_guard(
                 EvidenceStateOwner::BlockedStrategyInputSnapshot,
@@ -1463,7 +1424,8 @@ impl BinaryOracleEdgeTaker {
             self.enter_blind_settlement_recovery(error);
             return Ok(());
         }
-        self.exposure = ExposureState::Flat;
+        let cancellation = self.exposure.observe_settlement();
+        self.perform_entry_cancellation_effect(cancellation);
         self.sync_exposure_context_from_active();
         self.refresh_book_subscriptions_for_current_state();
         Ok(())
@@ -1506,19 +1468,9 @@ impl BinaryOracleEdgeTaker {
         detail: String,
         observed_at_ns: u64,
     ) -> Result<()> {
-        let origin = if position.lifecycle.interval_end_ms().is_none()
-            && self.managed_position().is_some_and(|managed| {
-                managed.origin == ManagedPositionOrigin::RecoveryBootstrap
-                    && managed.position.position_id == position.position_id
-            }) {
-            SettlementPositionOrigin::RecoveryBootstrap
-        } else {
-            SettlementPositionOrigin::Live
-        };
         let position_key = settlement_position_key(position, settlement_key);
         let Some(transition) = decide_settlement_booking_error(
             &position_key,
-            origin,
             reason,
             detail,
             observed_at_ns,
@@ -1608,7 +1560,8 @@ impl BinaryOracleEdgeTaker {
             position.instrument_id,
             eligibility.reason.label(),
         );
-        self.exposure = ExposureState::Flat;
+        let cancellation = self.exposure.observe_settlement();
+        self.perform_entry_cancellation_effect(cancellation);
         self.sync_exposure_context_from_active();
         self.refresh_book_subscriptions_for_current_state();
         let health_transition = BoltV3SettlementHealthTransition {
@@ -2135,12 +2088,8 @@ impl BinaryOracleEdgeTaker {
             .nt_open_position_projection(context.position_id)
             .ok()
             .flatten()?;
-        let origin = context.origin;
-        let pending_entry = context.pending_entry.clone();
         Some(ManagedPositionState {
             position: open_position_from_nt_projection(context, spec)?,
-            origin,
-            pending_entry,
         })
     }
 
@@ -2189,101 +2138,130 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn clear_managed_pending_entry_for_client_order(
+    fn entry_terminal_position_truth(
         &mut self,
-        client_order_id: ClientOrderId,
-        event_instrument_id: InstrumentId,
-    ) {
-        let matches_pending_entry = self
-            .exposure
-            .managed_position_context()
-            .and_then(|managed| managed.pending_entry.as_ref())
-            .is_some_and(|pending| pending.client_order_id == client_order_id);
-        if !matches_pending_entry {
-            return;
-        }
-        if !self.event_instrument_matches_held_exposure(event_instrument_id) {
-            return;
-        }
-        if let Some(managed) = self.exposure.managed_position_context_mut() {
-            managed.pending_entry = None;
-            self.prune_market_lifecycle_at_current_time();
-        }
-    }
+        pending: &PendingEntryState,
+        input: &PendingEntryTerminalEventInput,
+    ) -> (EntryTerminalPositionTruth, Option<Quantity>) {
+        let (order_truth, filled_quantity) = if input.terminal_proves_zero_fill {
+            (EntryTerminalOrderTruth::ZeroFill, None)
+        } else if !self.is_registered() {
+            (EntryTerminalOrderTruth::Unresolved, None)
+        } else {
+            let cached_order = self.cache().order(&input.client_order_id);
+            match cached_order {
+                Some(order)
+                    if order.instrument_id() == input.event_instrument_id
+                        && (order.is_closed()
+                            || order.leaves_qty().as_decimal() == Decimal::ZERO) =>
+                {
+                    let filled_quantity = order.filled_qty();
+                    let truth = if filled_quantity.as_decimal() == Decimal::ZERO {
+                        EntryTerminalOrderTruth::ZeroFill
+                    } else {
+                        EntryTerminalOrderTruth::Filled {
+                            position_id: order.position_id(),
+                        }
+                    };
+                    (truth, Some(filled_quantity))
+                }
+                Some(_) | None => (EntryTerminalOrderTruth::Unresolved, None),
+            }
+        };
 
-    fn clear_pending_entry_for_client_order(
-        &mut self,
-        client_order_id: ClientOrderId,
-        event_instrument_id: InstrumentId,
-    ) {
-        let matches_pending_entry = matches!(
-            &self.exposure,
-            ExposureState::PendingEntry(pending) if pending.client_order_id == client_order_id
+        if order_truth == EntryTerminalOrderTruth::Unresolved {
+            return (
+                EntryTerminalPositionTruth::Unresolved(
+                    EntryReconcileReason::AwaitingPositionMaterialization,
+                ),
+                filled_quantity,
+            );
+        }
+        if !self.is_registered() {
+            return (EntryTerminalPositionTruth::ZeroFill, filled_quantity);
+        }
+
+        let canonical_position = match self.nt_canonical_open_position_projection() {
+            Ok(position) => position,
+            Err(error) => {
+                log::error!(
+                    "binary_oracle_edge_taker retained exact entry identity after terminal position projection failed: strategy_id={} client_order_id={} error={error:#}",
+                    self.config.strategy_id,
+                    input.client_order_id,
+                );
+                return (
+                    EntryTerminalPositionTruth::Unresolved(
+                        EntryReconcileReason::AwaitingPositionMaterialization,
+                    ),
+                    filled_quantity,
+                );
+            }
+        };
+
+        let Some(spec) = canonical_position else {
+            let truth = match order_truth {
+                EntryTerminalOrderTruth::ZeroFill => EntryTerminalPositionTruth::ZeroFill,
+                EntryTerminalOrderTruth::Filled { .. } => {
+                    EntryTerminalPositionTruth::CanonicallyFlat
+                }
+                EntryTerminalOrderTruth::Unresolved => EntryTerminalPositionTruth::Unresolved(
+                    EntryReconcileReason::AwaitingPositionMaterialization,
+                ),
+            };
+            return (truth, filled_quantity);
+        };
+
+        let order_position_matches = matches!(
+            order_truth,
+            EntryTerminalOrderTruth::Filled {
+                position_id: Some(position_id),
+            } if position_id == spec.position_id
         );
-        if matches_pending_entry {
-            if !self.event_instrument_matches_held_exposure(event_instrument_id) {
-                return;
-            }
-            self.exposure = ExposureState::Flat;
-            self.prune_market_lifecycle_at_current_time();
-            return;
+        if !order_position_matches
+            || spec.instrument_id != pending.instrument_id
+            || !is_observed_open_side(spec.side)
+        {
+            return (
+                EntryTerminalPositionTruth::Unresolved(
+                    EntryReconcileReason::AwaitingPositionMaterialization,
+                ),
+                filled_quantity,
+            );
+        }
+        if self.quarantine_foreign_venue_event(spec.instrument_id) {
+            return (
+                EntryTerminalPositionTruth::Unresolved(
+                    EntryReconcileReason::AwaitingPositionMaterialization,
+                ),
+                filled_quantity,
+            );
         }
 
-        self.clear_managed_pending_entry_for_client_order(client_order_id, event_instrument_id);
-    }
-
-    fn matching_pending_entry_snapshot(
-        &self,
-        client_order_id: ClientOrderId,
-        event_instrument_id: InstrumentId,
-    ) -> Option<PendingEntryState> {
-        let pending = self.pending_entry()?.clone();
-        (pending.client_order_id == client_order_id && pending.instrument_id == event_instrument_id)
-            .then_some(pending)
-    }
-
-    fn matching_entry_reconcile_snapshot(
-        &self,
-        client_order_id: ClientOrderId,
-        event_instrument_id: InstrumentId,
-    ) -> Option<(PendingEntryState, bool)> {
-        match &self.exposure {
-            ExposureState::EntryReconcilePending { pending, reason }
-                if pending.client_order_id == client_order_id
-                    && pending.instrument_id == event_instrument_id =>
-            {
-                Some((
-                    pending.clone(),
-                    !matches!(reason, EntryReconcileReason::UnresolvedAtSelectionBoundary),
-                ))
-            }
-            _ => None,
-        }
-    }
-
-    fn remember_flat_terminal_entry_override(&mut self, pending: &PendingEntryState) {
-        self.last_flat_terminal_entry_override = Some(FlatTerminalEntryOverride {
-            client_order_id: pending.client_order_id,
-            market_id: pending.lifecycle.market_id_owned(),
-            instrument_id: pending.instrument_id,
-        });
-    }
-
-    fn take_position_truth_rematerialization_override(
-        &mut self,
-        instrument_id: InstrumentId,
-        origin: ManagedPositionOrigin,
-    ) -> Option<FlatTerminalEntryOverride> {
-        if origin != ManagedPositionOrigin::RecoveryBootstrap {
-            self.last_flat_terminal_entry_override = None;
-            return None;
-        }
-        if !matches!(self.exposure, ExposureState::Flat) {
-            return None;
-        }
-        self.last_flat_terminal_entry_override
-            .take()
-            .filter(|terminal_override| terminal_override.instrument_id == instrument_id)
+        let preserved = self
+            .exposure
+            .tracked_position_context()
+            .filter(|position| {
+                position.position_id == spec.position_id
+                    && position.instrument_id == spec.instrument_id
+            })
+            .cloned();
+        let observed =
+            self.build_open_position_state(preserved.as_ref(), Some(pending), spec, true);
+        let supported = self
+            .configured_position_contract()
+            .ok()
+            .is_some_and(|contract| {
+                supports_strategy_managed_position(spec.entry_order_side, spec.side, contract)
+            });
+        let truth = if supported {
+            EntryTerminalPositionTruth::Supported(managed_position_context(observed))
+        } else {
+            EntryTerminalPositionTruth::Unsupported(UnsupportedObservedState {
+                context: managed_position_context(observed),
+                reason: UnsupportedObservedReason::LiveUnsupportedContract,
+            })
+        };
+        (truth, filled_quantity)
     }
 
     fn record_pending_entry_terminal_evidence(&self, input: PendingEntryTerminalEvidenceInput) {
@@ -2305,59 +2283,40 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn resolve_pending_entry_terminal_event(&mut self, input: PendingEntryTerminalEventInput) {
-        if let Some((pending, fill_observed)) =
-            self.matching_entry_reconcile_snapshot(input.client_order_id, input.event_instrument_id)
-        {
-            if fill_observed && !input.terminal_proves_zero_fill {
-                self.record_pending_entry_terminal_evidence(PendingEntryTerminalEvidenceInput {
-                    pending,
-                    transition: input.transition,
-                    outcome: OrderLifecycleOutcome::EntryReconcilePending,
-                    source: input.source,
-                    raw_reason_text: Some(
-                        ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON.to_string(),
-                    ),
-                    filled_quantity: None,
-                    ts_event_ns: input.ts_event_ns,
-                });
-                return;
-            }
-
-            // Zero-fill terminal feedback closes this accepted-entry loop. If later
-            // provider-allowance position events contradict it, materialization re-manages
-            // from that position truth instead of trusting the old pending order.
-            self.remember_flat_terminal_entry_override(&pending);
-            self.exposure = ExposureState::Flat;
-            self.prune_market_lifecycle_at_current_time();
-            self.record_pending_entry_terminal_evidence(PendingEntryTerminalEvidenceInput {
-                pending,
-                transition: input.transition,
-                outcome: OrderLifecycleOutcome::Flat,
-                source: input.source,
-                raw_reason_text: input.raw_reason_text,
-                filled_quantity: None,
-                ts_event_ns: input.ts_event_ns,
-            });
+        let Some(pending) = self
+            .pending_entry()
+            .filter(|pending| pending.client_order_id == input.client_order_id)
+            .cloned()
+        else {
+            return;
+        };
+        if !self.event_instrument_matches_held_exposure(input.event_instrument_id) {
             return;
         }
-
-        let pending_entry =
-            self.matching_pending_entry_snapshot(input.client_order_id, input.event_instrument_id);
-        self.clear_pending_entry_for_client_order(input.client_order_id, input.event_instrument_id);
-        if let Some(pending_entry) = pending_entry {
-            if matches!(self.exposure, ExposureState::Flat) {
-                self.remember_flat_terminal_entry_override(&pending_entry);
-            }
-            self.record_pending_entry_terminal_evidence(PendingEntryTerminalEvidenceInput {
-                pending: pending_entry,
-                transition: input.transition,
-                outcome: Self::lifecycle_outcome_for_exposure(&self.exposure),
-                source: input.source,
-                raw_reason_text: input.raw_reason_text,
-                filled_quantity: None,
-                ts_event_ns: input.ts_event_ns,
-            });
+        let (truth, filled_quantity) = self.entry_terminal_position_truth(&pending, &input);
+        let unresolved = matches!(&truth, EntryTerminalPositionTruth::Unresolved(_));
+        let retired = self
+            .exposure
+            .observe_entry_terminal(input.client_order_id, truth)
+            .is_some();
+        if retired {
+            self.prune_market_lifecycle_at_current_time();
         }
+        self.sync_exposure_context_from_active();
+        self.refresh_book_subscriptions_for_current_state();
+        self.record_pending_entry_terminal_evidence(PendingEntryTerminalEvidenceInput {
+            pending,
+            transition: input.transition,
+            outcome: Self::lifecycle_outcome_for_exposure(&self.exposure),
+            source: input.source,
+            raw_reason_text: if unresolved && input.raw_reason_text.is_none() {
+                Some(ENTRY_RECONCILE_FILL_OBSERVED_TERMINAL_REASON.to_string())
+            } else {
+                input.raw_reason_text
+            },
+            filled_quantity,
+            ts_event_ns: input.ts_event_ns,
+        });
     }
 
     fn prune_market_lifecycle_at_current_time(&mut self) {
@@ -2373,20 +2332,27 @@ impl BinaryOracleEdgeTaker {
         reason: UnsupportedObservedReason,
     ) {
         let pending_entry = self.pending_entry().cloned();
-        let origin = if pending_entry.is_some() {
-            ManagedPositionOrigin::StrategyEntry
-        } else {
-            ManagedPositionOrigin::RecoveryBootstrap
-        };
-        self.exposure = ExposureState::UnsupportedObserved(UnsupportedObservedState {
-            context: managed_position_context(observed, origin, pending_entry),
+        let entry_order_side = observed.entry_order_side;
+        let side = observed.side;
+        let unsupported = UnsupportedObservedState {
+            context: managed_position_context(observed),
             reason,
-        });
+        };
+        let keep_entry_remainder = pending_entry
+            .as_ref()
+            .is_some_and(|pending| self.entry_order_may_remain_working(&pending.client_order_id));
+        self.exposure.set_unsupported_observed(
+            unsupported,
+            keep_entry_remainder,
+            BlindRecoveryReason::InvalidLivePosition {
+                entry_order_side,
+                side: Some(side),
+            },
+        );
         self.refresh_book_subscriptions_for_current_state();
     }
 
     fn bootstrap_recovery_from_cache(&mut self) {
-        let observed_at_ns = self.clock().timestamp_ns().as_u64();
         // Scope recovery to the configured execution venue. The shared NT cache can hold positions
         // from every registered execution client; a foreign-venue position must never be accepted
         // into Managed state because the exit path would build/submit an order for it with no
@@ -2442,21 +2408,8 @@ impl BinaryOracleEdgeTaker {
         let (cached_positions, settlement_scope_positions) = match cached_recovery {
             Ok(cached_recovery) => cached_recovery,
             Err(_) => {
-                let cache_probe_decision = decide_bootstrap_recovery_from_cache(
-                    false,
-                    None,
-                    usize::default(),
-                    observed_at_ns,
-                    &self.settlement_booking_error_keys,
-                    &self.terminal_settlement_keys,
-                );
-                debug_assert!(matches!(
-                    cache_probe_decision,
-                    SettlementRecoveryEntryDecision::EnterBlindCacheProbe
-                ));
-                self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
-                    reason: BlindRecoveryReason::CacheProbeFailed,
-                });
+                self.exposure
+                    .enter_blind_recovery(BlindRecoveryReason::CacheProbeFailed);
                 log::warn!(
                     "binary_oracle_edge_taker recovery probe could not access cache: strategy_id={} entering fail-closed recovery mode",
                     self.config.strategy_id
@@ -2469,117 +2422,23 @@ impl BinaryOracleEdgeTaker {
             return;
         }
 
-        let open_position_count = cached_positions.len();
-        if let SettlementRecoveryEntryDecision::Flat = decide_bootstrap_recovery_from_cache(
-            true,
-            None,
-            open_position_count,
-            observed_at_ns,
-            &self.settlement_booking_error_keys,
-            &self.terminal_settlement_keys,
-        ) {
-            self.exposure = ExposureState::Flat;
-            return;
-        }
-
-        if let SettlementRecoveryEntryDecision::EnterBlindMultipleOpenPositions { count } =
-            decide_bootstrap_recovery_from_cache(
-                true,
-                None,
-                open_position_count,
-                observed_at_ns,
-                &self.settlement_booking_error_keys,
-                &self.terminal_settlement_keys,
-            )
-        {
-            self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::MultipleOpenPositions { count },
-            });
-            log::error!(
-                "binary_oracle_edge_taker recovery bootstrap found multiple open positions: strategy_id={} position_count={} leaving recovery mode blind to position bootstrap",
-                self.config.strategy_id,
-                count,
-            );
-            return;
-        }
-
-        let open_position = cached_positions
-            .into_iter()
-            .next()
-            .expect("checked non-empty recovery position set");
-        // Mirror live terminal booking-error: recovered open positions whose
-        // settlement key already has a booking-error record release exposure
-        // rather than parking Managed forever.
-        if let Ok(settlement_key) = settlement_key_for_position(&open_position) {
-            if self.settled_position_keys.contains(&settlement_key) {
-                self.exposure = ExposureState::Flat;
-                self.sync_exposure_context_from_active();
-                self.refresh_book_subscriptions_for_current_state();
-                return;
+        match cached_positions.as_slice() {
+            [] => self.exposure.observe_clean_start(),
+            [open_position] => {
+                let reason = self.bootstrapped_recovery_reason(&open_position, execution_venue);
+                self.exposure.enter_blind_recovery(reason);
             }
-            let position_key = settlement_position_key(&open_position, settlement_key.clone());
-            let decision = decide_bootstrap_recovery_from_cache(
-                true,
-                Some(&position_key),
-                open_position_count,
-                observed_at_ns,
-                &self.settlement_booking_error_keys,
-                &self.terminal_settlement_keys,
-            );
-            let SettlementRecoveryEntryDecision::ApplyPriorBookingError {
-                eligibility,
-                canonical_evidence_already_durable,
-            } = decision
-            else {
-                if let SettlementRecoveryEntryDecision::EnterBlindSettlementRecovery {
-                    detail,
-                    ..
-                } = decision
-                {
-                    self.enter_blind_settlement_recovery(anyhow::anyhow!(detail));
-                    return;
-                }
-                let exposure = self.bootstrapped_exposure_for(open_position, execution_venue);
-                self.exposure = exposure;
-                self.adopt_restart_open_exit_order_from_cache(execution_venue, strategy_id);
-                return;
-            };
-            if !canonical_evidence_already_durable {
-                self.enter_blind_settlement_recovery(anyhow::anyhow!(
-                    "booking-terminal recovery key `{settlement_key}` lacks canonical terminal evidence"
-                ));
-                return;
+            open_positions => {
+                let count = open_positions.len();
+                self.exposure
+                    .enter_blind_recovery(BlindRecoveryReason::MultipleOpenPositions { count });
+                log::error!(
+                    "binary_oracle_edge_taker recovery bootstrap found multiple open positions: strategy_id={} position_count={} leaving recovery mode blind to position bootstrap",
+                    self.config.strategy_id,
+                    count,
+                );
             }
-            let Some(RecoveredSettlementOutcome::BookingTerminal(recovered_terminal)) = self
-                .context
-                .settlement_recovery()
-                .and_then(|recovery| recovery.outcomes().get(&settlement_key))
-            else {
-                self.enter_blind_settlement_recovery(anyhow::anyhow!(
-                    "booking-terminal recovery key `{settlement_key}` lacks typed terminal evidence"
-                ));
-                return;
-            };
-            if let Err(error) = self.apply_terminal_settlement_transition(
-                &open_position,
-                eligibility,
-                SettlementTerminalKeyDelta {
-                    settlement_key: settlement_key.clone(),
-                    insert_booking_error_key: true,
-                    insert_terminal_key: true,
-                    remove_close_fetch_attempt: true,
-                },
-                recovered_terminal.booking_error.clone(),
-                format!("prior_booking_error_key_on_restart settlement_key={settlement_key}"),
-                TerminalEvidenceState::CanonicalAlreadyDurable,
-            ) {
-                self.enter_blind_settlement_recovery(error);
-            }
-            return;
         }
-        let exposure = self.bootstrapped_exposure_for(open_position, execution_venue);
-        self.exposure = exposure;
-        self.adopt_restart_open_exit_order_from_cache(execution_venue, strategy_id);
     }
 
     fn recover_settlement_bootstrap_from_scope(
@@ -2650,21 +2509,12 @@ impl BinaryOracleEdgeTaker {
 
     fn enter_blind_settlement_recovery(&mut self, error: anyhow::Error) {
         let decision = decide_blind_settlement_recovery(&error);
-        let SettlementRecoveryEntryDecision::EnterBlindSettlementRecovery {
-            transition,
-            outcome,
-            ..
-        } = decision
-        else {
-            return;
-        };
         let position = self.settlement_position_candidate();
-        self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
-            reason: BlindRecoveryReason::SettlementEvidenceRecoveryFailed,
-        });
+        self.exposure
+            .enter_blind_recovery(BlindRecoveryReason::SettlementEvidenceRecoveryFailed);
         self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-            transition,
-            outcome,
+            transition: decision.transition,
+            outcome: decision.outcome,
             source: ORDER_LIFECYCLE_SOURCE_SETTLEMENT_RECOVERY,
             market_id: position
                 .as_ref()
@@ -2685,373 +2535,43 @@ impl BinaryOracleEdgeTaker {
         );
     }
 
-    fn recover_exit_authority_state(
+    fn bootstrapped_recovery_reason(
         &self,
-        position: Option<ManagedPositionContext>,
-        instrument_id: InstrumentId,
-        position_id: PositionId,
-        pending_exit: PendingExitState,
-        cause: BoltV3RecoveredExitCause,
-    ) -> Result<ExitPendingState> {
-        let order = self
-            .cache()
-            .order(&pending_exit.client_order_id)
-            .with_context(|| {
-                format!(
-                    "recovered exit order is missing from NT cache: client_order_id={}",
-                    pending_exit.client_order_id
-                )
-            })?;
-        anyhow::ensure!(
-            order.instrument_id() == instrument_id,
-            "recovered exit order instrument does not match its position"
-        );
-        if let Some(order_position_id) = order.position_id() {
-            anyhow::ensure!(
-                order_position_id == position_id,
-                "recovered exit order position identity mismatch"
-            );
-        }
-        let position_authority = self
-            .context
-            .position_authority()
-            .ok_or_else(|| anyhow::anyhow!("recovered exit requires position authority"))?;
-        let sealed_position_authority =
-            position_authority.acquire_canonical_position(position_id, instrument_id)?;
-        let authority = BoltV3ExitOrderAuthorityHandle::recovered(
-            cause,
-            pending_exit.client_order_id,
-            instrument_id,
-            position_id,
-            &order,
-            sealed_position_authority,
-        )?;
-        authority.refresh_recovered_baseline(position_authority)?;
-        Ok(ExitPendingState {
-            position,
-            pending_exit,
-            authority,
-        })
-    }
-
-    fn acquire_exit_authority_flat_recovery(
-        &self,
-        instrument_id: InstrumentId,
-        position_id: PositionId,
-    ) -> Result<BoltV3ExitAuthorityRecoveryHandle> {
-        let capability = self
-            .context
-            .position_authority()
-            .ok_or_else(|| anyhow::anyhow!("exit recovery requires position authority"))?;
-        BoltV3ExitAuthorityRecoveryHandle::acquire(capability, instrument_id, position_id)
-    }
-
-    fn adopt_restart_open_exit_order_from_cache(
-        &mut self,
+        open_position: &OpenPositionState,
         execution_venue: Venue,
-        strategy_id: StrategyId,
-    ) {
-        let Some(managed_position) = self.managed_position() else {
-            return;
-        };
-        if managed_position.origin != ManagedPositionOrigin::RecoveryBootstrap {
-            return;
-        }
-        let Ok(contract) = self.configured_position_contract() else {
-            return;
-        };
-        let position = managed_position.position.clone();
-        let open_exit_order_attribution =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let cache = self.cache();
-                cache
-                    .orders_open(
-                        Some(&execution_venue),
-                        Some(&position.instrument_id),
-                        Some(&strategy_id),
-                        None,
-                        Some(contract.exit_order_side),
-                    )
-                    .into_iter()
-                    .map(|order| {
-                        let client_order_id = order.client_order_id();
-                        let attributed_to_position =
-                            cache.position_id(&client_order_id) == Some(position.position_id);
-                        (order.clone(), attributed_to_position)
-                    })
-                    .collect::<Vec<_>>()
-            }));
-        let open_exit_order_attribution = match open_exit_order_attribution {
-            Ok(open_exit_order_attribution) => open_exit_order_attribution,
-            Err(_) => {
-                self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
-                    reason: BlindRecoveryReason::CacheProbeFailed,
-                });
-                self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                    transition: OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
-                    outcome: OrderLifecycleOutcome::BlindRecovery,
-                    source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
-                    market_id: position.lifecycle.market_id_owned(),
-                    instrument_id: Some(position.instrument_id),
-                    position_id: Some(position.position_id),
-                    client_order_id: None,
-                    prior_client_order_id: None,
-                    raw_reason_text: Some("cache_probe_failed".to_string()),
-                    order_side: Some(contract.exit_order_side),
-                    filled_quantity: None,
-                    residual_quantity: Some(position.quantity),
-                    ts_event_ns: None,
-                });
-                return;
-            }
-        };
-        let unattributed_open_exit_count = open_exit_order_attribution
-            .iter()
-            .filter(|(_, attributed_to_position)| !*attributed_to_position)
-            .count();
-        let attributed_open_exit_orders = open_exit_order_attribution
-            .into_iter()
-            .filter_map(|(order, attributed_to_position)| attributed_to_position.then_some(order))
-            .collect::<Vec<_>>();
-        if unattributed_open_exit_count > 0 {
-            self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::UnattributedRestartOpenExitOrder {
-                    instrument_id: position.instrument_id,
-                },
-            });
-            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                transition: OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
-                outcome: OrderLifecycleOutcome::BlindRecovery,
-                source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
-                market_id: position.lifecycle.market_id_owned(),
-                instrument_id: Some(position.instrument_id),
-                position_id: Some(position.position_id),
-                client_order_id: None,
-                prior_client_order_id: None,
-                raw_reason_text: Some("unattributed_open_exit_order".to_string()),
-                order_side: Some(contract.exit_order_side),
-                filled_quantity: None,
-                residual_quantity: Some(position.quantity),
-                ts_event_ns: None,
-            });
-            return;
-        }
-        if attributed_open_exit_orders.is_empty() {
-            return;
-        }
-        if attributed_open_exit_orders.len() > 1 {
-            self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::AmbiguousRestartOpenExitOrders {
-                    instrument_id: position.instrument_id,
-                    count: attributed_open_exit_orders.len(),
-                },
-            });
-            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                transition: OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
-                outcome: OrderLifecycleOutcome::BlindRecovery,
-                source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
-                market_id: position.lifecycle.market_id_owned(),
-                instrument_id: Some(position.instrument_id),
-                position_id: Some(position.position_id),
-                client_order_id: None,
-                prior_client_order_id: None,
-                raw_reason_text: Some("ambiguous_open_exit_orders".to_string()),
-                order_side: Some(contract.exit_order_side),
-                filled_quantity: None,
-                residual_quantity: Some(position.quantity),
-                ts_event_ns: None,
-            });
-            return;
-        }
-        let order = attributed_open_exit_orders
-            .into_iter()
-            .next()
-            .expect("checked exactly one attributed open exit order");
-        let client_order_id = order.client_order_id();
-        let recovered_position = managed_position_context(
-            position.clone(),
-            managed_position.origin,
-            managed_position.pending_entry,
-        );
-        let pending_exit = PendingExitState {
-            client_order_id,
-            submitted_at_ms: None,
-            market_id: position.lifecycle.market_id_owned(),
-            position_id: Some(position.position_id),
-        };
-        let recovered = self.recover_exit_authority_state(
-            Some(recovered_position.clone()),
-            position.instrument_id,
-            position.position_id,
-            pending_exit.clone(),
-            BoltV3RecoveredExitCause::StartupAdoption,
-        );
-        let recovered = match recovered {
-            Ok(recovered) => recovered,
-            Err(error) => {
-                let now_ns = self.clock().timestamp_ns().as_u64();
-                self.enter_exit_authority_recovery_hold(
-                    Some(recovered_position),
-                    pending_exit,
-                    position.instrument_id,
-                    ExitAuthorityRecoveryPlan::Reconstruct(
-                        BoltV3RecoveredExitCause::StartupAdoption,
-                    ),
-                    now_ns,
-                );
-                self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                    transition: OrderLifecycleTransition::RestartOpenOrderRecoveryBlocked,
-                    outcome: OrderLifecycleOutcome::ExitPending,
-                    source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
-                    market_id: position.lifecycle.market_id_owned(),
-                    instrument_id: Some(position.instrument_id),
-                    position_id: Some(position.position_id),
-                    client_order_id: Some(client_order_id),
-                    prior_client_order_id: None,
-                    raw_reason_text: Some("exit_authority_recovery_hold".to_string()),
-                    order_side: Some(contract.exit_order_side),
-                    filled_quantity: Some(order.filled_qty()),
-                    residual_quantity: Some(position.quantity),
-                    ts_event_ns: None,
-                });
-                log::error!(
-                    "binary_oracle_edge_taker restart exit authority entered recovery hold: strategy_id={} client_order_id={} error={error:#}",
-                    self.config.strategy_id,
-                    client_order_id,
-                );
-                return;
-            }
-        };
-        self.exposure = ExposureState::ExitPending(recovered);
-        self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-            transition: OrderLifecycleTransition::RestartOpenOrderAdopted,
-            outcome: OrderLifecycleOutcome::ExitPending,
-            source: ORDER_LIFECYCLE_SOURCE_RESTART_BOOTSTRAP,
-            market_id: position.lifecycle.market_id_owned(),
-            instrument_id: Some(position.instrument_id),
-            position_id: Some(position.position_id),
-            client_order_id: Some(client_order_id),
-            prior_client_order_id: None,
-            raw_reason_text: None,
-            order_side: Some(contract.exit_order_side),
-            filled_quantity: None,
-            residual_quantity: Some(position.quantity),
-            ts_event_ns: None,
-        });
-    }
-
-    /// Classify a single recovered open position into the exposure state to adopt.
-    ///
-    /// The recovery probe already scopes the cache read to the execution venue, so a
-    /// foreign-venue position should never reach here in production. This is the single
-    /// fail-closed adoption decision and re-asserts the venue invariant structurally
-    /// (defense in depth) BEFORE any contract check: the exit path would otherwise
-    /// build/submit an order for a wrong-venue position with no further venue gate.
-    /// A foreign-venue position is quarantined to blind recovery and
-    /// is never managed.
-    fn bootstrapped_exposure_for(
-        &self,
-        open_position: OpenPositionState,
-        execution_venue: Venue,
-    ) -> ExposureState {
-        if open_position.instrument_id.venue != execution_venue {
-            log::error!(
-                "binary_oracle_edge_taker recovery bootstrap quarantined foreign-venue cached position: strategy_id={} position_id={} instrument_id={} instrument_venue={} execution_venue={}",
-                self.config.strategy_id,
-                open_position.position_id,
-                open_position.instrument_id,
-                open_position.instrument_id.venue,
+    ) -> BlindRecoveryReason {
+        let reason = if open_position.instrument_id.venue != execution_venue {
+            BlindRecoveryReason::ForeignVenuePosition {
+                instrument_venue: open_position.instrument_id.venue,
                 execution_venue,
-            );
-            return ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::ForeignVenuePosition {
-                    instrument_venue: open_position.instrument_id.venue,
-                    execution_venue,
-                },
-            });
-        }
-        if self
-            .configured_position_contract()
-            .ok()
-            .is_some_and(|contract| {
-                supports_strategy_managed_position(
-                    open_position.entry_order_side,
-                    open_position.side,
-                    contract,
-                )
-            })
-        {
-            log::warn!(
-                "binary_oracle_edge_taker recovery bootstrap loaded cached open position: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?} quantity={} avg_px_open={}",
-                self.config.strategy_id,
-                open_position.position_id,
-                open_position.instrument_id,
-                open_position.entry_order_side,
-                open_position.side,
-                open_position.quantity,
-                open_position.avg_px_open,
-            );
-            ExposureState::Managed(managed_position_context(
-                open_position,
-                ManagedPositionOrigin::RecoveryBootstrap,
-                None,
-            ))
-        } else if is_observed_open_side(open_position.side) {
-            log::error!(
-                "binary_oracle_edge_taker recovery bootstrap quarantined unsupported cached position: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?} quantity={} avg_px_open={}",
-                self.config.strategy_id,
-                open_position.position_id,
-                open_position.instrument_id,
-                open_position.entry_order_side,
-                open_position.side,
-                open_position.quantity,
-                open_position.avg_px_open,
-            );
-            ExposureState::UnsupportedObserved(UnsupportedObservedState {
-                context: managed_position_context(
-                    open_position,
-                    ManagedPositionOrigin::RecoveryBootstrap,
-                    None,
-                ),
-                reason: UnsupportedObservedReason::BootstrappedUnsupportedContract,
-            })
+            }
+        } else if !is_observed_open_side(open_position.side) {
+            BlindRecoveryReason::InvalidBootstrappedPosition {
+                entry_order_side: open_position.entry_order_side,
+                side: open_position.side,
+            }
         } else {
-            log::error!(
-                "binary_oracle_edge_taker recovery bootstrap received invalid cached position side: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?}",
-                self.config.strategy_id,
-                open_position.position_id,
-                open_position.instrument_id,
-                open_position.entry_order_side,
-                open_position.side,
-            );
-            ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::InvalidBootstrappedPosition {
-                    entry_order_side: open_position.entry_order_side,
-                    side: open_position.side,
-                },
-            })
-        }
+            BlindRecoveryReason::RestartOpenPosition {
+                instrument_id: open_position.instrument_id,
+                position_id: open_position.position_id,
+            }
+        };
+        log::error!(
+            "binary_oracle_edge_taker restart observed an open position without current-process authority: strategy_id={} position_id={} instrument_id={} entering blind recovery",
+            self.config.strategy_id,
+            open_position.position_id,
+            open_position.instrument_id,
+        );
+        reason
     }
 
+    #[cfg(test)]
     fn exposure_occupancy(&self) -> Option<ExposureOccupancy> {
         self.exposure.occupancy()
     }
 
-    fn lifecycle_outcome_for_exposure(exposure: &ExposureState) -> OrderLifecycleOutcome {
-        match exposure {
-            ExposureState::Flat => OrderLifecycleOutcome::Flat,
-            ExposureState::PendingEntry(_) => OrderLifecycleOutcome::PendingEntry,
-            ExposureState::EntryReconcilePending { .. } => {
-                OrderLifecycleOutcome::EntryReconcilePending
-            }
-            ExposureState::Managed(_) => OrderLifecycleOutcome::Managed,
-            ExposureState::ExitAttempting(_)
-            | ExposureState::ExitPending(_)
-            | ExposureState::TerminalExitAwaitingPosition(_)
-            | ExposureState::ExitAuthorityRecoveryHold(_) => OrderLifecycleOutcome::ExitPending,
-            ExposureState::UnsupportedObserved(_) => OrderLifecycleOutcome::UnsupportedObserved,
-            ExposureState::BlindRecovery(_) => OrderLifecycleOutcome::BlindRecovery,
-        }
+    fn lifecycle_outcome_for_exposure(exposure: &ExposureOwner) -> OrderLifecycleOutcome {
+        exposure.lifecycle_outcome()
     }
 
     fn record_order_lifecycle_evidence(&self, input: OrderLifecycleEvidenceInput) {
@@ -3111,15 +2631,8 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn clear_pending_entry_state(&mut self) {
-        if matches!(self.exposure, ExposureState::PendingEntry(_)) {
-            self.exposure = ExposureState::Flat;
-            self.prune_market_lifecycle_at_current_time();
-        }
-    }
-
     fn reclassify_unreachable_pending_entry_at_selection_boundary(&mut self, now_ms: u64) {
-        let ExposureState::PendingEntry(pending) = &self.exposure else {
+        let Some(pending) = self.exposure.pending_entry_arm().cloned() else {
             return;
         };
         if self.active.books.up.instrument_id == Some(pending.instrument_id)
@@ -3127,10 +2640,11 @@ impl BinaryOracleEdgeTaker {
         {
             return;
         }
-        let pending = pending.clone();
-        self.exposure = ExposureState::EntryReconcilePending {
-            pending: pending.clone(),
-            reason: EntryReconcileReason::UnresolvedAtSelectionBoundary,
+        let Some(pending) = self
+            .exposure
+            .reclassify_pending_entry(EntryReconcileReason::UnresolvedAtSelectionBoundary)
+        else {
+            return;
         };
         self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
             transition: OrderLifecycleTransition::BoundaryReclassification,
@@ -3155,20 +2669,6 @@ impl BinaryOracleEdgeTaker {
         );
     }
 
-    fn enforce_one_position_invariant(&self) -> Result<()> {
-        let Some(occupancy) = self.exposure_occupancy() else {
-            return Ok(());
-        };
-
-        let message = format!("one-position invariant occupied by {occupancy:?}");
-        if cfg!(debug_assertions) {
-            panic!("{message}");
-        }
-
-        self.report_one_position_invariant_violation(occupancy);
-        anyhow::bail!("{message}");
-    }
-
     fn report_one_position_invariant_violation(&self, occupancy: ExposureOccupancy) {
         if self.last_reported_exposure_occupancy.get() == Some(occupancy) {
             return;
@@ -3176,6 +2676,17 @@ impl BinaryOracleEdgeTaker {
         self.last_reported_exposure_occupancy.set(Some(occupancy));
         let message = format!("one-position invariant occupied by {occupancy:?}");
         log::error!("{message}");
+    }
+
+    fn push_occupancy_entry_block(
+        &self,
+        blocked_by: &mut Vec<EntryBlockReason>,
+        occupancy: ExposureOccupancy,
+    ) {
+        if should_report_one_position_gate_violation(occupancy) {
+            self.report_one_position_invariant_violation(occupancy);
+        }
+        blocked_by.push(EntryBlockReason::OnePositionInvariant(occupancy));
     }
 
     fn market_in_cooldown(&self, market_id: &str, now_ms: u64) -> bool {
@@ -3288,8 +2799,12 @@ impl BinaryOracleEdgeTaker {
         if !self.active.warmup_complete() {
             blocked_by.push(EntryBlockReason::WarmupIncomplete);
         }
-        if self.exposure.is_recovering() {
-            blocked_by.push(EntryBlockReason::RecoveryMode);
+        let exposure_entry_gate = self.exposure.entry_gate();
+        match exposure_entry_gate {
+            ExposureEntryGate::Recovering(_) => {
+                blocked_by.push(EntryBlockReason::RecoveryMode);
+            }
+            ExposureEntryGate::Open | ExposureEntryGate::Occupied(_) => {}
         }
         if self
             .current_market_id()
@@ -3311,13 +2826,11 @@ impl BinaryOracleEdgeTaker {
         {
             blocked_by.push(EntryBlockReason::ForcedFlat(reason));
         }
-        if let Some(occupancy) = self.exposure_occupancy() {
-            if should_report_one_position_gate_violation(occupancy) {
-                self.report_one_position_invariant_violation(occupancy);
+        match exposure_entry_gate {
+            ExposureEntryGate::Open => self.last_reported_exposure_occupancy.set(None),
+            ExposureEntryGate::Occupied(occupancy) | ExposureEntryGate::Recovering(occupancy) => {
+                self.push_occupancy_entry_block(&mut blocked_by, occupancy);
             }
-            blocked_by.push(EntryBlockReason::OnePositionInvariant(occupancy));
-        } else {
-            self.last_reported_exposure_occupancy.set(None);
         }
 
         EntryGateDecision { blocked_by }
@@ -3996,7 +3509,7 @@ impl BinaryOracleEdgeTaker {
         {
             // An entry skip is declining new risk: a telemetry-write failure
             // must never abort the strategy callback (which would skip
-            // downstream safety logic such as enforce_one_position_invariant).
+            // downstream cancellation or exit-risk reduction logic).
             // Surface the lost write at the highest non-panicking severity and
             // let the skip path proceed.
             log::error!(
@@ -4528,8 +4041,8 @@ impl BinaryOracleEdgeTaker {
     /// foreign-venue event to blind recovery and signal the caller to stop
     /// before any `Managed`/`ExitPending` transition. Returns `true` when the
     /// event was quarantined (the caller must return early), `false` when the
-    /// event is on the execution venue. Mirrors the recovery-path guard in
-    /// `bootstrapped_exposure_for` (single `ForeignVenuePosition` classification).
+    /// event is on the execution venue. Both startup and live observations use
+    /// the same `ForeignVenuePosition` blind-recovery classification.
     fn quarantine_foreign_venue_event(&mut self, instrument_id: InstrumentId) -> bool {
         let execution_venue = self.context.execution_venue();
         if instrument_id.venue == execution_venue {
@@ -4542,12 +4055,11 @@ impl BinaryOracleEdgeTaker {
             instrument_id.venue,
             execution_venue,
         );
-        self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
-            reason: BlindRecoveryReason::ForeignVenuePosition {
+        self.exposure
+            .enter_blind_recovery(BlindRecoveryReason::ForeignVenuePosition {
                 instrument_venue: instrument_id.venue,
                 execution_venue,
-            },
-        });
+            });
         self.refresh_book_subscriptions_for_current_state();
         true
     }
@@ -4629,63 +4141,60 @@ impl BinaryOracleEdgeTaker {
             quantity,
             avg_px_open,
         } = spec;
-        // Venue invariant (defense in depth): a live position event must be on the
-        // execution venue, or it would be adopted into Managed and the exit path
-        // would submit against a foreign instrument_id. Quarantine before any
-        // Managed/ExitPending transition via the shared venue-adoption guard.
         if self.quarantine_foreign_venue_event(instrument_id) {
             return;
         }
         let preserved = self
             .exposure
-            .managed_position_context()
-            .filter(|managed| {
-                managed.position_id == position_id && managed.instrument_id == instrument_id
+            .tracked_position_context()
+            .filter(|position| {
+                position.position_id == position_id && position.instrument_id == instrument_id
             })
             .cloned();
         let pending_context = self.pending_entry_context_for(instrument_id);
-        let pending_matches = pending_context.is_some();
         let observed_open_side = is_observed_open_side(side);
-        let tradable_position_supported =
-            self.configured_position_contract()
-                .ok()
-                .is_some_and(|contract| {
-                    supports_strategy_managed_position(entry_order_side, side, contract)
-                });
+        let supported = self
+            .configured_position_contract()
+            .ok()
+            .is_some_and(|contract| {
+                supports_strategy_managed_position(entry_order_side, side, contract)
+            });
 
         if !observed_open_side {
-            if let Some(pending) = pending_context.clone() {
-                let market_id = pending.lifecycle.market_id_owned();
-                let client_order_id = pending.client_order_id;
-                self.exposure = ExposureState::EntryReconcilePending {
-                    pending,
-                    reason: EntryReconcileReason::InvalidObservedPosition {
-                        entry_order_side,
-                        side,
-                    },
-                };
-                self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                    transition: OrderLifecycleTransition::EntryReconcilePending,
-                    outcome: OrderLifecycleOutcome::EntryReconcilePending,
-                    source,
-                    market_id,
-                    instrument_id: Some(instrument_id),
-                    position_id: Some(position_id),
-                    client_order_id: Some(client_order_id),
-                    prior_client_order_id: None,
-                    raw_reason_text: None,
-                    order_side: Some(entry_order_side),
-                    filled_quantity: None,
-                    residual_quantity: None,
-                    ts_event_ns: Some(ts_event_ns),
-                });
-            } else {
-                self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
-                    reason: BlindRecoveryReason::InvalidLivePosition {
-                        entry_order_side,
-                        side: Some(side),
-                    },
-                });
+            match pending_context {
+                Some(pending) => {
+                    let market_id = pending.lifecycle.market_id_owned();
+                    let client_order_id = pending.client_order_id;
+                    self.exposure.enter_entry_reconcile(
+                        pending,
+                        EntryReconcileReason::InvalidObservedPosition {
+                            entry_order_side,
+                            side,
+                        },
+                    );
+                    self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+                        transition: OrderLifecycleTransition::EntryReconcilePending,
+                        outcome: OrderLifecycleOutcome::EntryReconcilePending,
+                        source,
+                        market_id,
+                        instrument_id: Some(instrument_id),
+                        position_id: Some(position_id),
+                        client_order_id: Some(client_order_id),
+                        prior_client_order_id: None,
+                        raw_reason_text: None,
+                        order_side: Some(entry_order_side),
+                        filled_quantity: None,
+                        residual_quantity: None,
+                        ts_event_ns: Some(ts_event_ns),
+                    });
+                }
+                None => {
+                    self.exposure
+                        .enter_blind_recovery(BlindRecoveryReason::InvalidLivePosition {
+                            entry_order_side,
+                            side: Some(side),
+                        });
+                }
             }
             log::error!(
                 "binary_oracle_edge_taker position event carried unsupported position side: strategy_id={} instrument_id={} position_id={} entry_order_side={:?} side={:?}",
@@ -4699,7 +4208,21 @@ impl BinaryOracleEdgeTaker {
             return;
         }
 
-        if !tradable_position_supported {
+        let materialization_spec = PositionMaterializationSpec {
+            instrument_id,
+            position_id,
+            entry_order_side,
+            side,
+            quantity,
+            avg_px_open,
+        };
+        let observed = self.build_open_position_state(
+            preserved.as_ref(),
+            pending_context.as_ref(),
+            materialization_spec,
+            pending_context.is_some(),
+        );
+        if !supported {
             log::error!(
                 "binary_oracle_edge_taker quarantining unsupported observed position contract: strategy_id={} instrument_id={} entry_order_side={:?} side={:?}",
                 self.config.strategy_id,
@@ -4708,176 +4231,35 @@ impl BinaryOracleEdgeTaker {
                 side,
             );
             self.set_unsupported_observed_exposure(
-                self.build_open_position_state(
-                    preserved.as_ref(),
-                    pending_context.as_ref(),
-                    PositionMaterializationSpec {
-                        instrument_id,
-                        position_id,
-                        entry_order_side,
-                        side,
-                        quantity,
-                        avg_px_open,
-                    },
-                    false,
-                ),
+                observed,
                 UnsupportedObservedReason::LiveUnsupportedContract,
             );
+            let cancellation = self.exposure.request_entry_remainder_cancellation();
+            self.perform_entry_cancellation_effect(cancellation);
             return;
         }
 
-        let origin = match self
-            .exposure
-            .managed_position_context()
-            .filter(|managed| {
-                managed.position_id == position_id && managed.instrument_id == instrument_id
-            })
-            .map(|managed| managed.origin)
-        {
-            Some(origin) => origin,
-            None if pending_matches => ManagedPositionOrigin::StrategyEntry,
-            None => ManagedPositionOrigin::RecoveryBootstrap,
-        };
-        let position_truth_rematerialization_override =
-            self.take_position_truth_rematerialization_override(instrument_id, origin);
-        let materialized_position = self.build_open_position_state(
-            preserved.as_ref(),
-            pending_context.as_ref(),
-            PositionMaterializationSpec {
-                instrument_id,
-                position_id,
+        let keep_entry_remainder = pending_context
+            .as_ref()
+            .is_some_and(|pending| self.entry_order_may_remain_working(&pending.client_order_id));
+        let managed = managed_position_context(observed);
+        let materialized = self.exposure.materialize_supported_position(
+            managed,
+            keep_entry_remainder,
+            BlindRecoveryReason::InvalidLivePosition {
                 entry_order_side,
-                side,
-                quantity,
-                avg_px_open,
+                side: Some(side),
             },
-            pending_matches,
         );
-        let rematerialized_market_id = materialized_position.lifecycle.market_id_owned();
-        let rematerialized_quantity = materialized_position.quantity;
-        let pending_entry = pending_context
-            .clone()
-            .filter(|pending| self.entry_order_may_remain_working(&pending.client_order_id));
-        let managed_context =
-            managed_position_context(materialized_position, origin, pending_entry);
-        self.exposure = match self.exposure.clone() {
-            ExposureState::ExitAttempting(mut attempt)
-                if attempt.authority.position_id() == position_id
-                    && attempt.authority.instrument_id() == instrument_id =>
+        if materialized {
+            if let Some((ExitLifecyclePhase::TerminalAwaitingPosition, exit_pending)) =
+                self.exposure.exit_lifecycle()
             {
-                attempt.managed = managed_context;
-                ExposureState::ExitAttempting(attempt)
+                self.try_release_terminal_exit(&exit_pending, source, None, ts_event_ns);
             }
-            ExposureState::ExitAttempting(attempt) => ExposureState::ExitAttempting(attempt),
-            ExposureState::ExitPending(mut exit_pending)
-                if exit_pending.authority.position_id() == position_id
-                    && exit_pending.authority.instrument_id() == instrument_id =>
-            {
-                exit_pending.position = Some(managed_context);
-                ExposureState::ExitPending(exit_pending)
-            }
-            ExposureState::TerminalExitAwaitingPosition(mut exit_pending)
-                if exit_pending.authority.position_id() == position_id
-                    && exit_pending.authority.instrument_id() == instrument_id =>
-            {
-                exit_pending.position = Some(managed_context);
-                ExposureState::TerminalExitAwaitingPosition(exit_pending)
-            }
-            ExposureState::ExitPending(exit_pending) => ExposureState::ExitPending(exit_pending),
-            ExposureState::TerminalExitAwaitingPosition(exit_pending) => {
-                ExposureState::TerminalExitAwaitingPosition(exit_pending)
-            }
-            ExposureState::ExitAuthorityRecoveryHold(hold)
-                if hold.instrument_id == instrument_id
-                    && hold
-                        .pending_exit
-                        .position_id
-                        .is_none_or(|held_position_id| held_position_id == position_id) =>
-            {
-                let mut pending_exit = hold.pending_exit;
-                pending_exit.position_id = Some(position_id);
-                ExposureState::ExitAuthorityRecoveryHold(ExitAuthorityRecoveryHoldState {
-                    position: Some(managed_context),
-                    pending_exit,
-                    ..hold
-                })
-            }
-            ExposureState::ExitAuthorityRecoveryHold(hold) => {
-                ExposureState::ExitAuthorityRecoveryHold(hold)
-            }
-            ExposureState::Flat
-            | ExposureState::PendingEntry(_)
-            | ExposureState::EntryReconcilePending { .. }
-            | ExposureState::Managed(_)
-            | ExposureState::UnsupportedObserved(_)
-            | ExposureState::BlindRecovery(_) => ExposureState::Managed(managed_context),
-        };
-        if self.exposure.exit_authority_recovery_hold().is_some() {
-            self.try_recover_exit_authority_hold(ts_event_ns);
-        } else {
-            self.refresh_exit_authority_baseline();
-        }
-        if let ExposureState::TerminalExitAwaitingPosition(exit_pending) = &self.exposure {
-            let exit_pending = exit_pending.clone();
-            self.try_release_terminal_exit(&exit_pending, source, None, ts_event_ns);
-        }
-        if let Some(terminal_override) = position_truth_rematerialization_override {
-            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                transition: OrderLifecycleTransition::PositionTruthRematerialized,
-                outcome: Self::lifecycle_outcome_for_exposure(&self.exposure),
-                source,
-                market_id: terminal_override.market_id.or(rematerialized_market_id),
-                instrument_id: Some(instrument_id),
-                position_id: Some(position_id),
-                client_order_id: Some(terminal_override.client_order_id),
-                prior_client_order_id: None,
-                raw_reason_text: None,
-                order_side: Some(entry_order_side),
-                filled_quantity: None,
-                residual_quantity: Some(rematerialized_quantity),
-                ts_event_ns: Some(ts_event_ns),
-            });
         }
         self.sync_exposure_context_from_active();
         self.refresh_book_subscriptions_for_current_state();
-    }
-
-    fn enter_exit_authority_recovery_hold(
-        &mut self,
-        position: Option<ManagedPositionContext>,
-        mut pending_exit: PendingExitState,
-        instrument_id: InstrumentId,
-        plan: ExitAuthorityRecoveryPlan,
-        now_ns: u64,
-    ) {
-        let position_id = pending_exit
-            .position_id
-            .or_else(|| position.as_ref().map(|position| position.position_id));
-        pending_exit.position_id = position_id;
-        let flat_recovery = match position_id {
-            Some(position_id) => {
-                match self.acquire_exit_authority_flat_recovery(instrument_id, position_id) {
-                    Ok(authority) => ExitAuthorityFlatRecovery::Armed(authority),
-                    Err(error) => {
-                        log::error!(
-                            "binary_oracle_edge_taker exit recovery flat-proof lease unavailable: strategy_id={} client_order_id={} error={error:#}",
-                            self.config.strategy_id,
-                            pending_exit.client_order_id,
-                        );
-                        ExitAuthorityFlatRecovery::AwaitingLease
-                    }
-                }
-            }
-            None => ExitAuthorityFlatRecovery::AwaitingLease,
-        };
-        self.exposure = ExposureState::ExitAuthorityRecoveryHold(ExitAuthorityRecoveryHoldState {
-            position,
-            instrument_id,
-            pending_exit,
-            plan,
-            flat_recovery,
-        });
-        self.try_recover_exit_authority_hold(now_ns);
     }
 
     fn reconcile_exit_order_lifecycle(&mut self, input: ExitOrderLifecycleObservationInput) {
@@ -4901,12 +4283,9 @@ impl BinaryOracleEdgeTaker {
         }
         let cached_order = self.cache().order(&client_order_id);
         let Some(cached_order) = cached_order else {
-            self.enter_exit_authority_recovery_hold(
-                exit_pending.position.clone(),
-                exit_pending.pending_exit.clone(),
-                event_instrument_id,
-                observation.recovery_plan(&exit_pending.authority),
-                ts_event_ns,
+            log::error!(
+                "binary_oracle_edge_taker retained local exit authority after cache omission: strategy_id={} client_order_id={client_order_id}",
+                self.config.strategy_id,
             );
             return;
         };
@@ -4921,25 +4300,18 @@ impl BinaryOracleEdgeTaker {
                     "binary_oracle_edge_taker terminal exit authority reconciliation failed: strategy_id={} client_order_id={client_order_id} error={error:#}",
                     self.config.strategy_id,
                 );
-                self.enter_exit_authority_recovery_hold(
-                    exit_pending.position.clone(),
-                    exit_pending.pending_exit.clone(),
-                    event_instrument_id,
-                    observation.recovery_plan(&exit_pending.authority),
-                    ts_event_ns,
-                );
                 return;
             }
         };
         match lifecycle {
             BoltV3ExitOrderLifecycleReduction::Working => {
                 if observation.is_correction() {
-                    self.exposure = ExposureState::ExitPending(exit_pending);
+                    self.exposure.observe_exit_working(exit_pending);
                 }
                 return;
             }
             BoltV3ExitOrderLifecycleReduction::TerminalAwaitingPosition => {
-                self.exposure = ExposureState::TerminalExitAwaitingPosition(exit_pending.clone());
+                self.exposure.observe_exit_terminal(exit_pending.clone());
                 let released = self.try_release_terminal_exit(
                     &exit_pending,
                     source,
@@ -4985,27 +4357,11 @@ impl BinaryOracleEdgeTaker {
             None => Ok(None),
         };
         if let Ok(Some(spec)) = nt_residual.as_ref() {
-            let origin = exit_pending
-                .position
-                .as_ref()
-                .map(|managed| managed.origin)
-                .unwrap_or(ManagedPositionOrigin::RecoveryBootstrap);
-            let pending_entry = exit_pending
-                .position
-                .as_ref()
-                .and_then(|managed| managed.pending_entry.clone());
-            let residual_position = self.build_open_position_state(
-                exit_pending.position.as_ref(),
-                pending_entry.as_ref(),
-                *spec,
-                pending_entry.is_some(),
-            );
+            let residual_position =
+                self.build_open_position_state(exit_pending.position.as_ref(), None, *spec, false);
             let residual_quantity = residual_position.quantity;
-            self.exposure = ExposureState::Managed(managed_position_context(
-                residual_position.clone(),
-                origin,
-                pending_entry,
-            ));
+            self.exposure
+                .observe_exit_residual(managed_position_context(residual_position.clone()));
             self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
                 transition: OrderLifecycleTransition::ResidualRemanaged,
                 outcome: OrderLifecycleOutcome::Managed,
@@ -5026,15 +4382,14 @@ impl BinaryOracleEdgeTaker {
             return;
         }
         if let Err(error) = nt_residual {
-            self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::CacheProbeFailed,
-            });
+            self.exposure
+                .enter_blind_recovery(BlindRecoveryReason::CacheProbeFailed);
             log::error!(
                 "binary_oracle_edge_taker could not project terminal exit state from NT cache: strategy_id={} error={error:#}",
                 self.config.strategy_id,
             );
         } else {
-            self.exposure = ExposureState::Flat;
+            self.exposure.observe_exit_flat();
         }
         self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
             transition,
@@ -5061,13 +4416,9 @@ impl BinaryOracleEdgeTaker {
         };
         let client_order_id = exit_pending.pending_exit.client_order_id;
         let Some(order) = self.cache().order(&client_order_id) else {
-            let now_ns = self.clock().timestamp_ns().as_u64();
-            self.enter_exit_authority_recovery_hold(
-                exit_pending.position.clone(),
-                exit_pending.pending_exit.clone(),
-                exit_pending.authority.instrument_id(),
-                ExitAuthorityRecoveryPlan::Resume(exit_pending.authority.clone()),
-                now_ns,
+            log::error!(
+                "binary_oracle_edge_taker retained local exit authority after timer cache omission: strategy_id={} client_order_id={client_order_id}",
+                self.config.strategy_id,
             );
             return;
         };
@@ -5076,12 +4427,13 @@ impl BinaryOracleEdgeTaker {
                 CachedExitOrderLifecycle::Working => (
                     OrderLifecycleTransition::OrderFilled,
                     Some("cached_working"),
-                    if phase == ExitLifecyclePhase::TerminalAwaitingPosition {
-                        ExitOrderAuthorityObservation::Correction {
-                            cause: BoltV3RecoveredExitCause::FillVoidReopen,
+                    match phase {
+                        ExitLifecyclePhase::TerminalAwaitingPosition => {
+                            ExitOrderAuthorityObservation::FillAuthorityChanged
                         }
-                    } else {
-                        ExitOrderAuthorityObservation::Lifecycle
+                        ExitLifecyclePhase::Attempting | ExitLifecyclePhase::Working => {
+                            ExitOrderAuthorityObservation::Lifecycle
+                        }
                     },
                 ),
                 CachedExitOrderLifecycle::Terminal {
@@ -5093,9 +4445,7 @@ impl BinaryOracleEdgeTaker {
                     raw_reason_text,
                     match correction {
                         BoltV3ExitOrderCorrection::FillAuthorityChanged => {
-                            ExitOrderAuthorityObservation::Correction {
-                                cause: BoltV3RecoveredExitCause::FillVoidReopen,
-                            }
+                            ExitOrderAuthorityObservation::FillAuthorityChanged
                         }
                         BoltV3ExitOrderCorrection::Unchanged => {
                             ExitOrderAuthorityObservation::Lifecycle
@@ -5113,221 +4463,6 @@ impl BinaryOracleEdgeTaker {
             ts_event_ns: terminal_event_ns,
             authority: observation,
         });
-    }
-
-    fn refresh_exit_authority_baseline(&self) {
-        let Some(exit_pending) = self.exposure.exit_pending_snapshot() else {
-            return;
-        };
-        let Some(position_authority) = self.context.position_authority() else {
-            log::error!(
-                "binary_oracle_edge_taker recovered exit baseline lacks position authority: strategy_id={} client_order_id={}",
-                self.config.strategy_id,
-                exit_pending.pending_exit.client_order_id,
-            );
-            return;
-        };
-        if let Err(error) = exit_pending
-            .authority
-            .refresh_recovered_baseline(position_authority)
-        {
-            log::error!(
-                "binary_oracle_edge_taker recovered exit baseline remains unavailable: strategy_id={} client_order_id={} error={error:#}",
-                self.config.strategy_id,
-                exit_pending.pending_exit.client_order_id,
-            );
-        }
-    }
-
-    fn try_recover_exit_authority_hold(&mut self, now_ns: u64) {
-        let Some(mut hold) = self.exposure.exit_authority_recovery_hold().cloned() else {
-            return;
-        };
-        let position_id = hold.pending_exit.position_id.or_else(|| {
-            let cache = self.cache();
-            cache
-                .order(&hold.pending_exit.client_order_id)
-                .and_then(|order| order.position_id())
-                .or_else(|| cache.position_id(&hold.pending_exit.client_order_id))
-        });
-        let Some(position_id) = position_id else {
-            log::error!(
-                "binary_oracle_edge_taker exit authority recovery lacks position attribution: strategy_id={} client_order_id={}",
-                self.config.strategy_id,
-                hold.pending_exit.client_order_id,
-            );
-            return;
-        };
-        if matches!(hold.flat_recovery, ExitAuthorityFlatRecovery::AwaitingLease) {
-            match self.acquire_exit_authority_flat_recovery(hold.instrument_id, position_id) {
-                Ok(authority) => {
-                    hold.flat_recovery = ExitAuthorityFlatRecovery::Armed(authority);
-                }
-                Err(error) => {
-                    log::error!(
-                        "binary_oracle_edge_taker exit recovery flat-proof lease remains unavailable: strategy_id={} client_order_id={} error={error:#}",
-                        self.config.strategy_id,
-                        hold.pending_exit.client_order_id,
-                    );
-                }
-            }
-        }
-        let recovered = match &hold.plan {
-            ExitAuthorityRecoveryPlan::Reconstruct(cause) => self.recover_exit_authority_state(
-                hold.position.clone(),
-                hold.instrument_id,
-                position_id,
-                hold.pending_exit.clone(),
-                *cause,
-            ),
-            ExitAuthorityRecoveryPlan::Resume(authority) => (|| {
-                let position_authority = self
-                    .context
-                    .position_authority()
-                    .context("exit authority recovery still lacks position authority")?;
-                authority.refresh_recovered_baseline(position_authority)?;
-                Ok(ExitPendingState {
-                    position: hold.position.clone(),
-                    pending_exit: hold.pending_exit.clone(),
-                    authority: authority.clone(),
-                })
-            })(),
-        };
-        let attempt = match recovered {
-            Err(error) => ExitAuthorityRecoveryAttempt::Blocked(
-                ExitAuthorityRecoveryBlock::Construction(error),
-            ),
-            Ok(recovered) => match self.cache().order(&hold.pending_exit.client_order_id) {
-                None => ExitAuthorityRecoveryAttempt::Blocked(
-                    ExitAuthorityRecoveryBlock::CachedOrderMissing,
-                ),
-                Some(order) => {
-                    let correction = match &hold.plan {
-                        ExitAuthorityRecoveryPlan::Reconstruct(
-                            BoltV3RecoveredExitCause::FillVoidReopen,
-                        ) => BoltV3ExitOrderCorrection::FillAuthorityChanged,
-                        ExitAuthorityRecoveryPlan::Reconstruct(
-                            BoltV3RecoveredExitCause::StartupAdoption,
-                        ) => BoltV3ExitOrderCorrection::Unchanged,
-                        ExitAuthorityRecoveryPlan::Resume(_) => {
-                            match classify_cached_exit_order_lifecycle(order.status()) {
-                                CachedExitOrderLifecycle::Terminal { correction, .. } => correction,
-                                CachedExitOrderLifecycle::Working => {
-                                    BoltV3ExitOrderCorrection::Unchanged
-                                }
-                            }
-                        }
-                    };
-                    match recovered
-                        .authority
-                        .observe_order(&order, now_ns, correction)
-                    {
-                        Ok(BoltV3ExitOrderLifecycleReduction::Working) => {
-                            ExitAuthorityRecoveryAttempt::Working(recovered)
-                        }
-                        Ok(BoltV3ExitOrderLifecycleReduction::TerminalAwaitingPosition) => {
-                            ExitAuthorityRecoveryAttempt::TerminalAwaitingPosition(recovered)
-                        }
-                        Ok(BoltV3ExitOrderLifecycleReduction::TerminalZeroFill) => {
-                            ExitAuthorityRecoveryAttempt::Blocked(
-                                ExitAuthorityRecoveryBlock::InvalidTerminalZeroFill,
-                            )
-                        }
-                        Err(error) => ExitAuthorityRecoveryAttempt::Blocked(
-                            ExitAuthorityRecoveryBlock::Observation(error),
-                        ),
-                    }
-                }
-            },
-        };
-        match attempt {
-            ExitAuthorityRecoveryAttempt::TerminalAwaitingPosition(recovered) => {
-                self.exposure = ExposureState::TerminalExitAwaitingPosition(recovered.clone());
-                self.try_release_terminal_exit(
-                    &recovered,
-                    ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
-                    Some("exit_authority_recovered"),
-                    now_ns,
-                );
-            }
-            ExitAuthorityRecoveryAttempt::Working(recovered) => {
-                self.exposure = ExposureState::ExitPending(recovered);
-            }
-            ExitAuthorityRecoveryAttempt::Blocked(reason) => {
-                if self.try_release_exit_authority_recovery_flat(&hold, position_id, now_ns) {
-                    return;
-                }
-                self.exposure = ExposureState::ExitAuthorityRecoveryHold(hold);
-                log::error!(
-                    "binary_oracle_edge_taker exit authority recovery remains held: strategy_id={} reason={reason}",
-                    self.config.strategy_id,
-                );
-            }
-        }
-    }
-
-    fn try_release_exit_authority_recovery_flat(
-        &mut self,
-        hold: &ExitAuthorityRecoveryHoldState,
-        position_id: PositionId,
-        now_ns: u64,
-    ) -> bool {
-        if self
-            .cache()
-            .order(&hold.pending_exit.client_order_id)
-            .is_some_and(|order| !order.is_closed())
-        {
-            return false;
-        }
-        let ExitAuthorityFlatRecovery::Armed(authority) = &hold.flat_recovery else {
-            return false;
-        };
-        let Some(position_authority) = self.context.position_authority() else {
-            log::error!(
-                "binary_oracle_edge_taker exit recovery flat proof lacks position authority: strategy_id={} client_order_id={}",
-                self.config.strategy_id,
-                hold.pending_exit.client_order_id,
-            );
-            return false;
-        };
-        let release = match authority.release_flat(position_authority) {
-            Ok(release) => release,
-            Err(error) => {
-                log::error!(
-                    "binary_oracle_edge_taker exit recovery flat proof failed: strategy_id={} client_order_id={} error={error:#}",
-                    self.config.strategy_id,
-                    hold.pending_exit.client_order_id,
-                );
-                return false;
-            }
-        };
-        match release {
-            BoltV3ExitAuthorityRecoveryRelease::AwaitingAuthority => false,
-            BoltV3ExitAuthorityRecoveryRelease::Flat => {
-                self.exposure = ExposureState::Flat;
-                if let Some(market_id) = hold.pending_exit.market_id.as_deref() {
-                    self.arm_market_cooldown(market_id, now_ns / NANOS_PER_MILLI_U64);
-                }
-                self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                    transition: OrderLifecycleTransition::ResidualRemanaged,
-                    outcome: OrderLifecycleOutcome::Flat,
-                    source: ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
-                    market_id: hold.pending_exit.market_id.clone(),
-                    instrument_id: Some(hold.instrument_id),
-                    position_id: Some(position_id),
-                    client_order_id: Some(hold.pending_exit.client_order_id),
-                    prior_client_order_id: None,
-                    raw_reason_text: Some("exit_authority_recovery_flat_proven".to_string()),
-                    order_side: None,
-                    filled_quantity: None,
-                    residual_quantity: None,
-                    ts_event_ns: Some(now_ns),
-                });
-                self.sync_exposure_context_from_active();
-                self.refresh_book_subscriptions_for_current_state();
-                true
-            }
-        }
     }
 
     fn try_release_terminal_exit(
@@ -5369,7 +4504,7 @@ impl BinaryOracleEdgeTaker {
         match release {
             BoltV3PositionReductionRelease::AwaitingAuthority => false,
             BoltV3PositionReductionRelease::Flat => {
-                self.exposure = ExposureState::Flat;
+                self.exposure.observe_exit_flat();
                 if let Some(market_id) = exit_pending.pending_exit.market_id.as_deref() {
                     self.arm_market_cooldown(market_id, ts_event_ns / NANOS_PER_MILLI_U64);
                 }
@@ -5394,27 +4529,15 @@ impl BinaryOracleEdgeTaker {
                         return false;
                     }
                 };
-                let origin = exit_pending
-                    .position
-                    .as_ref()
-                    .map(|position| position.origin)
-                    .unwrap_or(ManagedPositionOrigin::RecoveryBootstrap);
-                let pending_entry = exit_pending
-                    .position
-                    .as_ref()
-                    .and_then(|position| position.pending_entry.clone());
                 let residual_position = self.build_open_position_state(
                     exit_pending.position.as_ref(),
-                    pending_entry.as_ref(),
+                    None,
                     residual,
-                    pending_entry.is_some(),
+                    false,
                 );
                 let residual_quantity = residual_position.quantity;
-                self.exposure = ExposureState::Managed(managed_position_context(
-                    residual_position.clone(),
-                    origin,
-                    pending_entry,
-                ));
+                self.exposure
+                    .observe_exit_residual(managed_position_context(residual_position.clone()));
                 self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
                     transition: OrderLifecycleTransition::ResidualRemanaged,
                     outcome: OrderLifecycleOutcome::Managed,
@@ -5448,10 +4571,8 @@ impl BinaryOracleEdgeTaker {
         let active_down_instrument_id = self.active.books.down.instrument_id;
         let active_up_book = self.active.books.up.clone();
         let active_down_book = self.active.books.down.clone();
-        let allow_missing_interval_lifecycle_repair = self
-            .exposure
-            .managed_position_context()
-            .is_some_and(|managed| managed.origin == ManagedPositionOrigin::StrategyEntry);
+        let allow_missing_interval_lifecycle_repair =
+            self.exposure.managed_position_context().is_some();
         let Some((lifecycle, instrument_id, book)) = self.tracked_position_context_mut() else {
             return;
         };
@@ -5807,13 +4928,20 @@ impl BinaryOracleEdgeTaker {
             blocked_reason: None,
         };
 
-        if self.managed_position().is_none() {
-            evaluation.blocked_reason = Some(EvidenceExitBlockedReason::NoOpenPosition);
-            return evaluation;
-        }
-        if self.exposure.exit_pending_snapshot().is_some() {
-            evaluation.blocked_reason = Some(EvidenceExitBlockedReason::ExitAlreadyPending);
-            return evaluation;
+        match self.exposure.exit_route_availability() {
+            ExitRouteAvailability::Managed => {}
+            ExitRouteAvailability::EntryRemainder => {
+                evaluation.blocked_reason = Some(EvidenceExitBlockedReason::EntryOrderStillWorking);
+                return evaluation;
+            }
+            ExitRouteAvailability::ExitPending => {
+                evaluation.blocked_reason = Some(EvidenceExitBlockedReason::ExitAlreadyPending);
+                return evaluation;
+            }
+            ExitRouteAvailability::Unavailable => {
+                evaluation.blocked_reason = Some(EvidenceExitBlockedReason::NoOpenPosition);
+                return evaluation;
+            }
         }
 
         if self
@@ -5833,16 +4961,6 @@ impl BinaryOracleEdgeTaker {
 
         if !evaluation.forced_flat_reasons.is_empty() {
             evaluation.exit_decision = Some(ExitDecision::Exit);
-            return evaluation;
-        }
-
-        if self
-            .exposure
-            .managed_position_context()
-            .and_then(|managed| managed.pending_entry.as_ref())
-            .is_some()
-        {
-            evaluation.blocked_reason = Some(EvidenceExitBlockedReason::EntryOrderStillWorking);
             return evaluation;
         }
 
@@ -6274,14 +5392,50 @@ impl BinaryOracleEdgeTaker {
         &mut self,
         client_order_id: ClientOrderId,
         client_id: ClientId,
-    ) -> Result<()> {
+    ) -> Result<BoltV3CancelRoutingOutcome> {
         self.context.order_execution_policy().route_cancel(
             self,
             client_order_id,
             Some(client_id),
             None,
-        )?;
-        Ok(())
+        )
+    }
+
+    fn perform_entry_cancellation_effect(&mut self, effect: EntryCancellationEffect) {
+        let EntryCancellationEffect::Route {
+            client_order_id,
+            token,
+        } = effect
+        else {
+            return;
+        };
+        let client_id = ClientId::from(self.config.client_id.as_str());
+        match self.cancel_resting_order(client_order_id, client_id) {
+            Ok(BoltV3CancelRoutingOutcome::SkippedByPolicy) => {
+                self.exposure
+                    .settle_entry_cancellation(token, EntryCancellationSettlement::RestoreWorking);
+            }
+            Ok(BoltV3CancelRoutingOutcome::NtCallReturned) => {
+                self.exposure
+                    .settle_entry_cancellation(token, EntryCancellationSettlement::RetainPending);
+            }
+            Ok(BoltV3CancelRoutingOutcome::NtCallErrored { diagnostic }) => {
+                self.exposure
+                    .settle_entry_cancellation(token, EntryCancellationSettlement::RetainPending);
+                log::error!(
+                    "binary_oracle_edge_taker entry-remainder cancel returned an NT error: strategy_id={} client_order_id={} diagnostic={diagnostic}",
+                    self.config.strategy_id,
+                    client_order_id,
+                );
+            }
+            Err(error) => {
+                log::error!(
+                    "binary_oracle_edge_taker entry-remainder cancel route failed: strategy_id={} client_order_id={} error={error:#}",
+                    self.config.strategy_id,
+                    client_order_id,
+                );
+            }
+        }
     }
 
     #[cfg(test)]
@@ -7090,49 +6244,6 @@ impl BinaryOracleEdgeTaker {
         attempt.into_result()
     }
 
-    fn allocate_exit_attempt_generation(&mut self) -> Result<u64> {
-        let generation = self
-            .next_exit_attempt_generation
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("exit attempt generation overflow"))?;
-        self.next_exit_attempt_generation = generation;
-        Ok(generation)
-    }
-
-    fn resolve_exit_attempt(&mut self, generation: u64, disposition: ExitAttemptDisposition) {
-        let current = std::mem::replace(&mut self.exposure, ExposureState::Flat);
-        self.exposure = match current {
-            ExposureState::ExitAttempting(attempt) if attempt.generation == generation => {
-                match disposition {
-                    ExitAttemptDisposition::Submitted => {
-                        ExposureState::ExitPending(attempt.into_pending())
-                    }
-                    ExitAttemptDisposition::NonSubmitted => ExposureState::Managed(attempt.managed),
-                }
-            }
-            // A synchronous NT callback already advanced this generation. Its
-            // authoritative state transition wins over the stale route return.
-            ExposureState::ExitAttempting(attempt) => ExposureState::ExitAttempting(attempt),
-            ExposureState::Flat => ExposureState::Flat,
-            ExposureState::PendingEntry(pending) => ExposureState::PendingEntry(pending),
-            ExposureState::EntryReconcilePending { pending, reason } => {
-                ExposureState::EntryReconcilePending { pending, reason }
-            }
-            ExposureState::Managed(managed) => ExposureState::Managed(managed),
-            ExposureState::ExitPending(exit) => ExposureState::ExitPending(exit),
-            ExposureState::TerminalExitAwaitingPosition(exit) => {
-                ExposureState::TerminalExitAwaitingPosition(exit)
-            }
-            ExposureState::ExitAuthorityRecoveryHold(hold) => {
-                ExposureState::ExitAuthorityRecoveryHold(hold)
-            }
-            ExposureState::UnsupportedObserved(observed) => {
-                ExposureState::UnsupportedObserved(observed)
-            }
-            ExposureState::BlindRecovery(recovery) => ExposureState::BlindRecovery(recovery),
-        };
-    }
-
     fn reject_exit_preparation_after_recording_intent(
         &mut self,
         now_ms: u64,
@@ -7162,6 +6273,17 @@ impl BinaryOracleEdgeTaker {
             )?;
         }
         let mut decision = self.exit_intent_decision_for_trigger_at(now_ms, trigger_context);
+        match self.exposure.request_entry_remainder_cancellation() {
+            EntryCancellationEffect::None => {}
+            cancellation => {
+                self.perform_entry_cancellation_effect(cancellation);
+                decision.blocked_reason = Some(EvidenceExitBlockedReason::EntryOrderStillWorking);
+                self.record_exit_intent_or_hold_once(now_ms, trigger_context, &decision)?;
+                self.log_exit_evaluation(now_ms, trigger_context, &decision);
+                let outcome = non_action_exit_attempt_outcome(&decision);
+                return Ok(ExitAttemptExecution::completed(decision, outcome));
+            }
+        }
 
         let Some(instrument_id) = decision.instrument_id else {
             self.record_exit_intent_or_hold_once(now_ms, trigger_context, &decision)?;
@@ -7241,16 +6363,6 @@ impl BinaryOracleEdgeTaker {
         };
 
         let client_id = ClientId::from(self.config.client_id.as_str());
-        let Some(managed_context) = self.exposure.managed_position_context().cloned() else {
-            let failure = anyhow::anyhow!("exit submit requires managed position context");
-            return self.reject_exit_preparation_after_recording_intent(
-                now_ms,
-                trigger_context,
-                decision,
-                ExitPreparationStage::PositionAuthority,
-                failure,
-            );
-        };
         let prediction_market_outcome = match managed_position.position.lifecycle.outcome_side() {
             Some(OutcomeSide::Up) => PredictionMarketOutcomeSide::Yes,
             Some(OutcomeSide::Down) => PredictionMarketOutcomeSide::No,
@@ -7449,8 +6561,16 @@ impl BinaryOracleEdgeTaker {
         let prepared_order = prepared_order_linkage(&intent);
         self.record_exit_prepared_order(now_ms, trigger_context, &decision, prepared_order.clone());
         self.log_exit_evaluation(now_ms, trigger_context, &decision);
-        let generation = match self.allocate_exit_attempt_generation() {
-            Ok(generation) => generation,
+        let exit_capability = match self.exposure.begin_exit(
+            PendingExitState {
+                client_order_id,
+                submitted_at_ms: Some(now_ms),
+                market_id: managed_position.position.lifecycle.market_id_owned(),
+                position_id: Some(managed_position.position.position_id),
+            },
+            exit_authority,
+        ) {
+            Ok(capability) => capability,
             Err(failure) => {
                 let reason = format!("{failure:#}");
                 return Ok(ExitAttemptExecution::rejected(
@@ -7463,38 +6583,6 @@ impl BinaryOracleEdgeTaker {
                 ));
             }
         };
-        if !decision.forced_flat_reasons.is_empty()
-            && let Some(pending_entry) = managed_position.pending_entry.as_ref()
-            && let Err(failure) = self
-                .cancel_resting_order(pending_entry.client_order_id, client_id)
-                .with_context(|| {
-                    format!(
-                        "forced-flat exit could not cancel pending entry client_order_id={}",
-                        pending_entry.client_order_id
-                    )
-                })
-        {
-            let reason = format!("{failure:#}");
-            return Ok(ExitAttemptExecution::rejected(
-                decision,
-                ExitAttemptOutcome::RouteRejected {
-                    prepared_order,
-                    reason,
-                },
-                failure,
-            ));
-        }
-        self.exposure = ExposureState::ExitAttempting(ExitAttemptingState {
-            generation,
-            managed: managed_context,
-            pending_exit: PendingExitState {
-                client_order_id,
-                submitted_at_ms: Some(now_ms),
-                market_id: managed_position.position.lifecycle.market_id_owned(),
-                position_id: Some(managed_position.position.position_id),
-            },
-            authority: exit_authority,
-        });
         log::info!(
             "binary_oracle_edge_taker exit submit: strategy_id={} instrument_id={} order_side={:?} price={} quantity={} client_order_id={}",
             self.config.strategy_id,
@@ -7515,7 +6603,12 @@ impl BinaryOracleEdgeTaker {
         );
         let (disposition, attempt) =
             ExitAttemptExecution::from_submit_state(decision, prepared_order, outcome.into_state());
-        self.resolve_exit_attempt(generation, disposition);
+        let settlement = match disposition {
+            ExitAttemptDisposition::RetainAuthority => ExitAttemptSettlement::Retain,
+            ExitAttemptDisposition::AbortPreSink => ExitAttemptSettlement::Abort,
+        };
+        self.exposure
+            .settle_exit_attempt(exit_capability, settlement);
         Ok(attempt)
     }
 
@@ -7903,25 +6996,6 @@ impl BinaryOracleEdgeTaker {
             .ok_or_else(|| anyhow::anyhow!("entry instrument missing from cache"))?;
         let quantity = instrument.try_make_qty(quantity_value, Some(true))?;
 
-        if self.exposure_occupancy().is_some() {
-            let newly_recorded = self.record_entry_skip_once(
-                now_ms,
-                &decision,
-                EvidenceEntrySkipReason::OnePositionInvariantViolation,
-            )?;
-            // Keep WARN on the same dedupe as evidence (not per-tick), then
-            // propagate the invariant failure so admission fails closed.
-            if newly_recorded {
-                log::warn!(
-                    "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason={}",
-                    self.config.strategy_id,
-                    entry_skip_reason_label(EvidenceEntrySkipReason::OnePositionInvariantViolation)
-                );
-            }
-            self.enforce_one_position_invariant()?;
-            unreachable!("occupied exposure must fail the one-position invariant");
-        }
-
         // A successful submit no longer resets skip suppression, for the same
         // reason as the blocked-snapshot producer above: within one market
         // episode each skip reason is worth recording once.
@@ -7974,8 +7048,7 @@ impl BinaryOracleEdgeTaker {
         )?;
 
         let client_id = ClientId::from(self.config.client_id.as_str());
-        self.last_flat_terminal_entry_override = None;
-        self.exposure = ExposureState::PendingEntry(PendingEntryState {
+        let entry_arm = self.exposure.arm_entry(PendingEntryState {
             client_order_id,
             submitted_at_ms: Some(now_ms),
             lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
@@ -8002,6 +7075,21 @@ impl BinaryOracleEdgeTaker {
                 _ => OutcomeBookState::from_instrument_id(instrument_id),
             },
         });
+        let entry_capability = match entry_arm {
+            Ok(capability) => capability,
+            Err(EntryArmError::Occupied(occupancy)) => {
+                let _ = self.record_entry_skip_once(
+                    now_ms,
+                    &decision,
+                    EvidenceEntrySkipReason::OnePositionInvariantViolation,
+                )?;
+                self.report_one_position_invariant_violation(occupancy);
+                anyhow::bail!("one-position invariant occupied by {occupancy:?}");
+            }
+            Err(EntryArmError::GenerationExhausted) => {
+                anyhow::bail!("entry generation exhausted before routing")
+            }
+        };
         log::info!(
             "binary_oracle_edge_taker entry submit: strategy_id={} instrument_id={} order_side={:?} price={} quantity={} client_order_id={}",
             self.config.strategy_id,
@@ -8018,7 +7106,9 @@ impl BinaryOracleEdgeTaker {
             .expect("edge-taker strategy must own edge-taker evidence")
             .record_submit_linked_strategy_input_snapshot(strategy_input_snapshot)
         {
-            self.clear_pending_entry_state();
+            self.exposure
+                .settle_entry_arm(entry_capability, EntryArmSettlement::Abort);
+            self.prune_market_lifecycle_at_current_time();
             return Err(anyhow::Error::from(error));
         }
         let outcome = self.route_prepared_order_submission(
@@ -8027,20 +7117,34 @@ impl BinaryOracleEdgeTaker {
             sealed,
             BoltV3SubmitContext::with_client_id(client_id),
         );
-        match outcome.kind() {
-            BoltV3SubmitAttemptKind::Submitted => {}
-            BoltV3SubmitAttemptKind::PolicySkipped => {
-                self.clear_pending_entry_state();
+        let outcome_kind = outcome.kind();
+        let settlement = match outcome_kind {
+            BoltV3SubmitAttemptKind::Submitted | BoltV3SubmitAttemptKind::SinkInvokedUnknown => {
+                EntryArmSettlement::Retain
             }
+            BoltV3SubmitAttemptKind::PolicySkipped
+            | BoltV3SubmitAttemptKind::RouteValidationRejected
+            | BoltV3SubmitAttemptKind::IntentEvidenceRejected
+            | BoltV3SubmitAttemptKind::AdmissionRejected
+            | BoltV3SubmitAttemptKind::PreSinkRejected => EntryArmSettlement::Abort,
+        };
+        self.exposure.settle_entry_arm(entry_capability, settlement);
+        match outcome_kind {
+            BoltV3SubmitAttemptKind::Submitted => {}
+            BoltV3SubmitAttemptKind::PolicySkipped => {}
             BoltV3SubmitAttemptKind::RouteValidationRejected
             | BoltV3SubmitAttemptKind::IntentEvidenceRejected
             | BoltV3SubmitAttemptKind::AdmissionRejected
-            | BoltV3SubmitAttemptKind::PreSinkRejected
-            | BoltV3SubmitAttemptKind::SinkRejected => {
-                self.clear_pending_entry_state();
+            | BoltV3SubmitAttemptKind::PreSinkRejected => {
                 anyhow::bail!(
                     "entry submit did not reach the venue: outcome={:?} diagnostic={}",
-                    outcome.kind(),
+                    outcome_kind,
+                    outcome.diagnostic().unwrap_or("none")
+                );
+            }
+            BoltV3SubmitAttemptKind::SinkInvokedUnknown => {
+                anyhow::bail!(
+                    "entry submit returned after NT invocation with unknown lifecycle outcome: diagnostic={}",
                     outcome.diagnostic().unwrap_or("none")
                 );
             }
@@ -8515,11 +7619,8 @@ impl DataActor for BinaryOracleEdgeTaker {
             self.refresh_selection_from_cache(now_ms);
             self.retry_missing_live_input_subscriptions_at(now_ms);
         }
-        self.try_recover_exit_authority_hold(event.ts_event.as_u64());
-        self.refresh_exit_authority_baseline();
         self.reconcile_cached_exit_order_on_timer();
-        if let ExposureState::TerminalExitAwaitingPosition(exit_pending) = &self.exposure {
-            let exit_pending = exit_pending.clone();
+        if let Some(exit_pending) = self.exposure.terminal_exit_snapshot() {
             self.try_release_terminal_exit(
                 &exit_pending,
                 ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
@@ -8615,37 +7716,40 @@ impl DataActor for BinaryOracleEdgeTaker {
         }
 
         let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
-        if matches!(self.exposure, ExposureState::Managed(_))
-            && let Err(error) = self.try_submit_exit_order_for_trigger(
-                now_ms,
-                ExitEvaluationTriggerContext::from_market_data(
-                    EvidenceExitTriggerSource::BookDelta,
-                    deltas.ts_event.as_u64() / NANOS_PER_MILLI_U64,
-                    LocalReceiveMs::new(deltas.ts_init.as_u64() / NANOS_PER_MILLI_U64),
-                ),
-            )
-        {
-            log::error!(
-                "binary_oracle_edge_taker exit submit failed on book delta: strategy_id={} instrument_id={} error={:#}",
-                self.config.strategy_id,
-                deltas.instrument_id,
-                error
-            );
-        }
-        if self.exposure_occupancy().is_none()
-            && let Err(error) = self.try_submit_entry_order_for_receive(
-                now_ms,
-                EntryEvaluationReceiveContext::new(LocalReceiveMs::new(
-                    deltas.ts_init.as_u64() / NANOS_PER_MILLI_U64,
-                )),
-            )
-        {
-            log::error!(
-                "binary_oracle_edge_taker entry submit failed on book delta: strategy_id={} instrument_id={} error={:#}",
-                self.config.strategy_id,
-                deltas.instrument_id,
-                error
-            );
+        match self.exposure.market_data_route() {
+            ExposureMarketDataRoute::Exit => {
+                if let Err(error) = self.try_submit_exit_order_for_trigger(
+                    now_ms,
+                    ExitEvaluationTriggerContext::from_market_data(
+                        EvidenceExitTriggerSource::BookDelta,
+                        deltas.ts_event.as_u64() / NANOS_PER_MILLI_U64,
+                        LocalReceiveMs::new(deltas.ts_init.as_u64() / NANOS_PER_MILLI_U64),
+                    ),
+                ) {
+                    log::error!(
+                        "binary_oracle_edge_taker exit submit failed on book delta: strategy_id={} instrument_id={} error={:#}",
+                        self.config.strategy_id,
+                        deltas.instrument_id,
+                        error
+                    );
+                }
+            }
+            ExposureMarketDataRoute::Entry => {
+                if let Err(error) = self.try_submit_entry_order_for_receive(
+                    now_ms,
+                    EntryEvaluationReceiveContext::new(LocalReceiveMs::new(
+                        deltas.ts_init.as_u64() / NANOS_PER_MILLI_U64,
+                    )),
+                ) {
+                    log::error!(
+                        "binary_oracle_edge_taker entry submit failed on book delta: strategy_id={} instrument_id={} error={:#}",
+                        self.config.strategy_id,
+                        deltas.instrument_id,
+                        error
+                    );
+                }
+            }
+            ExposureMarketDataRoute::None => {}
         }
         Ok(())
     }
@@ -8662,59 +7766,29 @@ impl DataActor for BinaryOracleEdgeTaker {
 }
 
 impl BinaryOracleEdgeTaker {
-    fn enter_fill_void_exit_recovery(&mut self, event: &nautilus_model::events::OrderFillVoided) {
-        let Ok(contract) = self.configured_position_contract() else {
-            return;
-        };
-        if event.order_side != contract.exit_order_side
-            || event.instrument_id.venue != self.context.execution_venue()
-        {
-            return;
+    fn enter_blind_fill_void_recovery(&mut self, event: &nautilus_model::events::OrderFillVoided) {
+        let exit_order_side = self
+            .configured_position_contract()
+            .ok()
+            .map(|contract| contract.exit_order_side);
+        match exit_order_side {
+            Some(order_side)
+                if event.order_side == order_side
+                    && event.instrument_id.venue == self.context.execution_venue() =>
+            {
+                self.exposure
+                    .enter_blind_recovery(BlindRecoveryReason::UnretainedExitCorrection {
+                        instrument_id: event.instrument_id,
+                    });
+                log::error!(
+                    "binary_oracle_edge_taker fill correction arrived without retained local exit authority: strategy_id={} client_order_id={} instrument_id={} entering blind recovery",
+                    self.config.strategy_id,
+                    event.client_order_id,
+                    event.instrument_id,
+                );
+            }
+            Some(_) | None => {}
         }
-        let cached_order = self.cache().order(&event.client_order_id);
-        let position_id = event.position_id.or_else(|| {
-            cached_order
-                .as_ref()
-                .and_then(|order| order.position_id())
-                .or_else(|| self.cache().position_id(&event.client_order_id))
-        });
-        let position = self
-            .exposure
-            .managed_position_context()
-            .filter(|position| position.instrument_id == event.instrument_id)
-            .cloned()
-            .or_else(|| {
-                position_id
-                    .and_then(|position_id| self.nt_open_position_projection(position_id).ok())
-                    .flatten()
-                    .map(|spec| {
-                        managed_position_context(
-                            self.build_open_position_state(None, None, spec, false),
-                            ManagedPositionOrigin::RecoveryBootstrap,
-                            None,
-                        )
-                    })
-            });
-        self.enter_exit_authority_recovery_hold(
-            position,
-            PendingExitState {
-                client_order_id: event.client_order_id,
-                submitted_at_ms: None,
-                market_id: self.active.market_id.clone(),
-                position_id,
-            },
-            event.instrument_id,
-            ExitAuthorityRecoveryPlan::Reconstruct(BoltV3RecoveredExitCause::FillVoidReopen),
-            event.ts_event.as_u64(),
-        );
-        if cached_order.is_none() {
-            log::error!(
-                "binary_oracle_edge_taker fill-void recovery lacks cached order and remains held: strategy_id={} client_order_id={}",
-                self.config.strategy_id,
-                event.client_order_id,
-            );
-        }
-        self.try_recover_exit_authority_hold(event.ts_event.as_u64());
     }
 
     fn handle_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) {
@@ -8722,11 +7796,8 @@ impl BinaryOracleEdgeTaker {
         let entry_fill = self
             .pending_entry()
             .is_some_and(|pending| pending.client_order_id == event.client_order_id);
-        let managed_entry_fill = self.managed_position().is_some_and(|managed| {
-            managed
-                .pending_entry
-                .as_ref()
-                .is_some_and(|pending| pending.client_order_id == event.client_order_id)
+        let managed_entry_fill = self.exposure.entry_remainder().is_some_and(|remainder| {
+            remainder.pending_entry.client_order_id == event.client_order_id
         });
         let exit_fill = self
             .exposure
@@ -8734,8 +7805,7 @@ impl BinaryOracleEdgeTaker {
             .is_some_and(|exit| exit.pending_exit.client_order_id == event.client_order_id);
 
         if entry_fill {
-            let entry_reconcile_materialization =
-                matches!(self.exposure, ExposureState::EntryReconcilePending { .. });
+            let entry_reconcile_materialization = self.exposure.is_entry_reconcile_pending();
             let pending_context = self.pending_entry_context_for(event.instrument_id);
             let keep_pending_entry = self.entry_order_may_remain_working(&event.client_order_id);
             let position_side = self
@@ -8753,10 +7823,15 @@ impl BinaryOracleEdgeTaker {
                     return;
                 }
                 if !keep_pending_entry {
-                    self.clear_managed_pending_entry_for_client_order(
-                        event.client_order_id,
-                        event.instrument_id,
-                    );
+                    self.resolve_pending_entry_terminal_event(PendingEntryTerminalEventInput {
+                        client_order_id: event.client_order_id,
+                        event_instrument_id: event.instrument_id,
+                        transition: OrderLifecycleTransition::OrderFilled,
+                        source: ORDER_LIFECYCLE_SOURCE_ENTRY_FILL,
+                        raw_reason_text: None,
+                        ts_event_ns: event.ts_event.as_u64(),
+                        terminal_proves_zero_fill: false,
+                    });
                 }
             } else if let Some(position_id) = event.position_id
                 && let Some(position_side) = position_side
@@ -8792,7 +7867,7 @@ impl BinaryOracleEdgeTaker {
                     });
                 }
             } else {
-                if matches!(self.exposure, ExposureState::BlindRecovery(_)) {
+                if self.exposure.is_blind_recovery() {
                     // The shared materialization guard already selected a typed fail-closed
                     // state (for example, a foreign-venue position). Do not overwrite it
                     // with the less precise generic inference failure below.
@@ -8804,10 +7879,7 @@ impl BinaryOracleEdgeTaker {
                             order_side: event.order_side,
                         }
                     };
-                    self.exposure = ExposureState::EntryReconcilePending {
-                        pending: pending.clone(),
-                        reason,
-                    };
+                    self.exposure.enter_entry_reconcile(pending.clone(), reason);
                     self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
                         transition: OrderLifecycleTransition::EntryReconcilePending,
                         outcome: OrderLifecycleOutcome::EntryReconcilePending,
@@ -8824,12 +7896,11 @@ impl BinaryOracleEdgeTaker {
                         ts_event_ns: Some(event.ts_event.as_u64()),
                     });
                 } else {
-                    self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
-                        reason: BlindRecoveryReason::InvalidLivePosition {
+                    self.exposure
+                        .enter_blind_recovery(BlindRecoveryReason::InvalidLivePosition {
                             entry_order_side: event.order_side,
                             side: position_side,
-                        },
-                    });
+                        });
                 }
                 log::error!(
                     "binary_oracle_edge_taker entry fill could not materialize configured position contract: strategy_id={} client_order_id={} instrument_id={} order_side={:?} position_id_present={} position_side_inferable={}",
@@ -8899,7 +7970,7 @@ impl BinaryOracleEdgeTaker {
             .exit_pending_snapshot()
             .filter(|exit| exit.pending_exit.client_order_id == event.client_order_id)
         else {
-            self.enter_fill_void_exit_recovery(event);
+            self.enter_blind_fill_void_recovery(event);
             return;
         };
         self.reconcile_exit_order_lifecycle(ExitOrderLifecycleObservationInput {
@@ -8909,9 +7980,7 @@ impl BinaryOracleEdgeTaker {
             source: ORDER_LIFECYCLE_SOURCE_RECONCILE_PASS,
             raw_reason_text: event.reason.as_ref().map(ToString::to_string),
             ts_event_ns: event.ts_event.as_u64(),
-            authority: ExitOrderAuthorityObservation::Correction {
-                cause: BoltV3RecoveredExitCause::FillVoidReopen,
-            },
+            authority: ExitOrderAuthorityObservation::FillAuthorityChanged,
         });
     }
 }
@@ -8927,6 +7996,16 @@ nautilus_trading::nautilus_strategy!(BinaryOracleEdgeTaker, {
 
     fn on_order_canceled(&mut self, event: &nautilus_model::events::OrderCanceled) {
         self.handle_order_canceled(event);
+    }
+
+    fn on_order_cancel_rejected(&mut self, event: nautilus_model::events::OrderCancelRejected) {
+        self.exposure.observe_cancel_rejected(event.client_order_id);
+        log::error!(
+            "binary_oracle_edge_taker entry-remainder cancel was rejected and requires operator intervention: strategy_id={} client_order_id={} reason={}",
+            self.config.strategy_id,
+            event.client_order_id,
+            event.reason,
+        );
     }
 
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {
@@ -9048,14 +8127,6 @@ nautilus_trading::nautilus_strategy!(BinaryOracleEdgeTaker, {
             }
             return;
         }
-        if self
-            .exposure
-            .exit_authority_recovery_hold()
-            .is_some_and(|hold| hold.pending_exit.position_id == Some(event.position_id))
-        {
-            self.try_recover_exit_authority_hold(event.ts_event.as_u64());
-            return;
-        }
         match self.nt_canonical_open_position_projection() {
             Ok(Some(position)) => {
                 self.materialize_position_from_truth(
@@ -9088,98 +8159,30 @@ nautilus_trading::nautilus_strategy!(BinaryOracleEdgeTaker, {
         {
             self.last_recorded_exit_decision = None;
         }
-        let managed_position_close = match &self.exposure {
-            ExposureState::Managed(position) if position.position_id == event.position_id => {
-                Some(position.pending_entry.clone())
-            }
-            _ => None,
-        };
-        if let Some(pending_entry) = managed_position_close {
-            if !self.event_instrument_matches_held_exposure(event.instrument_id) {
-                return;
-            }
-            if let Some(pending_entry) = pending_entry {
-                let client_order_id = pending_entry.client_order_id;
-                self.exposure = ExposureState::PendingEntry(pending_entry);
-                let client_id = ClientId::from(self.config.client_id.as_str());
-                if let Err(error) = self.cancel_resting_order(client_order_id, client_id) {
-                    log::error!(
-                        "binary_oracle_edge_taker external position close could not cancel pending entry: strategy_id={} client_order_id={} error={error}",
-                        self.config.strategy_id,
-                        client_order_id,
-                    );
-                }
-            } else {
-                self.exposure = ExposureState::Flat;
-            }
-            self.refresh_book_subscriptions_for_current_state();
-            self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
-            return;
-        }
-
-        let exit_pending_close = self
+        let pending_before_close = self
+            .pending_entry()
+            .filter(|pending| pending.instrument_id == event.instrument_id)
+            .cloned();
+        let cancellation = self
             .exposure
-            .exit_pending_snapshot()
-            .filter(|exit_pending| {
-                exit_pending.pending_exit.position_id == Some(event.position_id)
+            .observe_position_closed(event.position_id, event.instrument_id);
+        self.perform_entry_cancellation_effect(cancellation);
+        if let Some(pending) = pending_before_close {
+            self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
+                transition: OrderLifecycleTransition::PositionClosed,
+                outcome: Self::lifecycle_outcome_for_exposure(&self.exposure),
+                source: ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
+                market_id: pending.lifecycle.market_id_owned(),
+                instrument_id: Some(event.instrument_id),
+                position_id: Some(event.position_id),
+                client_order_id: Some(pending.client_order_id),
+                prior_client_order_id: None,
+                raw_reason_text: None,
+                order_side: None,
+                filled_quantity: None,
+                residual_quantity: None,
+                ts_event_ns: Some(event.ts_event.as_u64()),
             });
-        if let Some(exit_pending) = exit_pending_close {
-            if !self.event_instrument_matches_held_exposure(event.instrument_id) {
-                return;
-            }
-            let closed_market_id = exit_pending.pending_exit.market_id.or_else(|| {
-                exit_pending
-                    .position
-                    .and_then(|managed| managed.lifecycle.market_id_owned())
-            });
-            self.exposure = ExposureState::Flat;
-            if let Some(market_id) = closed_market_id {
-                self.arm_market_cooldown(&market_id, event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
-            }
-        } else if matches!(
-            &self.exposure,
-            ExposureState::UnsupportedObserved(observed)
-                if observed.context.position_id == event.position_id
-        ) {
-            if !self.event_instrument_matches_held_exposure(event.instrument_id) {
-                return;
-            }
-            if matches!(
-                &self.exposure,
-                ExposureState::UnsupportedObserved(observed)
-                    if observed.context.position_id == event.position_id
-            ) {
-                self.exposure = ExposureState::Flat;
-            }
-        } else {
-            // Entry reconciliation may not have a position id yet; the instrument is the
-            // strongest available key for a close that races ahead of position materialization.
-            let entry_reconcile_close = match &self.exposure {
-                ExposureState::EntryReconcilePending { pending, .. }
-                    if pending.instrument_id == event.instrument_id =>
-                {
-                    Some(pending.clone())
-                }
-                _ => None,
-            };
-            if let Some(pending) = entry_reconcile_close {
-                self.exposure = ExposureState::Flat;
-                self.record_order_lifecycle_evidence(OrderLifecycleEvidenceInput {
-                    transition: OrderLifecycleTransition::PositionClosed,
-                    outcome: OrderLifecycleOutcome::Flat,
-                    source: ORDER_LIFECYCLE_SOURCE_POSITION_EVENT,
-                    market_id: pending.lifecycle.market_id_owned(),
-                    instrument_id: Some(event.instrument_id),
-                    position_id: Some(event.position_id),
-                    client_order_id: Some(pending.client_order_id),
-                    prior_client_order_id: None,
-                    raw_reason_text: None,
-                    order_side: None,
-                    filled_quantity: None,
-                    residual_quantity: None,
-                    ts_event_ns: Some(event.ts_event.as_u64()),
-                });
-            }
         }
         self.refresh_book_subscriptions_for_current_state();
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
@@ -9437,18 +8440,12 @@ fn settlement_key_for_position(position: &OpenPositionState) -> Result<String> {
     Ok(key)
 }
 
-fn managed_position_context(
-    position: OpenPositionState,
-    origin: ManagedPositionOrigin,
-    pending_entry: Option<PendingEntryState>,
-) -> ManagedPositionContext {
+fn managed_position_context(position: OpenPositionState) -> ManagedPositionContext {
     ManagedPositionContext {
         lifecycle: position.lifecycle,
         instrument_id: position.instrument_id,
         position_id: position.position_id,
         book: position.book,
-        origin,
-        pending_entry,
     }
 }
 
@@ -9505,6 +8502,7 @@ fn exposure_occupancy_to_evidence(occupancy: ExposureOccupancy) -> EvidenceExpos
         ExposureOccupancy::EntryReconcilePending => {
             EvidenceExposureOccupancy::EntryReconcilePending
         }
+        ExposureOccupancy::EntryRemainder => EvidenceExposureOccupancy::PendingEntry,
         ExposureOccupancy::ManagedPosition => EvidenceExposureOccupancy::ManagedPosition,
         ExposureOccupancy::ExitPending => EvidenceExposureOccupancy::ExitPending,
         ExposureOccupancy::UnsupportedObserved => EvidenceExposureOccupancy::UnsupportedObserved,
@@ -9516,6 +8514,7 @@ fn should_report_one_position_gate_violation(occupancy: ExposureOccupancy) -> bo
     matches!(
         occupancy,
         ExposureOccupancy::EntryReconcilePending
+            | ExposureOccupancy::EntryRemainder
             | ExposureOccupancy::UnsupportedObserved
             | ExposureOccupancy::BlindRecovery
     )

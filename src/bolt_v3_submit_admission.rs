@@ -1,7 +1,7 @@
 use crate::bolt_v3_capital_admission::{
     CapitalAdmissionGate, CapitalAdmissionGateInputs, CapitalAdmissionPolicy,
-    CapitalAdmissionRequest, IntentLiquidity, IntentOrderKind, IntentSide,
-    ProductAdmissionSnapshot, ProductKind,
+    CapitalAdmissionRequest, CapitalAdmissionReservationEvidence, IntentLiquidity, IntentOrderKind,
+    IntentSide, ProductAdmissionSnapshot, ProductKind,
 };
 use crate::bolt_v3_capital_admission_state::{
     NtDerivedCapitalAdmissionState, OrderLifecycleCapitalAdmissionSnapshot,
@@ -62,7 +62,7 @@ use rust_decimal::Decimal;
 use std::{
     collections::{BTreeMap, BTreeSet},
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -298,7 +298,7 @@ struct BoltV3SubmitAdmissionInner {
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
     admitted_order_count: u32,
     admitted_order_count_by_execution_client: BTreeMap<String, u32>,
-    capital_admission_nt_projection_epoch: u64,
+    capital_admission_state_revision: u64,
     live_non_reservation_client_order_ids: BTreeSet<String>,
     committed_admission_authority: ReservationRecoveryFacts,
     loss_policy: Option<LossGovernorPolicy>,
@@ -309,7 +309,7 @@ struct BoltV3SubmitAdmissionInner {
     capital_admission: Option<BoltV3SubmitCapitalAdmissionState>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct BoltV3SubmitCapitalAdmissionState {
     venue_id: String,
     account_id: String,
@@ -323,15 +323,55 @@ struct BoltV3SubmitCapitalAdmissionState {
     provider_collateral_allowance_capture_failure_observed_at_ns: Option<u64>,
     gate: CapitalAdmissionGate,
     next_sequence: u64,
-    client_order_reservations: BTreeMap<String, BoltV3SubmitReservationIndex>,
+    client_order_reservations: BTreeMap<String, BoltV3SubmitReservationRecord>,
+    unresolved_lifecycle_reservations: (usize, usize),
     fill_evidence_integrity_failed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct BoltV3SubmitReservationIndex {
-    submit_reservation_id: String,
-    collateral_group_id: String,
+struct BoltV3SubmitReservationRecord {
+    attribution: ReservationAttribution,
+    phase: BoltV3SubmitReservationPhase,
+    phase_revision: u64,
+    unresolved_in_projection: bool,
     fill_metadata: Option<BoltV3SubmitReservationFillMetadata>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3SubmitReservationPhase {
+    Reserved,
+    SinkInvoked,
+    ObservedOpen,
+}
+
+#[cfg(any(test, feature = "test-current-evidence-inspection"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoltV3SubmitReservationLifecycleSnapshot {
+    pub phase: BoltV3SubmitReservationPhase,
+    pub phase_revision: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct BoltV3SubmitTerminalReservationCapability {
+    client_order_id: String,
+    phase: BoltV3SubmitReservationPhase,
+    phase_revision: u64,
+}
+
+impl BoltV3SubmitTerminalReservationCapability {
+    pub(crate) fn client_order_id(&self) -> &str {
+        &self.client_order_id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoltV3SubmitTerminalReservationDecision {
+    Retired,
+    NotRetained,
+    StaleCapability,
+    RevisionExhausted,
+    LedgerMismatch,
+    EvidenceRejected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -364,6 +404,7 @@ pub struct BoltV3SubmitCapitalAdmissionNtComponents {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3SubmitCapitalAdmissionOpenOrderReservation {
     pub client_order_id: String,
+    pub attribution: ReservationAttribution,
     pub submit_reservation_id: String,
     pub collateral_group_id: String,
     pub liability: Decimal,
@@ -437,6 +478,8 @@ struct BoltV3SubmitCapitalAdmissionRebuildAuditContext {
     source: CapitalAdmissionRebuildSource,
     observed_open_order_count: usize,
     all_open_orders_attributed: bool,
+    unresolved_sink_invoked_reservation_count: usize,
+    unresolved_observed_open_reservation_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -552,7 +595,7 @@ impl BoltV3SubmitAdmissionState {
                 live_submit_approval_limits,
                 admitted_order_count: 0,
                 admitted_order_count_by_execution_client: BTreeMap::new(),
-                capital_admission_nt_projection_epoch: 0,
+                capital_admission_state_revision: 0,
                 live_non_reservation_client_order_ids: BTreeSet::new(),
                 committed_admission_authority: ReservationRecoveryFacts::default(),
                 loss_policy,
@@ -577,6 +620,7 @@ impl BoltV3SubmitAdmissionState {
                         gate: CapitalAdmissionGate::unreconciled(),
                         next_sequence: 0,
                         client_order_reservations: BTreeMap::new(),
+                        unresolved_lifecycle_reservations: (0, 0),
                         fill_evidence_integrity_failed: false,
                     }
                 }),
@@ -640,11 +684,11 @@ impl BoltV3SubmitAdmissionState {
         }
     }
 
-    pub(crate) fn capital_admission_nt_projection_epoch(&self) -> u64 {
+    pub(crate) fn capital_admission_state_revision(&self) -> u64 {
         self.inner
             .lock()
             .expect("submit admission state mutex should not be poisoned")
-            .capital_admission_nt_projection_epoch
+            .capital_admission_state_revision
     }
 
     #[cfg(any(test, feature = "test-current-evidence-inspection"))]
@@ -678,9 +722,13 @@ impl BoltV3SubmitAdmissionState {
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        advance_capital_admission_nt_projection_epoch(
-            &mut inner.capital_admission_nt_projection_epoch,
-        );
+        if advance_capital_admission_state_revision(&mut inner.capital_admission_state_revision)
+            .is_err()
+        {
+            log::error!(
+                "capital admission state revision exhausted while invalidating the NT projection"
+            );
+        }
         if let Some(capital_admission) = inner.capital_admission.as_mut() {
             capital_admission.gate.invalidate_reconciliation();
         }
@@ -725,9 +773,17 @@ impl BoltV3SubmitAdmissionState {
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        advance_capital_admission_nt_projection_epoch(
-            &mut inner.capital_admission_nt_projection_epoch,
-        );
+        if advance_capital_admission_state_revision(&mut inner.capital_admission_state_revision)
+            .is_err()
+        {
+            if let Some(capital_admission) = inner.capital_admission.as_mut() {
+                capital_admission.gate.invalidate_reconciliation();
+            }
+            log::error!(
+                "capital admission state revision exhausted while recording a collateral allowance capture failure"
+            );
+            return;
+        }
         if let Some(capital_admission) = inner.capital_admission.as_mut() {
             capital_admission.gate.invalidate_reconciliation();
             capital_admission.provider_collateral_allowance_capture_failure_source =
@@ -866,6 +922,173 @@ impl BoltV3SubmitAdmissionState {
             })
     }
 
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
+    pub fn remove_capital_ledger_reservation_only_for_test(&self, client_order_id: &str) -> bool {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        let Some(capital_admission) = inner.capital_admission.as_mut() else {
+            return false;
+        };
+        let Some(record) = capital_admission
+            .client_order_reservations
+            .get(client_order_id)
+        else {
+            return false;
+        };
+        let pool_id = record.attribution.capital_pool_id.clone();
+        let reservation_id = record.attribution.submit_reservation_id.clone();
+        capital_admission
+            .gate
+            .rollback_uncommitted_reservation(&pool_id, &reservation_id)
+            .is_some()
+    }
+
+    pub(crate) fn terminal_reservation_capabilities(
+        &self,
+    ) -> Vec<BoltV3SubmitTerminalReservationCapability> {
+        let inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        inner
+            .capital_admission
+            .as_ref()
+            .into_iter()
+            .flat_map(|state| state.client_order_reservations.iter())
+            .filter_map(|(client_order_id, record)| match record.phase {
+                BoltV3SubmitReservationPhase::SinkInvoked
+                | BoltV3SubmitReservationPhase::ObservedOpen => {
+                    Some(BoltV3SubmitTerminalReservationCapability {
+                        client_order_id: client_order_id.clone(),
+                        phase: record.phase,
+                        phase_revision: record.phase_revision,
+                    })
+                }
+                BoltV3SubmitReservationPhase::Reserved => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn retire_terminal_reservation(
+        &self,
+        capability: BoltV3SubmitTerminalReservationCapability,
+        observed_at_ns: u64,
+    ) -> BoltV3SubmitTerminalReservationDecision {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        let Some(live) = inner.capital_admission.as_ref() else {
+            return BoltV3SubmitTerminalReservationDecision::NotRetained;
+        };
+        let Some(record) = live
+            .client_order_reservations
+            .get(&capability.client_order_id)
+        else {
+            return BoltV3SubmitTerminalReservationDecision::NotRetained;
+        };
+        match (
+            record.phase,
+            record.phase_revision,
+            capability.phase,
+            capability.phase_revision,
+        ) {
+            (
+                BoltV3SubmitReservationPhase::SinkInvoked
+                | BoltV3SubmitReservationPhase::ObservedOpen,
+                record_revision,
+                capability_phase,
+                capability_revision,
+            ) if record.phase == capability_phase && record_revision == capability_revision => {}
+            _ => return BoltV3SubmitTerminalReservationDecision::StaleCapability,
+        }
+        let Some(next_revision) = inner.capital_admission_state_revision.checked_add(1) else {
+            if let Some(capital_admission) = inner.capital_admission.as_mut() {
+                capital_admission.gate.invalidate_reconciliation();
+            }
+            return BoltV3SubmitTerminalReservationDecision::RevisionExhausted;
+        };
+        let mut candidate = live.clone();
+        let Some(record) = candidate
+            .client_order_reservations
+            .get(&capability.client_order_id)
+            .cloned()
+        else {
+            if let Some(capital_admission) = inner.capital_admission.as_mut() {
+                capital_admission.gate.invalidate_reconciliation();
+            }
+            inner.capital_admission_state_revision = next_revision;
+            return BoltV3SubmitTerminalReservationDecision::LedgerMismatch;
+        };
+        let release = candidate.gate.remove_existing(
+            &record.attribution.capital_pool_id,
+            &record.attribution.collateral_group_id,
+            &record.attribution.submit_reservation_id,
+        );
+        if !release.accepted {
+            if let Some(capital_admission) = inner.capital_admission.as_mut() {
+                capital_admission.gate.invalidate_reconciliation();
+            }
+            inner.capital_admission_state_revision = next_revision;
+            return BoltV3SubmitTerminalReservationDecision::LedgerMismatch;
+        }
+        candidate
+            .client_order_reservations
+            .remove(&capability.client_order_id);
+        let unresolved = unresolved_reservation_counts(&candidate.client_order_reservations);
+        candidate.unresolved_lifecycle_reservations = unresolved;
+        let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
+            accepted: true,
+            reason: None,
+            attempted_reservation_count: 1,
+            rebuilt_reservation_count: 0,
+            live_reserved_liability: candidate
+                .gate
+                .live_reserved_liability(&candidate.capital_pool.pool_id),
+            missing_nt_account_cache_balance: None,
+        };
+        let audit_context = BoltV3SubmitCapitalAdmissionRebuildAuditContext {
+            observed_at_ns,
+            source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
+            observed_open_order_count: 0,
+            all_open_orders_attributed: true,
+            unresolved_sink_invoked_reservation_count: unresolved.0,
+            unresolved_observed_open_reservation_count: unresolved.1,
+        };
+        if !self.record_capital_admission_rebuild(&audit_context, &decision) {
+            if let Some(capital_admission) = inner.capital_admission.as_mut() {
+                capital_admission.gate.invalidate_reconciliation();
+            }
+            inner.capital_admission_state_revision = next_revision;
+            return BoltV3SubmitTerminalReservationDecision::EvidenceRejected;
+        }
+        inner.capital_admission = Some(candidate);
+        inner.capital_admission_state_revision = next_revision;
+        BoltV3SubmitTerminalReservationDecision::Retired
+    }
+
+    #[cfg(feature = "test-current-evidence-inspection")]
+    #[doc(hidden)]
+    pub fn retire_terminal_reservation_for_test(
+        &self,
+        client_order_id: &str,
+        observed_at_ns: u64,
+    ) -> bool {
+        let capability = self
+            .terminal_reservation_capabilities()
+            .into_iter()
+            .find(|capability| capability.client_order_id() == client_order_id);
+        capability.is_some_and(|capability| {
+            matches!(
+                self.retire_terminal_reservation(capability, observed_at_ns),
+                BoltV3SubmitTerminalReservationDecision::Retired
+            )
+        })
+    }
+
     pub fn capital_admission_reconciled(&self) -> Option<bool> {
         let inner = self
             .inner
@@ -878,6 +1101,16 @@ impl BoltV3SubmitAdmissionState {
                     .provider_collateral_allowance_capture_failure_source
                     .is_none(),
         )
+    }
+
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    pub fn unresolved_lifecycle_reservation_counts_for_test(&self) -> Option<(usize, usize)> {
+        self.inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned")
+            .capital_admission
+            .as_ref()
+            .map(|state| state.unresolved_lifecycle_reservations)
     }
 
     pub(crate) fn capital_admission_open_order_reservation_from_attribution(
@@ -951,6 +1184,7 @@ impl BoltV3SubmitAdmissionState {
         )?;
         Some(BoltV3SubmitCapitalAdmissionOpenOrderReservation {
             client_order_id: evidence.client_order_id,
+            attribution: attribution.clone(),
             submit_reservation_id: attribution.submit_reservation_id.clone(),
             collateral_group_id: attribution.collateral_group_id.clone(),
             liability: open_liability,
@@ -1030,20 +1264,22 @@ impl BoltV3SubmitAdmissionState {
             open_order_count: snapshot.observed_open_order_count,
             all_open_orders_attributed: snapshot.all_open_orders_attributed,
         };
-        let audit_context = BoltV3SubmitCapitalAdmissionRebuildAuditContext {
+        let mut audit_context = BoltV3SubmitCapitalAdmissionRebuildAuditContext {
             observed_at_ns: snapshot.observed_at_ns,
             source: snapshot.evidence_source,
             observed_open_order_count: snapshot.observed_open_order_count,
             all_open_orders_attributed: snapshot.all_open_orders_attributed,
+            unresolved_sink_invoked_reservation_count: 0,
+            unresolved_observed_open_reservation_count: 0,
         };
         let attempted_reservation_count = snapshot.observed_open_order_count;
         let mut inner = self
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        if expected_epoch.is_some_and(|expected_epoch| {
-            expected_epoch != inner.capital_admission_nt_projection_epoch
-        }) {
+        if expected_epoch
+            .is_some_and(|expected_epoch| expected_epoch != inner.capital_admission_state_revision)
+        {
             return BoltV3SubmitCapitalAdmissionRebuildDecision {
                 accepted: false,
                 reason: Some(ReservationRejectionReason::MissingEvidence),
@@ -1061,15 +1297,29 @@ impl BoltV3SubmitAdmissionState {
                 missing_nt_account_cache_balance: None,
             };
         }
-        if expected_epoch.is_some() {
-            advance_capital_admission_nt_projection_epoch(
-                &mut inner.capital_admission_nt_projection_epoch,
-            );
-        }
-        if snapshot.all_open_orders_attributed {
-            inner.live_non_reservation_client_order_ids = live_non_reservation_client_order_ids;
-        }
-        let Some(capital_admission) = inner.capital_admission.as_mut() else {
+        let Some(candidate_phase_revision) = inner.capital_admission_state_revision.checked_add(1)
+        else {
+            if let Some(capital_admission) = inner.capital_admission.as_mut() {
+                capital_admission.gate.invalidate_reconciliation();
+            }
+            return BoltV3SubmitCapitalAdmissionRebuildDecision {
+                accepted: false,
+                reason: Some(ReservationRejectionReason::ReconciliationRequired),
+                attempted_reservation_count,
+                rebuilt_reservation_count: 0,
+                live_reserved_liability: inner
+                    .capital_admission
+                    .as_ref()
+                    .map(|capital_admission| {
+                        capital_admission
+                            .gate
+                            .live_reserved_liability(&capital_admission.capital_pool.pool_id)
+                    })
+                    .unwrap_or(Decimal::ZERO),
+                missing_nt_account_cache_balance: None,
+            };
+        };
+        let Some(mut candidate_capital_admission) = inner.capital_admission.clone() else {
             return BoltV3SubmitCapitalAdmissionRebuildDecision {
                 accepted: snapshot.all_open_orders_attributed,
                 reason: (!snapshot.all_open_orders_attributed)
@@ -1080,6 +1330,7 @@ impl BoltV3SubmitAdmissionState {
                 missing_nt_account_cache_balance: None,
             };
         };
+        let capital_admission = &mut candidate_capital_admission;
         if let Some(mut components) = components {
             if capital_admission
                 .provider_collateral_allowance_capture_failure_observed_at_ns
@@ -1096,8 +1347,7 @@ impl BoltV3SubmitAdmissionState {
             refresh_capital_admission_state_from_components(capital_admission, components);
         }
         if capital_admission.fill_evidence_integrity_failed {
-            capital_admission.gate = CapitalAdmissionGate::unreconciled();
-            capital_admission.client_order_reservations.clear();
+            capital_admission.gate.invalidate_reconciliation();
             refresh_capital_admission_reservation_snapshot_with_source(
                 capital_admission,
                 snapshot.observed_at_ns,
@@ -1109,17 +1359,23 @@ impl BoltV3SubmitAdmissionState {
                 reason: Some(ReservationRejectionReason::MissingEvidence),
                 attempted_reservation_count,
                 rebuilt_reservation_count: 0,
-                live_reserved_liability: Decimal::ZERO,
+                live_reserved_liability: capital_admission
+                    .gate
+                    .live_reserved_liability(&capital_admission.capital_pool.pool_id),
                 missing_nt_account_cache_balance: None,
             };
-            return self.finish_capital_admission_rebuild(&mut inner, &audit_context, decision);
+            return self.finish_capital_admission_rebuild(
+                &mut inner,
+                &audit_context,
+                candidate_phase_revision,
+                decision,
+            );
         }
         if !snapshot.all_open_orders_attributed {
             if let Some(state) = capital_admission.state.as_mut() {
                 apply_rebuild_order_lifecycle(state, rebuilt_order_lifecycle);
             }
-            capital_admission.gate = CapitalAdmissionGate::unreconciled();
-            capital_admission.client_order_reservations.clear();
+            capital_admission.gate.invalidate_reconciliation();
             refresh_capital_admission_reservation_snapshot_with_source(
                 capital_admission,
                 snapshot.observed_at_ns,
@@ -1136,11 +1392,15 @@ impl BoltV3SubmitAdmissionState {
                     .live_reserved_liability(&capital_admission.capital_pool.pool_id),
                 missing_nt_account_cache_balance: None,
             };
-            return self.finish_capital_admission_rebuild(&mut inner, &audit_context, decision);
+            return self.finish_capital_admission_rebuild(
+                &mut inner,
+                &audit_context,
+                candidate_phase_revision,
+                decision,
+            );
         }
         let Some(state) = capital_admission.state.as_ref() else {
-            capital_admission.gate = CapitalAdmissionGate::unreconciled();
-            capital_admission.client_order_reservations.clear();
+            capital_admission.gate.invalidate_reconciliation();
             let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
                 accepted: false,
                 reason: Some(ReservationRejectionReason::MissingEvidence),
@@ -1151,17 +1411,23 @@ impl BoltV3SubmitAdmissionState {
                     .live_reserved_liability(&capital_admission.capital_pool.pool_id),
                 missing_nt_account_cache_balance: None,
             };
-            return self.finish_capital_admission_rebuild(&mut inner, &audit_context, decision);
+            return self.finish_capital_admission_rebuild(
+                &mut inner,
+                &audit_context,
+                candidate_phase_revision,
+                decision,
+            );
         };
         capital_admission.capital_pool.source = state.portfolio.source.clone();
         capital_admission.capital_pool.observed_at_ns = state.portfolio.observed_at_ns;
 
+        let retained_index = capital_admission.client_order_reservations.clone();
         let mut rebuilt_index = BTreeMap::new();
-        let mut reservation_requests = Vec::with_capacity(snapshot.reservations.len());
+        let mut reservation_requests: Vec<CapitalAdmissionReservationEvidence> =
+            Vec::with_capacity(snapshot.reservations.len() + retained_index.len());
         for (index, reservation) in snapshot.reservations.into_iter().enumerate() {
             if rebuilt_index.contains_key(&reservation.client_order_id) {
-                capital_admission.gate = CapitalAdmissionGate::unreconciled();
-                capital_admission.client_order_reservations.clear();
+                capital_admission.gate.invalidate_reconciliation();
                 let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
                     accepted: false,
                     reason: Some(ReservationRejectionReason::DuplicateReservation),
@@ -1172,11 +1438,15 @@ impl BoltV3SubmitAdmissionState {
                         .live_reserved_liability(&capital_admission.capital_pool.pool_id),
                     missing_nt_account_cache_balance: None,
                 };
-                return self.finish_capital_admission_rebuild(&mut inner, &audit_context, decision);
+                return self.finish_capital_admission_rebuild(
+                    &mut inner,
+                    &audit_context,
+                    candidate_phase_revision,
+                    decision,
+                );
             }
             if !rebuilt_open_order_reservation_attribution_valid(&reservation) {
-                capital_admission.gate = CapitalAdmissionGate::unreconciled();
-                capital_admission.client_order_reservations.clear();
+                capital_admission.gate.invalidate_reconciliation();
                 let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
                     accepted: false,
                     reason: Some(ReservationRejectionReason::MissingEvidence),
@@ -1187,7 +1457,37 @@ impl BoltV3SubmitAdmissionState {
                         .live_reserved_liability(&capital_admission.capital_pool.pool_id),
                     missing_nt_account_cache_balance: None,
                 };
-                return self.finish_capital_admission_rebuild(&mut inner, &audit_context, decision);
+                return self.finish_capital_admission_rebuild(
+                    &mut inner,
+                    &audit_context,
+                    candidate_phase_revision,
+                    decision,
+                );
+            }
+            if retained_index
+                .get(&reservation.client_order_id)
+                .is_some_and(|retained| {
+                    retained.phase == BoltV3SubmitReservationPhase::Reserved
+                        || retained.attribution != reservation.attribution
+                })
+            {
+                capital_admission.gate.invalidate_reconciliation();
+                let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
+                    accepted: false,
+                    reason: Some(ReservationRejectionReason::MissingEvidence),
+                    attempted_reservation_count: index + 1,
+                    rebuilt_reservation_count: 0,
+                    live_reserved_liability: capital_admission
+                        .gate
+                        .live_reserved_liability(&capital_admission.capital_pool.pool_id),
+                    missing_nt_account_cache_balance: None,
+                };
+                return self.finish_capital_admission_rebuild(
+                    &mut inner,
+                    &audit_context,
+                    candidate_phase_revision,
+                    decision,
+                );
             }
 
             let submit_reservation_id = reservation.submit_reservation_id;
@@ -1197,52 +1497,179 @@ impl BoltV3SubmitAdmissionState {
             let observed_at_ns = reservation.observed_at_ns;
             rebuilt_index.insert(
                 reservation.client_order_id,
-                BoltV3SubmitReservationIndex {
-                    submit_reservation_id: submit_reservation_id.clone(),
-                    collateral_group_id: collateral_group_id.clone(),
+                BoltV3SubmitReservationRecord {
+                    attribution: reservation.attribution,
+                    phase: BoltV3SubmitReservationPhase::ObservedOpen,
+                    phase_revision: candidate_phase_revision,
+                    unresolved_in_projection: false,
                     fill_metadata: Some(BoltV3SubmitReservationFillMetadata {
                         instrument_id,
                         side,
                     }),
                 },
             );
-            reservation_requests.push(ReservationRequest {
-                request_id: submit_reservation_id,
-                pool_id: capital_admission.capital_pool.pool_id.clone(),
-                collateral_group_id,
-                liability: reservation.liability,
-                observed_at_ns,
-                evidence_label: reservation.evidence_label,
-            });
+            reservation_requests.push(
+                ReservationRequest {
+                    request_id: submit_reservation_id,
+                    pool_id: capital_admission.capital_pool.pool_id.clone(),
+                    collateral_group_id,
+                    liability: reservation.liability,
+                    observed_at_ns,
+                    evidence_label: reservation.evidence_label,
+                }
+                .into(),
+            );
         }
 
-        capital_admission.client_order_reservations.clear();
-        let decision = capital_admission.gate.rebuild_open_order_reservations(
+        for (client_order_id, mut record) in retained_index {
+            match (rebuilt_index.contains_key(&client_order_id), record.phase) {
+                (true, _) => {}
+                (
+                    false,
+                    BoltV3SubmitReservationPhase::SinkInvoked
+                    | BoltV3SubmitReservationPhase::ObservedOpen,
+                ) => {
+                    let retained = capital_admission.gate.retained_reservation(
+                        &record.attribution.capital_pool_id,
+                        &record.attribution.collateral_group_id,
+                        &record.attribution.submit_reservation_id,
+                    );
+                    let Ok(retained) = retained else {
+                        capital_admission.gate.invalidate_reconciliation();
+                        let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
+                            accepted: false,
+                            reason: Some(ReservationRejectionReason::MissingEvidence),
+                            attempted_reservation_count,
+                            rebuilt_reservation_count: 0,
+                            live_reserved_liability: capital_admission
+                                .gate
+                                .live_reserved_liability(&capital_admission.capital_pool.pool_id),
+                            missing_nt_account_cache_balance: None,
+                        };
+                        return self.finish_capital_admission_rebuild(
+                            &mut inner,
+                            &audit_context,
+                            candidate_phase_revision,
+                            decision,
+                        );
+                    };
+                    reservation_requests.push(
+                        CapitalAdmissionReservationEvidence::RetainedLifecycleReservation(retained),
+                    );
+                    record.unresolved_in_projection = true;
+                    rebuilt_index.insert(client_order_id, record);
+                }
+                (false, BoltV3SubmitReservationPhase::Reserved) => {
+                    capital_admission.gate.invalidate_reconciliation();
+                    let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
+                        accepted: false,
+                        reason: Some(ReservationRejectionReason::MissingEvidence),
+                        attempted_reservation_count,
+                        rebuilt_reservation_count: 0,
+                        live_reserved_liability: capital_admission
+                            .gate
+                            .live_reserved_liability(&capital_admission.capital_pool.pool_id),
+                        missing_nt_account_cache_balance: None,
+                    };
+                    return self.finish_capital_admission_rebuild(
+                        &mut inner,
+                        &audit_context,
+                        candidate_phase_revision,
+                        decision,
+                    );
+                }
+            }
+        }
+
+        let unresolved = unresolved_reservation_counts(&rebuilt_index);
+        audit_context.unresolved_sink_invoked_reservation_count = unresolved.0;
+        audit_context.unresolved_observed_open_reservation_count = unresolved.1;
+        capital_admission.unresolved_lifecycle_reservations = unresolved;
+
+        let mut candidate_gate = capital_admission.gate.clone();
+        let gate_decision = candidate_gate.rebuild_open_order_reservations(
             &capital_admission.capital_pool,
             &reservation_requests,
             now_ns,
             capital_admission.policy.min_remaining_pool_balance,
         );
-        if decision.accepted {
-            capital_admission.client_order_reservations = rebuilt_index;
-            if let Some(state) = capital_admission.state.as_mut() {
-                apply_rebuild_order_lifecycle(state, rebuilt_order_lifecycle);
-            }
-            refresh_capital_admission_reservation_snapshot(capital_admission, now_ns);
-        }
-
         let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
-            accepted: decision.accepted,
-            reason: decision.reason,
-            attempted_reservation_count: decision.attempted_reservation_count,
-            rebuilt_reservation_count: decision.rebuilt_reservation_count,
-            live_reserved_liability: decision.live_reserved_liability,
+            accepted: gate_decision.accepted,
+            reason: gate_decision.reason,
+            attempted_reservation_count: gate_decision.attempted_reservation_count,
+            rebuilt_reservation_count: gate_decision.rebuilt_reservation_count,
+            live_reserved_liability: gate_decision.live_reserved_liability,
             missing_nt_account_cache_balance: None,
         };
-        self.finish_capital_admission_rebuild(&mut inner, &audit_context, decision)
+        match decision.accepted {
+            false => {
+                capital_admission.gate.invalidate_reconciliation();
+                self.finish_capital_admission_rebuild(
+                    &mut inner,
+                    &audit_context,
+                    candidate_phase_revision,
+                    decision,
+                )
+            }
+            true => match self.record_capital_admission_rebuild(&audit_context, &decision) {
+                false => {
+                    let live_reserved_liability =
+                        inner
+                            .capital_admission
+                            .as_mut()
+                            .map_or(Decimal::ZERO, |live| {
+                                live.gate.invalidate_reconciliation();
+                                refresh_capital_admission_reservation_snapshot_with_source(
+                                    live,
+                                    audit_context.observed_at_ns,
+                                    audit_context.source.as_str().to_string(),
+                                    false,
+                                );
+                                live.gate
+                                    .live_reserved_liability(&live.capital_pool.pool_id)
+                            });
+                    inner.capital_admission_state_revision = candidate_phase_revision;
+                    BoltV3SubmitCapitalAdmissionRebuildDecision {
+                        accepted: false,
+                        reason: Some(ReservationRejectionReason::MissingEvidence),
+                        attempted_reservation_count: decision.attempted_reservation_count,
+                        rebuilt_reservation_count: 0,
+                        live_reserved_liability,
+                        missing_nt_account_cache_balance: None,
+                    }
+                }
+                true => {
+                    let prior_unresolved = inner
+                        .capital_admission
+                        .as_ref()
+                        .map(|state| state.unresolved_lifecycle_reservations)
+                        .unwrap_or((0, 0));
+                    if prior_unresolved != unresolved {
+                        log::warn!(
+                            "bolt-v3 capital admission unresolved lifecycle reservations changed: sink_invoked={} observed_open={}",
+                            unresolved.0,
+                            unresolved.1,
+                        );
+                    }
+                    capital_admission.gate = candidate_gate;
+                    capital_admission.client_order_reservations = rebuilt_index;
+                    if let Some(state) = capital_admission.state.as_mut() {
+                        apply_rebuild_order_lifecycle(state, rebuilt_order_lifecycle);
+                    }
+                    refresh_capital_admission_reservation_snapshot(capital_admission, now_ns);
+                    inner.capital_admission = Some(candidate_capital_admission);
+                    inner.capital_admission_state_revision = candidate_phase_revision;
+                    if audit_context.all_open_orders_attributed {
+                        inner.live_non_reservation_client_order_ids =
+                            live_non_reservation_client_order_ids;
+                    }
+                    decision
+                }
+            },
+        }
     }
 
-    #[cfg(feature = "test-current-evidence-inspection")]
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     #[doc(hidden)]
     pub fn rebuild_capital_admission_open_order_snapshot_for_test(
         &self,
@@ -1254,8 +1681,38 @@ impl BoltV3SubmitAdmissionState {
 
     #[cfg(feature = "test-current-evidence-inspection")]
     #[doc(hidden)]
-    pub fn capital_admission_nt_projection_epoch_for_test(&self) -> u64 {
-        self.capital_admission_nt_projection_epoch()
+    pub fn capital_admission_state_revision_for_test(&self) -> u64 {
+        self.capital_admission_state_revision()
+    }
+
+    #[cfg(feature = "test-current-evidence-inspection")]
+    #[doc(hidden)]
+    pub fn set_capital_admission_state_revision_for_test(&self, revision: u64) {
+        self.inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned")
+            .capital_admission_state_revision = revision;
+    }
+
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
+    pub fn capital_admission_reservation_lifecycle_for_test(
+        &self,
+        client_order_id: &str,
+    ) -> Option<BoltV3SubmitReservationLifecycleSnapshot> {
+        let inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        let record = inner
+            .capital_admission
+            .as_ref()?
+            .client_order_reservations
+            .get(client_order_id)?;
+        Some(BoltV3SubmitReservationLifecycleSnapshot {
+            phase: record.phase,
+            phase_revision: record.phase_revision,
+        })
     }
 
     #[cfg(feature = "test-current-evidence-inspection")]
@@ -1281,39 +1738,11 @@ impl BoltV3SubmitAdmissionState {
         &self,
         inner: &mut BoltV3SubmitAdmissionInner,
         context: &BoltV3SubmitCapitalAdmissionRebuildAuditContext,
+        failure_revision: u64,
         decision: BoltV3SubmitCapitalAdmissionRebuildDecision,
     ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
-        let outcome = if decision.accepted {
-            CapitalAdmissionRebuildOutcome::Accepted
-        } else {
-            CapitalAdmissionRebuildOutcome::Rejected(
-                decision
-                    .reason
-                    .map(capital_admission_rejection_reason)
-                    .unwrap_or(CapitalAdmissionRejectionReason::InvalidRequest),
-            )
-        };
-        let audit = CapitalAdmissionRebuildFact {
-            observed_at_ns: context.observed_at_ns,
-            source: context.source,
-            observed_open_order_count: context.observed_open_order_count,
-            all_open_orders_attributed: context.all_open_orders_attributed,
-            outcome,
-            attempted_reservation_count: decision.attempted_reservation_count,
-            recovered_reservation_count: decision.rebuilt_reservation_count,
-            live_reserved_liability: decision.live_reserved_liability.to_string(),
-        };
-        if self
-            .decision_evidence
-            .record_capital_admission_rebuild(audit)
-            .is_ok()
-        {
-            return decision;
-        }
-
         if let Some(capital_admission) = inner.capital_admission.as_mut() {
-            capital_admission.gate = CapitalAdmissionGate::unreconciled();
-            capital_admission.client_order_reservations.clear();
+            capital_admission.gate.invalidate_reconciliation();
             refresh_capital_admission_reservation_snapshot_with_source(
                 capital_admission,
                 context.observed_at_ns,
@@ -1321,6 +1750,11 @@ impl BoltV3SubmitAdmissionState {
                 false,
             );
         }
+        inner.capital_admission_state_revision = failure_revision;
+        if self.record_capital_admission_rebuild(context, &decision) {
+            return decision;
+        }
+
         BoltV3SubmitCapitalAdmissionRebuildDecision {
             accepted: false,
             reason: Some(ReservationRejectionReason::MissingEvidence),
@@ -1337,6 +1771,39 @@ impl BoltV3SubmitAdmissionState {
                 .unwrap_or(Decimal::ZERO),
             missing_nt_account_cache_balance: None,
         }
+    }
+
+    fn record_capital_admission_rebuild(
+        &self,
+        context: &BoltV3SubmitCapitalAdmissionRebuildAuditContext,
+        decision: &BoltV3SubmitCapitalAdmissionRebuildDecision,
+    ) -> bool {
+        let outcome = match decision.accepted {
+            true => CapitalAdmissionRebuildOutcome::Accepted,
+            false => CapitalAdmissionRebuildOutcome::Rejected(
+                decision
+                    .reason
+                    .map(capital_admission_rejection_reason)
+                    .unwrap_or(CapitalAdmissionRejectionReason::InvalidRequest),
+            ),
+        };
+        let audit = CapitalAdmissionRebuildFact {
+            observed_at_ns: context.observed_at_ns,
+            source: context.source,
+            observed_open_order_count: context.observed_open_order_count,
+            all_open_orders_attributed: context.all_open_orders_attributed,
+            outcome,
+            attempted_reservation_count: decision.attempted_reservation_count,
+            recovered_reservation_count: decision.rebuilt_reservation_count,
+            live_reserved_liability: decision.live_reserved_liability.to_string(),
+            unresolved_sink_invoked_reservation_count: context
+                .unresolved_sink_invoked_reservation_count,
+            unresolved_observed_open_reservation_count: context
+                .unresolved_observed_open_reservation_count,
+        };
+        self.decision_evidence
+            .record_capital_admission_rebuild(audit)
+            .is_ok()
     }
 
     pub fn record_capital_admission_fill_evidence(
@@ -1356,7 +1823,7 @@ impl BoltV3SubmitAdmissionState {
         let BoltV3SubmitAdmissionInner {
             committed_admission_authority,
             capital_admission,
-            capital_admission_nt_projection_epoch,
+            capital_admission_state_revision,
             ..
         } = &mut *inner;
         let Some(capital_admission) = capital_admission.as_mut() else {
@@ -1377,7 +1844,7 @@ impl BoltV3SubmitAdmissionState {
             .and_then(|index| {
                 index.fill_metadata.as_ref().map(|metadata| {
                     (
-                        index.submit_reservation_id.clone(),
+                        index.attribution.submit_reservation_id.clone(),
                         metadata.instrument_id.clone(),
                         metadata.side,
                     )
@@ -1400,12 +1867,11 @@ impl BoltV3SubmitAdmissionState {
                     })
             });
         let Some((submit_reservation_id, instrument_id, side)) = expected else {
-            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
-            fail_capital_admission_fill_evidence_integrity(
+            return reject_capital_admission_fill_evidence_integrity(
                 capital_admission,
+                capital_admission_state_revision,
                 update.observed_at_ns,
             );
-            return BoltV3SubmitReservationFillEvidenceDecision::unknown();
         };
         if update.trade_id.trim().len() != update.trade_id.len()
             || update.trade_id.is_empty()
@@ -1413,12 +1879,11 @@ impl BoltV3SubmitAdmissionState {
             || update.instrument_id != instrument_id
             || update.side != side
         {
-            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
-            fail_capital_admission_fill_evidence_integrity(
+            return reject_capital_admission_fill_evidence_integrity(
                 capital_admission,
+                capital_admission_state_revision,
                 update.observed_at_ns,
             );
-            return BoltV3SubmitReservationFillEvidenceDecision::unknown();
         }
         if let Some(existing) = committed_admission_authority.reservation_fill(
             &update.client_order_id,
@@ -1431,37 +1896,43 @@ impl BoltV3SubmitAdmissionState {
                     unknown_reservation: false,
                 };
             }
-            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
-            fail_capital_admission_fill_evidence_integrity(
+            return reject_capital_admission_fill_evidence_integrity(
                 capital_admission,
+                capital_admission_state_revision,
                 update.observed_at_ns,
             );
-            return BoltV3SubmitReservationFillEvidenceDecision::unknown();
         }
         let Some(index) = live_index else {
             log::warn!(
                 "bolt-v3 submit admission received new fill for non-live client_order_id={}",
                 update.client_order_id
             );
-            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
-            fail_capital_admission_fill_evidence_integrity(
+            return reject_capital_admission_fill_evidence_integrity(
                 capital_admission,
+                capital_admission_state_revision,
                 update.observed_at_ns,
             );
-            return BoltV3SubmitReservationFillEvidenceDecision::unknown();
         };
         if index.fill_metadata.is_none() {
-            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
-            fail_capital_admission_fill_evidence_integrity(
+            return reject_capital_admission_fill_evidence_integrity(
                 capital_admission,
+                capital_admission_state_revision,
                 update.observed_at_ns,
             );
-            return BoltV3SubmitReservationFillEvidenceDecision::unknown();
         }
-        advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
+        match advance_capital_admission_state_revision(capital_admission_state_revision) {
+            Ok(()) => {}
+            Err(_) => {
+                capital_admission.gate.invalidate_reconciliation();
+                log::error!(
+                    "capital admission state revision exhausted while recording fill evidence"
+                );
+                return BoltV3SubmitReservationFillEvidenceDecision::unknown();
+            }
+        }
         let fill_evidence = SubmitReservationFillFact {
             client_order_id: update.client_order_id.clone(),
-            submit_reservation_id: index.submit_reservation_id.clone(),
+            submit_reservation_id: index.attribution.submit_reservation_id.clone(),
             trade_id: update.trade_id.clone(),
             instrument_id: update.instrument_id.clone(),
             side: match update.side {
@@ -1516,12 +1987,15 @@ impl BoltV3SubmitAdmissionState {
             .expect("submit admission state mutex should not be poisoned");
         let BoltV3SubmitAdmissionInner {
             capital_admission,
-            capital_admission_nt_projection_epoch,
+            capital_admission_state_revision,
             ..
         } = &mut *inner;
         if let Some(capital_admission) = capital_admission.as_mut() {
-            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
-            fail_capital_admission_fill_evidence_integrity(capital_admission, observed_at_ns);
+            let _ = reject_capital_admission_fill_evidence_integrity(
+                capital_admission,
+                capital_admission_state_revision,
+                observed_at_ns,
+            );
         }
     }
 
@@ -2239,13 +2713,13 @@ impl BoltV3SubmitAdmissionState {
                 live_submit_count_cap_outcome(current_count, claim_count, limits.max_order_count);
         }
 
-        if outcome != AdmissionDecisionOutcome::Admitted {
+        if let AdmissionDecisionOutcome::Rejected(reason) = outcome {
             rollback_capital_admission_reservations(&mut inner, &rollbacks);
             if let Some(evaluation) = rejected_evaluation.as_ref() {
                 Self::admission_result(&inner, evaluation)?;
             }
-            return Err(submit_admission_error_from_outcome(
-                outcome,
+            return Err(submit_admission_error_from_rejection(
+                reason,
                 inner.kill_switch_state.kind(),
             ));
         }
@@ -2540,49 +3014,46 @@ fn loss_snapshot_stale_reason_to_evidence(
     }
 }
 
-fn submit_admission_error_from_outcome(
-    outcome: AdmissionDecisionOutcome,
+fn submit_admission_error_from_rejection(
+    reason: AdmissionRejectionReason,
     kill_switch_state: KillSwitchStateKind,
 ) -> BoltV3SubmitAdmissionError {
-    match outcome {
-        AdmissionDecisionOutcome::Admitted => {
-            unreachable!("admitted outcome does not convert to a submit admission error")
-        }
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::KillSwitchLatched) => {
+    match reason {
+        AdmissionRejectionReason::KillSwitchLatched => {
             BoltV3SubmitAdmissionError::KillSwitchLatched {
                 state: kill_switch_state,
             }
         }
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::LossGovernorHalted) => {
+        AdmissionRejectionReason::LossGovernorHalted => {
             BoltV3SubmitAdmissionError::LossGovernorHalted {
                 reasons: Vec::new(),
             }
         }
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::NonPositiveNotional) => {
+        AdmissionRejectionReason::NonPositiveNotional => {
             BoltV3SubmitAdmissionError::NonPositiveNotional
         }
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::NotionalCapExceeded) => {
+        AdmissionRejectionReason::NotionalCapExceeded => {
             BoltV3SubmitAdmissionError::NotionalCapExceeded
         }
-        AdmissionDecisionOutcome::Rejected(
-            AdmissionRejectionReason::ClientOrderAlreadyAuthorized,
-        ) => BoltV3SubmitAdmissionError::ClientOrderAlreadyAuthorized,
-        AdmissionDecisionOutcome::Rejected(
-            AdmissionRejectionReason::InvalidRiskReducingExitProof,
-        ) => BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof,
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CountCapExhausted) => {
+        AdmissionRejectionReason::ClientOrderAlreadyAuthorized => {
+            BoltV3SubmitAdmissionError::ClientOrderAlreadyAuthorized
+        }
+        AdmissionRejectionReason::InvalidRiskReducingExitProof => {
+            BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof
+        }
+        AdmissionRejectionReason::CountCapExhausted => {
             BoltV3SubmitAdmissionError::CountCapExhausted
         }
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CapitalAdmission) => {
+        AdmissionRejectionReason::CapitalAdmission => {
             BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
                 reason: BoltV3CapitalAdmissionRejectReason::Rejected,
             }
         }
-        AdmissionDecisionOutcome::Rejected(
-            AdmissionRejectionReason::KillSwitchForcedReductionProofInvalid
-            | AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
-        ) => retired_forced_reduction_outcome_error(),
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::EconomicsSealRejected) => {
+        AdmissionRejectionReason::KillSwitchForcedReductionProofInvalid
+        | AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded => {
+            retired_forced_reduction_outcome_error()
+        }
+        AdmissionRejectionReason::EconomicsSealRejected => {
             BoltV3SubmitAdmissionError::EconomicsSealRejected
         }
     }
@@ -2654,14 +3125,125 @@ pub struct BoltV3SubmitAdmissionPermit {
 
 impl BoltV3SubmitAdmissionPermit {
     pub fn commit_submitted(mut self) {
-        self.evidence_authority
-            .take()
-            .expect("submit permit must retain its evidence authority until commit")
-            .consume();
-        self.committed = true;
-        self.rollbacks.clear();
-        self.counter_rollback = None;
+        self.prepare_sink_invocation()
+            .expect("admitted reservation must remain exact until the submit boundary")
+            .commit();
     }
+
+    pub(crate) fn prepare_sink_invocation(
+        &mut self,
+    ) -> Result<BoltV3PreparedCapitalSinkInvocation<'_>, ReservationRejectionReason> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| ReservationRejectionReason::ReconciliationRequired)?;
+        let prepared = prepare_capital_sink_invocation(&inner, &self.rollbacks)?;
+        let evidence_authority = self
+            .evidence_authority
+            .take()
+            .ok_or(ReservationRejectionReason::ReconciliationRequired)?;
+        Ok(BoltV3PreparedCapitalSinkInvocation {
+            inner,
+            prepared: Some(prepared),
+            evidence_authority: Some(evidence_authority),
+            evidence_slot: &mut self.evidence_authority,
+            committed: &mut self.committed,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct PreparedCapitalSinkInvocationTransition {
+    candidate_capital_admission: Option<BoltV3SubmitCapitalAdmissionState>,
+    final_revision: u64,
+}
+
+#[must_use = "prepared capital admission must cross the submit boundary or remain refundable"]
+pub(crate) struct BoltV3PreparedCapitalSinkInvocation<'a> {
+    inner: MutexGuard<'a, BoltV3SubmitAdmissionInner>,
+    prepared: Option<PreparedCapitalSinkInvocationTransition>,
+    evidence_authority: Option<BoltV3SubmitEvidenceAuthority>,
+    evidence_slot: &'a mut Option<BoltV3SubmitEvidenceAuthority>,
+    committed: &'a mut bool,
+}
+
+impl BoltV3PreparedCapitalSinkInvocation<'_> {
+    pub(crate) fn commit(&mut self) {
+        match self.prepared.take() {
+            Some(prepared) => commit_capital_sink_invocation(&mut self.inner, prepared),
+            None => {}
+        }
+        match self.evidence_authority.take() {
+            Some(authority) => authority.consume(),
+            None => {}
+        }
+        *self.committed = true;
+    }
+}
+
+impl Drop for BoltV3PreparedCapitalSinkInvocation<'_> {
+    fn drop(&mut self) {
+        *self.evidence_slot = self.evidence_authority.take();
+    }
+}
+
+fn prepare_capital_sink_invocation(
+    inner: &BoltV3SubmitAdmissionInner,
+    rollbacks: &[BoltV3CapitalAdmissionReservationRollback],
+) -> Result<PreparedCapitalSinkInvocationTransition, ReservationRejectionReason> {
+    if rollbacks.is_empty() {
+        return Ok(PreparedCapitalSinkInvocationTransition {
+            candidate_capital_admission: None,
+            final_revision: inner.capital_admission_state_revision,
+        });
+    }
+    let mut candidate_capital_admission = inner
+        .capital_admission
+        .clone()
+        .ok_or(ReservationRejectionReason::UnknownReservation)?;
+    let mut next_revision = inner.capital_admission_state_revision;
+    for rollback in rollbacks {
+        next_revision = next_revision
+            .checked_add(1)
+            .ok_or(ReservationRejectionReason::ReconciliationRequired)?;
+        let record = candidate_capital_admission
+            .client_order_reservations
+            .get(&rollback.client_order_id)
+            .ok_or(ReservationRejectionReason::UnknownReservation)?;
+        match (
+            record.phase,
+            record.attribution.submit_reservation_id == rollback.submit_reservation_id,
+            record.attribution.capital_pool_id == rollback.pool_id,
+        ) {
+            (BoltV3SubmitReservationPhase::Reserved, true, true) => {}
+            _ => return Err(ReservationRejectionReason::UnknownReservation),
+        }
+        candidate_capital_admission.gate.retained_reservation(
+            &record.attribution.capital_pool_id,
+            &record.attribution.collateral_group_id,
+            &record.attribution.submit_reservation_id,
+        )?;
+        let record = candidate_capital_admission
+            .client_order_reservations
+            .get_mut(&rollback.client_order_id)
+            .ok_or(ReservationRejectionReason::UnknownReservation)?;
+        record.phase = BoltV3SubmitReservationPhase::SinkInvoked;
+        record.phase_revision = next_revision;
+    }
+    Ok(PreparedCapitalSinkInvocationTransition {
+        candidate_capital_admission: Some(candidate_capital_admission),
+        final_revision: next_revision,
+    })
+}
+
+fn commit_capital_sink_invocation(
+    inner: &mut BoltV3SubmitAdmissionInner,
+    prepared: PreparedCapitalSinkInvocationTransition,
+) {
+    if let Some(candidate_capital_admission) = prepared.candidate_capital_admission {
+        inner.capital_admission = Some(candidate_capital_admission);
+    }
+    inner.capital_admission_state_revision = prepared.final_revision;
 }
 
 impl Drop for BoltV3SubmitAdmissionPermit {
@@ -3919,7 +4501,12 @@ fn evaluate_capital_admission_submit(
     request: &BoltV3SubmitAdmissionRequest,
     now_ns: u64,
 ) -> BoltV3CapitalAdmissionSubmitDecision {
-    let Some(capital_admission) = inner.capital_admission.as_mut() else {
+    let BoltV3SubmitAdmissionInner {
+        capital_admission_state_revision,
+        capital_admission,
+        ..
+    } = inner;
+    let Some(capital_admission) = capital_admission.as_mut() else {
         return accepted_without_reservation();
     };
     let Some(evidence) = request.admission_evidence.as_ref() else {
@@ -4013,6 +4600,12 @@ fn evaluate_capital_admission_submit(
         );
     }
 
+    let Some(reservation_revision) = capital_admission_state_revision.checked_add(1) else {
+        capital_admission.gate.invalidate_reconciliation();
+        return rejected_capital_admission(
+            BoltV3CapitalAdmissionRejectReason::ReconciliationRequired,
+        );
+    };
     capital_admission.next_sequence += 1;
     let submit_reservation_id = format!(
         "{}#{}",
@@ -4091,15 +4684,18 @@ fn evaluate_capital_admission_submit(
     };
     capital_admission.client_order_reservations.insert(
         request.client_order_id.clone(),
-        BoltV3SubmitReservationIndex {
-            submit_reservation_id: submit_reservation_id.clone(),
-            collateral_group_id: product.collateral_coupled_group_id.clone(),
+        BoltV3SubmitReservationRecord {
+            attribution: reservation_attribution.clone(),
+            phase: BoltV3SubmitReservationPhase::Reserved,
+            phase_revision: reservation_revision,
+            unresolved_in_projection: false,
             fill_metadata: Some(BoltV3SubmitReservationFillMetadata {
                 instrument_id: request.instrument_id.clone(),
                 side: evidence.side,
             }),
         },
     );
+    *capital_admission_state_revision = reservation_revision;
     BoltV3CapitalAdmissionSubmitDecision {
         accepted: true,
         reason: BoltV3CapitalAdmissionRejectReason::Rejected,
@@ -4148,21 +4744,13 @@ fn refresh_capital_admission_state_from_components(
     components: BoltV3SubmitCapitalAdmissionNtComponents,
 ) {
     if capital_admission.fill_evidence_integrity_failed {
-        capital_admission.gate = CapitalAdmissionGate::unreconciled();
+        capital_admission.gate.invalidate_reconciliation();
     }
     if capital_admission.gate.is_reconciled()
         && components.order_lifecycle.open_order_count > 0
         && !components.order_lifecycle.all_open_orders_attributed
     {
-        capital_admission.gate = CapitalAdmissionGate::unreconciled();
-    }
-    if !capital_admission.gate.is_reconciled()
-        && !capital_admission.fill_evidence_integrity_failed
-        && capital_admission.client_order_reservations.is_empty()
-        && components.order_lifecycle.open_order_count == 0
-        && components.order_lifecycle.all_open_orders_attributed
-    {
-        capital_admission.gate = CapitalAdmissionGate::reconciled();
+        capital_admission.gate.invalidate_reconciliation();
     }
     let state = compose_capital_admission_state_from_components(
         components,
@@ -4182,15 +4770,56 @@ fn fail_capital_admission_fill_evidence_integrity(
     observed_at_ns: u64,
 ) {
     capital_admission.fill_evidence_integrity_failed = true;
-    capital_admission.gate = CapitalAdmissionGate::unreconciled();
-    capital_admission.client_order_reservations.clear();
+    capital_admission.gate.invalidate_reconciliation();
     refresh_capital_admission_reservation_snapshot(capital_admission, observed_at_ns);
 }
 
-fn advance_capital_admission_nt_projection_epoch(epoch: &mut u64) {
-    *epoch = epoch
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CapitalAdmissionStateRevisionExhausted;
+
+fn advance_capital_admission_state_revision(
+    revision: &mut u64,
+) -> Result<(), CapitalAdmissionStateRevisionExhausted> {
+    let next = revision
         .checked_add(1)
-        .expect("capital admission NT projection epoch exhausted");
+        .ok_or(CapitalAdmissionStateRevisionExhausted)?;
+    *revision = next;
+    Ok(())
+}
+
+fn reject_capital_admission_fill_evidence_integrity(
+    capital_admission: &mut BoltV3SubmitCapitalAdmissionState,
+    revision: &mut u64,
+    observed_at_ns: u64,
+) -> BoltV3SubmitReservationFillEvidenceDecision {
+    match advance_capital_admission_state_revision(revision) {
+        Ok(()) => fail_capital_admission_fill_evidence_integrity(capital_admission, observed_at_ns),
+        Err(_) => {
+            capital_admission.gate.invalidate_reconciliation();
+            log::error!("capital admission state revision exhausted while rejecting fill evidence");
+        }
+    }
+    BoltV3SubmitReservationFillEvidenceDecision::unknown()
+}
+
+fn unresolved_reservation_counts(
+    records: &BTreeMap<String, BoltV3SubmitReservationRecord>,
+) -> (usize, usize) {
+    let sink_invoked = records
+        .values()
+        .filter(|record| {
+            record.unresolved_in_projection
+                && matches!(record.phase, BoltV3SubmitReservationPhase::SinkInvoked)
+        })
+        .count();
+    let observed_open = records
+        .values()
+        .filter(|record| {
+            record.unresolved_in_projection
+                && matches!(record.phase, BoltV3SubmitReservationPhase::ObservedOpen)
+        })
+        .count();
+    (sink_invoked, observed_open)
 }
 
 fn apply_rebuild_order_lifecycle(
@@ -4265,7 +4894,12 @@ fn nt_components_from_existing_capital_admission_state(
 fn rebuilt_open_order_reservation_attribution_valid(
     reservation: &BoltV3SubmitCapitalAdmissionOpenOrderReservation,
 ) -> bool {
-    if reservation.instrument_id.trim().is_empty()
+    if reservation.client_order_id != reservation.attribution.client_order_id
+        || reservation.submit_reservation_id != reservation.attribution.submit_reservation_id
+        || reservation.collateral_group_id != reservation.attribution.collateral_group_id
+        || reservation.instrument_id != reservation.attribution.instrument_id
+        || evidence_order_side(reservation.side) != reservation.attribution.side
+        || reservation.instrument_id.trim().is_empty()
         || reservation.open_quantity <= Decimal::ZERO
         || reservation.original_quantity <= Decimal::ZERO
         || reservation.filled_quantity < Decimal::ZERO
@@ -4340,21 +4974,50 @@ fn rollback_capital_admission_reservation(
     inner: &mut BoltV3SubmitAdmissionInner,
     rollback: &BoltV3CapitalAdmissionReservationRollback,
 ) {
+    let Some(next_revision) = inner.capital_admission_state_revision.checked_add(1) else {
+        if let Some(capital_admission) = inner.capital_admission.as_mut() {
+            capital_admission.gate.invalidate_reconciliation();
+        }
+        log::error!(
+            "bolt-v3 capital reservation rollback exhausted the lifecycle revision: client_order_id={}",
+            rollback.client_order_id,
+        );
+        return;
+    };
     let Some(capital_admission) = inner.capital_admission.as_mut() else {
         return;
     };
-    capital_admission
-        .gate
-        .rollback_uncommitted_reservation(&rollback.pool_id, &rollback.submit_reservation_id);
-    if capital_admission
+    let index_matches = capital_admission
         .client_order_reservations
         .get(&rollback.client_order_id)
-        .map(|current| current.submit_reservation_id.as_str())
-        == Some(rollback.submit_reservation_id.as_str())
-    {
-        capital_admission
-            .client_order_reservations
-            .remove(&rollback.client_order_id);
+        .is_some_and(|current| {
+            current.attribution.submit_reservation_id == rollback.submit_reservation_id
+        });
+    let ledger_removed = capital_admission
+        .gate
+        .rollback_uncommitted_reservation(&rollback.pool_id, &rollback.submit_reservation_id)
+        .is_some();
+    match (ledger_removed, index_matches) {
+        (true, true) => {
+            capital_admission
+                .client_order_reservations
+                .remove(&rollback.client_order_id);
+        }
+        (true, false) => {}
+        (false, true) => {
+            capital_admission.gate.invalidate_reconciliation();
+            log::error!(
+                "bolt-v3 capital reservation rollback found attribution without numerical liability: client_order_id={} reservation_id={}",
+                rollback.client_order_id,
+                rollback.submit_reservation_id,
+            );
+        }
+        (false, false) => return,
+    }
+    inner.capital_admission_state_revision = next_revision;
+    if ledger_removed {
+        capital_admission.unresolved_lifecycle_reservations =
+            unresolved_reservation_counts(&capital_admission.client_order_reservations);
     }
     refresh_capital_admission_reservation_snapshot(capital_admission, rollback.observed_at_ns);
 }

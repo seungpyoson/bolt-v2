@@ -94,7 +94,9 @@ use nautilus_model::{
         TradeTick, option_chain::StrikeRange,
     },
     enums::{BarIntervalType, BookType},
-    identifiers::{AccountId, ClientId, InstrumentId, OptionSeriesId, StrategyId, Venue},
+    identifiers::{
+        AccountId, ClientId, ClientOrderId, InstrumentId, OptionSeriesId, StrategyId, Venue,
+    },
     instruments::{Instrument, InstrumentAny},
     types::Price,
 };
@@ -250,6 +252,7 @@ use crate::{
         BoltV3SubmitCapitalAdmissionMissingNtAccountCacheBalance,
         BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
         BoltV3SubmitCapitalAdmissionOpenOrderSnapshot, BoltV3SubmitCapitalAdmissionRebuildDecision,
+        BoltV3SubmitTerminalReservationDecision,
     },
     bolt_v3_validate::parse_decimal_string,
     nt_runtime_capture::{
@@ -1564,8 +1567,18 @@ impl BoltV3LiveNodeRuntime {
             }
             None => (None, None, None, None),
         };
-        let nt_projection_epoch = submit_admission.capital_admission_nt_projection_epoch();
+        let terminal_capabilities = submit_admission.terminal_reservation_capabilities();
         let cache = cache.borrow();
+        let terminal_observations = terminal_capabilities
+            .into_iter()
+            .filter(|capability| {
+                cache
+                    .order(&ClientOrderId::from(capability.client_order_id()))
+                    .is_some_and(|order| {
+                        order.is_closed() || order.leaves_qty().as_decimal() == Decimal::ZERO
+                    })
+            })
+            .collect::<Vec<_>>();
         let open_order_snapshots = reconciliation_account_ids
             .iter()
             .flat_map(|account_id| {
@@ -1630,6 +1643,22 @@ impl BoltV3LiveNodeRuntime {
                 _ => (Decimal::ZERO, Decimal::ZERO),
             };
         drop(cache);
+
+        for capability in terminal_observations {
+            match submit_admission.retire_terminal_reservation(capability, now_ns) {
+                BoltV3SubmitTerminalReservationDecision::Retired
+                | BoltV3SubmitTerminalReservationDecision::NotRetained => {}
+                decision @ (BoltV3SubmitTerminalReservationDecision::StaleCapability
+                | BoltV3SubmitTerminalReservationDecision::RevisionExhausted
+                | BoltV3SubmitTerminalReservationDecision::LedgerMismatch
+                | BoltV3SubmitTerminalReservationDecision::EvidenceRejected) => {
+                    log::error!(
+                        "bolt-v3 capital admission terminal reservation retirement failed: decision={decision:?}"
+                    );
+                }
+            }
+        }
+        let nt_projection_epoch = submit_admission.capital_admission_state_revision();
 
         let canonical_projection = CapitalAdmissionNtCacheProjection {
             accepted_allowance_observed_at_ns,

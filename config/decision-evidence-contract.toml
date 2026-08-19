@@ -765,7 +765,7 @@ gate_id = "bolt_v3.submit_admission"
 id = "capital_admission_rebuild_v1"
 purpose = "capital_admission_rebuild"
 kind = "capital_admission_rebuild"
-schema_version = 16
+schema_version = 17
 gate_id = "bolt_v3.capital_admission_rebuild"
 
 [[identities]]
@@ -807,7 +807,7 @@ gate_id = "bolt_v3.exit_decision"
 id = "exit_evaluation_v1"
 purpose = "exit_evaluation"
 kind = "exit_evaluation"
-schema_version = 17
+schema_version = 18
 gate_id = "bolt_v3.exit_evaluation"
 
 [[identities]]

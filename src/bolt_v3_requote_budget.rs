@@ -258,6 +258,13 @@ impl Eq for RequoteBudgetPair {}
 pub struct RequoteBudgetReservation {
     budget: RequoteBudgetPair,
     generation: u64,
+    phase: RequoteBudgetReservationPhase,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RequoteBudgetReservationPhase {
+    Refundable,
+    SinkInvoked { now_ms: u64 },
 }
 
 impl RequoteBudgetPair {
@@ -331,6 +338,7 @@ impl RequoteBudgetPair {
         Ok(RequoteBudgetReservation {
             budget: self.clone(),
             generation,
+            phase: RequoteBudgetReservationPhase::Refundable,
         })
     }
 
@@ -460,15 +468,28 @@ impl RequoteBudgetReservation {
         self.generation
     }
 
-    pub fn mark_sink_invoked_at(
-        &mut self,
-        now_ms: u64,
-    ) -> Result<(), RequoteBudgetReservationDenied> {
+    /// Cross the route point of no return without acquiring the shared budget lock.
+    ///
+    /// The outstanding ledger entry continues to reserve the complete liability
+    /// until route settlement or a synchronous lifecycle callback accounts for
+    /// this invocation. This makes the aggregate submit commitment an owned-token
+    /// phase change rather than a second lock acquisition.
+    pub(crate) fn prepare_sink_invoked_at(&mut self, now_ms: u64) {
+        if self.phase == RequoteBudgetReservationPhase::Refundable {
+            self.phase = RequoteBudgetReservationPhase::SinkInvoked { now_ms };
+        }
+    }
+
+    pub(crate) fn settle_prepared_sink_invocation(&mut self) {
+        let RequoteBudgetReservationPhase::SinkInvoked { now_ms } = self.phase else {
+            return;
+        };
+        self.phase = RequoteBudgetReservationPhase::Refundable;
         let mut state = self.budget.lock();
         let Some(liability) = state.outstanding.remove(&self.generation) else {
             // Once the sink has consumed the complete liability, the token is an
             // inert receipt. Re-observing the same sink boundary is idempotent.
-            return Ok(());
+            return;
         };
         match liability {
             OutstandingLiability::CancelResubmitBothOutstanding { .. } => {
@@ -493,7 +514,11 @@ impl RequoteBudgetReservation {
                 );
             }
         }
-        Ok(())
+    }
+
+    pub fn mark_sink_invoked_at(&mut self, now_ms: u64) {
+        self.prepare_sink_invoked_at(now_ms);
+        self.settle_prepared_sink_invocation();
     }
 
     pub fn commit(mut self) -> Result<(), RequoteBudgetReservationDenied> {
@@ -505,6 +530,7 @@ impl RequoteBudgetReservation {
     }
 
     fn settle_committed(&mut self) -> Result<(), RequoteBudgetReservationDenied> {
+        self.settle_prepared_sink_invocation();
         let mut state = self.budget.lock();
         let Some(liability) = state.outstanding.remove(&self.generation) else {
             return Ok(());
@@ -514,6 +540,12 @@ impl RequoteBudgetReservation {
     }
 
     fn settle_aborted(&mut self) -> Result<(), RequoteBudgetReservationDenied> {
+        let sink_was_invoked = self.phase != RequoteBudgetReservationPhase::Refundable;
+        if sink_was_invoked {
+            self.settle_prepared_sink_invocation();
+            self.budget.lock().outstanding.remove(&self.generation);
+            return Ok(());
+        }
         self.budget
             .lock()
             .outstanding
@@ -536,6 +568,7 @@ impl RequoteBudgetReservation {
 
 impl Drop for RequoteBudgetReservation {
     fn drop(&mut self) {
+        self.settle_prepared_sink_invocation();
         self.budget.lock().outstanding.remove(&self.generation);
     }
 }
@@ -969,12 +1002,31 @@ mod tests {
         let pair = fresh_pair(1, 1);
         let proposal = pair.propose_fresh_submit(1_000).expect("proposal fits");
         let mut reservation = pair.reserve(proposal).expect("reservation arms");
-        reservation
-            .mark_sink_invoked_at(1_000)
-            .expect("sink invocation records the emitted command");
+        reservation.mark_sink_invoked_at(1_000);
         reservation
             .commit()
             .expect("unchanged configuration commits");
+
+        assert_eq!(pair.outstanding_submit_cost(), 0);
+        assert_eq!(pair.outstanding_rest_cost(), 0);
+        assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 1);
+    }
+
+    #[test]
+    fn prepared_sink_invocation_crosses_the_boundary_without_touching_shared_accounting() {
+        let pair = fresh_pair(1, 1);
+        let proposal = pair.propose_fresh_submit(1_000).expect("proposal fits");
+        let mut reservation = pair.reserve(proposal).expect("reservation arms");
+
+        reservation.prepare_sink_invoked_at(1_001);
+
+        assert_eq!(pair.outstanding_submit_cost(), 1);
+        assert_eq!(pair.outstanding_rest_cost(), 1);
+        assert_eq!(pair.submit_commands_in_window(), 0);
+        assert_eq!(pair.rest_cost_in_window(), 0);
+
+        drop(reservation);
 
         assert_eq!(pair.outstanding_submit_cost(), 0);
         assert_eq!(pair.outstanding_rest_cost(), 0);
@@ -994,17 +1046,13 @@ mod tests {
 
         assert_eq!(pair.outstanding_submit_cost(), 1);
         assert_eq!(pair.outstanding_rest_cost(), 2);
-        reservation
-            .mark_sink_invoked_at(1_000)
-            .expect("cancel invocation consumes only the cancel REST liability");
+        reservation.mark_sink_invoked_at(1_000);
         assert_eq!(pair.submit_commands_in_window(), 0);
         assert_eq!(pair.rest_cost_in_window(), 1);
         assert_eq!(pair.outstanding_submit_cost(), 1);
         assert_eq!(pair.outstanding_rest_cost(), 1);
 
-        reservation
-            .mark_sink_invoked_at(1_001)
-            .expect("replacement invocation consumes the remaining liability");
+        reservation.mark_sink_invoked_at(1_001);
         reservation
             .commit()
             .expect("a fully consumed reservation is an inert receipt");
@@ -1024,9 +1072,7 @@ mod tests {
             )
             .expect("prepaid reservation arms");
         assert!(reserve_fresh(&pair, 61_001));
-        prepaid
-            .mark_sink_invoked_at(61_001)
-            .expect("delayed sink invocation records at actor time");
+        prepaid.mark_sink_invoked_at(61_001);
         prepaid
             .commit()
             .expect("liability conversion cannot fail on window capacity");

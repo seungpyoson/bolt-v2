@@ -35,7 +35,10 @@ fn switch_resets_only_active_market_state() {
             churn_count: 2,
         })
     );
-    assert!(strategy.exposure.is_recovering());
+    assert!(matches!(
+        strategy.exposure.entry_gate(),
+        ExposureEntryGate::Recovering(_)
+    ));
     let active = &strategy.active;
     assert_eq!(active.market_id.as_deref(), Some("B"));
     assert!(active.interval_open.is_none());
@@ -112,7 +115,7 @@ fn exit_fill_arms_cooldown_for_position_market_not_current_selection() {
         &mut strategy,
         open_position,
         exit_client_order_id,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
 
@@ -146,7 +149,7 @@ fn exit_fill_without_known_position_market_does_not_cool_down_active_selection()
         &mut strategy,
         open_position,
         exit_client_order_id,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
 
@@ -176,7 +179,7 @@ fn position_close_keeps_exit_fenced_until_delayed_fill_authority_converges() {
         &mut strategy,
         open_position,
         exit_client_order_id,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
     close_nt_position(&mut strategy, position_id);
@@ -203,10 +206,7 @@ fn position_close_keeps_exit_fenced_until_delayed_fill_authority_converges() {
     );
     strategy.on_order_filled(&delayed_fill);
 
-    assert!(matches!(
-        strategy.exposure,
-        ExposureState::TerminalExitAwaitingPosition(_)
-    ));
+    assert!(strategy.exposure.terminal_exit_snapshot().is_some());
     assert_eq!(
         pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id),
         Some(exit_client_order_id),
@@ -717,7 +717,7 @@ fn tracked_market_lifecycle_is_retained_after_cooldown_expiry() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy.record_market_fill("MKT-1", 0);
 

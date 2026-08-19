@@ -363,7 +363,7 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
         let MakerOrderDispatchOutcome::SubmitAttempt {
             leg: dispatched_leg,
             instrument_id,
-            prepared_client_order_id,
+            prepared_client_order_id: _,
             price: dispatched_price,
             quantity: dispatched_quantity,
             transaction,
@@ -378,15 +378,9 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
             "the route must target the active runtime binding, never a caller-supplied instrument"
         );
         assert!(runtime_market.leg_binding(leg).active_order.is_none());
-        assert_eq!(
-            runtime_market
-                .leg_binding(leg)
-                .next_order
-                .as_ref()
-                .expect("a policy skip retains the prepared identity")
-                .client_order_id()
-                .as_str(),
-            prepared_client_order_id.as_str()
+        assert!(
+            runtime_market.leg_binding(leg).next_order.is_none(),
+            "a policy skip must consume an identity the lifecycle registry did not retain"
         );
         assert_eq!(*dispatched_price, price);
         assert_eq!(*dispatched_quantity, quantity);
@@ -397,6 +391,11 @@ fn maker_runtime_quote_tick_routes_both_legs_through_shared_context_in_shadow() 
             ) if outcome.kind()
                 == bolt_v2::bolt_v3_order_execution::BoltV3SubmitAttemptKind::PolicySkipped
         ));
+        assert_eq!(
+            transaction.identity_disposition(),
+            bolt_v2::bolt_v3_order_execution::RestingOrderIdentityDisposition::NotRetained,
+            "submit classification cannot mint lifecycle identity"
+        );
     };
     assert_runtime_policy_skip(
         yes_dispatch,
@@ -1457,18 +1456,20 @@ fn maker_loss_risk_route_drains_quotes_for_untrusted_loss_snapshot() {
         .expect("cancel-only risk action should dispatch cancel-all commands");
     assert_eq!(
         orders.yes.dispatch,
-        Some(MakerOrderDispatchOutcome::CanceledAll {
+        Some(MakerOrderDispatchOutcome::CancelScopeHandled {
             leg: Some(Leg::Yes),
             instrument_id: InstrumentId::from("YES.RUNTIME"),
             order_side: None,
+            dispositions: Vec::new(),
         })
     );
     assert_eq!(
         orders.no.dispatch,
-        Some(MakerOrderDispatchOutcome::CanceledAll {
+        Some(MakerOrderDispatchOutcome::CancelScopeHandled {
             leg: Some(Leg::No),
             instrument_id: InstrumentId::from("NO.RUNTIME"),
             order_side: None,
+            dispositions: Vec::new(),
         })
     );
     assert_eq!(market.market_state(), MarketState::Draining);
@@ -1515,18 +1516,20 @@ fn maker_loss_risk_route_hard_flat_does_not_hide_unsupported_active_reduce() {
         .expect("hard-flat drain action should dispatch cancel-all commands");
     assert_eq!(
         orders.yes.dispatch,
-        Some(MakerOrderDispatchOutcome::CanceledAll {
+        Some(MakerOrderDispatchOutcome::CancelScopeHandled {
             leg: Some(Leg::Yes),
             instrument_id: InstrumentId::from("YES.RUNTIME"),
             order_side: None,
+            dispositions: Vec::new(),
         })
     );
     assert_eq!(
         orders.no.dispatch,
-        Some(MakerOrderDispatchOutcome::CanceledAll {
+        Some(MakerOrderDispatchOutcome::CancelScopeHandled {
             leg: Some(Leg::No),
             instrument_id: InstrumentId::from("NO.RUNTIME"),
             order_side: None,
+            dispositions: Vec::new(),
         })
     );
     assert_eq!(market.market_state(), MarketState::Draining);
@@ -2588,9 +2591,7 @@ fn seed_emitted_yes_submit(
     let mut reservation = budget
         .reserve(proposal)
         .expect("the first submit charge should reserve");
-    reservation
-        .mark_sink_invoked_at(actor_now_ms)
-        .expect("the emitted charge should record at the actor boundary");
+    reservation.mark_sink_invoked_at(actor_now_ms);
     reservation
         .commit()
         .expect("the emitted submit charge should commit");
@@ -3328,9 +3329,8 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
     // Shadow chokepoint: intent emitted, nothing admitted to the venue.
     assert_eq!(admission.admitted_order_count(), 0);
 
-    // A policy skip is not a submission: neither leg may fabricate an active order,
-    // and each pre-minted identity remains in `next_order` for a later eligible
-    // attempt.
+    // A policy skip is not a submission: neither leg may fabricate or retain an
+    // order identity that the exact-generation lifecycle registry did not retain.
     let market_runtime = maker
         .runtime()
         .market(RUNTIME_MARKET_KEY)
@@ -3340,16 +3340,16 @@ fn maker_run_quote_cycle_assigns_identities_and_emits_intent_in_shadow() {
         "a policy-skipped YES intent must not fabricate an active order"
     );
     assert!(
-        market_runtime.leg_binding(Leg::Yes).next_order.is_some(),
-        "the minted next YES identity remains available after a policy skip"
+        market_runtime.leg_binding(Leg::Yes).next_order.is_none(),
+        "the unretained next YES identity must be consumed after a policy skip"
     );
     assert!(
         market_runtime.leg_binding(Leg::No).active_order.is_none(),
         "a policy-skipped NO intent must not fabricate an active order"
     );
     assert!(
-        market_runtime.leg_binding(Leg::No).next_order.is_some(),
-        "the minted next NO identity remains available after a policy skip"
+        market_runtime.leg_binding(Leg::No).next_order.is_none(),
+        "the unretained next NO identity must be consumed after a policy skip"
     );
 }
 

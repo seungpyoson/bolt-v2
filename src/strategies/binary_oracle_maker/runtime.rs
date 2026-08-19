@@ -36,8 +36,12 @@ use crate::{
     bolt_v3_maker_order_plan::MakerLegBinding,
     bolt_v3_maker_runtime_order::MakerRuntimeOrderDispatchOutcome,
     bolt_v3_maker_runtime_quote::MakerRuntimeOrderPlanInput,
+    bolt_v3_order_execution::{RestingOrderCancelHandled, RestingOrderIdentityDisposition},
     bolt_v3_quote_lifecycle::{Leg, MakerOrderLifecycleScopeIdentity},
 };
+
+#[cfg(test)]
+use crate::bolt_v3_order_execution::RestingOrderCancelDisposition;
 
 use super::binding::{
     MakerMarketDeclaration, MakerMarketResolution, MakerMarketResolutionMiss,
@@ -621,19 +625,16 @@ impl MakerRuntime {
         &mut self,
         market_key: &str,
         outcome: &MakerRuntimeOrderDispatchOutcome,
-    ) -> bool {
+    ) -> Result<bool, MakerRuntimeIdentityError> {
         let Some(market) = self.markets.get_mut(market_key) else {
-            return false;
+            return Ok(false);
         };
-        rotate_leg_identity(
-            market.leg_binding_mut(Leg::Yes),
-            outcome.yes.dispatch.as_ref(),
-        );
-        rotate_leg_identity(
-            market.leg_binding_mut(Leg::No),
-            outcome.no.dispatch.as_ref(),
-        );
-        true
+        let yes =
+            leg_identity_rotation(market.leg_binding(Leg::Yes), outcome.yes.dispatch.as_ref())?;
+        let no = leg_identity_rotation(market.leg_binding(Leg::No), outcome.no.dispatch.as_ref())?;
+        apply_leg_identity_rotation(market.leg_binding_mut(Leg::Yes), yes);
+        apply_leg_identity_rotation(market.leg_binding_mut(Leg::No), no);
+        Ok(true)
     }
 }
 
@@ -654,33 +655,145 @@ fn same_window(prior: &MakerResolvedMarketBinding, current: &MakerResolvedMarket
 
 /// Apply one leg's dispatched intent to its identity slots. See
 /// [`MakerRuntime::apply_dispatch_outcome`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LegIdentityRotation {
+    active_order: Option<OrderIdentity>,
+    next_order: Option<OrderIdentity>,
+}
+
+impl LegIdentityRotation {
+    fn preserve(binding: &MakerLegBinding) -> Self {
+        Self {
+            active_order: binding.active_order.clone(),
+            next_order: binding.next_order.clone(),
+        }
+    }
+
+    fn promote_next(binding: &MakerLegBinding) -> Self {
+        Self {
+            active_order: binding.next_order.clone(),
+            next_order: None,
+        }
+    }
+
+    fn clear_next(binding: &MakerLegBinding) -> Self {
+        Self {
+            active_order: binding.active_order.clone(),
+            next_order: None,
+        }
+    }
+
+    const fn clear() -> Self {
+        Self {
+            active_order: None,
+            next_order: None,
+        }
+    }
+
+    fn apply(self, binding: &mut MakerLegBinding) {
+        binding.active_order = self.active_order;
+        binding.next_order = self.next_order;
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MakerRuntimeIdentityError {
+    diagnostic: String,
+}
+
+impl std::fmt::Display for MakerRuntimeIdentityError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.diagnostic)
+    }
+}
+
+impl std::error::Error for MakerRuntimeIdentityError {}
+
+fn cancel_identity_matches(identity: &OrderIdentity, handled: RestingOrderCancelHandled) -> bool {
+    identity.client_order_id().as_str() == handled.client_order_id().as_str()
+}
+
+fn leg_identity_rotation(
+    binding: &MakerLegBinding,
+    dispatch: Option<&MakerOrderDispatchOutcome>,
+) -> Result<LegIdentityRotation, MakerRuntimeIdentityError> {
+    match dispatch {
+        Some(MakerOrderDispatchOutcome::SubmitAttempt { transaction, .. }) => {
+            match transaction.identity_disposition() {
+                RestingOrderIdentityDisposition::RetainedActive => {
+                    Ok(LegIdentityRotation::promote_next(binding))
+                }
+                RestingOrderIdentityDisposition::RetiredByCallback
+                | RestingOrderIdentityDisposition::NotRetained => {
+                    Ok(LegIdentityRotation::clear_next(binding))
+                }
+            }
+        }
+        Some(MakerOrderDispatchOutcome::CancelIntentHandled {
+            client_order_id,
+            disposition,
+            ..
+        }) => match binding.active_order.as_ref() {
+            Some(active)
+                if active.client_order_id().as_str() == client_order_id.as_str()
+                    && cancel_identity_matches(active, *disposition) =>
+            {
+                Ok(LegIdentityRotation::clear())
+            }
+            Some(active) => Err(MakerRuntimeIdentityError {
+                diagnostic: format!(
+                    "maker cancel disposition does not match active planning identity: active_client_order_id={} command_client_order_id={} disposition_client_order_id={}",
+                    active.client_order_id().as_str(),
+                    client_order_id,
+                    disposition.client_order_id(),
+                ),
+            }),
+            None => Err(MakerRuntimeIdentityError {
+                diagnostic: format!(
+                    "maker cancel disposition has no active planning identity: command_client_order_id={} disposition_client_order_id={}",
+                    client_order_id,
+                    disposition.client_order_id(),
+                ),
+            }),
+        },
+        Some(MakerOrderDispatchOutcome::CancelScopeHandled { dispositions, .. }) => {
+            match binding.active_order.as_ref() {
+                Some(active) => match dispositions
+                    .iter()
+                    .copied()
+                    .find(|handled| cancel_identity_matches(active, *handled))
+                {
+                    Some(_) => Ok(LegIdentityRotation::clear()),
+                    None => Err(MakerRuntimeIdentityError {
+                        diagnostic: format!(
+                            "maker cancel-scope dispositions omit active planning identity: active_client_order_id={}",
+                            active.client_order_id().as_str(),
+                        ),
+                    }),
+                },
+                None => Ok(LegIdentityRotation::clear_next(binding)),
+            }
+        }
+        // A modify amends the resting order in place: the active identity is
+        // unchanged. No dispatch (a blocked or no-action leg) leaves the slots as-is.
+        Some(MakerOrderDispatchOutcome::Modified { .. }) | None => {
+            Ok(LegIdentityRotation::preserve(binding))
+        }
+    }
+}
+
+fn apply_leg_identity_rotation(binding: &mut MakerLegBinding, rotation: LegIdentityRotation) {
+    rotation.apply(binding);
+}
+
+#[cfg(test)]
 fn rotate_leg_identity(
     binding: &mut MakerLegBinding,
     dispatch: Option<&MakerOrderDispatchOutcome>,
 ) {
-    match dispatch {
-        Some(MakerOrderDispatchOutcome::SubmitAttempt { transaction, .. }) => {
-            if transaction.is_submitted() {
-                binding.active_order = binding.next_order.take();
-            }
-        }
-        Some(
-            MakerOrderDispatchOutcome::Canceled { .. }
-            | MakerOrderDispatchOutcome::CanceledAll { .. },
-        ) => {
-            // A cancel/drain clears the resting identity AND drops the pre-minted
-            // replacement: a drained leg leaves a clean slate, so no stale
-            // `next_order` survives to be promoted by a later submit (the X4
-            // reduce-only/flatten path mints fresh identities of its own). The next
-            // quote cycle re-mints `next_order` before use, so this never strands a
-            // live cycle.
-            binding.active_order = None;
-            binding.next_order = None;
-        }
-        // A modify amends the resting order in place: the active identity is
-        // unchanged. No dispatch (a blocked or no-action leg) leaves the slots as-is.
-        Some(MakerOrderDispatchOutcome::Modified { .. }) | None => {}
-    }
+    let rotation = leg_identity_rotation(binding, dispatch)
+        .expect("maker identity test dispatch must match its planning binding");
+    apply_leg_identity_rotation(binding, rotation);
 }
 
 #[cfg(test)]
@@ -799,9 +912,11 @@ mod tests {
             .next_order
             .clone()
             .expect("NO next identity was minted");
-        assert!(runtime.apply_dispatch_outcome(
-            "configured-market",
-            &MakerRuntimeOrderDispatchOutcome {
+        assert!(
+            runtime
+                .apply_dispatch_outcome(
+                    "configured-market",
+                    &MakerRuntimeOrderDispatchOutcome {
                 yes: crate::bolt_v3_maker_runtime_order::MakerRuntimeLegOrderDispatchOutcome {
                     dispatch: Some(MakerOrderDispatchOutcome::submitted_for_test(
                         Leg::Yes,
@@ -818,8 +933,10 @@ mod tests {
                     blocked_by: None,
                     command_failure: None,
                 },
-            },
-        ));
+                    },
+                )
+                .expect("matching submit disposition must apply")
+        );
         let prior_identity = runtime
             .market("configured-market")
             .expect("market is active")
@@ -975,13 +1092,43 @@ mod tests {
         binding.active_order = Some(make_leg_identity("001", "m", 1, Leg::No, 2));
         rotate_leg_identity(
             &mut binding,
-            Some(&MakerOrderDispatchOutcome::Canceled {
+            Some(&MakerOrderDispatchOutcome::CancelIntentHandled {
                 leg: Leg::No,
                 instrument_id: InstrumentId::from("NO.SIM"),
-                client_order_id: ClientOrderId::from("001-m-no-2"),
+                client_order_id: ClientOrderId::from("001-m-1-no-2"),
+                disposition: RestingOrderCancelHandled::new(
+                    ClientOrderId::from("001-m-1-no-2"),
+                    RestingOrderCancelDisposition::RetainedByCoordinator,
+                ),
             }),
         );
         assert_eq!(binding.active_order, None);
+    }
+
+    #[test]
+    fn mismatched_cancel_disposition_preserves_planning_identities() {
+        let mut binding = leg_binding("NO.SIM");
+        let active = make_leg_identity("001", "m", 1, Leg::No, 2);
+        let next = make_leg_identity("001", "m", 1, Leg::No, 3);
+        binding.active_order = Some(active.clone());
+        binding.next_order = Some(next.clone());
+
+        let result = leg_identity_rotation(
+            &binding,
+            Some(&MakerOrderDispatchOutcome::CancelIntentHandled {
+                leg: Leg::No,
+                instrument_id: InstrumentId::from("NO.SIM"),
+                client_order_id: ClientOrderId::from(active.client_order_id().as_str()),
+                disposition: RestingOrderCancelHandled::new(
+                    ClientOrderId::from("001-m-1-no-other"),
+                    RestingOrderCancelDisposition::RetainedByCoordinator,
+                ),
+            }),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(binding.active_order, Some(active));
+        assert_eq!(binding.next_order, Some(next));
     }
 
     #[test]
@@ -996,10 +1143,14 @@ mod tests {
         binding.next_order = Some(make_leg_identity("001", "m", 1, Leg::Yes, 6));
         rotate_leg_identity(
             &mut binding,
-            Some(&MakerOrderDispatchOutcome::CanceledAll {
+            Some(&MakerOrderDispatchOutcome::CancelScopeHandled {
                 leg: Some(Leg::Yes),
                 instrument_id: InstrumentId::from("YES.SIM"),
                 order_side: Some(OrderSide::Buy),
+                dispositions: vec![RestingOrderCancelHandled::new(
+                    ClientOrderId::from("001-m-1-yes-5"),
+                    RestingOrderCancelDisposition::AuthoritativelyTerminal,
+                )],
             }),
         );
         assert_eq!(binding.active_order, None);

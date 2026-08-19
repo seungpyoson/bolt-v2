@@ -228,7 +228,6 @@ enum TransitionV1 {
     BoundaryReclassification,
     EntryFillMaterialized,
     EntryReconcilePending,
-    PositionTruthRematerialized,
     PositionClosed,
     ResidualRemanaged,
     RestartOpenOrderAdopted,
@@ -249,9 +248,6 @@ impl TransitionV1 {
             OrderLifecycleTransition::BoundaryReclassification => Self::BoundaryReclassification,
             OrderLifecycleTransition::EntryFillMaterialized => Self::EntryFillMaterialized,
             OrderLifecycleTransition::EntryReconcilePending => Self::EntryReconcilePending,
-            OrderLifecycleTransition::PositionTruthRematerialized => {
-                Self::PositionTruthRematerialized
-            }
             OrderLifecycleTransition::PositionClosed => Self::PositionClosed,
             OrderLifecycleTransition::ResidualRemanaged => Self::ResidualRemanaged,
             OrderLifecycleTransition::RestartOpenOrderAdopted => Self::RestartOpenOrderAdopted,
@@ -276,9 +272,6 @@ impl TransitionV1 {
             Self::BoundaryReclassification => OrderLifecycleTransition::BoundaryReclassification,
             Self::EntryFillMaterialized => OrderLifecycleTransition::EntryFillMaterialized,
             Self::EntryReconcilePending => OrderLifecycleTransition::EntryReconcilePending,
-            Self::PositionTruthRematerialized => {
-                OrderLifecycleTransition::PositionTruthRematerialized
-            }
             Self::PositionClosed => OrderLifecycleTransition::PositionClosed,
             Self::ResidualRemanaged => OrderLifecycleTransition::ResidualRemanaged,
             Self::RestartOpenOrderAdopted => OrderLifecycleTransition::RestartOpenOrderAdopted,

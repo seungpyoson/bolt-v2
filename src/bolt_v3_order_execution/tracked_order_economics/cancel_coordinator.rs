@@ -9,14 +9,17 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use super::{
-    BoltV3OrderEconomicsHandle, BoltV3RestingOrderDrainCapability, RestingRegistrationState,
-    RestingRegistryHealth, RestingRegistryLifecycle, RetentionHorizonCapability,
-    TrackedMakerOrderRecord, TrackedMakerOrderRegistry, apply_retention_horizon,
+    BoltV3OrderEconomicsHandle, BoltV3RestingOrderDrainCapability, RestingOrderCancelDisposition,
+    RestingRegistrationState, RestingRegistryHealth, RestingRegistryLifecycle,
+    RetentionHorizonCapability, TrackedMakerOrderRecord, TrackedMakerOrderRegistry,
+    apply_retention_horizon,
 };
 #[cfg(test)]
 use super::{MakerQuoteOrderAuthority, MakerQuoteRetainedTerminal};
 use crate::bolt_v3_numeric::NANOS_PER_MILLI_U64;
-use crate::bolt_v3_order_execution::{BoltV3NtVenueMutationSink, BoltV3OrderExecutionPolicy};
+use crate::bolt_v3_order_execution::{
+    BoltV3CancelRoutingOutcome, BoltV3NtVenueMutationSink, BoltV3OrderExecutionPolicy,
+};
 use crate::bolt_v3_quote_lifecycle::{Leg, MakerQuoteLifecycleHandle, MarketQuote};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -300,6 +303,15 @@ impl TrackedOrderCancellation {
 
     pub(super) const fn is_requested(&self) -> bool {
         self.intent.is_some()
+    }
+
+    pub(super) fn matches_scope(
+        &self,
+        instrument_id: InstrumentId,
+        order_side: Option<OrderSide>,
+    ) -> bool {
+        self.query_seed.instrument_id() == instrument_id
+            && order_side.is_none_or(|side| self.query_seed.order_side() == side)
     }
 }
 
@@ -1140,7 +1152,7 @@ impl BoltV3OrderEconomicsHandle {
         policy: BoltV3OrderExecutionPolicy,
         sink: &mut S,
         input: CancelDriveInput<'_>,
-    ) -> Result<()>
+    ) -> Result<RestingOrderCancelDisposition>
     where
         S: BoltV3NtVenueMutationSink + ?Sized,
     {
@@ -1162,7 +1174,8 @@ impl BoltV3OrderEconomicsHandle {
         ) {
             Ok(effect) => effect,
             Err(error) => {
-                return self.finish_cancel_drive(client_order_id, vec![error.to_string()]);
+                self.finish_cancel_drive(client_order_id, vec![error.to_string()])?;
+                return Ok(RestingOrderCancelDisposition::RetainedByCoordinator);
             }
         };
         let effect = match effect {
@@ -1185,7 +1198,8 @@ impl BoltV3OrderEconomicsHandle {
                             matches!(retired, CancelEffect::RetireIntent),
                             "requote reservation denial did not retire its cancel intent"
                         );
-                        return self.finish_cancel_drive(client_order_id, Vec::new());
+                        self.finish_cancel_drive(client_order_id, Vec::new())?;
+                        return Ok(RestingOrderCancelDisposition::RetainedByCoordinator);
                     }
                     let armed = self.settle_cancel_reservation_with_lifecycle(
                         client_order_id,
@@ -1222,7 +1236,8 @@ impl BoltV3OrderEconomicsHandle {
                                 retry_timeout_ns,
                             },
                         )?;
-                        return self.finish_cancel_drive(client_order_id, Vec::new());
+                        self.finish_cancel_drive(client_order_id, Vec::new())?;
+                        return Ok(RestingOrderCancelDisposition::RetainedByCoordinator);
                     };
                     let armed = self.settle_cancel_reservation(
                         client_order_id,
@@ -1246,42 +1261,42 @@ impl BoltV3OrderEconomicsHandle {
         // network request left the process, so the reservation remains charged.
         let (generation, operation_result, nt_mutation_invoked) = match effect {
             CancelEffect::None => {
-                return self.finish_cancel_drive(client_order_id, Vec::new());
+                self.finish_cancel_drive(client_order_id, Vec::new())?;
+                return Ok(RestingOrderCancelDisposition::RetainedByCoordinator);
             }
-            CancelEffect::Remove => return Ok(()),
+            CancelEffect::Remove => {
+                return Ok(RestingOrderCancelDisposition::AuthoritativelyTerminal);
+            }
             CancelEffect::RetireIntent => {
-                return self.finish_cancel_drive(client_order_id, Vec::new());
+                self.finish_cancel_drive(client_order_id, Vec::new())?;
+                return Ok(RestingOrderCancelDisposition::RetainedByCoordinator);
             }
             CancelEffect::Cancel { generation } => {
                 let pre_sink = (|| -> Result<()> {
                     let pre_sink_now_ns = sink.actor_time_ns()?;
                     if let Some(participant) = command_participant.as_mut() {
-                        participant.mark_sink_invoked(pre_sink_now_ns)?;
+                        participant
+                            .preflight_sink_invocation(generation, pre_sink_now_ns)?
+                            .commit();
                     }
                     if let Some(reservation) = reservation.as_mut() {
-                        reservation
-                            .mark_sink_invoked_at(pre_sink_now_ns / NANOS_PER_MILLI_U64)
-                            .map_err(|error| {
-                                anyhow::anyhow!(
-                                    "cancel REST reservation sink accounting failed: {error:?}"
-                                )
-                            })?;
+                        reservation.mark_sink_invoked_at(pre_sink_now_ns / NANOS_PER_MILLI_U64);
                     }
                     Ok(())
                 })();
                 match pre_sink {
-                    Ok(()) => (
-                        generation,
-                        policy
-                            .route_cancel_with_sink(
-                                sink,
-                                client_order_id,
-                                Some(ClientId::from(execution_client_id)),
-                                None,
-                            )
-                            .map(|_| ()),
-                        true,
-                    ),
+                    Ok(()) => match policy.route_cancel_with_sink(
+                        sink,
+                        client_order_id,
+                        Some(ClientId::from(execution_client_id)),
+                        None,
+                    )? {
+                        BoltV3CancelRoutingOutcome::SkippedByPolicy => (generation, Ok(()), false),
+                        BoltV3CancelRoutingOutcome::NtCallReturned => (generation, Ok(()), true),
+                        BoltV3CancelRoutingOutcome::NtCallErrored { diagnostic } => {
+                            (generation, Err(anyhow::anyhow!(diagnostic)), true)
+                        }
+                    },
                     Err(error) => (generation, Err(error), false),
                 }
             }
@@ -1292,13 +1307,7 @@ impl BoltV3OrderEconomicsHandle {
                     let reservation = reservation
                         .as_mut()
                         .expect("query operation must own its REST reservation");
-                    reservation
-                        .mark_sink_invoked_at(pre_sink_now_ns / NANOS_PER_MILLI_U64)
-                        .map_err(|error| {
-                            anyhow::anyhow!(
-                                "query REST reservation sink accounting failed: {error:?}"
-                            )
-                        })?;
+                    reservation.mark_sink_invoked_at(pre_sink_now_ns / NANOS_PER_MILLI_U64);
                     Ok(())
                 })();
                 match pre_sink {
@@ -1371,10 +1380,15 @@ impl BoltV3OrderEconomicsHandle {
                 }
             }
         };
-        if let Err(error) = operation_settlement {
-            settlement_failures.push(error.to_string());
-        }
-        finish_cancel_failures(settlement_failures)
+        let disposition = match operation_settlement {
+            Ok(disposition) => disposition,
+            Err(error) => {
+                settlement_failures.push(error.to_string());
+                RestingOrderCancelDisposition::RetainedByCoordinator
+            }
+        };
+        finish_cancel_failures(settlement_failures)?;
+        Ok(disposition)
     }
 
     fn settle_cancel_operation(
@@ -1383,7 +1397,7 @@ impl BoltV3OrderEconomicsHandle {
         generation: u64,
         completion: CancelOperationCompletion<'_>,
         retry_timeout_ns: u64,
-    ) -> Result<()> {
+    ) -> Result<RestingOrderCancelDisposition> {
         let mut failures = Vec::new();
         let terminal_observation = match &completion {
             CancelOperationCompletion::Observed {
@@ -1398,6 +1412,10 @@ impl BoltV3OrderEconomicsHandle {
             }
             | CancelOperationCompletion::Unobserved(_) => None,
         };
+        let disposition = match &terminal_observation {
+            Some(_) => RestingOrderCancelDisposition::AuthoritativelyTerminal,
+            None => RestingOrderCancelDisposition::RetainedByCoordinator,
+        };
         let mut registry = self
             .tracked_orders
             .write()
@@ -1406,7 +1424,8 @@ impl BoltV3OrderEconomicsHandle {
             if let CancelOperationCompletion::Unobserved(error) = completion {
                 failures.push(error.to_string());
             }
-            return finish_cancel_failures(failures);
+            finish_cancel_failures(failures)?;
+            return Ok(disposition);
         };
 
         let TrackedOrderCancellation { query_seed, intent } = tracked_cancellation;
@@ -1467,7 +1486,8 @@ impl BoltV3OrderEconomicsHandle {
             }
             (None, Some(_) | None) => {}
         }
-        self.finish_cancel_drive(client_order_id, failures)
+        self.finish_cancel_drive(client_order_id, failures)?;
+        Ok(disposition)
     }
 
     fn reduce_cancel_drive(
@@ -2073,9 +2093,7 @@ mod tests {
                 MakerQuoteLifecycleIdentity::new(client_order_id.as_str(), lifecycle_generation),
             )
             .expect("requote cancel should arm");
-        market
-            .mark_leg_transaction_sink_invoked(cancel, lifecycle_generation, 1)
-            .expect("requote cancel should reach the sink");
+        market.commit_leg_transaction_sink_invoked(cancel, lifecycle_generation, 1);
         assert!(market.commit_leg_transaction(cancel, lifecycle_generation));
 
         let handle = coordinator_handle_with_budget(order.clone(), 8);
@@ -2178,9 +2196,7 @@ mod tests {
         let mut order_b = accepted_order("newer-terminal-b", "VENUE-TERMINAL-B");
         let order_b_id = order_b.client_order_id();
         let replacement = arm_replacement(&market, budget, order_b_id, 8);
-        market
-            .mark_leg_transaction_sink_invoked(replacement, 8, 2)
-            .expect("replacement should reach the sink");
+        market.commit_leg_transaction_sink_invoked(replacement, 8, 2);
         assert!(market.commit_leg_transaction(replacement, 8));
         assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Accepted), None);
         track_order_with_lifecycle(&handle, order_b.clone(), 2, 8, &market);
@@ -2228,9 +2244,7 @@ mod tests {
         let order_a_id = order_a.client_order_id();
         let replacement_id = ClientOrderId::from("sink-rejected-replacement-b");
         let replacement = arm_replacement(&market, budget, replacement_id, 8);
-        market
-            .mark_leg_transaction_sink_invoked(replacement, 8, 2)
-            .expect("replacement should reach the sink");
+        market.commit_leg_transaction_sink_invoked(replacement, 8, 2);
         assert!(market.reject_leg_transaction_at_sink(replacement, 8));
 
         fill_canceled_order_with_quantity(&mut order_a, venue_order_id, Quantity::new(0.5, 2));
@@ -2307,9 +2321,7 @@ mod tests {
         let order_b = accepted_order("affected-live-b", "VENUE-AFFECTED-LIVE-B");
         let order_b_id = order_b.client_order_id();
         let replacement = arm_replacement(&market, budget, order_b_id, 8);
-        market
-            .mark_leg_transaction_sink_invoked(replacement, 8, 2)
-            .expect("replacement should reach the sink");
+        market.commit_leg_transaction_sink_invoked(replacement, 8, 2);
         assert!(market.commit_leg_transaction(replacement, 8));
         assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Accepted), None);
         track_order_with_lifecycle(&handle, order_b, 2, 8, &market);
@@ -2382,9 +2394,7 @@ mod tests {
         let order_b = accepted_order("missing-reopen-live-b", "VENUE-MISSING-REOPEN-B");
         let order_b_id = order_b.client_order_id();
         let replacement = arm_replacement(&market, budget, order_b_id, 8);
-        market
-            .mark_leg_transaction_sink_invoked(replacement, 8, 2)
-            .expect("replacement should reach the sink");
+        market.commit_leg_transaction_sink_invoked(replacement, 8, 2);
         assert!(market.commit_leg_transaction(replacement, 8));
         assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Accepted), None);
         track_order_with_lifecycle(&handle, order_b, 2, 8, &market);
@@ -2716,9 +2726,7 @@ mod tests {
                 MakerQuoteLifecycleIdentity::new(client_order_id.as_str(), 1),
             )
             .expect("requote cancel should arm");
-        market
-            .mark_leg_transaction_sink_invoked(proposal, 1, 1)
-            .expect("requote cancel should reach the sink");
+        market.commit_leg_transaction_sink_invoked(proposal, 1, 1);
         assert!(market.commit_leg_transaction(proposal, 1));
         assert_eq!(market.leg_state(Leg::Yes), LegState::RequotePending);
 
@@ -2849,9 +2857,7 @@ mod tests {
                 MakerQuoteLifecycleIdentity::new(client_order_id.as_str(), 7),
             )
             .expect("requote cancel should arm");
-        market
-            .mark_leg_transaction_sink_invoked(proposal, 7, 1)
-            .expect("requote cancel should reach the sink");
+        market.commit_leg_transaction_sink_invoked(proposal, 7, 1);
         assert!(market.commit_leg_transaction(proposal, 7));
 
         let handle = coordinator_handle_with_budget(order.clone(), 8);
@@ -2964,9 +2970,7 @@ mod tests {
                 identity.clone(),
             )
             .expect("requote cancel should arm");
-        market
-            .mark_leg_transaction_sink_invoked(proposal, 7, 1)
-            .expect("requote cancel should reach the sink");
+        market.commit_leg_transaction_sink_invoked(proposal, 7, 1);
         assert!(market.commit_leg_transaction(proposal, 7));
 
         let lifecycle = MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes);
@@ -3056,9 +3060,7 @@ mod tests {
                 MakerQuoteLifecycleIdentity::new(client_order_id.as_str(), 1),
             )
             .expect("fresh submit should arm");
-        market
-            .mark_leg_transaction_sink_invoked(proposal, 1, 1)
-            .expect("fresh submit should reach the sink");
+        market.commit_leg_transaction_sink_invoked(proposal, 1, 1);
         assert!(market.commit_leg_transaction(proposal, 1));
         assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Accepted), None);
         assert_eq!(
@@ -3297,9 +3299,7 @@ mod tests {
                 MakerQuoteLifecycleIdentity::new(client_order_id.as_str(), 1),
             )
             .expect("requote cancel should arm");
-        market
-            .mark_leg_transaction_sink_invoked(cancel, 1, 1)
-            .expect("requote cancel should reach the sink");
+        market.commit_leg_transaction_sink_invoked(cancel, 1, 1);
         assert!(market.commit_leg_transaction(cancel, 1));
 
         let handle = coordinator_handle_with_budget(order.clone(), 8);
@@ -3349,9 +3349,7 @@ mod tests {
                 MakerQuoteLifecycleIdentity::new("new-poison-order", 2),
             )
             .expect("replacement should arm at a later generation");
-        market
-            .mark_leg_transaction_sink_invoked(replacement, 2, 2)
-            .expect("replacement should reach the sink");
+        market.commit_leg_transaction_sink_invoked(replacement, 2, 2);
         assert_eq!(
             market.cancel_leg(Leg::Yes),
             Some(MarketAction::Leg {

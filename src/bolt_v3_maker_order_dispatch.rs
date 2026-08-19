@@ -20,13 +20,15 @@ use crate::{
     bolt_v3_maker_quote_control::MakerQuoteCommandProposal,
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_order_execution::{
-        BoltV3RestingRegistrationCapability, BoltV3RestingRegistrationCommitParticipant,
-        BoltV3RestingSubmitTransactionOutcome,
+        BoltV3PreparedRestingRegistrationCommit, BoltV3RestingRegistrationCapability,
+        BoltV3RestingRegistrationCommitParticipant, BoltV3RestingSubmitTransactionOutcome,
+        RestingOrderCancelHandled,
     },
     bolt_v3_order_intent::build_nt_order,
     bolt_v3_quote_lifecycle::{
         Leg, LifecycleAction, MakerQuoteLifecycleHandle, MakerQuoteLifecycleIdentity, MarketAction,
-        MarketQuote, QuoteLegTransitionProposal, QuoteTransactionRegistrationPhase,
+        MarketQuote, PreparedMakerQuoteSinkInvocation, QuoteLegTransitionProposal,
+        QuoteTransactionRegistrationPhase,
     },
     bolt_v3_requote_budget::RequoteBudgetPair,
 };
@@ -87,6 +89,19 @@ impl MakerQuoteTransactionParticipant {
         anyhow::ensure!(settled, "maker quote transaction settlement was rejected");
         Ok(())
     }
+
+    #[cfg(test)]
+    fn commit_sink_invoked(&mut self, generation: u64, actor_now_ns: u64) {
+        self.preflight_sink_invocation(generation, actor_now_ns)
+            .expect("test participant should prepare the sink boundary")
+            .commit();
+    }
+}
+
+impl BoltV3PreparedRestingRegistrationCommit for PreparedMakerQuoteSinkInvocation<'_> {
+    fn commit(&mut self) {
+        PreparedMakerQuoteSinkInvocation::commit(self);
+    }
 }
 
 #[cfg(test)]
@@ -114,14 +129,18 @@ impl BoltV3RestingRegistrationCommitParticipant for MakerQuoteTransactionPartici
         )
     }
 
-    fn mark_sink_invoked(&mut self, actor_now_ns: u64) -> Result<()> {
-        self.market.mark_leg_transaction_sink_invoked(
-            self.lifecycle(),
-            self.market
-                .transaction_generation(self.lifecycle())
-                .ok_or_else(|| anyhow::anyhow!("maker quote transaction is not armed"))?,
-            actor_now_ns / NANOS_PER_MILLI_U64,
-        )
+    fn preflight_sink_invocation(
+        &mut self,
+        generation: u64,
+        actor_now_ns: u64,
+    ) -> Result<Box<dyn BoltV3PreparedRestingRegistrationCommit + '_>> {
+        self.market
+            .prepare_leg_transaction_sink_invoked(
+                self.lifecycle(),
+                generation,
+                actor_now_ns / NANOS_PER_MILLI_U64,
+            )
+            .map(|prepared| Box::new(prepared) as Box<dyn BoltV3PreparedRestingRegistrationCommit>)
     }
 
     fn registration_capability(&self, generation: u64) -> BoltV3RestingRegistrationCapability {
@@ -212,15 +231,17 @@ pub enum MakerOrderDispatchOutcome {
         quantity: Quantity,
         transaction: BoltV3RestingSubmitTransactionOutcome,
     },
-    Canceled {
+    CancelIntentHandled {
         leg: Leg,
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
+        disposition: RestingOrderCancelHandled,
     },
-    CanceledAll {
+    CancelScopeHandled {
         leg: Option<Leg>,
         instrument_id: InstrumentId,
         order_side: Option<OrderSide>,
+        dispositions: Vec<RestingOrderCancelHandled>,
     },
     Modified {
         leg: Leg,
@@ -407,14 +428,14 @@ pub trait MakerOrderCommandSink {
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
         participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
-    ) -> Result<()>;
+    ) -> Result<RestingOrderCancelHandled>;
 
     fn cancel_all_maker_orders(
         &mut self,
         leg: Option<Leg>,
         instrument_id: InstrumentId,
         order_side: Option<OrderSide>,
-    ) -> Result<()>;
+    ) -> Result<Vec<RestingOrderCancelHandled>>;
 
     fn modify_maker_order(
         &mut self,
@@ -499,19 +520,21 @@ pub fn dispatch_maker_order_command(
                 },
                 *instrument_id,
             )?;
-            sink.cancel_maker_order(
-                *leg,
-                *instrument_id,
-                *client_order_id,
-                Box::new(quote_transaction.into_participant()),
-            )
-            .map_err(|error| {
-                MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::Cancel, error)
-            })?;
-            Ok(MakerOrderDispatchOutcome::Canceled {
+            let disposition = sink
+                .cancel_maker_order(
+                    *leg,
+                    *instrument_id,
+                    *client_order_id,
+                    Box::new(quote_transaction.into_participant()),
+                )
+                .map_err(|error| {
+                    MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::Cancel, error)
+                })?;
+            Ok(MakerOrderDispatchOutcome::CancelIntentHandled {
                 leg: *leg,
                 instrument_id: *instrument_id,
                 client_order_id: *client_order_id,
+                disposition,
             })
         }
         (
@@ -522,14 +545,16 @@ pub fn dispatch_maker_order_command(
             },
             MakerOrderCommandAuthority::ScopeCancelAll,
         ) => {
-            sink.cancel_all_maker_orders(*leg, *instrument_id, *order_side)
+            let dispositions = sink
+                .cancel_all_maker_orders(*leg, *instrument_id, *order_side)
                 .map_err(|error| {
                     MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::CancelAll, error)
                 })?;
-            Ok(MakerOrderDispatchOutcome::CanceledAll {
+            Ok(MakerOrderDispatchOutcome::CancelScopeHandled {
                 leg: *leg,
                 instrument_id: *instrument_id,
                 order_side: *order_side,
+                dispositions,
             })
         }
         (
@@ -700,9 +725,7 @@ mod tests {
             MakerQuoteTransactionParticipant::new(fresh_context(&market, &budget, Leg::Yes));
         participant.arm_at_identity(lifecycle_identity(1)).unwrap();
         if mark_sink {
-            participant
-                .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-                .expect("participant should reach the sink");
+            participant.commit_sink_invoked(1, NOW_MS * NANOS_PER_MILLI_U64);
         }
         settle(&mut participant).unwrap();
         (market, budget)
@@ -730,9 +753,7 @@ mod tests {
         let mut participant =
             MakerQuoteTransactionParticipant::new(fresh_context(&market, &budget, Leg::Yes));
         participant.arm_at_identity(lifecycle_identity(1)).unwrap();
-        participant
-            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-            .expect("participant should reach the sink");
+        participant.commit_sink_invoked(1, NOW_MS * NANOS_PER_MILLI_U64);
         participant
             .settle_submitted(1)
             .expect("the matching settled outcome must be idempotent");
@@ -795,9 +816,7 @@ mod tests {
             Leg::Yes,
         ));
         after.arm_at_identity(lifecycle_identity(2)).unwrap();
-        after
-            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-            .expect("participant should reach the sink");
+        after.commit_sink_invoked(2, NOW_MS * NANOS_PER_MILLI_U64);
         drop(after);
         assert_eq!(
             after_market.leg_state(Leg::Yes),
@@ -814,9 +833,7 @@ mod tests {
         let mut participant =
             MakerQuoteTransactionParticipant::new(resting_context(&market, &budget));
         participant.arm_at_identity(lifecycle_identity(1)).unwrap();
-        participant
-            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-            .expect("cancel participant should reach the sink");
+        participant.commit_sink_invoked(1, NOW_MS * NANOS_PER_MILLI_U64);
 
         drop(participant);
 
@@ -834,9 +851,7 @@ mod tests {
         let mut participant =
             MakerQuoteTransactionParticipant::new(resting_context(&market, &budget));
         participant.arm_at_identity(lifecycle_identity(1)).unwrap();
-        participant
-            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-            .expect("requote cancel participant should reach the sink");
+        participant.commit_sink_invoked(1, NOW_MS * NANOS_PER_MILLI_U64);
 
         drop(participant);
 
@@ -886,9 +901,7 @@ mod tests {
         let proposal = context.proposal().lifecycle();
         let mut participant = MakerQuoteTransactionParticipant::new(context);
         participant.arm_at_identity(lifecycle_identity(7)).unwrap();
-        participant
-            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-            .expect("participant should reach the sink");
+        participant.commit_sink_invoked(7, NOW_MS * NANOS_PER_MILLI_U64);
         let _ = MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes)
             .refine(terminal_event(7, MakerQuoteTerminalDisposition::Rejected));
         assert!(market.retire_leg_transaction_from_callback(proposal, 7));
@@ -920,9 +933,7 @@ mod tests {
             ));
             submitted.arm_at_identity(lifecycle_identity(1)).unwrap();
             rejected.arm_at_identity(lifecycle_identity(2)).unwrap();
-            submitted
-                .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-                .expect("participant should reach the sink");
+            submitted.commit_sink_invoked(1, NOW_MS * NANOS_PER_MILLI_U64);
             submitted.settle_submitted(1).unwrap();
             rejected.abort_pre_sink(2).unwrap();
             assert_eq!(market.leg_state(submitted_leg), LegState::SubmitPending);
@@ -944,12 +955,8 @@ mod tests {
             ));
             submitted.arm_at_identity(lifecycle_identity(3)).unwrap();
             rejected.arm_at_identity(lifecycle_identity(4)).unwrap();
-            submitted
-                .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-                .expect("participant should reach the sink");
-            rejected
-                .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-                .expect("participant should reach the sink");
+            submitted.commit_sink_invoked(3, NOW_MS * NANOS_PER_MILLI_U64);
+            rejected.commit_sink_invoked(4, NOW_MS * NANOS_PER_MILLI_U64);
             submitted.settle_submitted(3).unwrap();
             rejected.settle_sink_rejected(4).unwrap();
             assert_eq!(market.leg_state(submitted_leg), LegState::SubmitPending);
@@ -969,9 +976,7 @@ mod tests {
         let lifecycle = context.proposal().lifecycle();
         let mut participant = MakerQuoteTransactionParticipant::new(context);
         participant.arm_at_identity(lifecycle_identity(1)).unwrap();
-        participant
-            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-            .expect("participant should reach the sink");
+        participant.commit_sink_invoked(1, NOW_MS * NANOS_PER_MILLI_U64);
         participant.settle_nt_mutation_invoked(1).unwrap();
         assert_eq!(market.leg_state(Leg::Yes), LegState::RequotePending);
         assert!(market.prepaid_generation(Leg::Yes).is_some());
@@ -993,9 +998,7 @@ mod tests {
             MakerQuoteLifecycleHandle::new(market.clone(), context.proposal().lifecycle().leg());
         let mut participant = MakerQuoteTransactionParticipant::new(context);
         participant.arm_at_identity(lifecycle_identity(1)).unwrap();
-        participant
-            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-            .expect("participant should reach the sink");
+        participant.commit_sink_invoked(1, NOW_MS * NANOS_PER_MILLI_U64);
         participant.settle_nt_mutation_invoked(1).unwrap();
         (market, budget, lifecycle, participant)
     }
@@ -1067,9 +1070,7 @@ mod tests {
             MakerQuoteLifecycleHandle::new(market.clone(), context.proposal().lifecycle().leg());
         let mut participant = MakerQuoteTransactionParticipant::new(context);
         participant.arm_at_identity(lifecycle_identity(1)).unwrap();
-        participant
-            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-            .expect("participant should reach the sink");
+        participant.commit_sink_invoked(1, NOW_MS * NANOS_PER_MILLI_U64);
         participant.fail_post_sink_invariant(1).unwrap();
         let prepaid_generation = market
             .prepaid_generation(Leg::Yes)
@@ -1160,9 +1161,7 @@ mod tests {
             participant
                 .arm_at_identity(lifecycle_identity(generation))
                 .unwrap();
-            participant
-                .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-                .expect("participant should reach the sink");
+            participant.commit_sink_invoked(generation, NOW_MS * NANOS_PER_MILLI_U64);
             participant.settle_nt_mutation_invoked(generation).unwrap();
             let _ = MakerQuoteLifecycleHandle::new(market.clone(), leg).refine(terminal_event(
                 generation,
@@ -1248,9 +1247,7 @@ mod tests {
         let mut invoked =
             MakerQuoteTransactionParticipant::new(modify_context(&invoked_market, &invoked_budget));
         invoked.arm_at_identity(lifecycle_identity(2)).unwrap();
-        invoked
-            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-            .expect("participant should reach the sink");
+        invoked.commit_sink_invoked(2, NOW_MS * NANOS_PER_MILLI_U64);
         invoked.settle_nt_mutation_invoked(2).unwrap();
         assert_eq!(invoked_market.leg_state(Leg::Yes), LegState::ModifyPending);
         assert_eq!(invoked_budget.submit_commands_in_window(), 0);
@@ -1264,9 +1261,7 @@ mod tests {
         let mut participant =
             MakerQuoteTransactionParticipant::new(fresh_context(&market, &budget, Leg::Yes));
         participant.arm_at_identity(lifecycle_identity(1)).unwrap();
-        participant
-            .mark_sink_invoked(1_900 * NANOS_PER_MILLI_U64)
-            .unwrap();
+        participant.commit_sink_invoked(1, 1_900 * NANOS_PER_MILLI_U64);
         participant.settle_submitted(1).unwrap();
 
         assert!(budget.propose_fresh_submit(2_001).is_err());
@@ -1279,9 +1274,7 @@ mod tests {
         let mut participant =
             MakerQuoteTransactionParticipant::new(modify_context(&market, &budget));
         participant.arm_at_identity(lifecycle_identity(1)).unwrap();
-        participant
-            .mark_sink_invoked(1_900 * NANOS_PER_MILLI_U64)
-            .unwrap();
+        participant.commit_sink_invoked(1, 1_900 * NANOS_PER_MILLI_U64);
         participant.settle_nt_mutation_invoked(1).unwrap();
 
         assert!(budget.propose_rest(2_001).is_err());
@@ -1348,9 +1341,7 @@ mod tests {
         let context = resting_context(&market, &budget);
         let mut participant = MakerQuoteTransactionParticipant::new(context);
         participant.arm_at_identity(lifecycle_identity(1)).unwrap();
-        participant
-            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-            .expect("participant should reach the sink");
+        participant.commit_sink_invoked(1, NOW_MS * NANOS_PER_MILLI_U64);
         let _ = MakerQuoteLifecycleHandle::new(market.clone(), Leg::Yes)
             .refine(terminal_event(1, MakerQuoteTerminalDisposition::Canceled));
         participant.settle_nt_mutation_invoked(1).unwrap();
@@ -1371,9 +1362,7 @@ mod tests {
         let mut replacement =
             MakerQuoteTransactionParticipant::new(replacement_context(&market, &budget));
         replacement.arm_at_identity(lifecycle_identity(2)).unwrap();
-        replacement
-            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-            .expect("participant should reach the sink");
+        replacement.commit_sink_invoked(2, NOW_MS * NANOS_PER_MILLI_U64);
         replacement.settle_sink_rejected(2).unwrap();
         assert_eq!(
             market.leg_state(Leg::Yes),
@@ -1395,9 +1384,7 @@ mod tests {
         let mut first =
             MakerQuoteTransactionParticipant::new(replacement_context(&market, &budget));
         first.arm_at_identity(lifecycle_identity(2)).unwrap();
-        first
-            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-            .expect("participant should reach the sink");
+        first.commit_sink_invoked(2, NOW_MS * NANOS_PER_MILLI_U64);
         first.settle_sink_rejected(2).unwrap();
 
         let second_context = replacement_context(&market, &budget);
@@ -1407,9 +1394,7 @@ mod tests {
         ));
         let mut second = MakerQuoteTransactionParticipant::new(second_context);
         second.arm_at_identity(lifecycle_identity(3)).unwrap();
-        second
-            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-            .expect("participant should reach the sink");
+        second.commit_sink_invoked(3, NOW_MS * NANOS_PER_MILLI_U64);
         second.settle_sink_rejected(3).unwrap();
         assert_eq!(budget.submit_commands_in_window(), 2);
         assert_eq!(budget.rest_cost_in_window(), 3);
@@ -1517,9 +1502,7 @@ mod tests {
         let mut replacement =
             MakerQuoteTransactionParticipant::new(replacement_context(&market, &budget));
         replacement.arm_at_identity(lifecycle_identity(2)).unwrap();
-        replacement
-            .mark_sink_invoked((NOW_MS + 1) * NANOS_PER_MILLI_U64)
-            .expect("replacement should reach the sink");
+        replacement.commit_sink_invoked(2, (NOW_MS + 1) * NANOS_PER_MILLI_U64);
         replacement.fail_post_sink_invariant(2).unwrap();
 
         assert_eq!(
@@ -1559,9 +1542,7 @@ mod tests {
         let lifecycle = context.proposal().lifecycle();
         let mut cancel = MakerQuoteTransactionParticipant::new(context);
         cancel.arm_at_identity(lifecycle_identity(1)).unwrap();
-        cancel
-            .mark_sink_invoked(NOW_MS * NANOS_PER_MILLI_U64)
-            .unwrap();
+        cancel.commit_sink_invoked(1, NOW_MS * NANOS_PER_MILLI_U64);
         cancel.settle_nt_mutation_invoked(1).unwrap();
         let _ = MakerQuoteLifecycleHandle::new(market.clone(), lifecycle.leg())
             .refine(terminal_event(1, MakerQuoteTerminalDisposition::Canceled));
@@ -1569,9 +1550,7 @@ mod tests {
         let mut replacement =
             MakerQuoteTransactionParticipant::new(replacement_context(&market, &budget));
         replacement.arm_at_identity(lifecycle_identity(2)).unwrap();
-        replacement
-            .mark_sink_invoked(1_900 * NANOS_PER_MILLI_U64)
-            .unwrap();
+        replacement.commit_sink_invoked(2, 1_900 * NANOS_PER_MILLI_U64);
         replacement.settle_submitted(2).unwrap();
 
         assert!(budget.propose_fresh_submit(2_001).is_err());

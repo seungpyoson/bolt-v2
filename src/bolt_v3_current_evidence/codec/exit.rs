@@ -255,9 +255,9 @@ enum ExitAttemptOutcomeV1 {
         prepared_order: SubmissionLinkageWireV1,
         reason: String,
     },
-    SinkRejected {
-        prepared_order: SubmissionLinkageWireV1,
-        reason: String,
+    SinkInvokedUnknown {
+        submitted_order: SubmissionLinkageWireV1,
+        diagnostic: String,
     },
     Submitted {
         submitted_order: SubmissionLinkageWireV1,
@@ -814,12 +814,12 @@ impl TryFrom<ExitAttemptOutcome> for ExitAttemptOutcomeV1 {
                 prepared_order: prepared_linkage_to_wire(prepared_order)?,
                 reason: required_text(reason, "pre_sink_rejected.reason")?,
             },
-            ExitAttemptOutcome::SinkRejected {
-                prepared_order,
-                reason,
-            } => Self::SinkRejected {
-                prepared_order: prepared_linkage_to_wire(prepared_order)?,
-                reason: required_text(reason, "sink_rejected.reason")?,
+            ExitAttemptOutcome::SinkInvokedUnknown {
+                submitted_order,
+                diagnostic,
+            } => Self::SinkInvokedUnknown {
+                submitted_order: submitted_linkage_to_wire(submitted_order)?,
+                diagnostic: required_text(diagnostic, "sink_invoked_unknown.diagnostic")?,
             },
             ExitAttemptOutcome::Submitted { submitted_order } => Self::Submitted {
                 submitted_order: submitted_linkage_to_wire(submitted_order)?,
@@ -876,12 +876,12 @@ impl TryFrom<ExitAttemptOutcomeV1> for ExitAttemptOutcome {
                 prepared_order: prepared_linkage_from_wire(prepared_order)?,
                 reason: required_text(reason, "pre_sink_rejected.reason")?,
             },
-            ExitAttemptOutcomeV1::SinkRejected {
-                prepared_order,
-                reason,
-            } => Self::SinkRejected {
-                prepared_order: prepared_linkage_from_wire(prepared_order)?,
-                reason: required_text(reason, "sink_rejected.reason")?,
+            ExitAttemptOutcomeV1::SinkInvokedUnknown {
+                submitted_order,
+                diagnostic,
+            } => Self::SinkInvokedUnknown {
+                submitted_order: submitted_linkage_from_wire(submitted_order)?,
+                diagnostic: required_text(diagnostic, "sink_invoked_unknown.diagnostic")?,
             },
             ExitAttemptOutcomeV1::Submitted { submitted_order } => Self::Submitted {
                 submitted_order: submitted_linkage_from_wire(submitted_order)?,

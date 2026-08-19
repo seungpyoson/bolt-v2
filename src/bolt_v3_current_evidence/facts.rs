@@ -269,6 +269,8 @@ pub struct CapitalAdmissionRebuildFact {
     pub attempted_reservation_count: usize,
     pub recovered_reservation_count: usize,
     pub live_reserved_liability: String,
+    pub unresolved_sink_invoked_reservation_count: usize,
+    pub unresolved_observed_open_reservation_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1210,9 +1212,9 @@ pub enum ExitAttemptOutcome {
         prepared_order: PreparedOrderLinkage,
         reason: String,
     },
-    SinkRejected {
-        prepared_order: PreparedOrderLinkage,
-        reason: String,
+    SinkInvokedUnknown {
+        submitted_order: SubmittedOrderLinkage,
+        diagnostic: String,
     },
     Submitted {
         submitted_order: SubmittedOrderLinkage,
@@ -1314,7 +1316,6 @@ pub enum OrderLifecycleTransition {
     BoundaryReclassification,
     EntryFillMaterialized,
     EntryReconcilePending,
-    PositionTruthRematerialized,
     PositionClosed,
     ResidualRemanaged,
     RestartOpenOrderAdopted,

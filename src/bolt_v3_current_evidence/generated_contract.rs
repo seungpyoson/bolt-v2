@@ -482,7 +482,7 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
         },
         KnownIdentity::CapitalAdmissionRebuildV1 => IdentityDescriptor {
             kind: "capital_admission_rebuild",
-            schema_version: 16,
+            schema_version: 17,
             gate_id: "bolt_v3.capital_admission_rebuild",
         },
         KnownIdentity::SubmitReservationFillV1 => IdentityDescriptor {
@@ -512,7 +512,7 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
         },
         KnownIdentity::ExitEvaluationV1 => IdentityDescriptor {
             kind: "exit_evaluation",
-            schema_version: 17,
+            schema_version: 18,
             gate_id: "bolt_v3.exit_evaluation",
         },
         KnownIdentity::LossGovernorHaltV1 => IdentityDescriptor {
@@ -956,7 +956,7 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     if kind == "basket_admission_rejected" && schema_version == 1 {
         return Some(KnownIdentity::BasketAdmissionRejectedV1);
     }
-    if kind == "capital_admission_rebuild" && schema_version == 16 {
+    if kind == "capital_admission_rebuild" && schema_version == 17 {
         return Some(KnownIdentity::CapitalAdmissionRebuildV1);
     }
     if kind == "submit_reservation_fill" && schema_version == 16 {
@@ -974,7 +974,7 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     if kind == "exit_hold_decision" && schema_version == 2 {
         return Some(KnownIdentity::ExitHoldDecisionV1);
     }
-    if kind == "exit_evaluation" && schema_version == 17 {
+    if kind == "exit_evaluation" && schema_version == 18 {
         return Some(KnownIdentity::ExitEvaluationV1);
     }
     if kind == "loss_governor_halt" && schema_version == 16 {

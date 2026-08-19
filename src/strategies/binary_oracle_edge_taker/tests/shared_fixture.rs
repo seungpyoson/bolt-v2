@@ -1401,6 +1401,18 @@ pub(super) fn materialize_configured_position(
     quantity: Quantity,
     avg_px_open: f64,
 ) -> OpenPositionState {
+    let book = configured_book_for_instrument(strategy, instrument_id);
+    let client_order_id = ClientOrderId::from(format!("FIXTURE-ENTRY-{position_id}").as_str());
+    set_pending_entry(
+        strategy,
+        PendingEntryState {
+            client_order_id,
+            submitted_at_ms: Some(1_000),
+            lifecycle: active_fixture_lifecycle_for_instrument(strategy, instrument_id),
+            instrument_id,
+            book,
+        },
+    );
     seed_nt_open_position(strategy, instrument_id, position_id, quantity, avg_px_open);
     strategy.materialize_position_from_event(
         PositionMaterializationSpec {
@@ -1436,8 +1448,14 @@ pub(super) fn configured_outcome_instruments(
     instrument_ids
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FixturePositionLineage {
+    CurrentProcess,
+    RestartObserved,
+}
+
 pub(super) fn set_pending_entry(strategy: &mut BinaryOracleEdgeTaker, pending: PendingEntryState) {
-    strategy.exposure = ExposureState::PendingEntry(pending);
+    strategy.exposure.set_pending_entry_for_test(pending);
 }
 
 pub(super) fn set_entry_reconcile_pending(
@@ -1445,7 +1463,9 @@ pub(super) fn set_entry_reconcile_pending(
     pending: PendingEntryState,
     reason: EntryReconcileReason,
 ) {
-    strategy.exposure = ExposureState::EntryReconcilePending { pending, reason };
+    strategy
+        .exposure
+        .set_entry_reconcile_for_test(pending, reason);
 }
 
 pub(super) fn set_entry_reconcile_pending_after_fill(
@@ -1453,13 +1473,15 @@ pub(super) fn set_entry_reconcile_pending_after_fill(
     pending: PendingEntryState,
     reason: EntryReconcileReason,
 ) {
-    strategy.exposure = ExposureState::EntryReconcilePending { pending, reason };
+    strategy
+        .exposure
+        .set_entry_reconcile_for_test(pending, reason);
 }
 
 pub(super) fn set_managed_position(
     strategy: &mut BinaryOracleEdgeTaker,
     position: OpenPositionState,
-    origin: ManagedPositionOrigin,
+    lineage: FixturePositionLineage,
 ) {
     seed_nt_open_position(
         strategy,
@@ -1468,13 +1490,23 @@ pub(super) fn set_managed_position(
         position.quantity,
         position.avg_px_open,
     );
-    strategy.exposure = ExposureState::Managed(managed_position_context(position, origin, None));
+    match lineage {
+        FixturePositionLineage::CurrentProcess => strategy
+            .exposure
+            .set_managed_for_test(managed_position_context(position)),
+        FixturePositionLineage::RestartObserved => strategy.exposure.set_blind_recovery_for_test(
+            BlindRecoveryReason::RestartOpenPosition {
+                instrument_id: position.instrument_id,
+                position_id: position.position_id,
+            },
+        ),
+    }
 }
 
 pub(super) fn set_managed_position_with_pending_entry(
     strategy: &mut BinaryOracleEdgeTaker,
     position: OpenPositionState,
-    origin: ManagedPositionOrigin,
+    lineage: FixturePositionLineage,
     pending_entry: PendingEntryState,
 ) {
     seed_nt_open_position(
@@ -1484,11 +1516,18 @@ pub(super) fn set_managed_position_with_pending_entry(
         position.quantity,
         position.avg_px_open,
     );
-    strategy.exposure = ExposureState::Managed(managed_position_context(
-        position,
-        origin,
-        Some(pending_entry),
-    ));
+    match lineage {
+        FixturePositionLineage::CurrentProcess => strategy.exposure.set_entry_remainder_for_test(
+            pending_entry,
+            EntryRemainderPosition::Supported(managed_position_context(position)),
+        ),
+        FixturePositionLineage::RestartObserved => strategy.exposure.set_blind_recovery_for_test(
+            BlindRecoveryReason::RestartOpenPosition {
+                instrument_id: position.instrument_id,
+                position_id: position.position_id,
+            },
+        ),
+    }
 }
 
 pub(super) fn materialize_managed_position_with_resting_pending_entry(
@@ -1532,7 +1571,7 @@ pub(super) fn set_exit_pending(
     strategy: &mut BinaryOracleEdgeTaker,
     position: OpenPositionState,
     client_order_id: ClientOrderId,
-    origin: ManagedPositionOrigin,
+    lineage: FixturePositionLineage,
 ) {
     seed_nt_open_position(
         strategy,
@@ -1547,66 +1586,44 @@ pub(super) fn set_exit_pending(
         .expect("fixture strategy should have position authority")
         .acquire_for_position(position.position_id, position.instrument_id)
         .expect("fixture exit authority lease should acquire");
-    let order = seed_nt_working_exit_order(
+    seed_nt_working_exit_order(
         strategy,
         client_order_id,
         position.instrument_id,
         position.position_id,
         position.quantity,
     );
-    let authority = match origin {
-        ManagedPositionOrigin::StrategyEntry => {
-            BoltV3ExitOrderAuthorityHandle::locally_submitted_for_test(
+    if lineage == FixturePositionLineage::RestartObserved {
+        strategy
+            .exposure
+            .set_blind_recovery_for_test(BlindRecoveryReason::RestartOpenPosition {
+                instrument_id: position.instrument_id,
+                position_id: position.position_id,
+            });
+        return;
+    }
+    let authority = BoltV3ExitOrderAuthorityHandle::locally_submitted_for_test(
+        client_order_id,
+        position.instrument_id,
+        position.position_id,
+        position.quantity.as_decimal(),
+        position.side.as_specified(),
+        position.quantity,
+        lease,
+    )
+    .expect("fixture local exit authority should build");
+    strategy
+        .exposure
+        .set_exit_pending_for_test(ExitPendingState {
+            pending_exit: PendingExitState {
                 client_order_id,
-                position.instrument_id,
-                position.position_id,
-                position.quantity.as_decimal(),
-                position.side.as_specified(),
-                position.quantity,
-                lease,
-            )
-            .expect("fixture local exit authority should build")
-        }
-        ManagedPositionOrigin::RecoveryBootstrap => {
-            observe_position_authority_report(
-                strategy,
-                position.instrument_id,
-                position.side.as_specified(),
-                position.quantity,
-                975,
-            );
-            let authority = BoltV3ExitOrderAuthorityHandle::recovered_for_test(
-                BoltV3RecoveredExitCause::StartupAdoption,
-                client_order_id,
-                position.instrument_id,
-                position.position_id,
-                position.quantity.as_decimal(),
-                position.side.as_specified(),
-                &order,
-                lease,
-            )
-            .expect("fixture recovered exit authority should build");
-            authority
-                .refresh_recovered_baseline(
-                    strategy
-                        .context
-                        .position_authority()
-                        .expect("fixture strategy should have position authority"),
-                )
-                .expect("fixture recovered baseline should establish");
-            authority
-        }
-    };
-    strategy.exposure = ExposureState::ExitPending(ExitPendingState {
-        pending_exit: PendingExitState {
-            client_order_id,
-            submitted_at_ms: Some(1_000),
-            market_id: position.lifecycle.market_id_owned(),
-            position_id: Some(position.position_id),
-        },
-        position: Some(managed_position_context(position, origin, None)),
-        authority,
-    });
+                submitted_at_ms: Some(1_000),
+                market_id: position.lifecycle.market_id_owned(),
+                position_id: Some(position.position_id),
+            },
+            position: Some(managed_position_context(position)),
+            authority,
+        });
 }
 
 fn seed_nt_working_exit_order(
@@ -1683,23 +1700,6 @@ pub(super) fn apply_exit_order_event_to_nt_cache(
         .expect("test cache should apply exit order event");
 }
 
-pub(super) fn apply_exit_fill_to_nt_position(
-    strategy: &mut BinaryOracleEdgeTaker,
-    position_id: PositionId,
-    fill: &nautilus_model::events::OrderFilled,
-) {
-    let cache = register_test_strategy(strategy);
-    let mut position = cache
-        .borrow()
-        .position_owned(&position_id)
-        .expect("test cache should contain the exit position");
-    position.apply(fill);
-    cache
-        .borrow_mut()
-        .update_position(&position)
-        .expect("test cache should apply the exit fill to the position");
-}
-
 pub(super) fn observe_position_authority_report(
     strategy: &BinaryOracleEdgeTaker,
     instrument_id: InstrumentId,
@@ -1760,7 +1760,7 @@ pub(super) fn set_blind_recovery(
     strategy: &mut BinaryOracleEdgeTaker,
     reason: BlindRecoveryReason,
 ) {
-    strategy.exposure = ExposureState::BlindRecovery(BlindRecoveryState { reason });
+    strategy.exposure.set_blind_recovery_for_test(reason);
 }
 
 pub(super) fn set_unsupported_observed(
@@ -1776,16 +1776,24 @@ pub(super) fn set_unsupported_observed(
         observed.avg_px_open,
         observed.entry_order_side,
     );
-    strategy.exposure = ExposureState::UnsupportedObserved(UnsupportedObservedState {
-        context: managed_position_context(observed, ManagedPositionOrigin::RecoveryBootstrap, None),
-        reason,
-    });
+    strategy
+        .exposure
+        .set_unsupported_for_test(UnsupportedObservedState {
+            context: managed_position_context(observed),
+            reason,
+        });
 }
 
 pub(super) fn managed_position_snapshot(
     strategy: &BinaryOracleEdgeTaker,
 ) -> Option<OpenPositionState> {
     strategy.managed_position().map(|managed| managed.position)
+}
+
+pub(super) fn tracked_position_snapshot(
+    strategy: &BinaryOracleEdgeTaker,
+) -> Option<OpenPositionState> {
+    strategy.tracked_observed_position()
 }
 
 pub(super) fn pending_exit_snapshot(strategy: &BinaryOracleEdgeTaker) -> Option<PendingExitState> {
@@ -1798,10 +1806,8 @@ pub(super) fn pending_exit_snapshot(strategy: &BinaryOracleEdgeTaker) -> Option<
 pub(super) fn assert_foreign_venue_blind_recovery(strategy: &BinaryOracleEdgeTaker) {
     assert!(
         matches!(
-            strategy.exposure,
-            ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::ForeignVenuePosition { .. }
-            })
+            strategy.exposure.blind_recovery_reason(),
+            Some(BlindRecoveryReason::ForeignVenuePosition { .. })
         ),
         "foreign-venue terminal event must be quarantined to blind recovery, got {:?}",
         strategy.exposure,

@@ -171,7 +171,7 @@ fn rotated_position_uses_position_book_for_thin_book_forced_flat() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
     strategy.active.books.up.liquidity_available = Some(5_000.0);

@@ -226,7 +226,7 @@ fn book_delta_submit_admission_error_does_not_escape_actor_loop() {
         result.is_ok(),
         "book-delta submit failures must be logged and contained inside the strategy actor: {result:#?}"
     );
-    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(strategy.exposure.is_flat());
 }
 
 #[test]
@@ -249,7 +249,7 @@ fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
     set_managed_position(
         &mut strategy,
         position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     register_test_strategy_with_active_instruments(&mut strategy);
     let decision = strategy.exit_intent_decision_at(1_200);
@@ -308,7 +308,7 @@ fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
         result.is_ok(),
         "book-delta exit submit failures must be logged and contained inside the strategy actor: {result:#?}"
     );
-    assert!(matches!(strategy.exposure, ExposureState::Managed(_)));
+    assert!(strategy.exposure.is_managed());
     assert_eq!(strategy.last_reported_exposure_occupancy.get(), None);
 }
 

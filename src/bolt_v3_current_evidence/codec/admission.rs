@@ -65,6 +65,10 @@ fn validate_fact(fact: &CapitalAdmissionRebuildFact) -> Result<(), RecordFailure
     if fact.observed_at_ns == 0
         || fact.live_reserved_liability.trim().is_empty()
         || fact.recovered_reservation_count > fact.attempted_reservation_count
+        || fact
+            .unresolved_sink_invoked_reservation_count
+            .checked_add(fact.unresolved_observed_open_reservation_count)
+            .is_none()
     {
         return Err(RecordFailure::Rejected(anyhow::anyhow!(
             "capital admission rebuild contains invalid or inconsistent fields"
@@ -95,6 +99,8 @@ struct CapitalAdmissionRebuildV1 {
     attempted_reservation_count: u64,
     recovered_reservation_count: u64,
     live_reserved_liability: String,
+    unresolved_sink_invoked_reservation_count: u64,
+    unresolved_observed_open_reservation_count: u64,
 }
 
 impl CapitalAdmissionRebuildV1 {
@@ -126,6 +132,22 @@ impl CapitalAdmissionRebuildV1 {
                 },
             )?,
             live_reserved_liability: fact.live_reserved_liability,
+            unresolved_sink_invoked_reservation_count: u64::try_from(
+                fact.unresolved_sink_invoked_reservation_count,
+            )
+            .map_err(|source| {
+                RecordFailure::Rejected(anyhow::anyhow!(
+                    "unresolved_sink_invoked_reservation_count cannot be encoded: {source}"
+                ))
+            })?,
+            unresolved_observed_open_reservation_count: u64::try_from(
+                fact.unresolved_observed_open_reservation_count,
+            )
+            .map_err(|source| {
+                RecordFailure::Rejected(anyhow::anyhow!(
+                    "unresolved_observed_open_reservation_count cannot be encoded: {source}"
+                ))
+            })?,
         })
     }
 
@@ -142,6 +164,14 @@ impl CapitalAdmissionRebuildV1 {
             recovered_reservation_count: usize::try_from(self.recovered_reservation_count)
                 .context("recovered_reservation_count does not fit usize")?,
             live_reserved_liability: self.live_reserved_liability,
+            unresolved_sink_invoked_reservation_count: usize::try_from(
+                self.unresolved_sink_invoked_reservation_count,
+            )
+            .context("unresolved_sink_invoked_reservation_count does not fit usize")?,
+            unresolved_observed_open_reservation_count: usize::try_from(
+                self.unresolved_observed_open_reservation_count,
+            )
+            .context("unresolved_observed_open_reservation_count does not fit usize")?,
         })
     }
 }

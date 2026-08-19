@@ -1358,10 +1358,10 @@ mod tests {
                 prepared_order: prepared_exit_linkage(),
                 reason: "rejected".to_string(),
             } => Self::PreSinkRejected { .. } => "pre_sink_rejected",
-            Self::SinkRejected {
-                prepared_order: prepared_exit_linkage(),
-                reason: "rejected".to_string(),
-            } => Self::SinkRejected { .. } => "sink_rejected",
+            Self::SinkInvokedUnknown {
+                submitted_order: prepared_exit_linkage().into(),
+                diagnostic: "unknown".to_string(),
+            } => Self::SinkInvokedUnknown { .. } => "sink_invoked_unknown",
             Self::Submitted {
                 submitted_order: prepared_exit_linkage().into(),
             } => Self::Submitted { .. } => "submitted"
@@ -1383,7 +1383,6 @@ mod tests {
             BoundaryReclassification => "boundary_reclassification",
             EntryFillMaterialized => "entry_fill_materialized",
             EntryReconcilePending => "entry_reconcile_pending",
-            PositionTruthRematerialized => "position_truth_rematerialized",
             PositionClosed => "position_closed",
             ResidualRemanaged => "residual_remanaged",
             RestartOpenOrderAdopted => "restart_open_order_adopted",
@@ -3026,6 +3025,8 @@ mod tests {
             attempted_reservation_count: 2,
             recovered_reservation_count: 2,
             live_reserved_liability: "10".to_string(),
+            unresolved_sink_invoked_reservation_count: 1,
+            unresolved_observed_open_reservation_count: 1,
         }
     }
 
@@ -4332,6 +4333,83 @@ mod tests {
                 .expect("capital rebuild must decode"),
             expected
         );
+    }
+
+    #[test]
+    fn capital_admission_rebuild_rejects_unresolved_count_overflow() {
+        let mut fact = capital_rebuild();
+        fact.unresolved_sink_invoked_reservation_count = usize::MAX;
+        fact.unresolved_observed_open_reservation_count = 1;
+
+        assert!(
+            <CurrentCodecs as CodecFor<identities::CapitalAdmissionRebuildV1>>::encode(&fact, 18)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn capital_admission_rebuild_schema_cutover_is_strict() {
+        let baseline = positive_value(KnownIdentity::CapitalAdmissionRebuildV1);
+
+        for field in [
+            "unresolved_sink_invoked_reservation_count",
+            "unresolved_observed_open_reservation_count",
+        ] {
+            let mut missing = baseline.clone();
+            missing["decision"]
+                .as_object_mut()
+                .expect("capital rebuild decision must be an object")
+                .remove(field);
+            mutation_is_rejected(KnownIdentity::CapitalAdmissionRebuildV1, &missing);
+        }
+
+        let mut unknown = baseline.clone();
+        unknown["decision"]
+            .as_object_mut()
+            .expect("capital rebuild decision must be an object")
+            .insert("unresolved_reservation_count".to_string(), 2.into());
+        mutation_is_rejected(KnownIdentity::CapitalAdmissionRebuildV1, &unknown);
+
+        let mut retired_schema = baseline;
+        retired_schema["schema_version"] = 16.into();
+        mutation_is_rejected(KnownIdentity::CapitalAdmissionRebuildV1, &retired_schema);
+    }
+
+    #[test]
+    fn exit_evaluation_schema_cutover_is_strict() {
+        let sink_invoked_unknown = positive_corpus(KnownIdentity::ExitEvaluationV1)
+            .lines()
+            .find_map(|line| {
+                let value: serde_json::Value = serde_json::from_str(line).ok()?;
+                (value.pointer("/exit_evaluation/outcome/action")
+                    == Some(&serde_json::Value::String(
+                        "sink_invoked_unknown".to_string(),
+                    )))
+                .then_some(value)
+            })
+            .expect("positive exit corpus must cover sink-invoked-unknown");
+
+        let mut retired_schema = sink_invoked_unknown.clone();
+        retired_schema["schema_version"] = 17.into();
+        mutation_is_rejected(KnownIdentity::ExitEvaluationV1, &retired_schema);
+
+        let mut retired_outcome = sink_invoked_unknown;
+        let outcome = retired_outcome["exit_evaluation"]["outcome"]
+            .as_object_mut()
+            .expect("exit outcome must be an object");
+        let submitted_order = outcome
+            .remove("submitted_order")
+            .expect("sink-invoked-unknown must carry the submitted order");
+        let diagnostic = outcome
+            .remove("diagnostic")
+            .expect("sink-invoked-unknown must carry a diagnostic");
+        outcome.insert(
+            "action".to_string(),
+            serde_json::Value::String("sink_rejected".to_string()),
+        );
+        outcome.insert("prepared_order".to_string(), submitted_order);
+        outcome.insert("reason".to_string(), diagnostic);
+        mutation_is_rejected(KnownIdentity::ExitEvaluationV1, &retired_outcome);
     }
 
     #[test]

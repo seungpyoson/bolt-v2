@@ -39,9 +39,10 @@ use crate::{
 
 use super::{
     BoltV3FinalOrderEconomicsInput, BoltV3FinalOrderEconomicsScenario, BoltV3NtVenueMutationSink,
-    BoltV3OrderExecutionPolicy, BoltV3RouteAttemptCompletion, BoltV3RouteAttemptParticipant,
-    BoltV3SubmitAttemptKind, BoltV3SubmitAttemptOutcome, BoltV3TakerEconomicsSizingInput,
-    NtStrategyVenueMutationSink, economics_basis::seal_final_order_economics_basis,
+    BoltV3OrderExecutionPolicy, BoltV3PreparedRouteAttemptCommit, BoltV3RouteAttemptCompletion,
+    BoltV3RouteAttemptParticipant, BoltV3SubmitAttemptKind, BoltV3SubmitAttemptOutcome,
+    BoltV3TakerEconomicsSizingInput, NtStrategyVenueMutationSink,
+    economics_basis::seal_final_order_economics_basis,
 };
 
 mod cancel_coordinator;
@@ -475,6 +476,44 @@ pub enum BoltV3RestingRollbackInvariantFailure {
     ParticipantSettlementFailed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RestingOrderIdentityDisposition {
+    RetainedActive,
+    RetiredByCallback,
+    NotRetained,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RestingOrderCancelDisposition {
+    RetainedByCoordinator,
+    AuthoritativelyTerminal,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RestingOrderCancelHandled {
+    client_order_id: ClientOrderId,
+    disposition: RestingOrderCancelDisposition,
+}
+
+impl RestingOrderCancelHandled {
+    pub fn new(client_order_id: ClientOrderId, disposition: RestingOrderCancelDisposition) -> Self {
+        Self {
+            client_order_id,
+            disposition,
+        }
+    }
+
+    #[must_use]
+    pub const fn client_order_id(&self) -> ClientOrderId {
+        self.client_order_id
+    }
+
+    #[must_use]
+    pub const fn disposition(&self) -> RestingOrderCancelDisposition {
+        self.disposition
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BoltV3RoutedNonSubmittedOutcome(BoltV3SubmitAttemptOutcome);
 
@@ -487,9 +526,10 @@ impl BoltV3RoutedNonSubmittedOutcome {
             | BoltV3SubmitAttemptKind::IntentEvidenceRejected
             | BoltV3SubmitAttemptKind::AdmissionRejected
             | BoltV3SubmitAttemptKind::PolicySkipped
-            | BoltV3SubmitAttemptKind::PreSinkRejected
-            | BoltV3SubmitAttemptKind::SinkRejected => Ok(Self(outcome)),
-            BoltV3SubmitAttemptKind::Submitted => Err(outcome),
+            | BoltV3SubmitAttemptKind::PreSinkRejected => Ok(Self(outcome)),
+            BoltV3SubmitAttemptKind::SinkInvokedUnknown | BoltV3SubmitAttemptKind::Submitted => {
+                Err(outcome)
+            }
         }
     }
 
@@ -508,6 +548,10 @@ impl BoltV3RoutedNonSubmittedOutcome {
 pub enum BoltV3RestingSubmitTransactionOutcome {
     RegistrationRejected(BoltV3RestingRegistrationRejection),
     Attempt(BoltV3SubmitAttemptOutcome),
+    Routed {
+        attempt: BoltV3SubmitAttemptOutcome,
+        identity_disposition: RestingOrderIdentityDisposition,
+    },
     RollbackInvariantFailed {
         original: BoltV3RoutedNonSubmittedOutcome,
         reason: BoltV3RestingRollbackInvariantFailure,
@@ -518,15 +562,34 @@ impl BoltV3RestingSubmitTransactionOutcome {
     #[must_use]
     pub fn is_submitted(&self) -> bool {
         match self {
-            Self::Attempt(outcome) => outcome.is_submitted(),
+            Self::Attempt(outcome)
+            | Self::Routed {
+                attempt: outcome, ..
+            } => outcome.is_submitted(),
             Self::RegistrationRejected(_) | Self::RollbackInvariantFailed { .. } => false,
+        }
+    }
+
+    #[must_use]
+    pub const fn identity_disposition(&self) -> RestingOrderIdentityDisposition {
+        match self {
+            Self::Routed {
+                identity_disposition,
+                ..
+            } => *identity_disposition,
+            Self::RegistrationRejected(_)
+            | Self::Attempt(_)
+            | Self::RollbackInvariantFailed { .. } => RestingOrderIdentityDisposition::NotRetained,
         }
     }
 
     #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     #[must_use]
     pub fn submitted_for_test() -> Self {
-        Self::Attempt(BoltV3SubmitAttemptOutcome::submitted_for_test())
+        Self::Routed {
+            attempt: BoltV3SubmitAttemptOutcome::submitted_for_test(),
+            identity_disposition: RestingOrderIdentityDisposition::RetainedActive,
+        }
     }
 
     #[cfg(any(test, feature = "test-current-evidence-inspection"))]
@@ -538,13 +601,16 @@ impl BoltV3RestingSubmitTransactionOutcome {
         quantity: Quantity,
         client_order_id: ClientOrderId,
     ) -> Self {
-        Self::Attempt(BoltV3SubmitAttemptOutcome::submitted_with_linkage_for_test(
-            instrument_id,
-            order_side,
-            price,
-            quantity,
-            client_order_id,
-        ))
+        Self::Routed {
+            attempt: BoltV3SubmitAttemptOutcome::submitted_with_linkage_for_test(
+                instrument_id,
+                order_side,
+                price,
+                quantity,
+                client_order_id,
+            ),
+            identity_disposition: RestingOrderIdentityDisposition::RetainedActive,
+        }
     }
 
     #[cfg(any(test, feature = "test-current-evidence-inspection"))]
@@ -565,7 +631,11 @@ pub trait BoltV3RestingRegistrationCommitParticipant: std::fmt::Debug {
     fn requote_budget(&self) -> Option<RequoteBudgetPair>;
     fn maker_lifecycle(&self) -> MakerQuoteLifecycleHandle;
     fn arm_at_identity(&mut self, identity: MakerQuoteLifecycleIdentity) -> Result<()>;
-    fn mark_sink_invoked(&mut self, actor_now_ns: u64) -> Result<()>;
+    fn preflight_sink_invocation(
+        &mut self,
+        generation: u64,
+        actor_now_ns: u64,
+    ) -> Result<Box<dyn BoltV3PreparedRestingRegistrationCommit + '_>>;
     fn registration_capability(&self, generation: u64) -> BoltV3RestingRegistrationCapability;
     fn settle_submitted(&mut self, generation: u64) -> Result<()>;
     fn settle_nt_mutation_invoked(&mut self, generation: u64) -> Result<()>;
@@ -574,6 +644,10 @@ pub trait BoltV3RestingRegistrationCommitParticipant: std::fmt::Debug {
     fn abort_pre_sink(&mut self, generation: u64) -> Result<()>;
     fn fail_pre_sink_invariant(&mut self, generation: u64) -> Result<()>;
     fn fail_post_sink_invariant(&mut self, generation: u64) -> Result<()>;
+}
+
+pub trait BoltV3PreparedRestingRegistrationCommit: std::fmt::Debug {
+    fn commit(&mut self);
 }
 
 #[derive(Debug)]
@@ -585,6 +659,7 @@ struct RestingRegistrationTransaction {
     lifecycle: MakerQuoteLifecycleHandle,
     participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
     rollback_failure: Arc<Mutex<Option<BoltV3RestingRollbackInvariantFailure>>>,
+    identity_disposition: Arc<Mutex<Option<RestingOrderIdentityDisposition>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -654,7 +729,8 @@ impl RestingRegistrationTransaction {
         let ownership = self.ownership(&registry);
         let failure = match ownership {
             RestingRegistrationOwnership::Active => match completion {
-                BoltV3RouteAttemptCompletion::Submitted => {
+                BoltV3RouteAttemptCompletion::Submitted
+                | BoltV3RouteAttemptCompletion::SinkInvokedUnknown => {
                     let record = registry
                         .records
                         .get_mut(&self.client_order_id)
@@ -663,10 +739,6 @@ impl RestingRegistrationTransaction {
                         .governed_mut()
                         .expect("owned resting registration must retain exact authority")
                         .registration_state = RestingRegistrationState::Committed;
-                    None
-                }
-                BoltV3RouteAttemptCompletion::SinkRejected => {
-                    registry.remove_registration_record(&self.client_order_id);
                     None
                 }
             },
@@ -689,8 +761,8 @@ impl RestingRegistrationTransaction {
                 BoltV3RouteAttemptCompletion::Submitted => {
                     self.participant.settle_submitted(self.generation)
                 }
-                BoltV3RouteAttemptCompletion::SinkRejected => {
-                    self.participant.settle_sink_rejected(self.generation)
+                BoltV3RouteAttemptCompletion::SinkInvokedUnknown => {
+                    self.participant.settle_nt_mutation_invoked(self.generation)
                 }
             },
             RestingRegistrationOwnership::RetiredByCallback => {
@@ -712,7 +784,8 @@ impl RestingRegistrationTransaction {
             (
                 RestingRegistrationOwnership::Active
                 | RestingRegistrationOwnership::RetiredByCallback,
-                BoltV3RouteAttemptCompletion::Submitted,
+                BoltV3RouteAttemptCompletion::Submitted
+                | BoltV3RouteAttemptCompletion::SinkInvokedUnknown,
                 Ok(()),
                 None,
             ) => apply_retention_horizon(
@@ -729,11 +802,32 @@ impl RestingRegistrationTransaction {
                 | RestingRegistrationOwnership::Replaced
                 | RestingRegistrationOwnership::Missing,
                 BoltV3RouteAttemptCompletion::Submitted
-                | BoltV3RouteAttemptCompletion::SinkRejected,
+                | BoltV3RouteAttemptCompletion::SinkInvokedUnknown,
                 Ok(()) | Err(_),
                 Some(_) | None,
             ) => Ok(0),
         };
+        let identity_disposition = match (ownership, &settlement, &retention_horizon, failure) {
+            (RestingRegistrationOwnership::Active, Ok(()), Ok(_), None) => {
+                RestingOrderIdentityDisposition::RetainedActive
+            }
+            (RestingRegistrationOwnership::RetiredByCallback, Ok(()), Ok(_), None) => {
+                RestingOrderIdentityDisposition::RetiredByCallback
+            }
+            (
+                RestingRegistrationOwnership::Active
+                | RestingRegistrationOwnership::RetiredByCallback
+                | RestingRegistrationOwnership::Replaced
+                | RestingRegistrationOwnership::Missing,
+                Ok(()) | Err(_),
+                Ok(_) | Err(_),
+                Some(_) | None,
+            ) => RestingOrderIdentityDisposition::NotRetained,
+        };
+        *self
+            .identity_disposition
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(identity_disposition);
         self.record_settlement_failure(failure, settlement, retention_horizon);
     }
 
@@ -750,16 +844,30 @@ impl RestingRegistrationTransaction {
 }
 
 impl BoltV3RouteAttemptParticipant for RestingRegistrationTransaction {
-    fn consume_at_pre_sink(&mut self) -> Result<()> {
-        self.participant.arm_at_identity(self.identity.clone())
-    }
-
-    fn mark_sink_invoked(&mut self, actor_now_ns: u64) -> Result<()> {
-        self.participant.mark_sink_invoked(actor_now_ns)
+    fn preflight_sink_invocation(
+        &mut self,
+        actor_now_ns: u64,
+    ) -> Result<Box<dyn BoltV3PreparedRouteAttemptCommit + '_>> {
+        self.participant.arm_at_identity(self.identity.clone())?;
+        let prepared = self
+            .participant
+            .preflight_sink_invocation(self.generation, actor_now_ns)?;
+        Ok(Box::new(PreparedRestingRouteAttemptCommit { prepared }))
     }
 
     fn complete(&mut self, completion: BoltV3RouteAttemptCompletion) {
         self.settle_route(completion);
+    }
+}
+
+#[derive(Debug)]
+struct PreparedRestingRouteAttemptCommit<'a> {
+    prepared: Box<dyn BoltV3PreparedRestingRegistrationCommit + 'a>,
+}
+
+impl BoltV3PreparedRouteAttemptCommit for PreparedRestingRouteAttemptCommit<'_> {
+    fn commit(&mut self) {
+        self.prepared.commit();
     }
 }
 
@@ -1087,11 +1195,13 @@ impl BoltV3OrderEconomicsHandle {
         F: FnOnce(Box<dyn BoltV3RouteAttemptParticipant>) -> BoltV3SubmitAttemptOutcome,
     {
         let rollback_failure = Arc::new(Mutex::new(None));
+        let identity_disposition = Arc::new(Mutex::new(None));
         let transaction = match self.begin_resting_registration(
             order,
             admission,
             participant,
             rollback_failure.clone(),
+            identity_disposition.clone(),
         ) {
             Ok(transaction) => transaction,
             Err(rejection) => {
@@ -1100,7 +1210,13 @@ impl BoltV3OrderEconomicsHandle {
         };
         let outcome = route(Box::new(transaction));
         match BoltV3RoutedNonSubmittedOutcome::try_new(outcome) {
-            Err(submitted) => BoltV3RestingSubmitTransactionOutcome::Attempt(submitted),
+            Err(routed) => BoltV3RestingSubmitTransactionOutcome::Routed {
+                attempt: routed,
+                identity_disposition: identity_disposition
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .unwrap_or(RestingOrderIdentityDisposition::NotRetained),
+            },
             Ok(non_submitted) => match *rollback_failure
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1120,6 +1236,7 @@ impl BoltV3OrderEconomicsHandle {
         admission: EconomicsAdmission,
         participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
         rollback_failure: Arc<Mutex<Option<BoltV3RestingRollbackInvariantFailure>>>,
+        identity_disposition: Arc<Mutex<Option<RestingOrderIdentityDisposition>>>,
     ) -> std::result::Result<RestingRegistrationTransaction, BoltV3RestingRegistrationRejection>
     {
         let client_order_id = order.client_order_id();
@@ -1217,6 +1334,7 @@ impl BoltV3OrderEconomicsHandle {
             lifecycle,
             participant,
             rollback_failure,
+            identity_disposition,
         })
     }
 
@@ -1227,22 +1345,21 @@ impl BoltV3OrderEconomicsHandle {
         execution_client_id: &str,
         client_order_id: ClientOrderId,
         participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
-    ) -> Result<()>
+    ) -> Result<RestingOrderCancelHandled>
     where
         S: BoltV3NtVenueMutationSink + ?Sized,
     {
         let now_ns = sink.actor_time_ns()?;
         let tracked = self.request_cancel_intent(client_order_id, now_ns)?;
         if !tracked {
-            anyhow::ensure!(
-                !policy.allows_venue_mutation(),
+            self.mark_resting_registry_unhealthy();
+            anyhow::bail!(
                 "tracked maker cancellation rejected unknown client order id: {client_order_id}"
             );
-            return Ok(());
         }
         let cached = sink.cached_order(client_order_id)?;
         self.refresh_tracked_economics(client_order_id, cached.as_ref(), now_ns)?;
-        self.drive_cancel_intent(
+        let disposition = self.drive_cancel_intent(
             policy,
             sink,
             CancelDriveInput {
@@ -1252,7 +1369,15 @@ impl BoltV3OrderEconomicsHandle {
                 now_ns,
                 command_participant: Some(participant),
             },
-        )
+        )?;
+        Ok(RestingOrderCancelHandled::new(client_order_id, disposition))
+    }
+
+    pub(crate) fn mark_resting_registry_unhealthy(&self) {
+        match self.tracked_orders.write() {
+            Ok(mut registry) => registry.health = RestingRegistryHealth::Poisoned,
+            Err(poisoned) => poisoned.into_inner().health = RestingRegistryHealth::Poisoned,
+        }
     }
 
     pub fn quote_taker_sizing(
@@ -1723,7 +1848,7 @@ pub(super) fn route_tracked_cancel_all<S>(
     execution_client_id: &str,
     instrument_id: InstrumentId,
     order_side: Option<OrderSide>,
-) -> Result<()>
+) -> Result<Vec<RestingOrderCancelHandled>>
 where
     S: BoltV3NtVenueMutationSink + ?Sized,
 {
@@ -1731,30 +1856,58 @@ where
         log::info!(
             "tracked maker cancellation scope skipped by execution policy: mode=shadow execution_client_id={execution_client_id} instrument_id={instrument_id} order_side={order_side:?}"
         );
-        return Ok(());
+        let registry = order_economics
+            .tracked_orders
+            .read()
+            .map_err(|_| anyhow::anyhow!("tracked maker order state lock poisoned"))?;
+        return Ok(registry
+            .records
+            .iter()
+            .filter_map(|(client_order_id, record)| {
+                record
+                    .cancellation
+                    .matches_scope(instrument_id, order_side)
+                    .then_some(RestingOrderCancelHandled::new(
+                        *client_order_id,
+                        RestingOrderCancelDisposition::RetainedByCoordinator,
+                    ))
+            })
+            .collect());
     }
     let now_ns = sink.actor_time_ns()?;
     let selected = order_economics.request_cancel_scope(instrument_id, order_side, now_ns)?;
-    let mut observations = Vec::with_capacity(selected.len());
     let mut failures = Vec::new();
+    let mut handled = Vec::with_capacity(selected.len());
     for client_order_id in selected {
         match sink.cached_order(client_order_id) {
-            Ok(cached) => observations.push((client_order_id, cached)),
+            Ok(cached) => {
+                let result = order_economics
+                    .refresh_tracked_economics(client_order_id, cached.as_ref(), now_ns)
+                    .and_then(|()| {
+                        order_economics.drive_cancel_intent(
+                            policy,
+                            sink,
+                            CancelDriveInput {
+                                execution_client_id,
+                                client_order_id,
+                                cached: cached.as_ref(),
+                                now_ns,
+                                command_participant: None,
+                            },
+                        )
+                    });
+                match result {
+                    Ok(disposition) => {
+                        handled.push(RestingOrderCancelHandled::new(client_order_id, disposition))
+                    }
+                    Err(error) => failures.push(error.to_string()),
+                }
+            }
             Err(error) => failures.push(error.to_string()),
         }
     }
-    if let Err(error) = drive_observed_resting_order_economics(
-        order_economics,
-        policy,
-        sink,
-        execution_client_id,
-        observations,
-        now_ns,
-    ) {
-        failures.push(error.to_string());
-    }
     if failures.is_empty() {
-        Ok(())
+        Ok(handled)
     } else {
         anyhow::bail!("tracked maker cancel-all failed: {}", failures.join(" | "))
     }
@@ -1779,18 +1932,30 @@ mod tests {
 
     use super::{
         BoltV3FinalOrderEconomicsInput, BoltV3FinalOrderEconomicsScenario,
-        BoltV3RestingRegistrationCapability, BoltV3RestingRegistrationCommitParticipant,
-        BoltV3RestingRegistrationRejectionKind, BoltV3RestingRollbackInvariantFailure,
-        BoltV3RestingSubmitTransactionOutcome, BoltV3RouteAttemptCompletion,
-        BoltV3RouteAttemptParticipant, BoltV3SubmitAttemptKind, BoltV3SubmitAttemptOutcome,
-        MakerQuoteLifecycleIdentity, RestingRegistryHealth, TrackedMakerOrderRegistry,
-        build_order_economics_submit_admission,
+        BoltV3PreparedRestingRegistrationCommit, BoltV3RestingRegistrationCapability,
+        BoltV3RestingRegistrationCommitParticipant, BoltV3RestingRegistrationRejectionKind,
+        BoltV3RestingRollbackInvariantFailure, BoltV3RestingSubmitTransactionOutcome,
+        BoltV3RouteAttemptCompletion, BoltV3RouteAttemptParticipant, BoltV3SubmitAttemptKind,
+        BoltV3SubmitAttemptOutcome, MakerQuoteLifecycleIdentity, RestingOrderIdentityDisposition,
+        RestingRegistryHealth, TrackedMakerOrderRegistry, build_order_economics_submit_admission,
     };
 
     #[derive(Debug)]
     struct TestRegistrationParticipant {
         capability: Cell<BoltV3RestingRegistrationCapability>,
         lifecycle: MakerQuoteLifecycleHandle,
+    }
+
+    #[derive(Debug)]
+    struct TestPreparedRegistrationCommit<'a> {
+        capability: &'a Cell<BoltV3RestingRegistrationCapability>,
+    }
+
+    impl BoltV3PreparedRestingRegistrationCommit for TestPreparedRegistrationCommit<'_> {
+        fn commit(&mut self) {
+            self.capability
+                .set(BoltV3RestingRegistrationCapability::SinkInvoked);
+        }
     }
 
     impl TestRegistrationParticipant {
@@ -1816,10 +1981,14 @@ mod tests {
             Ok(())
         }
 
-        fn mark_sink_invoked(&mut self, _actor_now_ns: u64) -> anyhow::Result<()> {
-            self.capability
-                .set(BoltV3RestingRegistrationCapability::SinkInvoked);
-            Ok(())
+        fn preflight_sink_invocation(
+            &mut self,
+            _generation: u64,
+            _actor_now_ns: u64,
+        ) -> anyhow::Result<Box<dyn BoltV3PreparedRestingRegistrationCommit + '_>> {
+            Ok(Box::new(TestPreparedRegistrationCommit {
+                capability: &self.capability,
+            }))
         }
 
         fn registration_capability(&self, _generation: u64) -> BoltV3RestingRegistrationCapability {
@@ -1910,10 +2079,14 @@ mod tests {
             Ok(())
         }
 
-        fn mark_sink_invoked(&mut self, _actor_now_ns: u64) -> anyhow::Result<()> {
-            self.capability
-                .set(BoltV3RestingRegistrationCapability::SinkInvoked);
-            Ok(())
+        fn preflight_sink_invocation(
+            &mut self,
+            _generation: u64,
+            _actor_now_ns: u64,
+        ) -> anyhow::Result<Box<dyn BoltV3PreparedRestingRegistrationCommit + '_>> {
+            Ok(Box::new(TestPreparedRegistrationCommit {
+                capability: &self.capability,
+            }))
         }
 
         fn registration_capability(&self, _generation: u64) -> BoltV3RestingRegistrationCapability {
@@ -1954,17 +2127,15 @@ mod tests {
         outcome: BoltV3SubmitAttemptOutcome,
     ) -> BoltV3SubmitAttemptOutcome {
         match outcome.kind() {
-            BoltV3SubmitAttemptKind::Submitted | BoltV3SubmitAttemptKind::SinkRejected => {
+            BoltV3SubmitAttemptKind::Submitted | BoltV3SubmitAttemptKind::SinkInvokedUnknown => {
                 participant
-                    .consume_at_pre_sink()
-                    .expect("test participant should arm");
-                participant
-                    .mark_sink_invoked(0)
-                    .expect("test participant should reach the sink");
+                    .preflight_sink_invocation(0)
+                    .expect("test participant should arm")
+                    .commit();
                 let completion = match outcome.kind() {
                     BoltV3SubmitAttemptKind::Submitted => BoltV3RouteAttemptCompletion::Submitted,
-                    BoltV3SubmitAttemptKind::SinkRejected => {
-                        BoltV3RouteAttemptCompletion::SinkRejected
+                    BoltV3SubmitAttemptKind::SinkInvokedUnknown => {
+                        BoltV3RouteAttemptCompletion::SinkInvokedUnknown
                     }
                     _ => unreachable!(),
                 };
@@ -2080,7 +2251,7 @@ mod tests {
             denied_participant,
             |mut participant| {
                 participant
-                    .consume_at_pre_sink()
+                    .preflight_sink_invocation(0)
                     .expect_err("the second proposal must exhaust the shared budget");
                 BoltV3SubmitAttemptOutcome::rejected_for_test(
                     BoltV3SubmitAttemptKind::PreSinkRejected,
@@ -2170,11 +2341,9 @@ mod tests {
             maker_submit_participant(&market, &budget, Leg::Yes),
             |mut participant| {
                 participant
-                    .consume_at_pre_sink()
-                    .expect("maker transaction should arm");
-                participant
-                    .mark_sink_invoked(1)
-                    .expect("maker transaction should enter the sink window");
+                    .preflight_sink_invocation(1)
+                    .expect("maker transaction should arm")
+                    .commit();
                 let mut terminal = callback_order;
                 let canceled = TestOrderEventStubs::canceled(
                     &terminal,
@@ -2191,6 +2360,10 @@ mod tests {
         );
 
         assert!(outcome.is_submitted());
+        assert_eq!(
+            outcome.identity_disposition(),
+            RestingOrderIdentityDisposition::RetiredByCallback
+        );
         let registry = economics
             .tracked_orders
             .read()
@@ -2219,6 +2392,60 @@ mod tests {
             "association-at-birth must bind the lifecycle and registration generations"
         );
         drop(registry);
+        assert_eq!(
+            market.leg_state(Leg::Yes),
+            crate::bolt_v3_quote_lifecycle::LegState::Idle
+        );
+    }
+
+    #[test]
+    fn synchronous_terminal_callback_wins_over_sink_invoked_unknown() {
+        let economics =
+            crate::bolt_v3_economics_test_support::fixture_order_economics_for("execution_client");
+        let market = MarketQuote::new_for_test(false);
+        let budget = RequoteBudgetPair::new(
+            RequoteBudget::new(2, 60_000, 0),
+            RequoteBudget::new(2, 60_000, 0),
+        );
+        let mut order = post_only_limit_order("MAKER-SYNC-TERMINAL-UNKNOWN");
+        let accepted = TestOrderEventStubs::accepted(
+            &order,
+            AccountId::from("ACCOUNT-001"),
+            VenueOrderId::from("VENUE-SYNC-TERMINAL-UNKNOWN"),
+        );
+        order.apply(accepted).expect("accept should apply");
+        let client_order_id = order.client_order_id();
+        let callback_order = order.clone();
+
+        let outcome = economics.route_resting_submit(
+            order.clone(),
+            sealed_admission(&economics, &order),
+            maker_submit_participant(&market, &budget, Leg::Yes),
+            |mut participant| {
+                participant
+                    .preflight_sink_invocation(1)
+                    .expect("maker transaction should arm")
+                    .commit();
+                let mut terminal = callback_order;
+                let canceled = TestOrderEventStubs::canceled(
+                    &terminal,
+                    AccountId::from("ACCOUNT-001"),
+                    Some(VenueOrderId::from("VENUE-SYNC-TERMINAL-UNKNOWN")),
+                );
+                terminal.apply(canceled).expect("cancel should apply");
+                economics
+                    .reconcile_tracked_order_at(client_order_id, Some(terminal), 2)
+                    .expect("synchronous terminal callback should settle economics");
+                participant.complete(BoltV3RouteAttemptCompletion::SinkInvokedUnknown);
+                BoltV3SubmitAttemptOutcome::sink_invoked_unknown_for_test()
+            },
+        );
+
+        assert_eq!(
+            outcome.identity_disposition(),
+            RestingOrderIdentityDisposition::RetiredByCallback
+        );
+        assert!(economics.resting_order_ids().unwrap().is_empty());
         assert_eq!(
             market.leg_state(Leg::Yes),
             crate::bolt_v3_quote_lifecycle::LegState::Idle
@@ -2468,7 +2695,6 @@ mod tests {
             BoltV3SubmitAttemptKind::AdmissionRejected,
             BoltV3SubmitAttemptKind::PolicySkipped,
             BoltV3SubmitAttemptKind::PreSinkRejected,
-            BoltV3SubmitAttemptKind::SinkRejected,
         ];
         for (index, kind) in kinds.into_iter().enumerate() {
             let economics = crate::bolt_v3_economics_test_support::fixture_order_economics_for(
@@ -2482,11 +2708,11 @@ mod tests {
                 BoltV3SubmitAttemptKind::RouteValidationRejected
                 | BoltV3SubmitAttemptKind::IntentEvidenceRejected
                 | BoltV3SubmitAttemptKind::AdmissionRejected
-                | BoltV3SubmitAttemptKind::PreSinkRejected
-                | BoltV3SubmitAttemptKind::SinkRejected => {
+                | BoltV3SubmitAttemptKind::PreSinkRejected => {
                     BoltV3SubmitAttemptOutcome::rejected_for_test(kind, "typed rejection")
                 }
-                BoltV3SubmitAttemptKind::Submitted => unreachable!(),
+                BoltV3SubmitAttemptKind::SinkInvokedUnknown
+                | BoltV3SubmitAttemptKind::Submitted => unreachable!(),
             };
             let outcome = economics.route_resting_submit(
                 order.clone(),
@@ -2578,6 +2804,7 @@ mod tests {
                 order.clone(),
                 sealed_admission(&economics, &order),
                 test_participant(),
+                Arc::new(Mutex::new(None)),
                 Arc::new(Mutex::new(None)),
             )
             .expect("provisional registration should begin");

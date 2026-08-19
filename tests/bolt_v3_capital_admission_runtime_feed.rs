@@ -23,9 +23,10 @@ use bolt_v2::bolt_v3_capital_admission_state::{
 };
 use bolt_v2::bolt_v3_capital_reservation::{CapitalPoolSnapshot, ReservationRejectionReason};
 use bolt_v2::bolt_v3_current_evidence::{
-    CapitalAdmissionRebuildSource, DecisionEvidenceRecorder,
+    CapitalAdmissionRebuildSource, DecisionEvidenceRecorder, EvidenceOrderSide,
     ProviderCollateralAllowanceCaptureEndpoint as EvidenceCaptureEndpoint,
     ProviderCollateralAllowanceCaptureErrorClass as EvidenceCaptureErrorClass,
+    ReservationAttribution, ReservationProductKind,
 };
 use bolt_v2::bolt_v3_kill_switch::KillSwitchStateKind;
 use bolt_v2::bolt_v3_provider_collateral_allowance::{
@@ -43,7 +44,7 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
     BoltV3SubmitCapitalAdmissionNtComponents, BoltV3SubmitCapitalAdmissionOpenOrderReservation,
     BoltV3SubmitCapitalAdmissionOpenOrderSnapshot, BoltV3SubmitIntentKind,
-    PredictionMarketOutcomeSide,
+    BoltV3SubmitReservationPhase, PredictionMarketOutcomeSide,
 };
 use nautilus_common::msgbus::{
     TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
@@ -176,6 +177,11 @@ fn nt_projection_request_revokes_new_risk_without_erasing_committed_reservation(
         admission.capital_admission_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
+    assert_eq!(
+        admission.unresolved_lifecycle_reservation_counts_for_test(),
+        Some((0, 0)),
+        "invalidation is not a complete projection proving the record absent"
+    );
     assert!(matches!(
         admission.admit_at(&capital_admission_submit_request("client-order-2"), 1_001),
         Err(BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
@@ -185,11 +191,200 @@ fn nt_projection_request_revokes_new_risk_without_erasing_committed_reservation(
 }
 
 #[test]
+fn reservation_phase_advances_from_refundable_to_sink_invoked_by_exact_revision() {
+    let admission = capital_admission_configured_admission();
+    arm_default(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    let before_arm = admission.capital_admission_state_revision_for_test();
+
+    let permit = admission
+        .admit_at(
+            &capital_admission_submit_request("client-order-phase"),
+            1_000,
+        )
+        .expect("fresh canonical NT projection should admit");
+    let reserved = admission
+        .capital_admission_reservation_lifecycle_for_test("client-order-phase")
+        .expect("admission should install one exact reservation record");
+    assert_eq!(reserved.phase, BoltV3SubmitReservationPhase::Reserved);
+    assert!(reserved.phase_revision > before_arm);
+
+    permit.commit_submitted();
+
+    let sink_invoked = admission
+        .capital_admission_reservation_lifecycle_for_test("client-order-phase")
+        .expect("the exact reservation must survive the submit boundary");
+    assert_eq!(
+        sink_invoked.phase,
+        BoltV3SubmitReservationPhase::SinkInvoked
+    );
+    assert!(sink_invoked.phase_revision > reserved.phase_revision);
+    assert_eq!(
+        sink_invoked.phase_revision,
+        admission.capital_admission_state_revision_for_test()
+    );
+}
+
+#[test]
+fn omitted_sink_invoked_reservation_keeps_its_exact_ledger_liability() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+
+    apply_empty_canonical_nt_projection(&mut feed, &admission, 1_100);
+
+    let retained = admission
+        .capital_admission_reservation_lifecycle_for_test("client-order-1")
+        .expect("projection omission cannot retire a sink-invoked reservation");
+    assert_eq!(retained.phase, BoltV3SubmitReservationPhase::SinkInvoked);
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    assert_eq!(
+        admission.unresolved_lifecycle_reservation_counts_for_test(),
+        Some((1, 0))
+    );
+}
+
+#[test]
+fn terminal_reservation_retires_record_and_ledger_while_reconciliation_is_invalid() {
+    let (admission, _) = committed_submit_runtime_feed();
+    admission.invalidate_capital_admission_for_nt_projection_request();
+    let before = admission.capital_admission_state_revision_for_test();
+
+    assert!(admission.retire_terminal_reservation_for_test("client-order-1", 1_100));
+
+    assert!(!admission.capital_admission_has_live_reservation("client-order-1"));
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+    assert!(admission.capital_admission_state_revision_for_test() > before);
+}
+
+#[test]
+fn terminal_retirement_invalidates_an_older_projection_candidate() {
+    let (admission, _) = committed_submit_runtime_feed();
+    let stale_revision = admission.capital_admission_state_revision_for_test();
+    assert!(admission.retire_terminal_reservation_for_test("client-order-1", 1_100));
+
+    let decision = admission.commit_capital_admission_nt_projection_for_test(
+        stale_revision,
+        Some(fresh_components(1_200)),
+        Some(1_200),
+        BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
+            observed_at_ns: 1_200,
+            evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
+            observed_open_order_count: 0,
+            all_open_orders_attributed: true,
+            reservations: Vec::new(),
+            live_non_reservation_client_order_ids: Default::default(),
+        },
+        1_200,
+    );
+
+    assert!(!decision.accepted);
+    assert!(!admission.capital_admission_has_live_reservation("client-order-1"));
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+}
+
+#[test]
+fn terminal_evidence_failure_preserves_record_and_numerical_liability() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = Arc::new(capital_admission_configured_admission_with_writer(
+        writer.recorder(),
+    ));
+    arm_default(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    admission
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
+        .expect("fresh capital state should admit")
+        .commit_submitted();
+    writer.fail_purpose_on_attempt(
+        bolt_v2::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::CapitalAdmissionRebuild,
+        2,
+    );
+
+    assert!(!admission.retire_terminal_reservation_for_test("client-order-1", 1_100));
+    assert!(admission.capital_admission_has_live_reservation("client-order-1"));
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+}
+
+#[test]
+fn observed_open_then_omitted_reservation_remains_numerically_live() {
+    let (admission, mut feed) = committed_submit_runtime_feed();
+    let observed = admission.rebuild_capital_admission_open_order_reservations_for_test(
+        vec![open_order_reservation(
+            "client-order-1",
+            "client-order-1#1",
+            Decimal::new(43, 1),
+        )],
+        1_050,
+    );
+    assert!(observed.accepted);
+    assert_eq!(
+        admission
+            .capital_admission_reservation_lifecycle_for_test("client-order-1")
+            .expect("fresh open-order evidence should retain the record")
+            .phase,
+        BoltV3SubmitReservationPhase::ObservedOpen
+    );
+
+    apply_empty_canonical_nt_projection(&mut feed, &admission, 1_100);
+
+    let retained = admission
+        .capital_admission_reservation_lifecycle_for_test("client-order-1")
+        .expect("projection omission cannot retire an observed-open reservation");
+    assert_eq!(retained.phase, BoltV3SubmitReservationPhase::ObservedOpen);
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    assert_eq!(
+        admission.unresolved_lifecycle_reservation_counts_for_test(),
+        Some((0, 1))
+    );
+}
+
+#[test]
+fn open_projection_cannot_replace_a_retained_reservation_generation() {
+    let (admission, _) = committed_submit_runtime_feed();
+
+    let decision = admission.rebuild_capital_admission_open_order_reservations_for_test(
+        vec![open_order_reservation(
+            "client-order-1",
+            "different-reservation-generation",
+            Decimal::new(43, 1),
+        )],
+        1_050,
+    );
+
+    assert!(!decision.accepted);
+    let retained = admission
+        .capital_admission_reservation_lifecycle_for_test("client-order-1")
+        .expect("identity mismatch must preserve the retained reservation");
+    assert_eq!(retained.phase, BoltV3SubmitReservationPhase::SinkInvoked);
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+}
+
+#[test]
 fn stale_nt_projection_candidate_cannot_rearm_after_newer_invalidation() {
     let admission = capital_admission_configured_admission();
     admission.update_capital_admission_nt_components(fresh_components(900));
     rebuild_empty_capital_admission(&admission);
-    let stale_epoch = admission.capital_admission_nt_projection_epoch_for_test();
+    let stale_epoch = admission.capital_admission_state_revision_for_test();
     let state_before_invalidation = admission
         .capital_admission_state_snapshot()
         .expect("test projection should publish state");
@@ -225,7 +420,7 @@ fn only_one_nt_projection_candidate_can_commit_for_an_epoch() {
     admission.update_capital_admission_nt_components(fresh_components(900));
     rebuild_empty_capital_admission(&admission);
     admission.invalidate_capital_admission_for_nt_projection_request();
-    let shared_epoch = admission.capital_admission_nt_projection_epoch_for_test();
+    let shared_epoch = admission.capital_admission_state_revision_for_test();
     let snapshot = BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
         observed_at_ns: 2_000,
         evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
@@ -262,6 +457,52 @@ fn only_one_nt_projection_candidate_can_commit_for_an_epoch() {
         admission.capital_admission_state_snapshot(),
         Some(state_after_first),
         "a rejected competing candidate must perform zero state mutation"
+    );
+}
+
+#[test]
+fn exhausted_state_revision_rejects_candidate_without_mutating_live_state() {
+    let admission = capital_admission_configured_admission();
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    let before = admission
+        .capital_admission_state_snapshot()
+        .expect("baseline components should be published");
+    admission.set_capital_admission_state_revision_for_test(u64::MAX);
+
+    let decision = admission.commit_capital_admission_nt_projection_for_test(
+        u64::MAX,
+        Some(fresh_components(2_000)),
+        Some(2_000),
+        BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
+            observed_at_ns: 2_000,
+            evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
+            observed_open_order_count: 0,
+            all_open_orders_attributed: true,
+            reservations: Vec::new(),
+            live_non_reservation_client_order_ids: Default::default(),
+        },
+        2_000,
+    );
+
+    assert!(!decision.accepted);
+    assert_eq!(
+        decision.reason,
+        Some(ReservationRejectionReason::ReconciliationRequired)
+    );
+    assert_eq!(
+        admission.capital_admission_state_revision_for_test(),
+        u64::MAX
+    );
+    let after = admission
+        .capital_admission_state_snapshot()
+        .expect("revision exhaustion must preserve the prior components");
+    assert_eq!(after.portfolio, before.portfolio);
+    assert_eq!(after.product_state, before.product_state);
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+    assert!(
+        admission.capital_admission_state_revision_for_test() > expected_revision,
+        "an evidence-rejected rebuild must invalidate every projection captured at its predecessor revision"
     );
 }
 
@@ -1156,6 +1397,85 @@ fn capital_admission_rebuild_evidence_failure_leaves_gate_unreconciled() {
 }
 
 #[test]
+fn rebuild_evidence_failure_preserves_the_prior_ledger_and_lifecycle_phase() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = capital_admission_configured_admission_with_writer(writer.recorder());
+    arm_default(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    admission
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
+        .expect("fresh canonical state should admit")
+        .commit_submitted();
+    writer.fail_purpose_on_attempt(
+        bolt_v2::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::CapitalAdmissionRebuild,
+        2,
+    );
+    let mut partially_filled =
+        open_order_reservation("client-order-1", "client-order-1#1", Decimal::new(23, 1));
+    partially_filled.open_quantity = Decimal::new(5, 0);
+    partially_filled.filled_quantity = Decimal::new(5, 0);
+    partially_filled.observed_at_ns = 1_100;
+    partially_filled.attribution.reserved_liability = Decimal::new(43, 1).to_string();
+
+    let rebuild = admission
+        .rebuild_capital_admission_open_order_reservations_for_test(vec![partially_filled], 1_100);
+
+    assert!(!rebuild.accepted);
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    assert_eq!(
+        admission
+            .capital_admission_reservation_lifecycle_for_test("client-order-1")
+            .expect("evidence failure must preserve the prior typed record")
+            .phase,
+        BoltV3SubmitReservationPhase::SinkInvoked
+    );
+}
+
+#[test]
+fn rebuild_evidence_failure_does_not_publish_candidate_nt_components() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = capital_admission_configured_admission_with_writer(writer.recorder());
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    let expected_revision = admission.capital_admission_state_revision_for_test();
+    let before = admission
+        .capital_admission_state_snapshot()
+        .expect("baseline components should be published");
+    writer.fail_purpose_on_attempt(
+        bolt_v2::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::CapitalAdmissionRebuild,
+        2,
+    );
+
+    let rebuild = admission.commit_capital_admission_nt_projection_for_test(
+        expected_revision,
+        Some(fresh_components(2_000)),
+        Some(2_000),
+        BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
+            observed_at_ns: 2_000,
+            evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
+            observed_open_order_count: 0,
+            all_open_orders_attributed: true,
+            reservations: Vec::new(),
+            live_non_reservation_client_order_ids: Default::default(),
+        },
+        2_000,
+    );
+
+    assert!(!rebuild.accepted);
+    let after = admission
+        .capital_admission_state_snapshot()
+        .expect("the prior NT components should remain published but unreconciled");
+    assert_eq!(after.portfolio, before.portfolio);
+    assert_eq!(after.product_state, before.product_state);
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+}
+
+#[test]
 fn terminal_callback_cannot_reopen_gate_without_fresh_nt_projection() {
     let admission = Arc::new(polymarket_capital_admission_configured_admission());
     let mut feed =
@@ -1675,7 +1995,7 @@ fn delayed_duplicate_fill_with_conflicting_quantity_after_empty_nt_reprojection_
 #[test]
 fn fill_evidence_invalidates_an_in_flight_nt_projection_candidate() {
     let (admission, mut feed) = committed_submit_runtime_feed();
-    let stale_epoch = admission.capital_admission_nt_projection_epoch_for_test();
+    let stale_epoch = admission.capital_admission_state_revision_for_test();
     let fill = feed
         .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
             "client-order-1",
@@ -1809,7 +2129,7 @@ fn duplicate_trade_id_with_conflicting_runtime_instrument_latches_fail_closed() 
     assert_eq!(admission.capital_admission_reconciled(), Some(false));
     assert_eq!(
         admission.capital_admission_live_reserved_liability(),
-        Some(Decimal::ZERO)
+        Some(Decimal::new(43, 1))
     );
 }
 
@@ -1918,6 +2238,35 @@ fn admission_evidence_failure_rolls_back_capital_reservation_before_submit() {
         0,
         "atomic reservation attribution must not survive a failed admission append"
     );
+}
+
+#[test]
+fn pre_sink_rollback_preserves_attribution_when_the_ledger_identity_is_missing() {
+    let admission = capital_admission_configured_admission();
+    arm_default(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    let permit = admission
+        .admit_at(
+            &capital_admission_submit_request("rollback-ledger-mismatch"),
+            1_000,
+        )
+        .expect("fresh sizing state should admit");
+
+    assert!(admission.capital_admission_has_live_reservation("rollback-ledger-mismatch"));
+    assert!(admission.remove_capital_ledger_reservation_only_for_test("rollback-ledger-mismatch"));
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+
+    drop(permit);
+
+    assert!(
+        admission.capital_admission_has_live_reservation("rollback-ledger-mismatch"),
+        "rollback must not erase attribution when the numerical ledger removal fails"
+    );
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
 }
 
 #[test]
@@ -2338,6 +2687,23 @@ fn open_order_reservation(
 ) -> BoltV3SubmitCapitalAdmissionOpenOrderReservation {
     BoltV3SubmitCapitalAdmissionOpenOrderReservation {
         client_order_id: client_order_id.to_string(),
+        attribution: ReservationAttribution {
+            client_order_id: client_order_id.to_string(),
+            submit_reservation_id: submit_reservation_id.to_string(),
+            venue_id: "VENUE-A".to_string(),
+            account_id: "ACCOUNT-001".to_string(),
+            product_kind: ReservationProductKind::PredictionMarketBinary,
+            collateral_currency: "USD".to_string(),
+            capital_pool_id: "pool-1".to_string(),
+            collateral_group_id: "group-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: EvidenceOrderSide::Buy,
+            submitted_quantity: "10".to_string(),
+            liability_factor: "0.4".to_string(),
+            additive_liability: "0.3".to_string(),
+            reserved_liability: liability.to_string(),
+            observed_at_ns: 1_000,
+        },
         submit_reservation_id: submit_reservation_id.to_string(),
         collateral_group_id: "group-1".to_string(),
         liability,

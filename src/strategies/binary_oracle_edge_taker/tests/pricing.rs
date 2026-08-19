@@ -1997,7 +1997,7 @@ fn exit_hold_ev_does_not_require_uncertainty_band_components() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy
         .pricing
@@ -2038,7 +2038,7 @@ fn exit_hold_ev_uses_raw_fair_probability_symmetrically_with_exit_ev() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy
         .pricing
@@ -2086,7 +2086,7 @@ fn position_probability_and_hold_ev_accept_ready_surfaced_zero_realized_volatili
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy.pricing.observe_realized_vol_snapshot(
         crate::bolt_v3_realized_volatility::RealizedVolSnapshot {

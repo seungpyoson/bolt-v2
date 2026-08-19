@@ -1501,7 +1501,7 @@ fn post_only_exit_submission_price_uses_passive_book_price() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
     let decision = strategy.exit_intent_decision_at(1_200);
@@ -1534,7 +1534,7 @@ fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used()
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
     let decision = strategy.exit_intent_decision_at(1_200);
@@ -1615,7 +1615,7 @@ fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
     let decision = strategy.exit_intent_decision_at(1_200);
@@ -1652,7 +1652,7 @@ fn forced_flat_exit_order_object_uses_configured_ioc_market_shape() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     let decision = strategy.exit_intent_decision_at(1_200);
     let price = Price::new(
@@ -1714,7 +1714,7 @@ fn forced_flat_exit_order_object_uses_configured_forced_exit_template() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     let decision = strategy.exit_intent_decision_at(1_200);
     let price = Price::new(
@@ -2246,7 +2246,7 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
     set_managed_position(
         &mut strategy,
         managed_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
     let exit_fallback_price = Price::new(0.45, 2);
@@ -2612,7 +2612,7 @@ fn stop_market_exit_submission_uses_trigger_price_without_book_liquidity() {
     set_managed_position(
         &mut strategy,
         position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
     let decision = strategy.exit_intent_decision_at(1_200);
@@ -2644,7 +2644,7 @@ fn stop_market_exit_ev_uses_trigger_price_instead_of_live_book() {
     set_managed_position(
         &mut strategy,
         position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
     let decision = strategy.exit_intent_decision_at(1_200);
@@ -2794,7 +2794,7 @@ fn quarantined_legacy_short_position_blocks_exit_submission() {
             avg_px_open: 0.480,
             book: tracked_book,
         },
-        UnsupportedObservedReason::BootstrappedUnsupportedContract,
+        UnsupportedObservedReason::LiveUnsupportedContract,
     );
 
     let decision = strategy.exit_intent_decision_at(2_000);
@@ -2839,7 +2839,7 @@ fn forced_flat_exit_intent_submits_for_open_up_position() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
     let decision = strategy.exit_intent_decision_at(1_200);
@@ -2879,7 +2879,7 @@ fn forced_flat_exit_intent_submits_for_open_down_position() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
     let decision = strategy.exit_intent_decision_at(1_200);
@@ -2918,7 +2918,7 @@ fn exit_intent_uses_live_hold_vs_exit_boundary() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy
         .pricing

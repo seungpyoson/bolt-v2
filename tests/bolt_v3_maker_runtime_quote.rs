@@ -28,6 +28,7 @@ use bolt_v2::{
     bolt_v3_market_families::{FairProbabilityInputs, static_binary_event, updown},
     bolt_v3_order_execution::{
         BoltV3RestingRegistrationCommitParticipant, BoltV3RestingSubmitTransactionOutcome,
+        RestingOrderCancelHandled,
     },
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
     bolt_v3_quote_lifecycle::{
@@ -1079,18 +1080,20 @@ fn cancel_all_runtime_order_plan_dispatches_both_leg_instruments() {
 
     assert_eq!(
         dispatched.yes.dispatch,
-        Some(MakerOrderDispatchOutcome::CanceledAll {
+        Some(MakerOrderDispatchOutcome::CancelScopeHandled {
             leg: Some(Leg::Yes),
             instrument_id: InstrumentId::from("YES.RUNTIME"),
             order_side: None,
+            dispositions: Vec::new(),
         })
     );
     assert_eq!(
         dispatched.no.dispatch,
-        Some(MakerOrderDispatchOutcome::CanceledAll {
+        Some(MakerOrderDispatchOutcome::CancelScopeHandled {
             leg: Some(Leg::No),
             instrument_id: InstrumentId::from("NO.RUNTIME"),
             order_side: None,
+            dispositions: Vec::new(),
         })
     );
     assert_eq!(
@@ -1420,8 +1423,9 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
             ))
             .expect("test submit participant must arm");
         participant
-            .mark_sink_invoked(actor_now_ns)
-            .expect("test submit participant must reach the sink");
+            .preflight_sink_invocation(generation, actor_now_ns)
+            .expect("test submit participant must prepare the sink boundary")
+            .commit();
         self.submitted.push(order);
         participant
             .settle_submitted(generation)
@@ -1441,7 +1445,7 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
         _instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
         mut participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
-    ) -> Result<()> {
+    ) -> Result<RestingOrderCancelHandled> {
         self.cancel_calls += 1;
         let generation = self.begin_generation();
         let actor_now_ns = self.clock.borrow().timestamp_ns().as_u64();
@@ -1449,7 +1453,9 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
             client_order_id.as_str(),
             generation,
         ))?;
-        participant.mark_sink_invoked(actor_now_ns)?;
+        participant
+            .preflight_sink_invocation(generation, actor_now_ns)?
+            .commit();
         participant.settle_nt_mutation_invoked(generation)?;
         anyhow::bail!("test sink should not receive cancel commands")
     }
@@ -1459,9 +1465,9 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
         leg: Option<Leg>,
         instrument_id: InstrumentId,
         order_side: Option<OrderSide>,
-    ) -> Result<()> {
+    ) -> Result<Vec<RestingOrderCancelHandled>> {
         self.canceled_all.push((leg, instrument_id, order_side));
-        Ok(())
+        Ok(Vec::new())
     }
 
     fn modify_maker_order(

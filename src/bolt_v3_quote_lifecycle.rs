@@ -27,7 +27,7 @@
 //! drain, one-side). The requote throttle, reconnect resync, and the NT handler
 //! translation arrive in later W2 slices.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 #[cfg(any(test, feature = "test-current-evidence-inspection"))]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -473,49 +473,81 @@ enum ArmedQuoteBudget {
 
 #[derive(Debug)]
 enum SinkInvokedQuoteBudget {
+    ChargePending(RequoteBudgetReservation),
+    PrepaidPending(RequoteBudgetReservation),
     Charged,
     Prepaid(RequoteBudgetReservation),
 }
 
 impl ArmedQuoteBudget {
-    fn mark_sink_invoked_at(
+    fn prepare_sink_invoked_at(
         mut self,
         obligation: QuoteLegTransactionObligation,
         actor_now_ms: u64,
-    ) -> std::result::Result<SinkInvokedQuoteBudget, (Self, anyhow::Error)> {
-        let accounting = match &mut self {
+    ) -> SinkInvokedQuoteBudget {
+        match &mut self {
             Self::Reserved(reservation) | Self::Prepaid(reservation) => {
-                reservation.mark_sink_invoked_at(actor_now_ms)
+                reservation.prepare_sink_invoked_at(actor_now_ms);
             }
-        };
-        match accounting {
-            Err(error) => Err((
-                self,
-                anyhow::anyhow!("maker quote budget sink accounting failed: {error:?}"),
-            )),
-            Ok(()) => match (self, obligation) {
-                (Self::Reserved(reservation), QuoteLegTransactionObligation::RequoteCancel) => {
-                    Ok(SinkInvokedQuoteBudget::Prepaid(reservation))
-                }
-                (
-                    Self::Reserved(reservation),
-                    QuoteLegTransactionObligation::FreshSubmit
-                    | QuoteLegTransactionObligation::ReplacementSubmit
-                    | QuoteLegTransactionObligation::PlainCancel
-                    | QuoteLegTransactionObligation::Modify,
-                )
-                | (
-                    Self::Prepaid(reservation),
-                    QuoteLegTransactionObligation::FreshSubmit
-                    | QuoteLegTransactionObligation::ReplacementSubmit
-                    | QuoteLegTransactionObligation::RequoteCancel
-                    | QuoteLegTransactionObligation::PlainCancel
-                    | QuoteLegTransactionObligation::Modify,
-                ) => {
-                    drop(reservation);
-                    Ok(SinkInvokedQuoteBudget::Charged)
-                }
-            },
+        }
+        match (self, obligation) {
+            (Self::Reserved(reservation), QuoteLegTransactionObligation::RequoteCancel) => {
+                SinkInvokedQuoteBudget::PrepaidPending(reservation)
+            }
+            (
+                Self::Reserved(reservation),
+                QuoteLegTransactionObligation::FreshSubmit
+                | QuoteLegTransactionObligation::ReplacementSubmit
+                | QuoteLegTransactionObligation::PlainCancel
+                | QuoteLegTransactionObligation::Modify,
+            )
+            | (
+                Self::Prepaid(reservation),
+                QuoteLegTransactionObligation::FreshSubmit
+                | QuoteLegTransactionObligation::ReplacementSubmit
+                | QuoteLegTransactionObligation::RequoteCancel
+                | QuoteLegTransactionObligation::PlainCancel
+                | QuoteLegTransactionObligation::Modify,
+            ) => SinkInvokedQuoteBudget::ChargePending(reservation),
+        }
+    }
+}
+
+impl SinkInvokedQuoteBudget {
+    fn account(self) -> AccountedSinkInvokedQuoteBudget {
+        match self {
+            Self::ChargePending(mut reservation) => {
+                reservation.settle_prepared_sink_invocation();
+                drop(reservation);
+                AccountedSinkInvokedQuoteBudget::Charged
+            }
+            Self::PrepaidPending(mut prepaid) => {
+                prepaid.settle_prepared_sink_invocation();
+                AccountedSinkInvokedQuoteBudget::Prepaid(prepaid)
+            }
+            Self::Charged => AccountedSinkInvokedQuoteBudget::Charged,
+            Self::Prepaid(prepaid) => AccountedSinkInvokedQuoteBudget::Prepaid(prepaid),
+        }
+    }
+}
+
+enum AccountedSinkInvokedQuoteBudget {
+    Charged,
+    Prepaid(RequoteBudgetReservation),
+}
+
+impl AccountedSinkInvokedQuoteBudget {
+    fn into_sink_invoked(self) -> SinkInvokedQuoteBudget {
+        match self {
+            Self::Charged => SinkInvokedQuoteBudget::Charged,
+            Self::Prepaid(prepaid) => SinkInvokedQuoteBudget::Prepaid(prepaid),
+        }
+    }
+
+    fn into_poisoned(self) -> QuotePoisonedBudget {
+        match self {
+            Self::Charged => QuotePoisonedBudget::Charged,
+            Self::Prepaid(prepaid) => QuotePoisonedBudget::Prepaid(prepaid),
         }
     }
 }
@@ -650,13 +682,16 @@ impl QuoteAttemptState {
             QuoteAttemptPhase::Armed(ArmedQuoteBudget::Reserved(_)) => {
                 (None, QuoteTransactionRegistrationPhase::PreSink)
             }
-            QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Prepaid(prepaid)) => (
+            QuoteAttemptPhase::SinkInvoked(
+                SinkInvokedQuoteBudget::PrepaidPending(prepaid)
+                | SinkInvokedQuoteBudget::Prepaid(prepaid),
+            ) => (
                 Some(prepaid.generation()),
                 QuoteTransactionRegistrationPhase::SinkInvoked,
             ),
-            QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Charged) => {
-                (None, QuoteTransactionRegistrationPhase::SinkInvoked)
-            }
+            QuoteAttemptPhase::SinkInvoked(
+                SinkInvokedQuoteBudget::ChargePending(_) | SinkInvokedQuoteBudget::Charged,
+            ) => (None, QuoteTransactionRegistrationPhase::SinkInvoked),
         };
         QuoteStateProjection {
             armed_identity: Some(&self.arm.identity),
@@ -818,10 +853,6 @@ impl QuoteTransactionState {
         self.projection().winding_down
     }
 
-    fn generation(&self) -> Option<u64> {
-        self.projection().generation
-    }
-
     fn registration_phase(&self, generation: u64) -> QuoteTransactionRegistrationPhase {
         let projection = self.projection();
         if projection.generation == Some(generation) {
@@ -862,7 +893,6 @@ enum QuoteTransactionEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SinkCapableQuoteTransactionEvent {
-    SinkInvoked { generation: u64, actor_now_ms: u64 },
     Submitted { generation: u64 },
     NtMutationInvoked { generation: u64 },
     SinkRejected { generation: u64 },
@@ -931,8 +961,7 @@ impl QuoteTransactionReductionRequest {
                 | QuoteTransactionEvent::Arm { .. },
             )
             | QuoteTransactionReductionEvent::SinkCapable(
-                SinkCapableQuoteTransactionEvent::SinkInvoked { .. }
-                | SinkCapableQuoteTransactionEvent::SinkRejected { .. }
+                SinkCapableQuoteTransactionEvent::SinkRejected { .. }
                 | SinkCapableQuoteTransactionEvent::CallbackRetired { .. },
             ) => (None, false),
         };
@@ -1144,10 +1173,6 @@ impl GovernedQuoteTransactionInner {
         event: SinkCapableQuoteTransactionEvent,
     ) -> QuoteReduction {
         match event {
-            SinkCapableQuoteTransactionEvent::SinkInvoked {
-                generation,
-                actor_now_ms,
-            } => Self::reduce_sink_invoked(state, generation, actor_now_ms),
             SinkCapableQuoteTransactionEvent::Submitted { generation } => {
                 Self::reduce_route_success(state, generation, QuoteRouteSuccess::Submitted)
             }
@@ -1504,13 +1529,10 @@ impl GovernedQuoteTransactionInner {
                 drop(reservation);
                 QuotePoisonedBudget::Charged
             }
-            QuoteAttemptPhase::Armed(ArmedQuoteBudget::Prepaid(prepaid))
-            | QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Prepaid(prepaid)) => {
+            QuoteAttemptPhase::Armed(ArmedQuoteBudget::Prepaid(prepaid)) => {
                 QuotePoisonedBudget::Prepaid(prepaid)
             }
-            QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Charged) => {
-                QuotePoisonedBudget::Charged
-            }
+            QuoteAttemptPhase::SinkInvoked(budget) => budget.account().into_poisoned(),
         };
         QuoteStableState::poisoned(
             attempt.mode,
@@ -1848,10 +1870,7 @@ impl GovernedQuoteTransactionInner {
         budget: SinkInvokedQuoteBudget,
         generation: u64,
     ) -> QuoteReduction {
-        let budget = match budget {
-            SinkInvokedQuoteBudget::Charged => QuotePoisonedBudget::Charged,
-            SinkInvokedQuoteBudget::Prepaid(prepaid) => QuotePoisonedBudget::Prepaid(prepaid),
-        };
+        let budget = budget.account().into_poisoned();
         Ok((
             Self::settled(
                 generation,
@@ -1861,29 +1880,25 @@ impl GovernedQuoteTransactionInner {
             GovernedQuoteTransactionCommit::no_action(),
         ))
     }
-    fn reduce_sink_invoked(
+    fn commit_sink_invoked(
         state: QuoteTransactionState,
         generation: u64,
         actor_now_ms: u64,
-    ) -> QuoteReduction {
-        Self::reduce_generation_fenced(
-            state,
-            generation,
-            |state| Ok((state, GovernedQuoteTransactionCommit::no_action())),
-            |state| match state {
-                QuoteTransactionState::Attempt(QuoteAttemptState {
-                    mode,
-                    arm,
-                    phase: QuoteAttemptPhase::Armed(budget),
-                }) => Self::account_sink_invocation(mode, arm, budget, actor_now_ms),
-                state @ (QuoteTransactionState::Stable(_)
-                | QuoteTransactionState::Settled(_)
-                | QuoteTransactionState::Attempt(QuoteAttemptState {
-                    phase: QuoteAttemptPhase::SinkInvoked(_),
-                    ..
-                })) => Ok((state, GovernedQuoteTransactionCommit::no_action())),
-            },
-        )
+    ) -> (QuoteTransactionState, GovernedQuoteTransactionCommit) {
+        match state {
+            QuoteTransactionState::Attempt(QuoteAttemptState {
+                mode,
+                arm,
+                phase: QuoteAttemptPhase::Armed(budget),
+            }) if arm.identity.generation() == generation => {
+                Self::account_sink_invocation(mode, arm, budget, actor_now_ms)
+            }
+            state @ (QuoteTransactionState::Stable(_)
+            | QuoteTransactionState::Settled(_)
+            | QuoteTransactionState::Attempt(_)) => {
+                (state, GovernedQuoteTransactionCommit::no_action())
+            }
+        }
     }
 
     fn account_sink_invocation(
@@ -1891,25 +1906,16 @@ impl GovernedQuoteTransactionInner {
         arm: QuoteTransactionArm,
         budget: ArmedQuoteBudget,
         actor_now_ms: u64,
-    ) -> QuoteReduction {
-        match budget.mark_sink_invoked_at(arm.obligation, actor_now_ms) {
-            Ok(budget) => Ok((
-                QuoteTransactionState::Attempt(QuoteAttemptState {
-                    mode,
-                    arm,
-                    phase: QuoteAttemptPhase::SinkInvoked(budget),
-                }),
-                GovernedQuoteTransactionCommit::no_action(),
-            )),
-            Err((budget, error)) => Err((
-                QuoteTransactionState::Attempt(QuoteAttemptState {
-                    mode,
-                    arm,
-                    phase: QuoteAttemptPhase::Armed(budget),
-                }),
-                error,
-            )),
-        }
+    ) -> (QuoteTransactionState, GovernedQuoteTransactionCommit) {
+        let budget = budget.prepare_sink_invoked_at(arm.obligation, actor_now_ms);
+        (
+            QuoteTransactionState::Attempt(QuoteAttemptState {
+                mode,
+                arm,
+                phase: QuoteAttemptPhase::SinkInvoked(budget),
+            }),
+            GovernedQuoteTransactionCommit::no_action(),
+        )
     }
     fn committed_pending(arm: QuoteTransactionArm) -> QuoteStableState {
         match arm.pending_state {
@@ -1987,17 +1993,20 @@ impl GovernedQuoteTransactionInner {
         arm: QuoteTransactionArm,
         budget: SinkInvokedQuoteBudget,
     ) -> QuoteStableState {
-        match (mode, budget) {
-            (QuoteTransactionMode::Active, SinkInvokedQuoteBudget::Charged) => {
+        match (mode, budget.account()) {
+            (QuoteTransactionMode::Active, AccountedSinkInvokedQuoteBudget::Charged) => {
                 Self::committed_pending(arm)
             }
-            (QuoteTransactionMode::Active, SinkInvokedQuoteBudget::Prepaid(prepaid)) => {
+            (QuoteTransactionMode::Active, AccountedSinkInvokedQuoteBudget::Prepaid(prepaid)) => {
                 QuoteStableState::active(ActiveQuotePhase::RequotePending { prepaid })
             }
-            (QuoteTransactionMode::WindingDown, SinkInvokedQuoteBudget::Charged) => {
+            (QuoteTransactionMode::WindingDown, AccountedSinkInvokedQuoteBudget::Charged) => {
                 QuoteStableState::winding_down(WindDownQuotePhase::CancelPending)
             }
-            (QuoteTransactionMode::WindingDown, SinkInvokedQuoteBudget::Prepaid(prepaid)) => {
+            (
+                QuoteTransactionMode::WindingDown,
+                AccountedSinkInvokedQuoteBudget::Prepaid(prepaid),
+            ) => {
                 drop(prepaid);
                 QuoteStableState::winding_down(WindDownQuotePhase::CancelPending)
             }
@@ -2013,25 +2022,43 @@ impl GovernedQuoteTransactionInner {
             |state| match state {
                 QuoteTransactionState::Attempt(QuoteAttemptState {
                     mode,
-                    arm:
-                        arm @ QuoteTransactionArm {
-                            obligation:
-                                QuoteLegTransactionObligation::FreshSubmit
-                                | QuoteLegTransactionObligation::ReplacementSubmit,
-                            ..
-                        },
-                    phase: QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Charged),
-                }) => {
-                    let stable = match mode {
-                        QuoteTransactionMode::Active => Self::restore_prior(arm),
-                        QuoteTransactionMode::WindingDown => {
-                            QuoteStableState::winding_down(WindDownQuotePhase::Idle)
+                    arm,
+                    phase: QuoteAttemptPhase::SinkInvoked(budget),
+                }) if matches!(
+                    arm.obligation,
+                    QuoteLegTransactionObligation::FreshSubmit
+                        | QuoteLegTransactionObligation::ReplacementSubmit
+                ) =>
+                {
+                    match budget.account() {
+                        AccountedSinkInvokedQuoteBudget::Charged => {
+                            let stable = match mode {
+                                QuoteTransactionMode::Active => Self::restore_prior(arm),
+                                QuoteTransactionMode::WindingDown => {
+                                    QuoteStableState::winding_down(WindDownQuotePhase::Idle)
+                                }
+                            };
+                            Ok((
+                                Self::settled(
+                                    generation,
+                                    QuoteRouteSettlement::SinkRejected,
+                                    stable,
+                                ),
+                                GovernedQuoteTransactionCommit::no_action(),
+                            ))
                         }
-                    };
-                    Ok((
-                        Self::settled(generation, QuoteRouteSettlement::SinkRejected, stable),
-                        GovernedQuoteTransactionCommit::no_action(),
-                    ))
+                        AccountedSinkInvokedQuoteBudget::Prepaid(prepaid) => Err((
+                            QuoteTransactionState::Attempt(QuoteAttemptState {
+                                mode,
+                                arm,
+                                phase: QuoteAttemptPhase::SinkInvoked(
+                                    AccountedSinkInvokedQuoteBudget::Prepaid(prepaid)
+                                        .into_sink_invoked(),
+                                ),
+                            }),
+                            anyhow::anyhow!(ILLEGAL_OUTCOME),
+                        )),
+                    }
                 }
                 QuoteTransactionState::Attempt(attempt) => Err((
                     QuoteTransactionState::Attempt(attempt),
@@ -2186,17 +2213,19 @@ impl GovernedQuoteTransactionInner {
             }
             (
                 QuoteTransactionMode::Active,
-                QuoteAttemptPhase::Armed(ArmedQuoteBudget::Prepaid(prepaid))
-                | QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Prepaid(prepaid)),
+                QuoteAttemptPhase::Armed(ArmedQuoteBudget::Prepaid(prepaid)),
             ) => Self::terminal_state(
                 arm.obligation,
                 QuotePoisonedBudget::Prepaid(prepaid),
                 disposition,
             ),
-            (
-                QuoteTransactionMode::Active,
-                QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Charged),
-            ) => Self::terminal_state(arm.obligation, QuotePoisonedBudget::Charged, disposition),
+            (QuoteTransactionMode::Active, QuoteAttemptPhase::SinkInvoked(budget)) => {
+                Self::terminal_state(
+                    arm.obligation,
+                    budget.account().into_poisoned(),
+                    disposition,
+                )
+            }
             (
                 QuoteTransactionMode::WindingDown,
                 QuoteAttemptPhase::Armed(ArmedQuoteBudget::Reserved(reservation)),
@@ -2206,16 +2235,15 @@ impl GovernedQuoteTransactionInner {
             }
             (
                 QuoteTransactionMode::WindingDown,
-                QuoteAttemptPhase::Armed(ArmedQuoteBudget::Prepaid(prepaid))
-                | QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Prepaid(prepaid)),
+                QuoteAttemptPhase::Armed(ArmedQuoteBudget::Prepaid(prepaid)),
             ) => {
                 drop(prepaid);
                 QuoteStableState::winding_down(WindDownQuotePhase::Idle)
             }
-            (
-                QuoteTransactionMode::WindingDown,
-                QuoteAttemptPhase::SinkInvoked(SinkInvokedQuoteBudget::Charged),
-            ) => QuoteStableState::winding_down(WindDownQuotePhase::Idle),
+            (QuoteTransactionMode::WindingDown, QuoteAttemptPhase::SinkInvoked(budget)) => {
+                drop(budget.account().into_poisoned());
+                QuoteStableState::winding_down(WindDownQuotePhase::Idle)
+            }
         }
     }
 
@@ -2310,6 +2338,26 @@ struct GovernedQuoteTransaction {
     inner: Arc<Mutex<GovernedQuoteTransactionInner>>,
 }
 
+#[must_use = "prepared quote lifecycle must cross the submit boundary or remain armed"]
+#[derive(Debug)]
+pub(crate) struct PreparedMakerQuoteSinkInvocation<'a> {
+    inner: MutexGuard<'a, GovernedQuoteTransactionInner>,
+    generation: u64,
+    actor_now_ms: u64,
+}
+
+impl PreparedMakerQuoteSinkInvocation<'_> {
+    pub(crate) fn commit(&mut self) {
+        let prior = std::mem::replace(&mut self.inner.state, QuoteTransactionState::idle());
+        let (next, _) = GovernedQuoteTransactionInner::commit_sink_invoked(
+            prior,
+            self.generation,
+            self.actor_now_ms,
+        );
+        self.inner.state = next;
+    }
+}
+
 impl GovernedQuoteTransaction {
     fn new(supports_modify: bool) -> Self {
         Self {
@@ -2329,6 +2377,33 @@ impl GovernedQuoteTransaction {
         event
             .into()
             .apply(&mut self.inner.lock().expect("quote transaction lock poisoned"))
+    }
+
+    fn prepare_sink_invoked(
+        &self,
+        generation: u64,
+        actor_now_ms: u64,
+    ) -> anyhow::Result<PreparedMakerQuoteSinkInvocation<'_>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| anyhow::anyhow!("quote transaction lock is poisoned"))?;
+        match &inner.state {
+            QuoteTransactionState::Attempt(QuoteAttemptState {
+                arm,
+                phase: QuoteAttemptPhase::Armed(_),
+                ..
+            }) if arm.identity.generation() == generation => Ok(PreparedMakerQuoteSinkInvocation {
+                inner,
+                generation,
+                actor_now_ms,
+            }),
+            QuoteTransactionState::Stable(_)
+            | QuoteTransactionState::Settled(_)
+            | QuoteTransactionState::Attempt(_) => {
+                anyhow::bail!("quote transaction is not armed at the prepared generation")
+            }
+        }
     }
 
     fn refine(
@@ -2432,14 +2507,6 @@ impl GovernedQuoteTransaction {
             prior_state,
             pending_state,
         })
-    }
-
-    fn generation(&self) -> Option<u64> {
-        self.inner
-            .lock()
-            .expect("quote transaction lock poisoned")
-            .state
-            .generation()
     }
 
     fn registration_phase(&self, generation: u64) -> QuoteTransactionRegistrationPhase {
@@ -2722,30 +2789,26 @@ impl MarketQuote {
         Ok(())
     }
 
-    pub(crate) fn mark_leg_transaction_sink_invoked(
+    pub(crate) fn prepare_leg_transaction_sink_invoked(
         &self,
         proposal: QuoteLegTransitionProposal,
         generation: u64,
         actor_now_ms: u64,
-    ) -> anyhow::Result<()> {
-        let commit = self.transaction(proposal.leg).reduce(
-            SinkCapableQuoteTransactionEvent::SinkInvoked {
-                generation,
-                actor_now_ms,
-            },
-        )?;
-        anyhow::ensure!(
-            commit.action.is_none(),
-            "sink invocation cannot emit a lifecycle action"
-        );
-        Ok(())
+    ) -> anyhow::Result<PreparedMakerQuoteSinkInvocation<'_>> {
+        self.transaction(proposal.leg)
+            .prepare_sink_invoked(generation, actor_now_ms)
     }
 
-    pub(crate) fn transaction_generation(
+    #[cfg(test)]
+    pub(crate) fn commit_leg_transaction_sink_invoked(
         &self,
         proposal: QuoteLegTransitionProposal,
-    ) -> Option<u64> {
-        self.transaction(proposal.leg).generation()
+        generation: u64,
+        actor_now_ms: u64,
+    ) {
+        self.prepare_leg_transaction_sink_invoked(proposal, generation, actor_now_ms)
+            .expect("test transaction should prepare the sink boundary")
+            .commit();
     }
 
     pub(crate) fn leg_transaction_registration_phase(
@@ -2980,8 +3043,7 @@ mod tests {
                     )
                     .expect("test transaction should arm");
                 self.market
-                    .mark_leg_transaction_sink_invoked(proposal, generation, 1)
-                    .expect("test transaction should reach the sink");
+                    .commit_leg_transaction_sink_invoked(proposal, generation, 1);
                 assert!(
                     self.market.commit_leg_transaction(proposal, generation),
                     "test transaction should settle"
@@ -3616,14 +3678,8 @@ mod tests {
         };
 
         for inner in [&mut active, &mut winding] {
-            let _ = QuoteTransactionReductionRequest::from(
-                SinkCapableQuoteTransactionEvent::SinkInvoked {
-                    generation: 1,
-                    actor_now_ms: 1,
-                },
-            )
-            .apply(inner)
-            .expect("sink accounting should be shared");
+            let prior = std::mem::replace(&mut inner.state, QuoteTransactionState::idle());
+            inner.state = GovernedQuoteTransactionInner::commit_sink_invoked(prior, 1, 1).0;
         }
         let _ = QuoteTransactionReductionRequest::from(QuoteTransactionEvent::WindDown)
             .apply(&mut winding)
@@ -3926,9 +3982,7 @@ mod tests {
                 let mut prepaid = budget
                     .reserve(proposal)
                     .expect("matrix prepaid reservation should succeed");
-                prepaid
-                    .mark_sink_invoked_at(1)
-                    .expect("matrix cancel should reach the sink");
+                prepaid.mark_sink_invoked_at(1);
                 QuoteTransactionState::Stable(QuoteStableState::poisoned(
                     QuoteTransactionMode::Active,
                     obligation,

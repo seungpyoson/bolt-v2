@@ -30,8 +30,6 @@ const DROPPED_TERMINAL_PINNED_FAILURE: &str =
     "accepted-with-no-terminal entry replay reached the boundary with no terminal event";
 const PARTIAL_FILL_PINNED_FAILURE: &str =
     "partial-fill residual must be re-managed with the exact unfilled quantity";
-const RESTART_OPEN_EXIT_PINNED_FAILURE: &str =
-    "restart replay must adopt the recovered exit before attributing fills";
 const SETTLEMENT_PINNED_FAILURE: &str = "hold-to-resolution must close exposure to Flat, book realized cash, and record settlement evidence";
 const POSITION_MARKET_LIFECYCLE_PINNED_FAILURE: &str =
     "managed position must own its market lifecycle across active-market roll";
@@ -179,7 +177,7 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
         &mut strategy,
         open_position.clone(),
         exit_client_order_id,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     let sequence = partial_fill_then_expire_sequence(exit_client_order_id, instrument_id);
     assert_event_types(&sequence, &["Filled", "Expired"]);
@@ -204,10 +202,7 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
     let expired = order_expired_event(exit_client_order_id, instrument_id);
     apply_exit_order_event_to_nt_cache(&mut strategy, OrderEventAny::Expired(expired.clone()));
     strategy.on_order_expired(expired);
-    assert!(matches!(
-        strategy.exposure,
-        ExposureState::TerminalExitAwaitingPosition(_)
-    ));
+    assert!(strategy.exposure.terminal_exit_snapshot().is_some());
     observe_position_authority_report(
         &strategy,
         instrument_id,
@@ -234,7 +229,7 @@ fn partial_fill_then_expire_exit_residual_is_remanaged_or_reexited() {
 }
 
 #[test]
-fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
+fn restart_with_open_exit_order_and_position_remains_blind() {
     assert_reality_fixtures();
 
     let mut strategy = ready_to_trade_strategy();
@@ -312,117 +307,18 @@ fn restart_with_open_exit_order_and_position_adopts_order_before_fill_replay() {
 
     strategy.bootstrap_recovery_from_cache();
 
-    assert_eq!(
-        pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id),
-        Some(exit_client_order_id),
-        "{RESTART_OPEN_EXIT_PINNED_FAILURE}: bootstrap must adopt the open exit order before a subsequent fill can be attributed"
-    );
-
-    let mut terminal_fill = order_filled_event_with_details(
-        exit_client_order_id,
-        instrument_id,
-        Some(position_id),
-        OrderSide::Sell,
-    );
-    terminal_fill.trade_id = TradeId::from("TRADE-RESTART-PROJECTED-TERMINAL");
-    terminal_fill.ts_event = UnixNanos::from(1_002_u64);
-    terminal_fill.ts_init = UnixNanos::from(1_002_u64);
-    apply_exit_order_event_to_nt_cache(&mut strategy, OrderEventAny::Filled(terminal_fill.clone()));
-    strategy.on_order_filled(&terminal_fill);
-    assert_eq!(
-        pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id),
-        Some(exit_client_order_id),
-        "{RESTART_OPEN_EXIT_PINNED_FAILURE}: a fill event must not replace NT position truth or lose exit-order correlation"
-    );
     assert!(matches!(
-        strategy.exposure,
-        ExposureState::TerminalExitAwaitingPosition(_)
+        strategy.exposure.blind_recovery_reason(),
+        Some(BlindRecoveryReason::RestartOpenPosition {
+            instrument_id: recovered_instrument_id,
+            position_id: recovered_position_id,
+        }) if *recovered_instrument_id == instrument_id && *recovered_position_id == position_id
     ));
-    assert_eq!(
-        strategy
-            .context
-            .position_authority()
-            .expect("projected terminal requires position authority")
-            .canonical_position(position_id, instrument_id)
-            .expect("projected terminal position read should succeed")
-            .expect("projected terminal must retain the stale cached position")
-            .signed_quantity(),
-        Decimal::new(10, 0),
-        "order-only reconciliation must not masquerade as position causality"
-    );
-
-    close_nt_position(&mut strategy, position_id);
-    observe_position_authority_report(
-        &strategy,
-        instrument_id,
-        PositionSideSpecified::Flat,
-        Quantity::zero(2),
-        1_100,
-    );
-    let authority = strategy
-        .exposure
-        .exit_pending_snapshot()
-        .expect("recovered terminal exit remains tracked before timer reconciliation")
-        .authority;
-    assert_eq!(
-        authority
-            .release(
-                strategy
-                    .context
-                    .position_authority()
-                    .expect("converged flat release requires position authority"),
-            )
-            .expect("exact flat cache/report convergence should be evaluable"),
-        crate::bolt_v3_order_execution::BoltV3PositionReductionRelease::Flat
-    );
-    let cached_exit = strategy
-        .cache()
-        .order(&exit_client_order_id)
-        .expect("recovered terminal order should remain cached");
-    assert!(
-        cached_exit.is_closed(),
-        "cached status={:?}",
-        cached_exit.status()
-    );
-    assert!(matches!(
-        classify_cached_exit_order_lifecycle(cached_exit.status()),
-        CachedExitOrderLifecycle::Terminal { .. }
-    ));
-    assert_eq!(
-        cached_exit.ts_last(),
-        terminal_fill.ts_event,
-        "the repeated cache observation must represent the same terminal event"
-    );
-    assert_eq!(
-        authority
-            .observe_order(
-                &cached_exit,
-                cached_exit.ts_last().as_u64(),
-                BoltV3ExitOrderCorrection::Unchanged,
-            )
-            .expect("repeated terminal observation should remain valid"),
-        crate::bolt_v3_order_execution::BoltV3ExitOrderLifecycleReduction::TerminalAwaitingPosition
-    );
-    assert_eq!(
-        authority
-            .release(
-                strategy
-                    .context
-                    .position_authority()
-                    .expect("repeated terminal release requires position authority"),
-            )
-            .expect("repeated terminal observation must preserve established proof"),
-        crate::bolt_v3_order_execution::BoltV3PositionReductionRelease::Flat
-    );
-    assert!(strategy.event_instrument_matches_held_exposure(instrument_id));
-    strategy.reconcile_cached_exit_order_on_timer();
-
-    assert!(
-        matches!(strategy.exposure, ExposureState::Flat),
-        "recovered projected terminal should release after exact flat cache/report convergence; exposure={:?}",
-        strategy.exposure
-    );
     assert!(pending_exit_snapshot(&strategy).is_none());
+    assert!(
+        strategy.cache().order(&exit_client_order_id).is_some(),
+        "restart isolation must not erase the NT-owned cached order"
+    );
 }
 
 #[test]
@@ -500,7 +396,7 @@ fn feed_outage_at_resolution_records_booking_error_after_close_fetch_retry_budge
         settlement_evidence_count(&events) == 0
             && settlement_booking_error_count(&events) == 0
             && close_fetch_count == 1
-            && !matches!(strategy.exposure, ExposureState::Flat),
+            && !strategy.exposure.is_flat(),
         "resolution feed outage must first request a close-boundary fetch before terminal booking-error; exposure={:?}, close_fetch_count={close_fetch_count}, events={events:?}",
         strategy.exposure
     );
@@ -518,7 +414,7 @@ fn feed_outage_at_resolution_records_booking_error_after_close_fetch_retry_budge
             // #1349: terminal booking-error releases exposure (Flat) so the
             // single-exposure strategy is not parked forever. Venue residual may
             // still exist in NT cache; occupancy is strategy-local.
-            && matches!(strategy.exposure, ExposureState::Flat)
+            && strategy.exposure.is_flat()
             && terminal_settlement_lifecycle_count(&events) == 1,
         "resolution feed outage must fail closed after close-fetch retry exhaustion: no settlement booking, one loud booking-error record, exposure released to Flat; exposure={:?}, close_fetch_count={close_fetch_count}, events={events:?}",
         strategy.exposure
@@ -531,7 +427,7 @@ fn feed_outage_at_resolution_records_booking_error_after_close_fetch_retry_budge
     assert!(
         settlement_evidence_count(&events) == 0
             && settlement_booking_error_count(&events) == 1
-            && matches!(strategy.exposure, ExposureState::Flat),
+            && strategy.exposure.is_flat(),
         "late resolution feed after a recorded outage must remain fail-closed with no booking and Flat exposure; exposure={:?}, events={events:?}",
         strategy.exposure
     );
@@ -571,7 +467,7 @@ fn position_market_lifecycle_books_settlement_at_its_own_interval_end() {
         .recorded_facts()
         .expect("recorded current evidence must decode");
     assert!(
-        matches!(strategy.exposure, ExposureState::Flat)
+        strategy.exposure.is_flat()
             && settlement_evidence_count(&events) == 1
             && settlement_booking_error_count(&events) == 0
             && settlement_evidence_matches(&events, expected.realized_pnl)
@@ -621,11 +517,10 @@ fn position_market_lifecycle_new_active_boundary_tick_does_not_settle_old_positi
     assert!(
         settlement_evidence_count(&events) == 0
             && settlement_booking_error_count(&events) == 0
-            && matches!(
-                &strategy.exposure,
-                ExposureState::Managed(managed)
-                    if managed.position_id == position.position_id
-            ),
+            && strategy
+                .exposure
+                .managed_position_context()
+                .is_some_and(|managed| managed.position_id == position.position_id),
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: next boundary tick must not book old position against new strike; exposure={:?} events={events:?}",
         strategy.exposure,
     );
@@ -861,11 +756,10 @@ fn position_market_lifecycle_expired_book_deltas_do_not_submit_exits_after_roll(
         open_sell_exit_order_count(&cache, &position) == 0
             && risk_messages.get_messages().is_empty()
             && exec_messages.get_messages().is_empty()
-            && matches!(
-                &strategy.exposure,
-                ExposureState::Managed(managed)
-                    if managed.position_id == position.position_id
-            ),
+            && strategy
+                .exposure
+                .managed_position_context()
+                .is_some_and(|managed| managed.position_id == position.position_id),
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: book deltas after position expiry must not submit exits; exposure={:?}",
         strategy.exposure,
     );
@@ -1082,7 +976,7 @@ fn position_market_lifecycle_selection_blocked_issues_own_settlement_close_fetch
                 == position_interval_end_ms / MILLIS_PER_SECOND_U64
             && settlement_evidence_count(&events) == 0
             && settlement_booking_error_count(&events) == 0
-            && matches!(strategy.exposure, ExposureState::Managed(_)),
+            && strategy.exposure.is_managed(),
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: selection-blocked held position must issue its own WindowCloseSettlement fetch without terminal outage evidence; exposure={:?} close_events={close_events:?} events={events:?}",
         strategy.exposure,
     );
@@ -1178,7 +1072,7 @@ fn position_market_lifecycle_late_matching_resolution_tick_after_watchdog_books_
     assert!(
         settlement_evidence_count(&events) == 1
             && settlement_booking_error_count(&events) == 0
-            && matches!(strategy.exposure, ExposureState::Flat)
+            && strategy.exposure.is_flat()
             && close_fetch_count == 1,
         "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: late matching resolution tick after watchdog must still book settlement; exposure={:?} close_fetch_count={close_fetch_count} events={events:?}",
         strategy.exposure,
@@ -1186,8 +1080,7 @@ fn position_market_lifecycle_late_matching_resolution_tick_after_watchdog_books_
 }
 
 #[test]
-fn position_market_lifecycle_recovered_expired_cache_position_records_terminal_booking_error_after_roll()
- {
+fn restart_expired_cache_position_remains_blind_after_roll() {
     assert_reality_fixtures();
 
     let evidence = recording_decision_evidence();
@@ -1253,27 +1146,24 @@ fn position_market_lifecycle_recovered_expired_cache_position_records_terminal_b
     let close_fetch_count = settlement_close_fetch_event_count(&strategy);
     assert!(
         settlement_evidence_count(&events) == 0
-            && settlement_booking_error_count(&events) == 1
-            && close_fetch_count == strategy.config.market_exit_max_attempts as usize
-            && strategy
+            && settlement_booking_error_count(&events) == 0
+            && close_fetch_count == 0
+            && !strategy
                 .settlement_booking_error_keys
                 .contains(&settlement_key)
-            // #1349: terminal booking-error releases exposure (Flat).
-            && matches!(strategy.exposure, ExposureState::Flat)
-            && terminal_settlement_lifecycle_count(&events) == 1,
-        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered expired cache position must record a terminal booking-error after close-fetch retry exhaustion and release exposure to Flat; exposure={:?} close_fetch_count={close_fetch_count} events={events:?}",
+            && strategy.exposure.is_blind_recovery()
+            && terminal_settlement_lifecycle_count(&events) == 0,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: restart-observed exposure must remain blind and must not mint settlement authority; exposure={:?} close_fetch_count={close_fetch_count} events={events:?}",
         strategy.exposure,
     );
     let transitions = health_transitions
         .lock()
         .expect("recording settlement health transition mutex poisoned");
-    assert_eq!(transitions.len(), 1);
-    assert_eq!(transitions[0].reason, "market_expired");
+    assert!(transitions.is_empty());
 }
 
 #[test]
-fn position_market_lifecycle_recovered_position_missing_instrument_records_terminal_booking_error()
-{
+fn restart_position_missing_instrument_remains_blind() {
     assert_reality_fixtures();
 
     let evidence = recording_decision_evidence();
@@ -1334,27 +1224,23 @@ fn position_market_lifecycle_recovered_position_missing_instrument_records_termi
         .expect("recorded current evidence must decode");
     assert!(
         settlement_evidence_count(&events) == 0
-            && settlement_booking_error_count(&events) == 1
-            && settlement_booking_error_reasons(&events)
-                == vec![SettlementBookingErrorReason::SettlementInputInvalid]
-            && strategy
+            && settlement_booking_error_count(&events) == 0
+            && !strategy
                 .settlement_booking_error_keys
                 .contains(&settlement_key)
-            // #1349: terminal booking-error releases exposure (Flat).
-            && matches!(strategy.exposure, ExposureState::Flat)
-            && terminal_settlement_lifecycle_count(&events) == 1,
-        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered cache position with missing instrument metadata must record a terminal booking-error and release exposure to Flat; exposure={:?} events={events:?}",
+            && strategy.exposure.is_blind_recovery()
+            && terminal_settlement_lifecycle_count(&events) == 0,
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: restart-observed exposure with missing instrument metadata must remain blind; exposure={:?} events={events:?}",
         strategy.exposure,
     );
     let transitions = health_transitions
         .lock()
         .expect("recording settlement health transition mutex poisoned");
-    assert_eq!(transitions.len(), 1);
-    assert_eq!(transitions[0].reason, "recovery_unknown_interval");
+    assert!(transitions.is_empty());
 }
 
 #[test]
-fn position_market_lifecycle_recovered_missing_interval_book_delta_records_error_not_exit() {
+fn restart_position_missing_interval_book_delta_stays_blind_and_does_not_exit() {
     assert_reality_fixtures();
 
     let evidence = recording_decision_evidence();
@@ -1439,26 +1325,21 @@ fn position_market_lifecycle_recovered_missing_interval_book_delta_records_error
         .expect("recorded current evidence must decode");
     assert!(
         settlement_evidence_count(&events) == 0
-            && settlement_booking_error_count(&events) == 1
-            && settlement_booking_error_reasons(&events)
-                == vec![SettlementBookingErrorReason::SettlementInputInvalid]
-            && strategy
+            && settlement_booking_error_count(&events) == 0
+            && !strategy
                 .settlement_booking_error_keys
                 .contains(&settlement_key)
             && open_sell_exit_order_count(&cache, &scope_position) == 0
             && risk_messages.get_messages().is_empty()
             && exec_messages.get_messages().is_empty()
-            // #1349: terminal booking-error releases exposure (Flat) so the
-            // single-exposure strategy is not parked; exit path stays blocked
-            // by booking-error key, not Managed occupancy.
-            && matches!(strategy.exposure, ExposureState::Flat),
-        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: recovered position with missing interval must record terminal booking-error, release exposure to Flat, and block forced-flat book-delta exit; exposure={:?} events={events:?}",
+            && strategy.exposure.is_blind_recovery(),
+        "{POSITION_MARKET_LIFECYCLE_PINNED_FAILURE}: restart-observed position with missing interval must remain blind and route no exit; exposure={:?} events={events:?}",
         strategy.exposure,
     );
 }
 
 #[test]
-fn terminal_after_settlement_stays_flat_and_does_not_double_book() {
+fn terminal_after_settlement_preserves_exit_authority_and_does_not_double_book() {
     assert_reality_fixtures();
 
     let evidence = recording_decision_evidence();
@@ -1483,11 +1364,15 @@ fn terminal_after_settlement_stays_flat_and_does_not_double_book() {
         &mut strategy,
         position,
         exit_client_order_id,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
     emit_resolution_update(&mut strategy, 3_101.0);
-    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert_eq!(
+        pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id),
+        Some(exit_client_order_id),
+        "settlement must not stand in for terminal exit-order evidence"
+    );
     let expired = order_expired_event(exit_client_order_id, instrument_id);
     apply_exit_order_event_to_nt_cache(&mut strategy, OrderEventAny::Expired(expired.clone()));
     strategy.on_order_expired(expired);
@@ -1497,7 +1382,8 @@ fn terminal_after_settlement_stays_flat_and_does_not_double_book() {
         .expect("recorded current evidence must decode");
     assert_eq!(settlement_evidence_count(&events), 1);
     assert_eq!(settlement_booking_error_count(&events), 0);
-    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(strategy.exposure.is_managed());
+    assert!(pending_exit_snapshot(&strategy).is_none());
 }
 
 #[test]
@@ -1526,7 +1412,7 @@ fn terminal_before_settlement_remanages_residual_then_books_residual_settlement(
         &mut strategy,
         position.clone(),
         exit_client_order_id,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     seed_nt_open_position(
         &mut strategy,
@@ -1540,7 +1426,7 @@ fn terminal_before_settlement_remanages_residual_then_books_residual_settlement(
     apply_exit_order_event_to_nt_cache(&mut strategy, OrderEventAny::Expired(expired.clone()));
     strategy.on_order_expired(expired);
     assert!(
-        matches!(&strategy.exposure, ExposureState::Managed(_))
+        strategy.exposure.is_managed()
             && managed_position_snapshot(&strategy)
                 .is_some_and(|managed| managed.quantity == Quantity::new(6.0, 2)),
         "terminal before settlement must re-manage the known residual before resolution; exposure={:?}",
@@ -1554,7 +1440,7 @@ fn terminal_before_settlement_remanages_residual_then_books_residual_settlement(
         .recorded_facts()
         .expect("recorded current evidence must decode");
     assert!(
-        matches!(strategy.exposure, ExposureState::Flat)
+        strategy.exposure.is_flat()
             && settlement_evidence_matches(&events, expected.realized_pnl)
             && settlement_evidence_count(&events) == 1,
         "residual settlement should book exactly the residual quantity after terminal-before-settlement; expected_realized_pnl={}, exposure={:?}, events={events:?}",
@@ -1606,7 +1492,7 @@ fn booked_settlement_routes_to_runtime_sink_and_flattening() {
         loss_observations[0].event_id.as_deref(),
         Some(settlement_key)
     );
-    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(strategy.exposure.is_flat());
 
     emit_resolution_update(&mut strategy, 3_101.0);
     assert_eq!(
@@ -1677,10 +1563,8 @@ fn loss_reducer_failure_after_settled_key_insert_enters_blind_recovery() {
     assert_eq!(sink.loss_observation_count(), 1);
     assert!(
         matches!(
-            strategy.exposure,
-            ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::SettlementEvidenceRecoveryFailed
-            })
+            strategy.exposure.blind_recovery_reason(),
+            Some(BlindRecoveryReason::SettlementEvidenceRecoveryFailed)
         ),
         "post-settled-key loss-reducer failure must enter blind settlement recovery; exposure={:?}",
         strategy.exposure
@@ -1804,7 +1688,7 @@ fn losing_settlement_moves_durable_loss_governor() {
             .contains_key(&settlement_key),
         "settlement-key dedupe entry should persist with the realized-PnL snapshot: {loss_snapshot:?}"
     );
-    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(strategy.exposure.is_flat());
 }
 
 #[test]
@@ -1847,7 +1731,7 @@ fn missing_settlement_currency_records_booking_error_from_config_derived_fixture
     assert_eq!(settlement_evidence_count(&events), 0);
     assert_eq!(settlement_booking_error_count(&events), 1);
     // #1349: terminal booking-error releases single-exposure occupancy.
-    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(strategy.exposure.is_flat());
     assert_eq!(terminal_settlement_lifecycle_count(&events), 1);
 }
 
@@ -1894,7 +1778,7 @@ fn missing_settlement_account_records_booking_error_from_config_derived_fixture(
     assert_eq!(settlement_booking_error_count(&events), 1);
     assert!(sink.loss_observations().is_empty());
     // #1349: terminal booking-error releases single-exposure occupancy.
-    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(strategy.exposure.is_flat());
     assert_eq!(terminal_settlement_lifecycle_count(&events), 1);
 }
 
@@ -1936,7 +1820,7 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
             first_terminal_ns,
         )
         .expect("first terminal booking error should be recorded");
-    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(strategy.exposure.is_flat());
 
     let second_position = materialize_configured_position(
         &mut strategy,
@@ -1963,7 +1847,7 @@ fn distinct_terminal_booking_error_keys_each_record_lifecycle_and_release_exposu
             second_terminal_ns,
         )
         .expect("second terminal booking error should be recorded");
-    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(strategy.exposure.is_flat());
 
     let events = evidence
         .recorded_facts()
@@ -2075,7 +1959,7 @@ fn terminal_settlement_uses_one_canonical_durable_event() {
             .len(),
         1
     );
-    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(strategy.exposure.is_flat());
 }
 
 #[test]
@@ -2127,7 +2011,7 @@ fn health_emitter_failure_cannot_park_exposure_or_duplicate_terminal_evidence() 
             .expect("health reporting failure must not fail terminal release");
     }
 
-    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(strategy.exposure.is_flat());
     assert_eq!(
         settlement_booking_error_count(
             &evidence
@@ -2213,7 +2097,7 @@ fn live_manageable_nonterminal_position_cannot_enter_terminal_settlement_transit
         .expect_err("nonterminal position must be ineligible for terminal settlement");
 
     assert!(error.to_string().contains("ineligible"));
-    assert!(matches!(strategy.exposure, ExposureState::Managed(_)));
+    assert!(strategy.exposure.is_managed());
     let events = evidence
         .recorded_facts()
         .expect("recorded current evidence must decode");
@@ -2228,7 +2112,7 @@ fn live_manageable_nonterminal_position_cannot_enter_terminal_settlement_transit
 }
 
 #[test]
-fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error() {
+fn restart_preserves_durable_booking_error_without_reconstructing_authority() {
     assert_reality_fixtures();
 
     let evidence = recording_decision_evidence();
@@ -2332,7 +2216,10 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
 
     strategy.bootstrap_recovery_from_cache();
 
-    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(matches!(
+        strategy.exposure.blind_recovery_reason(),
+        Some(BlindRecoveryReason::RestartOpenPosition { .. })
+    ));
     assert_eq!(
         terminal_settlement_lifecycle_count(
             &evidence
@@ -2344,9 +2231,7 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
     let transitions = health_transitions
         .lock()
         .expect("recording settlement health transition mutex poisoned");
-    assert_eq!(transitions.len(), 1);
-    assert_eq!(transitions[0].settlement_key, settlement_key);
-    assert_eq!(transitions[0].reason, "market_expired");
+    assert!(transitions.is_empty());
     assert_eq!(
         settlement_booking_error_count(
             &evidence
@@ -2359,7 +2244,7 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
 
     drop(transitions);
     strategy.bootstrap_recovery_from_cache();
-    assert!(matches!(strategy.exposure, ExposureState::Flat));
+    assert!(strategy.exposure.is_blind_recovery());
     assert_eq!(
         terminal_settlement_lifecycle_count(
             &evidence
@@ -2367,7 +2252,7 @@ fn restart_reconstructs_expired_terminal_transition_from_durable_booking_error()
                 .expect("current evidence should decode"),
         ),
         1,
-        "restart must not append duplicate canonical terminal evidence"
+        "restart must not append a duplicate standalone lifecycle transition"
     );
 }
 
@@ -2482,8 +2367,8 @@ fn startup_settlement_recovery_replays_evidence_from_real_cache_positions() {
     );
     assert!(strategy.settled_position_keys.contains(&settlement_key));
     assert!(
-        matches!(strategy.exposure, ExposureState::Flat),
-        "a recovered successful settlement must reconstruct terminal Flat exposure"
+        strategy.exposure.is_blind_recovery(),
+        "durable settlement replay must not turn a restart-observed open position into route authority"
     );
 }
 
@@ -2506,7 +2391,7 @@ struct SettlementCaseObservation {
     expected_realized_pnl: f64,
     exposure_is_flat: bool,
     settlement_evidence_matches_expected: bool,
-    exposure: ExposureState,
+    exposure: ExposureKind,
     evidence_events: Vec<CurrentFact>,
 }
 
@@ -2571,9 +2456,9 @@ fn hold_to_resolution_case(
     SettlementCaseObservation {
         name,
         expected_realized_pnl: expected.realized_pnl,
-        exposure_is_flat: matches!(strategy.exposure, ExposureState::Flat),
+        exposure_is_flat: strategy.exposure.is_flat(),
         settlement_evidence_matches_expected,
-        exposure: strategy.exposure.clone(),
+        exposure: strategy.exposure.kind(),
         evidence_events,
     }
 }
@@ -2688,8 +2573,8 @@ fn partial_fill_residual_is_managed_or_fresh_reexit(
     original_position: &OpenPositionState,
     expected_residual_quantity: Quantity,
 ) -> bool {
-    match &strategy.exposure {
-        ExposureState::Managed(_) => {
+    match strategy.exposure.kind() {
+        ExposureKind::Managed => {
             let Some(managed) = strategy.managed_position() else {
                 return false;
             };
@@ -2699,7 +2584,10 @@ fn partial_fill_residual_is_managed_or_fresh_reexit(
                 expected_residual_quantity,
             ) && open_sell_exit_order_count(cache, original_position) == 0
         }
-        ExposureState::ExitPending(exit) => {
+        ExposureKind::ExitPending => {
+            let Some(exit) = strategy.exposure.exit_pending_snapshot() else {
+                return false;
+            };
             let Some(managed) = strategy.managed_position() else {
                 return false;
             };
@@ -2720,7 +2608,12 @@ fn partial_fill_residual_is_managed_or_fresh_reexit(
                     strategy.config.exit_order.is_reduce_only,
                 )
         }
-        _ => false,
+        ExposureKind::Flat
+        | ExposureKind::PendingEntry
+        | ExposureKind::EntryReconcilePending
+        | ExposureKind::EntryRemainder
+        | ExposureKind::UnsupportedObserved
+        | ExposureKind::BlindRecovery => false,
     }
 }
 
@@ -2952,11 +2845,11 @@ fn assert_reality_fixtures() {
 fn assert_managed_or_halted_loud(strategy: &BinaryOracleEdgeTaker, context: &str) {
     assert!(
         matches!(
-            strategy.exposure,
-            ExposureState::Managed(_)
-                | ExposureState::EntryReconcilePending { .. }
-                | ExposureState::BlindRecovery(_)
-                | ExposureState::UnsupportedObserved(_)
+            strategy.exposure.kind(),
+            ExposureKind::Managed
+                | ExposureKind::EntryReconcilePending
+                | ExposureKind::BlindRecovery
+                | ExposureKind::UnsupportedObserved
         ),
         "{context}; expected Managed or fail-closed halt/recovery state, got {:?}",
         strategy.exposure,

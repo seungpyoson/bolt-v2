@@ -1258,7 +1258,7 @@ fn rv_clock_domain_amendment_submit_evidence_cannot_veto_admitted_order() {
         "the admitted order must reach submit routing"
     );
     assert!(
-        matches!(&strategy.exposure, ExposureState::PendingEntry(_)),
+        strategy.exposure.pending_entry_arm().is_some(),
         "submitted routing must retain pending entry exposure"
     );
     let events = evidence
@@ -1356,7 +1356,7 @@ fn submit_snapshot_failure_clears_pending_entry_and_never_reaches_submit_admissi
         "{error:#}"
     );
     assert!(
-        !matches!(strategy.exposure, ExposureState::PendingEntry(_)),
+        strategy.exposure.pending_entry_arm().is_none(),
         "snapshot failure must clear strategy-local pending-entry state"
     );
     assert_eq!(
@@ -1400,7 +1400,7 @@ fn final_basis_failure_precedes_edge_evidence_exposure_and_admission_mutation() 
             .contains("planned fill level must be positive")
     );
     assert!(
-        !matches!(strategy.exposure, ExposureState::PendingEntry(_)),
+        strategy.exposure.pending_entry_arm().is_none(),
         "basis failure must precede pending-entry exposure"
     );
     assert_eq!(submit_admission.admitted_order_count(), 0);
@@ -1879,7 +1879,7 @@ fn shadow_policy_exit_restores_managed_and_allows_a_later_attempt() {
     set_managed_position(
         &mut strategy,
         position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
     assert_eq!(
@@ -2007,7 +2007,7 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
     set_managed_position(
         &mut strategy,
         position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
     let exit_eval_now_ms = strategy
@@ -3037,11 +3037,13 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
 #[test]
 fn terminal_close_reclaims_exit_decision_for_reused_position_identity() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
-    let reused_exposure = strategy.exposure.clone();
-    let (instrument_id, position_id) = match &reused_exposure {
-        ExposureState::Managed(position) => (position.instrument_id, position.position_id),
-        other => panic!("exit fixture must begin managed, got {other:?}"),
-    };
+    let reused_managed = strategy
+        .exposure
+        .managed_position_context()
+        .cloned()
+        .expect("exit fixture must begin managed");
+    let instrument_id = reused_managed.instrument_id;
+    let position_id = reused_managed.position_id;
     let trigger = ExitEvaluationTriggerContext::unknown(1_200);
     let decision = minimal_exit_prepared_order();
 
@@ -3067,7 +3069,7 @@ fn terminal_close_reclaims_exit_decision_for_reused_position_identity() {
     // NT netting reuses `{instrument}-{strategy}` as PositionId. Recreate the
     // same logical position identity and prove its first decision is not
     // suppressed by the predecessor's last one.
-    strategy.exposure = reused_exposure;
+    strategy.exposure.set_managed_for_test(reused_managed);
     strategy
         .record_exit_intent_or_hold_once(1_202, trigger, &decision)
         .expect("the reused position identity should record its first decision");
@@ -3127,7 +3129,7 @@ fn exit_evidence_strategy_with_open_position_using_writer(
     set_managed_position(
         &mut strategy,
         position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy
 }
@@ -3345,8 +3347,8 @@ fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
 #[test]
 fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
     // An entry skip is DECLINING new risk. record_entry_skip_once is called inside
-    // the entry-submit callback immediately before downstream safety logic (e.g.
-    // enforce_one_position_invariant). The pre-fix `record_entry_skip(&evidence)?`
+    // the entry-submit callback immediately before downstream safety logic. The
+    // pre-fix `record_entry_skip(&evidence)?`
     // propagated the writer Err, aborting the callback and SKIPPING that downstream
     // safety logic on a lost log line. The fix swaps `?` for a `log::error!` +
     // continue, so the helper returns Ok(()) even when the writer fails. The
@@ -4157,10 +4159,14 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
     hold.blocked_reason = None;
     decisions.push(strategy.exit_intent_decision_from_evaluation(hold));
 
-    let saved_exposure = strategy.exposure.clone();
-    strategy.exposure = ExposureState::Flat;
+    let saved_managed = strategy
+        .exposure
+        .managed_position_context()
+        .cloned()
+        .expect("exit decision fixture must begin managed");
+    strategy.exposure.set_flat_for_test();
     decisions.push(strategy.exit_intent_decision_from_evaluation(base.clone()));
-    strategy.exposure = saved_exposure;
+    strategy.exposure.set_managed_for_test(saved_managed);
 
     let saved_exit_order = strategy.config.exit_order.clone();
     strategy.config.exit_order.side = "not-an-order-side".to_string();

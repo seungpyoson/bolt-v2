@@ -1,0 +1,624 @@
+format_version = 1
+
+[pilot]
+id = "myx-2025-provider-admission"
+selection_as_of_utc = "2026-08-19T00:00:00Z"
+evidence_cutoff_utc = "2026-08-19T14:45:00Z"
+decision_state = "incomplete"
+evidence_class = "non_admission_observational_ledger"
+admission_authority = false
+independent_replay = false
+purpose = "Reject or advance managed historical data candidates before any multi-year purchase; this record cannot admit a provider."
+
+[execution]
+model = "table_driven"
+orchestrator = "generic manifest iterator"
+provider_specific_conditionals = false
+raw_retention = "hash-only until provider rights pass"
+replay_consequence = "All admission evidence must be rerun with retained or durably retrievable source bytes after rights pass."
+
+[target]
+asset = "MYX"
+chain = "bsc"
+chain_id = 56
+contract = "0xd82544bf0dfe8385ef8fa34d67e6e4940cc63e16"
+
+[selection]
+authority_state = "exploratory_provider_defined_not_admissible"
+quiet_rule = "Within 2025-08-23 <= day < 2025-09-07, excluding the incident day, select the three lowest Binance daily (high-low)/open ranges."
+event_rule = "Initial ignition maximum-range day plus the second markup/peak pulse."
+incident_rule = "Exploratory control from a Tardis-published Binance exchange-side trade/bookTicker/depth gap; not an independent admission control."
+third_venue_rule = "Exploratory selection from Tardis MYX futures metadata; an admission run must reselect from official or independent coverage evidence."
+
+[cost]
+currency = "USD"
+incremental_spend_cap = 0.0
+incremental_paid_query_cap = 0
+coinapi_authorized_funding = 5.0
+coinapi_actual_consumption = "not_independently_reconciled"
+coinapi_catalog_call_assumption_credits = 0.25
+coinapi_full_drilldown_assumption_credits = 9.0
+coinapi_credit_usd_parity = "unproved"
+surf_observed_sql_credits = 5
+surf_observed_label_credits = 1
+surf_observed_typed_price_credits = 1
+surf_chat_charge_state = "unresolved"
+tardis_one_off_instrument_day = 2.0
+selected_instrument_days = 18
+calculated_subtotal = 36.0
+published_minimum_order = 300.0
+effective_tardis_pilot_price = 300.0
+sample_core_compressed_bytes_one_day = 150931278
+event_day_storage_estimate = "unproven"
+
+[[window]]
+id = "quiet-2025-08-27"
+role = "quiet"
+start_utc = "2025-08-27T00:00:00Z"
+end_utc = "2025-08-28T00:00:00Z"
+binance_daily_range_pct = 7.23139
+binance_quote_volume_usd = 73756921.31229
+
+[[window]]
+id = "incident-2025-08-29"
+role = "incident"
+start_utc = "2025-08-29T00:00:00Z"
+end_utc = "2025-08-30T00:00:00Z"
+incident_start_utc = "2025-08-29T06:18:03.205Z"
+incident_end_utc = "2025-08-29T06:37:04.820Z"
+
+[[window]]
+id = "quiet-2025-08-30"
+role = "quiet"
+start_utc = "2025-08-30T00:00:00Z"
+end_utc = "2025-08-31T00:00:00Z"
+binance_daily_range_pct = 4.59618
+binance_quote_volume_usd = 28992478.03911
+
+[[window]]
+id = "quiet-2025-08-31"
+role = "quiet"
+start_utc = "2025-08-31T00:00:00Z"
+end_utc = "2025-09-01T00:00:00Z"
+binance_daily_range_pct = 7.14402
+binance_quote_volume_usd = 39935889.11848
+
+[[window]]
+id = "event-2025-09-08"
+role = "event"
+start_utc = "2025-09-08T00:00:00Z"
+end_utc = "2025-09-09T00:00:00Z"
+binance_daily_range_pct = 316.98
+binance_quote_volume_usd = 6272000000.0
+
+[[window]]
+id = "event-2025-09-17"
+role = "event"
+start_utc = "2025-09-17T00:00:00Z"
+end_utc = "2025-09-18T00:00:00Z"
+binance_daily_range_pct = 59.97
+binance_quote_volume_usd = 1879000000.0
+
+[[venue]]
+id = "binance-futures"
+symbol = "MYXUSDT"
+selected = true
+coverage_start_utc = "2025-06-18T00:00:00Z"
+required_data_types = ["trades", "incremental_book_L2", "derivative_ticker"]
+supplementary_data_types = ["liquidations", "book_ticker"]
+book_claim = "L2: top-1000 initial snapshot plus exchange incremental price-level updates; not L3."
+
+[[venue]]
+id = "bybit"
+symbol = "MYXUSDT"
+selected = true
+coverage_start_utc = "2025-08-05T00:00:00Z"
+required_data_types = ["trades", "incremental_book_L2", "derivative_ticker"]
+supplementary_data_types = ["liquidations", "book_ticker"]
+book_claim = "L2 price-level data from captured orderbook channels; not L3."
+
+[[venue]]
+id = "gate-io-futures"
+symbol = "MYX_USDT"
+selected = true
+coverage_start_utc = "2025-08-07T00:00:00Z"
+required_data_types = ["trades", "incremental_book_L2", "derivative_ticker"]
+supplementary_data_types = ["book_ticker"]
+book_claim = "L2 top-20 exchange order-book snapshots/updates; not L3."
+exact_window_coverage = "pending_paid_files"
+
+[[venue_exclusion]]
+id = "bitget-futures"
+symbol = "MYXUSDT"
+reason = "The exchange delisted MYX futures on 2025-06-13 and relisted on 2025-09-10; five of six windows have no instrument. Tardis metadata flattens these intervals into one continuous availableSince range."
+official_first_listing_date = "2025-05-14"
+official_delisting_utc = "2025-06-13T07:00:00Z"
+official_relisting_date = "2025-09-10"
+
+[[venue_candidate_measurement]]
+id = "gate-io-futures"
+sample_date = "2025-09-01"
+trade_count = 13176
+normalized_trade_notional_usd = 3611544.95
+selected = true
+
+[[venue_candidate_measurement]]
+id = "phemex"
+sample_date = "2025-09-01"
+trade_count = 16768
+normalized_trade_notional_usd = 2031913.89
+selected = false
+
+[[venue_candidate_measurement]]
+id = "kucoin-futures"
+sample_date = "2025-09-01"
+trade_count = 5962
+normalized_trade_notional_usd = 251714.89
+selected = false
+
+[[venue_candidate_measurement]]
+id = "huobi-dm-linear-swap"
+sample_date = "2025-09-01"
+trade_count = 2377
+normalized_trade_notional_usd = 131336.96
+selected = false
+
+[[cex_sample]]
+venue = "binance-futures"
+symbol = "MYXUSDT"
+date = "2025-09-01"
+data_type = "trades"
+records = 339104
+compressed_bytes = 3461051
+sha256 = "780ceb964c4c5d1c9b53843baf4d9cdac8ae5bb2c5d1dc0b841c03403603aa92"
+
+[[cex_sample]]
+venue = "binance-futures"
+symbol = "MYXUSDT"
+date = "2025-09-01"
+data_type = "incremental_book_L2"
+records = 5150702
+compressed_bytes = 34461085
+sha256 = "ab73128ca9e4ab08d5ad3efbc023a5b731a754b300d8ad5409e95ae8a052280c"
+
+[[cex_sample]]
+venue = "binance-futures"
+symbol = "MYXUSDT"
+date = "2025-09-01"
+data_type = "derivative_ticker"
+records = 117978
+compressed_bytes = 1669133
+sha256 = "5dd23aff5d69770a79c8b66c82d10c8c95ba74974d6de503b6bb7ebf815dedaa"
+
+[[cex_sample]]
+venue = "bybit"
+symbol = "MYXUSDT"
+date = "2025-09-01"
+data_type = "trades"
+records = 189075
+compressed_bytes = 5602203
+sha256 = "254f434e8803be6a229bdbc3ce2737ccfeb55b2e3aa7914d0cae6c89b67e69d8"
+
+[[cex_sample]]
+venue = "bybit"
+symbol = "MYXUSDT"
+date = "2025-09-01"
+data_type = "incremental_book_L2"
+records = 12999693
+compressed_bytes = 62511922
+sha256 = "93aa0cad22f7e34b6f4f11b7220a7d251f1e6a00fc4027e45a7194ff98ed878b"
+
+[[cex_sample]]
+venue = "bybit"
+symbol = "MYXUSDT"
+date = "2025-09-01"
+data_type = "derivative_ticker"
+records = 98097
+compressed_bytes = 1203341
+sha256 = "2c2361e9a74ea4b59ba0b8360573c28a0eecd4832212f4a257e680f45aa6d742"
+
+[[cex_sample]]
+venue = "gate-io-futures"
+symbol = "MYX_USDT"
+date = "2025-09-01"
+data_type = "trades"
+records = 13176
+compressed_bytes = 185535
+sha256 = "b1d67aeb36293a4f9f047f54f8be787a25fb0140c3b4a52a82f0d978cacd6455"
+
+[[cex_sample]]
+venue = "gate-io-futures"
+symbol = "MYX_USDT"
+date = "2025-09-01"
+data_type = "incremental_book_L2"
+records = 11668600
+compressed_bytes = 41632785
+sha256 = "a7cd5b4dd45858d361ffc17f404ae40bd40b0c9868929c8e2115038302b166fe"
+
+[[cex_sample]]
+venue = "gate-io-futures"
+symbol = "MYX_USDT"
+date = "2025-09-01"
+data_type = "derivative_ticker"
+records = 13920
+compressed_bytes = 204223
+sha256 = "5b93c74108d0a412b811fd3ba0a42c3716dd741e209cf04a5afa32bec89cc174"
+
+[onchain_sample]
+provider = "surf-onchain-sql"
+table = "agent.bsc_transfers"
+selection = "Deterministic row_number by tx_hash, evt_index within each of the six dates: 17+17+17+17+16+16 rows."
+row_count = 100
+unique_transaction_count = 84
+identity_failures = 0
+canonical_quantity_field = "amount_raw"
+derived_quantity_fields = ["amount", "price_usd", "amount_usd"]
+surf_daily_transfer_counts = [16611, 11781, 8012, 9059, 511484, 145744]
+
+[surf_api_probe]
+as_of_utc = "2026-08-19T14:45:00Z"
+typed_price_http_status = 200
+typed_price_point_count = 720
+typed_price_credits_used = 1
+long_range_price_granularity = "daily_at_180_days_or_more"
+persisted_candle_coverage_venues = ["bithumb", "upbit", "hashkey", "bitflyer", "coinone", "korbit"]
+all_token_all_venue_recall = "unproven"
+requested_chat_model = "fable-5"
+returned_chat_model = "surf-2.0"
+fable_5_selectability = "not_proved"
+exact_prompt_reasoning_effort = "xhigh"
+exact_prompt_timeout_seconds = 1200
+exact_prompt_response_bytes = 0
+evidence_stream_response_id = "resp_e077daef8da902ee4441ac3bdc632ecf"
+evidence_stream_final_state = "in_progress_then_http2_internal_error"
+evidence_stream_output_delta_count = 0
+response_retrieval_http_status = 404
+credit_balance_http_status = 401
+charge_reconciliation = "unresolved"
+decision = "no_more_chat_credit_probes_or_chat_automation_until_completion_retrieval_cancellation_and_billing_contracts_are_proved"
+
+[[cex_challenger]]
+provider = "tardis"
+catalog_access = "public metadata plus first-of-month samples"
+exact_myx_coverage_state = "partial"
+public_sample_state = "validated_first_of_month_mixed_venue_samples"
+l2_delivery = "incremental_book_L2 CSV and exchange-native raw replay"
+derivatives_metrics = "derivative_ticker samples; exact-window provenance remains to be tested"
+public_cost = "USD 2 per instrument-day; USD 300 minimum one-off order"
+commercial_retention_state = "partial"
+selection_state = "unadmitted_fidelity_challenger"
+
+[[cex_challenger]]
+provider = "coinapi"
+catalog_access = "paid REST metadata plus S3 date and exchange-prefix listings"
+exact_myx_coverage_state = "partial_one_venue_date"
+public_sample_state = "exact paid Binance Futures MYX incident-date L2 file validated and discarded"
+l2_delivery = "full limit-order-book CSV with L2 or source-supplied order IDs"
+derivatives_metrics = "minute Metrics OHLCV advertised; exact MYX funding and open-interest coverage unproved"
+public_cost = "pay as you go: first 1 GB order book at USD 8/GB and first 0.5 GB trades at USD 24/GB per billing day and SKU"
+commercial_retention_state = "pending"
+selection_state = "rejected_as_canonical_l2"
+
+[[coinapi_sample]]
+venue = "BINANCEFTS"
+symbol = "BINANCEFTS_PERP_MYX_USDT"
+date = "2025-08-29"
+dataset = "T-LIMITBOOK_FULL"
+object_key = "T-LIMITBOOK_FULL/D-20250829/E-BINANCEFTS/IDDI-39868900+SC-BINANCEFTS_PERP_MYX_USDT+S-MYXUSDT.csv.gz"
+compressed_bytes = 39363049
+compressed_sha256 = "45d82dd070136f9ba05fe5c04815252839f9246f409447b6fc0b524162866fc4"
+row_count = 4784711
+fields = ["time_exchange", "time_coinapi", "update_type", "is_buy", "entry_px", "entry_sx", "order_id"]
+update_type_counts = ["ADD:231", "SET:4774621", "SNAPSHOT:5572", "SUB:4287"]
+order_id_nonempty = 0
+exchange_time_backwards = 1
+coinapi_time_backwards = 2
+consecutive_duplicates = 0
+has_sequence = false
+has_disconnect_markers = false
+has_raw_exchange_payload = false
+raw_bytes_retained = false
+source_locator = "coinapi S3 object_key above"
+retrieved_at_utc = "not_recorded"
+media_type = "application/gzip"
+schema_version = "seven_field_normalized_csv_header_observed"
+parser_version = "not_recorded"
+admission_authority = false
+
+[[gate]]
+id = "cex_legal_retention"
+mandatory = true
+state = "partial"
+evidence = "Tardis Terms clause 9.1 permits internal Permitted Use, Derived Data creation, and storage of Data and Manipulated Data on the customer system during the Term. Clause 13.6 does not clearly grant post-Term reuse of a standalone raw archive. CoinAPI grants Cloud Service use only during the subscription term and delegates external-source restrictions. Long-term raw replay remains unapproved."
+
+[[gate]]
+id = "cex_exact_coverage"
+mandatory = true
+state = "partial"
+evidence = "Tardis machine-readable MYX metadata and public first-of-month files exist for selected venues. CoinAPI paid metadata covers all three target perpetuals and all six broad ranges; one exact Binance 2025-08-29 L2 object was proved. CoinAPI date-root listings are non-recursive, so the remaining venue/date/type tuples require billed drill-down calls."
+
+[[gate]]
+id = "cex_l2_fidelity"
+mandatory = true
+state = "partial"
+evidence = "Tardis public files pass gzip/schema/hash checks but exact-window raw replay remains pending. CoinAPI's exact Binance incident file passed gzip/hash/schema checks but is rejected as canonical replay evidence: seven normalized fields omit sequence numbers, disconnect markers, and raw payloads; all 4,784,711 rows have empty order_id, with one exchange-time and two receipt-time reversals."
+
+[[gate]]
+id = "cex_l3_fidelity"
+mandatory = false
+state = "not_observed_in_reviewed_feeds"
+evidence = "Reviewed public feeds and provider candidates for the selected target venues and period supplied market-by-price L2, not market-by-order evidence. Exact queue replay is unsupported by this record."
+
+[[gate]]
+id = "surf_onchain_identity"
+mandatory = true
+state = "passed_technical_sample"
+evidence = "100/100 stratified SQL rows uniquely matched BNB Chain receipt logs, block hashes, transaction indices, event indices, contract, addresses, raw amounts, and block timestamps."
+
+[[gate]]
+id = "surf_onchain_completeness"
+mandatory = true
+state = "pending"
+evidence = "Surf returned per-day counts for all six dates, but a second full-population indexed source or archival export has not established that every chain log is present. Receipt sampling proves identity, not recall."
+
+[[gate]]
+id = "surf_legal_retention"
+mandatory = true
+state = "failed_closed"
+evidence = "No written permission yet for the intended commercial research, retained raw/normalized output, and automated use. Surf remains non-canonical until resolved."
+
+[[gate]]
+id = "historical_label_asof"
+mandatory = true
+state = "failed_closed"
+evidence = "In 100 Surf-enriched transfers, only three distinct addresses were labeled and no label carried source, observation time, effective-time, or revision fields. No Arkham challenger sample is available. Labels are excluded from primary backtests."
+
+[[gate]]
+id = "nt_two_run_replay"
+mandatory = true
+state = "partial"
+evidence = "Pinned NT e4167fd produced identical counts and serialized event hashes in two bounded runs over all nine public venue/type streams. Exact-window full replay and decision traces remain pending because the six source days are unavailable."
+
+[[gate]]
+id = "challenger_and_cost"
+mandatory = true
+state = "partial"
+evidence = "A USD 5 CoinAPI credit pilot proved authenticated REST/S3 access and one exact 39,363,049-byte incident L2 file. CoinAPI's published Flat Files use case budgets API calls at 0.25 credit each; date-root listings return directory prefixes and require further billed drill-down. CoinAPI is cheaper than Tardis but fails the mandatory raw replay fidelity contract, so no further CoinAPI spend is recommended for canonical L2."
+
+[[gate]]
+id = "surf_chat_automation"
+mandatory = false
+state = "rejected_current_endpoint"
+evidence = "The response to a requested fable-5 model reported surf-2.0; internal aliasing or execution is unknown and Fable 5 selectability remains unproved. Two xhigh manipulated-pump calls failed to produce a completed response within 1,200 seconds; the streaming response ended in an HTTP/2 internal error, response-ID retrieval returned 404, and credit-balance retrieval returned 401."
+
+[[gate]]
+id = "artifact_replayability"
+mandatory = true
+state = "failed_closed"
+evidence = "Provider bytes are hash-only, ephemeral, discarded, or not durably retrievable without another paid request. The ledger cannot independently reproduce schema, counts, transformations, or replay and cannot admit a provider."
+
+[[nt_probe]]
+venue = "binance-futures"
+data_type = "trades"
+event_limit = 100000
+event_count = 100000
+sha256 = "3c9d9afcca9b66e3d864c3c9a219c839bc634564e9262e1a57b2e3d1985b33f7"
+two_run_identical = true
+
+[[nt_probe]]
+venue = "binance-futures"
+data_type = "deltas"
+event_limit = 100000
+event_count = 100000
+sha256 = "bcdf8ad7b51e1b02b8973e6fd612b12ac91c384ce302175065792d94e8a3730f"
+two_run_identical = true
+
+[[nt_probe]]
+venue = "binance-futures"
+data_type = "funding"
+event_limit = 100000
+event_count = 100000
+sha256 = "d4e3748e9f7e3715e2cdc86d1d5b61bba4be0daf8b49a26d67ef1521d5abf0b1"
+two_run_identical = true
+
+[[nt_probe]]
+venue = "bybit"
+data_type = "trades"
+event_limit = 100000
+event_count = 100000
+sha256 = "7ea9a57a639d2fc0d5ebaa0257a37601232b1eff5a59787422da30cf9be8a1ac"
+two_run_identical = true
+
+[[nt_probe]]
+venue = "bybit"
+data_type = "deltas"
+event_limit = 100000
+event_count = 100000
+sha256 = "6ba3ae0f5aa1a3b9395a0a0dcf8e419c1048b7d8edbfac17ab3e6504a9065572"
+two_run_identical = true
+
+[[nt_probe]]
+venue = "bybit"
+data_type = "funding"
+event_limit = 100000
+event_count = 98096
+sha256 = "fc7f0269c5625a1a06608f78ceca52e269771a15f2fbf79e546165399869e9e6"
+two_run_identical = true
+
+[[nt_probe]]
+venue = "gate-io-futures"
+data_type = "trades"
+event_limit = 100000
+event_count = 13176
+sha256 = "39c2ae587f04e86852f8ade5472aeff7a067c03e883ea10a2cef719d394b754b"
+two_run_identical = true
+
+[[nt_probe]]
+venue = "gate-io-futures"
+data_type = "deltas"
+event_limit = 100000
+event_count = 100000
+sha256 = "809f859b44b476e4942ebe2e463cff78f4f7cbe3dcca5dac64e133ef7db23cca"
+two_run_identical = true
+
+[[nt_probe]]
+venue = "gate-io-futures"
+data_type = "funding"
+event_limit = 100000
+event_count = 13920
+sha256 = "78c145cdc2ffcb51c4e8abc57040ef17b2f8950b64b1906d118a05eb9a72ecb3"
+two_run_identical = true
+
+[[artifact]]
+id = "binance_daily_window_basis"
+sha256 = "645537d9882a6706cd118d6c0708bb39e97633c621133888aa42b4b7941453e4"
+retention = "ephemeral-local"
+
+[[artifact]]
+id = "surf_onchain_sql_request"
+sha256 = "ac8229b9eb499e65161a5c3b465578a6448b18471171600b064854fcc5e1b3e5"
+retention = "ephemeral-local"
+
+[[artifact]]
+id = "surf_onchain_sql_response"
+sha256 = "715acc4ca09242efaf1bedbadb543e612a3e2317bb8078ef1ab7bb032e7e06c8"
+retention = "ephemeral-local"
+
+[[artifact]]
+id = "surf_transfer_label_sample"
+sha256 = "3d74b023480a546c831a4ac80a36db6f1143429f61ce7e051988b9ff665e209f"
+retention = "ephemeral-local"
+
+[[artifact]]
+id = "surf_transfer_daily_counts"
+sha256 = "9eec4e684939422ead78edb393b868b9d2548de5bddb616073940e079a47782f"
+retention = "ephemeral-local"
+
+[[artifact]]
+id = "surf_chat_exact_prompt_request"
+sha256 = "2db04812a778dc838ad4a51ebdc57a8d45e08b47f468145dd99d44db32e0a10d"
+retention = "ephemeral-local"
+source_locator = "request body for POST /gateway/v1/responses"
+observed_at_utc = "2026-08-19T13:53:46Z"
+byte_count = 742
+media_type = "application/json"
+schema_version = "surf_chat_request_observed_2026-08-19"
+parser_version = "none_raw_observation"
+
+[[artifact]]
+id = "surf_chat_evidence_request"
+sha256 = "9b310845ef9bfda932629111ecb64aa4cfc209837b75c73eb7a233828ea1af41"
+retention = "ephemeral-local"
+source_locator = "request body for POST /gateway/v1/responses"
+observed_at_utc = "2026-08-19T14:19:58Z"
+byte_count = 2145
+media_type = "application/json"
+schema_version = "surf_chat_request_observed_2026-08-19"
+parser_version = "none_raw_observation"
+
+[[artifact]]
+id = "surf_chat_alias_request"
+sha256 = "4032525ee34994f270289c36135b40001b5d690278cab82f7f7d70ee417c0054"
+retention = "ephemeral-local"
+source_locator = "request body for POST /gateway/v1/responses"
+observed_at_utc = "2026-08-19T13:54:49Z"
+byte_count = 145
+media_type = "application/json"
+schema_version = "surf_chat_request_observed_2026-08-19"
+parser_version = "none_raw_observation"
+
+[[artifact]]
+id = "surf_chat_alias_response"
+sha256 = "3771090749db542912dbb446a71fd54ac4e9ae0cf86cd744d97217a19838d8b2"
+retention = "ephemeral-local"
+source_locator = "POST /gateway/v1/responses"
+observed_at_utc = "2026-08-19T13:56:44Z"
+byte_count = 519
+media_type = "application/json"
+schema_version = "surf_chat_response_observed_2026-08-19"
+parser_version = "none_raw_observation"
+
+[[artifact]]
+id = "surf_chat_evidence_stream"
+sha256 = "547a2350ef158124c55cc474b6edc7ab6e92ce6760fdf32aff509b38543a6419"
+retention = "ephemeral-local"
+source_locator = "POST /gateway/v1/responses"
+observed_at_utc = "2026-08-19T14:20:04Z"
+byte_count = 1894
+media_type = "text/event-stream"
+schema_version = "surf_chat_sse_observed_2026-08-19"
+parser_version = "none_raw_observation"
+
+[[artifact]]
+id = "surf_typed_price_response"
+sha256 = "78ad69c6cb88158e34925d53d48b6d9241940dfd24d61e5ce14129141fd2a731"
+retention = "ephemeral-local"
+source_locator = "GET /gateway/v1/market/price?symbol=BTC"
+observed_at_utc = "2026-08-19T13:56:07Z"
+byte_count = 60250
+media_type = "application/json"
+schema_version = "not_exposed"
+parser_version = "none_raw_observation"
+
+[[artifact]]
+id = "surf_credit_balance_response"
+sha256 = "7d6dc19c61cec49c66a2f79cc86191c98d6010b187322c4002ab6aad814d2e2f"
+retention = "ephemeral-local"
+source_locator = "GET /gateway/v1/me/credit-balance"
+observed_at_utc = "2026-08-19T13:55:09Z"
+byte_count = 120
+media_type = "application/json"
+schema_version = "surf_data_api_error_observed_2026-08-19"
+parser_version = "none_raw_observation"
+
+[[artifact]]
+id = "surf_response_retrieval_body"
+sha256 = "99eb12f2ab3c4866a353e098ffa3cb7a967e617c49b98480394ec5d8ea92b094"
+retention = "ephemeral-local"
+source_locator = "GET /gateway/v1/responses/resp_e077daef8da902ee4441ac3bdc632ecf"
+observed_at_utc = "2026-08-19T14:40:19Z"
+byte_count = 18
+media_type = "text/plain"
+schema_version = "none_http_404_body"
+parser_version = "none_raw_observation"
+
+[[artifact]]
+id = "surf_live_openapi"
+sha256 = "a13083843c3d80501bbc2598ebccaff3d64a8f57a459fa39ddac1593e82d06d4"
+retention = "ephemeral-local"
+source_locator = "GET /gateway/openapi.json"
+observed_at_utc = "2026-08-19T14:44:05Z"
+byte_count = 984179
+media_type = "application/json"
+schema_version = "hermod_0.2.57"
+parser_version = "none_raw_observation"
+
+[[artifact]]
+id = "bnb_receipts"
+sha256 = "f82830cb0f3060e7f4fefeb15c74a155fff08c551645a39367f0f389ad6dec37"
+retention = "ephemeral-local"
+
+[[artifact]]
+id = "bnb_block_headers"
+sha256 = "9cce81c533f290a1c67cc45751d7b8c482ea04cc48b7c749631a72e7401fa0b9"
+retention = "ephemeral-local"
+
+[[artifact]]
+id = "tardis_binance_metadata"
+sha256 = "5695414d8ee2301e6447ec66621d3f43607bb04fc7ba8d98c55bc698deb93d01"
+retention = "ephemeral-local"
+
+[[artifact]]
+id = "tardis_bybit_metadata"
+sha256 = "806ff57703149ea2cc898e2d5ebc05f75f93fef4c083410ed4db7f3743aadaa2"
+retention = "ephemeral-local"
+
+[[artifact]]
+id = "tardis_gate_metadata"
+sha256 = "c5ad8282a90acc3d05c4d2bbcea3209e5228753dc4226340500c505ba50633fe"
+retention = "ephemeral-local"
+
+[[artifact]]
+id = "tardis_public_configurator"
+sha256 = "3bdd921e98073cd0051e8880c055370ccd19d02f427ac2ffe1d012a19780bd8f"
+retention = "ephemeral-local"

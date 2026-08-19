@@ -345,9 +345,9 @@ fn build_trade_ticks(
                 spec.base_timestamp_nanos + (sequence as u64) * spec.trade_interval_nanos,
             );
             let aggressor = if sequence.is_multiple_of(2) {
-                AggressorSide::Buyer
+                AggressorSide::Buy
             } else {
-                AggressorSide::Seller
+                AggressorSide::Sell
             };
             ticks.push(TradeTick::new(
                 instrument_id,

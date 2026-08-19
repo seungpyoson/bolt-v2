@@ -16,7 +16,7 @@ fn on_trade_routes_to_subscribed_instrument_and_ignores_untracked() {
             up_instrument,
             0.42,
             2.0,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             1_000,
         ))
         .expect("trade on subscribed instrument should process");
@@ -25,7 +25,7 @@ fn on_trade_routes_to_subscribed_instrument_and_ignores_untracked() {
             untracked_instrument,
             0.99,
             1.0,
-            AggressorSide::Seller,
+            AggressorSide::Sell,
             1_100,
         ))
         .expect("trade on untracked instrument should be ignored without error");
@@ -36,7 +36,7 @@ fn on_trade_routes_to_subscribed_instrument_and_ignores_untracked() {
         .get(&InstrumentId::from(up_instrument))
         .expect("subscribed up instrument should have a trade-flow buffer");
     assert_eq!(up_flow.len(), 1);
-    assert_eq!(up_flow.samples()[0].aggressor, AggressorSide::Buyer);
+    assert_eq!(up_flow.samples()[0].aggressor, AggressorSide::Buy);
 
     let down_flow = strategy
         .active
@@ -87,7 +87,7 @@ fn same_market_refresh_preserves_accumulated_trade_flow() {
             "condition-A-A-UP.POLYMARKET",
             0.42,
             2.0,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             1_200,
         ))
         .expect("trade on subscribed instrument should process");
@@ -148,7 +148,7 @@ fn real_market_change_preserves_retained_instrument_trade_flow() {
             retained_instrument.to_string().as_str(),
             0.42,
             2.0,
-            AggressorSide::Buyer,
+            AggressorSide::Buy,
             2_200,
         ))
         .expect("trade on the tracked instrument should process");

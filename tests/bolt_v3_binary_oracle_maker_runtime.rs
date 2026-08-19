@@ -1756,11 +1756,11 @@ fn gate_cleared_informed_fraction() -> UsableMu {
         state.observe(&trade);
     };
     for _ in 0..BUYS {
-        observe(&mut state, AggressorSide::Buyer, ts_ms);
+        observe(&mut state, AggressorSide::Buy, ts_ms);
         ts_ms += STEP_MS;
     }
     for _ in 0..SELLS {
-        observe(&mut state, AggressorSide::Seller, ts_ms);
+        observe(&mut state, AggressorSide::Sell, ts_ms);
         ts_ms += STEP_MS;
     }
     // `now_ms` == the newest trade's timestamp, so the flow is fresh and the gate

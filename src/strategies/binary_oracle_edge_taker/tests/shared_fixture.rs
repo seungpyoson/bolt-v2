@@ -733,7 +733,7 @@ pub(super) fn trade_tick(
         instrument_id,
         price,
         1.0,
-        nautilus_model::enums::AggressorSide::Buyer,
+        nautilus_model::enums::AggressorSide::Buy,
         ts_ms,
     )
 }
@@ -2138,6 +2138,7 @@ pub(super) fn position_opened_event_with_details(
         last_px: Price::new(avg_px_open, 3),
         currency: nautilus_model::types::Currency::USDC(),
         avg_px_open,
+        realized_pnl: None,
         event_id: nautilus_core::UUID4::new(),
         ts_event: nautilus_core::UnixNanos::from(1_u64),
         ts_init: nautilus_core::UnixNanos::from(1_u64),

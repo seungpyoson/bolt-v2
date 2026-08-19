@@ -35,8 +35,20 @@ pub fn materialize_clob_v2_fee_behavior_source_from_nt_fee_sources(
         CLOB_V2_FEE_BEHAVIOR_SELF_TEST_BUILDER_FEE_RATE,
     )?;
 
-    let maker_commission = compute_commission(fee_rate, size, price, LiquiditySide::Maker);
-    let taker_commission = compute_commission(fee_rate, size, price, LiquiditySide::Taker);
+    let maker_commission = compute_commission(
+        fee_rate,
+        CLOB_V2_FEE_BEHAVIOR_SELF_TEST_EXPONENT,
+        size,
+        price,
+        LiquiditySide::Maker,
+    );
+    let taker_commission = compute_commission(
+        fee_rate,
+        CLOB_V2_FEE_BEHAVIOR_SELF_TEST_EXPONENT,
+        size,
+        price,
+        LiquiditySide::Taker,
+    );
     let adjusted_market_buy_amount = adjust_market_buy_amount(
         size,
         balance,
@@ -49,8 +61,8 @@ pub fn materialize_clob_v2_fee_behavior_source_from_nt_fee_sources(
         field: "market_buy_fee_adjustment_verified",
     })?;
 
-    let maker_zero_fee_verified = maker_commission.abs() <= f64::EPSILON;
-    let taker_fee_schedule_verified = taker_commission > f64::EPSILON;
+    let maker_zero_fee_verified = maker_commission.is_zero();
+    let taker_fee_schedule_verified = taker_commission > Decimal::ZERO;
     let market_buy_fee_adjustment_verified =
         adjusted_market_buy_amount > Decimal::ZERO && adjusted_market_buy_amount < size;
     if !maker_zero_fee_verified {
@@ -79,8 +91,8 @@ pub fn materialize_clob_v2_fee_behavior_source_from_nt_fee_sources(
         balance: CLOB_V2_FEE_BEHAVIOR_SELF_TEST_BALANCE,
         builder_fee_rate: CLOB_V2_FEE_BEHAVIOR_SELF_TEST_BUILDER_FEE_RATE,
         fee_exponent: CLOB_V2_FEE_BEHAVIOR_SELF_TEST_EXPONENT,
-        maker_commission,
-        taker_commission,
+        maker_commission: maker_commission.to_string(),
+        taker_commission: taker_commission.to_string(),
         adjusted_market_buy_amount: adjusted_market_buy_amount.to_string(),
         maker_zero_fee_verified,
         taker_fee_schedule_verified,
@@ -214,8 +226,8 @@ struct ClobV2FeeBehaviorAssumptionsProof<'a> {
     balance: &'a str,
     builder_fee_rate: &'a str,
     fee_exponent: f64,
-    maker_commission: f64,
-    taker_commission: f64,
+    maker_commission: String,
+    taker_commission: String,
     adjusted_market_buy_amount: String,
     maker_zero_fee_verified: bool,
     taker_fee_schedule_verified: bool,

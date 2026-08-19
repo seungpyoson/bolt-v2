@@ -273,6 +273,11 @@ max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
 provider_collateral_allowance_poll_interval_ms = 1000
+provider_collateral_allowance_spenders = [
+  "0xE111180000d2663C0091e4f400237545B87B996B",
+  "0xe2222d279d744050d28e00520010520000310F59",
+  "0xadA2005600Dec949baf300f4C6120000bDB6eAab",
+]
 transport_backend = "sockudo"
 
 [clients.polymarket_main.execution.economics]

@@ -1,5 +1,8 @@
 //! Polymarket collateral allowance input for Bolt admission policy.
 
+use std::collections::BTreeMap;
+
+use alloy_primitives::U256;
 use anyhow::{Context, Result};
 use nautilus_core::UnixNanos;
 use nautilus_model::{identifiers::AccountId, types::Currency};
@@ -28,7 +31,10 @@ use crate::{
     },
 };
 
-use super::{PolymarketExecutionConfig, ResolvedBoltV3PolymarketSecrets};
+use super::{
+    PolymarketExecutionConfig, ResolvedBoltV3PolymarketSecrets,
+    normalize_provider_collateral_allowance_spenders,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolymarketProviderCollateralAllowanceRuntimeSourceConfig {
@@ -41,11 +47,13 @@ pub struct PolymarketProviderCollateralAllowanceInput {
     pub account_id: AccountId,
     pub collateral_currency: Currency,
     pub collateral: BalanceAllowance,
+    pub required_spenders: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolymarketProviderCollateralAllowanceBuildError {
     MissingCollateralAllowance,
+    InvalidCollateralAllowance,
     InvalidCollateralMoney,
 }
 
@@ -55,6 +63,7 @@ pub struct PolymarketProviderCollateralAllowanceRuntimeSource {
     collateral_currency: Currency,
     clob_client: PolymarketClobHttpClient,
     balance_allowance_params: GetBalanceAllowanceParams,
+    required_spenders: Vec<String>,
 }
 
 impl std::fmt::Debug for PolymarketProviderCollateralAllowanceRuntimeSource {
@@ -71,6 +80,18 @@ pub fn build_polymarket_provider_collateral_allowance_runtime_source(
     resolved: &ResolvedBoltV3PolymarketSecrets,
     collateral_currency: Currency,
 ) -> Result<PolymarketProviderCollateralAllowanceRuntimeSource> {
+    let required_spenders = cfg
+        .provider_collateral_allowance_spenders
+        .as_ref()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "provider_collateral_allowance_spenders must be configured for the Polymarket provider-allowance runtime source"
+            )
+        })
+        .and_then(|spenders| {
+            normalize_provider_collateral_allowance_spenders(spenders)
+                .map_err(anyhow::Error::msg)
+        })?;
     let polymarket_secrets = PolymarketSecrets::resolve(
         Some(resolved.private_key.as_str()),
         Some(resolved.api_key.as_str().to_owned()),
@@ -95,6 +116,7 @@ pub fn build_polymarket_provider_collateral_allowance_runtime_source(
             token_id: None,
             signature_type: Some(super::nt_signature_type(cfg.signature_type)),
         },
+        required_spenders,
     })
 }
 
@@ -122,6 +144,7 @@ impl PolymarketProviderCollateralAllowanceRuntimeSource {
                 account_id: self.account_id,
                 collateral_currency: self.collateral_currency,
                 collateral,
+                required_spenders: self.required_spenders.clone(),
             },
         )
         .map_err(|error| {
@@ -141,13 +164,10 @@ impl ProviderCollateralAllowanceSnapshotSource
 pub fn build_polymarket_provider_collateral_allowance_snapshot(
     input: PolymarketProviderCollateralAllowanceInput,
 ) -> Result<ProviderCollateralAllowanceSnapshot, PolymarketProviderCollateralAllowanceBuildError> {
-    let collateral_allowance = decimal_from_clob_pusd_units(
-        input
-            .collateral
-            .allowance
-            .ok_or(PolymarketProviderCollateralAllowanceBuildError::MissingCollateralAllowance)?,
-        input.collateral_currency,
-    )?;
+    let spendable_allowance =
+        conservative_spendable_allowance(&input.collateral, &input.required_spenders)?;
+    let collateral_allowance =
+        decimal_from_clob_pusd_units(spendable_allowance, input.collateral_currency)?;
 
     Ok(ProviderCollateralAllowanceSnapshot {
         source: POLYMARKET_PROVIDER_COLLATERAL_ALLOWANCE_REST_SOURCE.to_string(),
@@ -157,6 +177,69 @@ pub fn build_polymarket_provider_collateral_allowance_snapshot(
         collateral_currency: input.collateral_currency.to_string(),
         collateral_allowance,
     })
+}
+
+fn conservative_spendable_allowance(
+    collateral: &BalanceAllowance,
+    required_spenders: &[String],
+) -> Result<Decimal, PolymarketProviderCollateralAllowanceBuildError> {
+    if collateral.balance < Decimal::ZERO {
+        return Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralMoney);
+    }
+    if collateral.allowance.is_some() {
+        return Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance);
+    }
+    if collateral.allowances.is_empty() {
+        return Err(PolymarketProviderCollateralAllowanceBuildError::MissingCollateralAllowance);
+    }
+
+    let required_spenders = normalize_provider_collateral_allowance_spenders(required_spenders)
+        .map_err(|_| PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance)?;
+    let mut allowances = BTreeMap::new();
+    for (spender, allowance) in &collateral.allowances {
+        if spender.trim() != spender || super::check_evm_address_syntax(spender).is_err() {
+            return Err(
+                PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance,
+            );
+        }
+        let normalized_spender = spender.to_ascii_lowercase();
+        if allowances
+            .insert(normalized_spender, parse_wire_allowance(allowance)?)
+            .is_some()
+        {
+            return Err(
+                PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance,
+            );
+        }
+    }
+
+    if allowances.len() != required_spenders.len()
+        || required_spenders
+            .iter()
+            .any(|spender| !allowances.contains_key(spender))
+    {
+        return Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance);
+    }
+
+    Ok(allowances
+        .values()
+        .copied()
+        .fold(collateral.balance, Decimal::min))
+}
+
+fn parse_wire_allowance(
+    value: &str,
+) -> Result<Decimal, PolymarketProviderCollateralAllowanceBuildError> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance);
+    }
+    let significant = value.trim_start_matches('0');
+    if significant.is_empty() {
+        return Ok(Decimal::ZERO);
+    }
+    U256::from_str_radix(significant, 10)
+        .map_err(|_| PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralAllowance)?;
+    Ok(Decimal::from_str_exact(significant).unwrap_or(Decimal::MAX))
 }
 
 fn decimal_from_clob_pusd_units(

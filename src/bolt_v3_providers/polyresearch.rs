@@ -1298,14 +1298,15 @@ pub(crate) fn polyresearch_websocket_client_config(
     WebSocketConfig {
         url: url.to_string(),
         headers: vec![],
-        heartbeat: config.heartbeat_secs,
-        heartbeat_msg: config.heartbeat_message.clone(),
-        reconnect_timeout_ms: Some(config.reconnect_timeout_ms),
+        heartbeat_interval_secs: config.heartbeat_secs,
+        heartbeat_payload: config.heartbeat_message.clone(),
+        connect_timeout_ms: Some(config.reconnect_timeout_ms),
         reconnect_delay_initial_ms: Some(config.reconnect_delay_initial_ms),
         reconnect_delay_max_ms: Some(config.reconnect_delay_max_ms),
         reconnect_backoff_factor: Some(config.reconnect_backoff_factor),
         reconnect_jitter_ms: Some(config.reconnect_jitter_ms),
         reconnect_max_attempts: config.reconnect_max_attempts.as_websocket_config(),
+        heartbeat_timeout_secs: None,
         idle_timeout_ms: Some(config.idle_timeout_ms),
         backend: config.transport_backend,
         proxy_url: None,
@@ -1639,6 +1640,10 @@ mod tests {
                 .expect("fixture URL should parse"),
         );
         assert_eq!(websocket.reconnect_max_attempts, Some(3));
+        assert_eq!(websocket.heartbeat_interval_secs, Some(5));
+        assert_eq!(websocket.heartbeat_payload.as_deref(), Some("ping"));
+        assert_eq!(websocket.heartbeat_timeout_secs, None);
+        assert_eq!(websocket.connect_timeout_ms, Some(5_000));
 
         config.reconnect_max_attempts = PolyResearchReconnectMaxAttempts::Unlimited;
         let websocket = polyresearch_websocket_client_config(

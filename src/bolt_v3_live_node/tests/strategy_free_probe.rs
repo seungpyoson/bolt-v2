@@ -49,7 +49,7 @@ fn readiness_trade_tick(instrument_id: InstrumentId, trade_id: &str) -> TradeTic
         instrument_id,
         Price::from("1.00"),
         nautilus_model::types::Quantity::from("1.00"),
-        AggressorSide::Buyer,
+        AggressorSide::Buy,
         TradeId::from(trade_id),
         1.into(),
         1.into(),

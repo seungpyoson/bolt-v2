@@ -853,7 +853,7 @@ Definitions:
   - implementation owner: `src/bolt_v3_config.rs::config_bundle_checksum`
 - `nautilus_trader_revision`
   - the pinned git revision string from `Cargo.toml`
-  - current value: `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`
+  - current value: `c9732b4704a09f2dbc8a4d442fb78da27039bf04`
 - `configured_target_id`
   - the exact configured target identifier from the strategy configuration
   - reused on all decision events for the same configured target
@@ -1432,7 +1432,7 @@ Governance rules:
 - startup verification must fail if the compiled pin disagrees with the release manifest `nautilus_trader_revision`
 
 The live Binance Spot SBE quote boundary is owned by NautilusTrader revision
-`e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`. WebSocket frames flow through
+`c9732b4704a09f2dbc8a4d442fb78da27039bf04`. WebSocket frames flow through
 `BinanceSpotDataClient::handle_ws_message` and the shared SBE
 `decode_market_data` parser family. Exact pinned source shows the handler
 capturing one local clock value per decoded message and supplying it to
@@ -1602,13 +1602,21 @@ Unknown panic behavior is not acceptable.
 Polymarket CLOB signing compatibility is a live-trading launch gate.
 
 Current status: this branch pins the official NautilusTrader repository at
-exact official commit `e4167fd1ed5ce9db06b43a81417ab4096b8b84b6`, merged upstream.
+exact official commit `c9732b4704a09f2dbc8a4d442fb78da27039bf04`, merged upstream.
 That official commit contains the Binance Spot SBE schema 3:5 instrument-loading
 fix, schema 3:5 request negotiation, and adapter receive-clock ownership.
 The pin carries Polymarket CLOB V2 adapter support, version-tolerant Binance
 Spot REST SBE decode within schema id 3, and the Hyperliquid HIP-4 metadata
-path. The compatibility
-evidence proves focused Bolt-v3 compile and test compatibility only. It does
+path. At this revision the Polymarket allowance response derives authority only
+from the plural spender map. Bolt requires the configured spender identities to
+equal the pinned NT collateral-approval target set, rejects the legacy singular
+field and malformed or incomplete maps, and admits no more than the minimum of
+the reported balance and every required allowance. The fee-behavior proof passes
+the schedule exponent into NT and records the returned `Decimal` commission
+without an alternate Bolt formula. The isolated backtesting adapter also handles
+NT wallet accounts and records the historical Gamma fixture's known `negRisk`
+value explicitly. The compatibility evidence proves focused Bolt-v3 compile and
+test compatibility only. It does
 not prove live order signing, submission, fill parsing, collateral accounting,
 or fee behavior.
 

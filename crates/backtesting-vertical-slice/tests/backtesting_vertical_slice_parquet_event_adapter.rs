@@ -567,14 +567,14 @@ fn event_stream_trades_round_trip_to_catalog() {
             Quantity::from(row.size.as_str()).as_decimal()
         );
         let expected_aggressor = if row.aggressor_side == "BUYER" {
-            AggressorSide::Buyer
+            AggressorSide::Buy
         } else {
-            AggressorSide::Seller
+            AggressorSide::Sell
         };
         assert_eq!(tick.aggressor_side, expected_aggressor);
     }
     // The trade in the fixture is a SELL print => Seller aggressor.
-    assert_eq!(loaded[0].aggressor_side, AggressorSide::Seller);
+    assert_eq!(loaded[0].aggressor_side, AggressorSide::Sell);
     // Synthetic per-instrument ordinal trade id.
     assert_eq!(loaded[0].trade_id.to_string(), "0");
 }

@@ -189,6 +189,23 @@ fn rejects_negative_collateral_balance() {
 }
 
 #[test]
+fn rejects_fractional_raw_collateral_balance() {
+    let result = build_polymarket_provider_collateral_allowance_snapshot(input(balance_allowance(
+        Decimal::new(16, 1),
+        [
+            (SPENDER_A, UINT256_MAX),
+            (SPENDER_B, UINT256_MAX),
+            (SPENDER_C, UINT256_MAX),
+        ],
+    )));
+
+    assert_eq!(
+        result,
+        Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralMoney)
+    );
+}
+
+#[test]
 fn capture_failure_domain_survives_anyhow_context() {
     let error = anyhow::anyhow!(ProviderCollateralAllowanceCaptureEndpointError::new(
         ProviderCollateralAllowanceCaptureEndpoint::ClobBalanceAllowance,

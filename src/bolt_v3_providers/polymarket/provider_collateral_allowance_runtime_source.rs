@@ -183,7 +183,7 @@ fn conservative_spendable_allowance(
     collateral: &BalanceAllowance,
     required_spenders: &[String],
 ) -> Result<Decimal, PolymarketProviderCollateralAllowanceBuildError> {
-    if collateral.balance < Decimal::ZERO {
+    if collateral.balance < Decimal::ZERO || collateral.balance.fract() != Decimal::ZERO {
         return Err(PolymarketProviderCollateralAllowanceBuildError::InvalidCollateralMoney);
     }
     if collateral.allowance.is_some() {

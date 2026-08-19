@@ -193,6 +193,72 @@ fn nt_projection_request_revokes_new_risk_without_erasing_committed_reservation(
 }
 
 #[test]
+fn unsubmitted_permit_rollback_is_atomic_after_projection_invalidation() {
+    let admission = capital_admission_configured_admission();
+    arm_default(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    let permit = admission
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
+        .expect("fresh canonical NT projection should reserve capital");
+
+    assert_eq!(admission.admitted_order_count(), 1);
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    admission.invalidate_capital_admission_for_nt_projection_request();
+
+    drop(permit);
+
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    assert!(
+        !admission.capital_admission_has_live_reservation("client-order-1"),
+        "an exact uncommitted rollback must remove its ledger and ownership index together"
+    );
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+}
+
+#[test]
+fn empty_nt_projection_cannot_erase_unobserved_capital_permit() {
+    let admission = capital_admission_configured_admission();
+    arm_default(&admission);
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    let permit = admission
+        .admit_at(&capital_admission_submit_request("client-order-1"), 1_000)
+        .expect("fresh canonical NT projection should reserve capital");
+
+    let projection = admission
+        .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1_100)
+        .expect("an empty projection should return a fail-closed decision");
+
+    assert!(!projection.accepted);
+    assert_eq!(
+        projection.reason,
+        Some(ReservationRejectionReason::MissingEvidence)
+    );
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::new(43, 1)),
+        "projection must preserve a reservation until NT has observed its order identity"
+    );
+    assert_eq!(admission.capital_admission_reconciled(), Some(false));
+
+    drop(permit);
+
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert_eq!(
+        admission.capital_admission_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+}
+
+#[test]
 fn reservation_phase_advances_from_refundable_to_sink_invoked_by_exact_revision() {
     let admission = capital_admission_configured_admission();
     arm_default(&admission);
@@ -282,7 +348,6 @@ fn terminal_retirement_invalidates_an_older_projection_candidate() {
                 observed_open_order_count: 0,
                 all_open_orders_attributed: true,
                 reservations: Vec::new(),
-                live_non_reservation_client_order_ids: Default::default(),
             },
             1_200,
         )
@@ -362,6 +427,61 @@ fn observed_open_then_omitted_reservation_remains_numerically_live() {
 }
 
 #[test]
+fn empty_projection_cannot_release_held_evidence_free_exit_identity() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = capital_admission_configured_admission_with_writer(writer.recorder());
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    let request =
+        unrecordable_risk_reducing_exit_submit_request("evidence-free-held-exit", &writer);
+    let permit = admission
+        .admit_at(&request, 1_000)
+        .expect("evidence failure must not block a verified risk-reducing exit");
+
+    let rebuild = admission
+        .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1_050)
+        .expect("an empty canonical projection should remain structurally valid");
+    assert!(rebuild.accepted, "unexpected rebuild decision: {rebuild:?}");
+    assert_eq!(
+        admission
+            .admit_at(&request, 1_051)
+            .expect_err("projection omission cannot release a held local identity"),
+        BoltV3SubmitAdmissionError::ClientOrderAlreadyAuthorized
+    );
+
+    drop(permit);
+    admission
+        .admit_at(&request, 1_052)
+        .expect("exact rollback must release a held identity after the projection")
+        .commit_submitted();
+}
+
+#[test]
+fn empty_projection_cannot_release_submitted_evidence_free_exit_identity() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let admission = capital_admission_configured_admission_with_writer(writer.recorder());
+    admission.update_capital_admission_nt_components(fresh_components(900));
+    rebuild_empty_capital_admission(&admission);
+    let request =
+        unrecordable_risk_reducing_exit_submit_request("evidence-free-submitted-exit", &writer);
+    admission
+        .admit_at(&request, 1_000)
+        .expect("evidence failure must not block a verified risk-reducing exit")
+        .commit_submitted();
+
+    let rebuild = admission
+        .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1_050)
+        .expect("an empty canonical projection should remain structurally valid");
+    assert!(rebuild.accepted, "unexpected rebuild decision: {rebuild:?}");
+    assert_eq!(
+        admission
+            .admit_at(&request, 1_051)
+            .expect_err("projection omission cannot release a submitted local identity"),
+        BoltV3SubmitAdmissionError::ClientOrderAlreadyAuthorized
+    );
+}
+
+#[test]
 fn open_projection_cannot_replace_a_retained_reservation_generation() {
     let (admission, _) = committed_submit_runtime_feed();
 
@@ -409,7 +529,6 @@ fn stale_nt_projection_candidate_cannot_rearm_after_newer_invalidation() {
                 observed_open_order_count: 0,
                 all_open_orders_attributed: true,
                 reservations: Vec::new(),
-                live_non_reservation_client_order_ids: Default::default(),
             },
             2_000,
         )
@@ -437,7 +556,6 @@ fn only_one_nt_projection_candidate_can_commit_for_an_epoch() {
         observed_open_order_count: 0,
         all_open_orders_attributed: true,
         reservations: Vec::new(),
-        live_non_reservation_client_order_ids: Default::default(),
     };
 
     let first = admission
@@ -495,7 +613,6 @@ fn exhausted_state_revision_rejects_candidate_without_mutating_live_state() {
                 observed_open_order_count: 0,
                 all_open_orders_attributed: true,
                 reservations: Vec::new(),
-                live_non_reservation_client_order_ids: Default::default(),
             },
             2_000,
         )
@@ -1477,7 +1594,6 @@ fn rebuild_evidence_failure_does_not_publish_candidate_nt_components() {
                 observed_open_order_count: 0,
                 all_open_orders_attributed: true,
                 reservations: Vec::new(),
-                live_non_reservation_client_order_ids: Default::default(),
             },
             2_000,
         )
@@ -2046,7 +2162,6 @@ fn fill_evidence_invalidates_an_in_flight_nt_projection_candidate() {
                 observed_open_order_count: 0,
                 all_open_orders_attributed: true,
                 reservations: Vec::new(),
-                live_non_reservation_client_order_ids: Default::default(),
             },
             1_200,
         )
@@ -2292,6 +2407,11 @@ fn pre_sink_rollback_preserves_attribution_when_the_ledger_identity_is_missing()
 
     drop(permit);
 
+    assert_eq!(
+        admission.admitted_order_count(),
+        1,
+        "rollback must preserve the count claim when its capital reservation no longer matches"
+    );
     assert!(
         admission.capital_admission_has_live_reservation("rollback-ledger-mismatch"),
         "rollback must not erase attribution when the numerical ledger removal fails"
@@ -2813,6 +2933,15 @@ fn risk_reducing_exit_submit_request(client_order_id: &str) -> BoltV3SubmitAdmis
         position_quantity: request.order_quantity,
         exit_quantity: request.order_quantity,
     });
+    request
+}
+
+fn unrecordable_risk_reducing_exit_submit_request(
+    client_order_id: &str,
+    writer: &support::current_evidence::RecordingDecisionEvidenceWriter,
+) -> BoltV3SubmitAdmissionRequest {
+    let mut request = risk_reducing_exit_submit_request(client_order_id);
+    request.strategy_id = writer.value_exceeding_record_cap();
     request
 }
 

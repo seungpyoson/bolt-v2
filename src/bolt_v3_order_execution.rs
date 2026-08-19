@@ -48,7 +48,7 @@ use crate::{
     bolt_v3_submit_admission::{
         BoltV3CompiledOrderAdmissionEvidence, BoltV3CompiledOrderKind,
         BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide, BoltV3CompiledProductKind,
-        BoltV3EconomicsSubmitAdmission, BoltV3PreparedCapitalSinkInvocation,
+        BoltV3EconomicsSubmitAdmission, BoltV3PreparedSubmitSinkInvocation,
         BoltV3RiskReducingExitPositionInput, BoltV3SubmitAdmissionError,
         BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionRequestInput,
         BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, OrderValuationContext,
@@ -1227,10 +1227,10 @@ impl BoltV3OrderExecutionPolicy {
                 .map_err(|error| {
                     BoltV3SubmitAttemptOutcome::rejected(BoltV3SubmitRejectionKind::PreSink, error)
                 })?;
-                let prepared_capital = permit.prepare_sink_invocation().map_err(|error| {
+                let prepared_admission = permit.prepare_sink_invocation().map_err(|error| {
                     BoltV3SubmitAttemptOutcome::rejected(
                         BoltV3SubmitRejectionKind::PreSink,
-                        format!("capital submit-boundary preparation failed: {error:?}"),
+                        format!("submit-admission boundary preparation failed: {error:?}"),
                     )
                 })?;
                 let prepared_boundary = match attempt_participant.as_mut() {
@@ -1243,12 +1243,12 @@ impl BoltV3OrderExecutionPolicy {
                                     error,
                                 )
                             })?;
-                        BoltV3PreparedSubmitBoundary::CapitalAndLifecycle {
-                            capital: prepared_capital,
+                        BoltV3PreparedSubmitBoundary::AdmissionAndLifecycle {
+                            admission: prepared_admission,
                             lifecycle,
                         }
                     }
-                    None => BoltV3PreparedSubmitBoundary::Capital(prepared_capital),
+                    None => BoltV3PreparedSubmitBoundary::Admission(prepared_admission),
                 };
                 prepared_boundary.commit();
                 if let Err(error) = sink.submit_order_via_nt(order, context) {
@@ -1604,9 +1604,9 @@ pub(crate) trait BoltV3PreparedRouteAttemptCommit: std::fmt::Debug {
 }
 
 enum BoltV3PreparedSubmitBoundary<'a> {
-    Capital(BoltV3PreparedCapitalSinkInvocation<'a>),
-    CapitalAndLifecycle {
-        capital: BoltV3PreparedCapitalSinkInvocation<'a>,
+    Admission(BoltV3PreparedSubmitSinkInvocation<'a>),
+    AdmissionAndLifecycle {
+        admission: BoltV3PreparedSubmitSinkInvocation<'a>,
         lifecycle: Box<dyn BoltV3PreparedRouteAttemptCommit + 'a>,
     },
 }
@@ -1614,13 +1614,13 @@ enum BoltV3PreparedSubmitBoundary<'a> {
 impl BoltV3PreparedSubmitBoundary<'_> {
     fn commit(self) {
         match self {
-            Self::Capital(mut capital) => capital.commit(),
-            Self::CapitalAndLifecycle {
-                mut capital,
+            Self::Admission(mut admission) => admission.commit(),
+            Self::AdmissionAndLifecycle {
+                mut admission,
                 mut lifecycle,
             } => {
                 lifecycle.commit();
-                capital.commit();
+                admission.commit();
             }
         }
     }

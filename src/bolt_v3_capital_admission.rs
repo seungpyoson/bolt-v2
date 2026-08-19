@@ -5,8 +5,8 @@ use crate::bolt_v3_capital_admission_state::{
     NtDerivedCapitalAdmissionState, validate_nt_derived_capital_admission_state,
 };
 use crate::bolt_v3_capital_reservation::{
-    CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason, ReservationRequest,
-    RetainedReservation,
+    CapitalPoolSnapshot, ReservationDecision, ReservationLedger, ReservationRejectionReason,
+    ReservationRequest, RetainedReservation,
 };
 use crate::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, evaluate_loss_admission};
 
@@ -280,9 +280,35 @@ pub enum CapitalAdmissionReason {
     Loss(LossHaltReason),
     Reservation(ReservationRejectionReason),
     Liability(LiabilityError),
+    Invariant(CapitalAdmissionInvariant),
     MissingNtState,
     StaleNtState(CapitalAdmissionStateEvidenceKind),
     UnattributedNtState(CapitalAdmissionStateEvidenceKind),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapitalAdmissionInvariant {
+    AcceptedReservationHasRejectionReason,
+    ContradictoryReservationDecisionContext,
+    MissingReservationRejectionReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValidatedReservationDecision {
+    Accepted,
+    Rejected(ReservationRejectionReason),
+}
+
+fn validate_reservation_decision(
+    decision: &ReservationDecision,
+) -> Result<ValidatedReservationDecision, CapitalAdmissionInvariant> {
+    match (decision.accepted, decision.reason, decision.available_after) {
+        (true, None, Some(_)) => Ok(ValidatedReservationDecision::Accepted),
+        (false, Some(reason), None) => Ok(ValidatedReservationDecision::Rejected(reason)),
+        (false, None, _) => Err(CapitalAdmissionInvariant::MissingReservationRejectionReason),
+        (true, Some(_), _) => Err(CapitalAdmissionInvariant::AcceptedReservationHasRejectionReason),
+        _ => Err(CapitalAdmissionInvariant::ContradictoryReservationDecisionContext),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -411,18 +437,30 @@ pub fn evaluate_capital_admission(inputs: CapitalAdmissionInputs<'_>) -> Capital
         inputs.request.now_ns,
         inputs.policy.min_remaining_pool_balance,
     );
-    if !reservation_decision.accepted {
+    let reservation_decision = match validate_reservation_decision(&reservation_decision) {
+        Ok(decision) => decision,
+        Err(invariant) => {
+            inputs
+                .reservation_ledger
+                .rollback_uncommitted(&inputs.request.pool_id, &inputs.request.intent_id);
+            return rejected_capital_admission_with_liability(
+                original_quantity,
+                pool_id,
+                liability_quote.calculated_liability,
+                liability_quote.reserved_liability,
+                admission_evidence(&state_evidence, inputs.request.now_ns, &liability_quote),
+                vec![CapitalAdmissionReason::Invariant(invariant)],
+            );
+        }
+    };
+    if let ValidatedReservationDecision::Rejected(reason) = reservation_decision {
         return rejected_capital_admission_with_liability(
             original_quantity,
             pool_id,
             liability_quote.calculated_liability,
             liability_quote.reserved_liability,
             admission_evidence(&state_evidence, inputs.request.now_ns, &liability_quote),
-            vec![CapitalAdmissionReason::Reservation(
-                reservation_decision
-                    .reason
-                    .unwrap_or(ReservationRejectionReason::InvalidRequest),
-            )],
+            vec![CapitalAdmissionReason::Reservation(reason)],
         );
     }
 
@@ -659,7 +697,8 @@ mod tests {
         ProviderCollateralAllowanceSnapshot, ReservationLedgerSnapshot,
     };
     use crate::bolt_v3_capital_reservation::{
-        CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason, ReservationRequest,
+        CapitalPoolSnapshot, ReservationDecision, ReservationLedger, ReservationRejectionReason,
+        ReservationRequest,
     };
     use crate::bolt_v3_loss_governor::{
         LossGovernorPolicy, LossHaltReason, LossSnapshot, LossSnapshotSource,
@@ -668,11 +707,12 @@ mod tests {
 
     use super::{
         CapitalAdmissionEvidenceKind, CapitalAdmissionGate, CapitalAdmissionGateInputs,
-        CapitalAdmissionInputs, CapitalAdmissionPolicy, CapitalAdmissionReason,
-        CapitalAdmissionRequest, CapitalAdmissionReservationEvidence, FeeSlippagePolicy,
-        IntentLiquidity, IntentOrderKind, IntentSide, LiabilityError,
+        CapitalAdmissionInputs, CapitalAdmissionInvariant, CapitalAdmissionPolicy,
+        CapitalAdmissionReason, CapitalAdmissionRequest, CapitalAdmissionReservationEvidence,
+        FeeSlippagePolicy, IntentLiquidity, IntentOrderKind, IntentSide, LiabilityError,
         PredictionMarketAdmissionSnapshot, PredictionMarketBinaryLiabilityCalculator,
-        ProductAdmissionSnapshot, ProductKind, evaluate_capital_admission,
+        ProductAdmissionSnapshot, ProductKind, ValidatedReservationDecision,
+        evaluate_capital_admission, validate_reservation_decision,
     };
 
     fn policy() -> CapitalAdmissionPolicy {
@@ -810,6 +850,44 @@ mod tests {
             evidence_label: String::new(),
             ..rebuilt_open_order_reservation(intent_id)
         }
+    }
+
+    #[test]
+    fn reservation_decision_context_is_structurally_validated() {
+        let decision = |accepted, reason, available_after| ReservationDecision {
+            accepted,
+            reason,
+            requested_liability: Decimal::ONE,
+            available_before: Decimal::new(10, 0),
+            available_after,
+        };
+
+        assert_eq!(
+            validate_reservation_decision(&decision(
+                false,
+                Some(ReservationRejectionReason::OverBudget),
+                None,
+            )),
+            Ok(ValidatedReservationDecision::Rejected(
+                ReservationRejectionReason::OverBudget,
+            ))
+        );
+        assert_eq!(
+            validate_reservation_decision(&decision(false, None, None)),
+            Err(CapitalAdmissionInvariant::MissingReservationRejectionReason)
+        );
+        assert_eq!(
+            validate_reservation_decision(&decision(
+                true,
+                Some(ReservationRejectionReason::OverBudget),
+                Some(Decimal::ZERO),
+            )),
+            Err(CapitalAdmissionInvariant::AcceptedReservationHasRejectionReason)
+        );
+        assert_eq!(
+            validate_reservation_decision(&decision(true, None, None)),
+            Err(CapitalAdmissionInvariant::ContradictoryReservationDecisionContext)
+        );
     }
 
     #[test]

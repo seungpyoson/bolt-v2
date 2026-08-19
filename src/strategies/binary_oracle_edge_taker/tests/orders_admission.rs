@@ -2236,6 +2236,7 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
         "a market-style TrailingStopMarket entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
     );
 
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
     let managed_position = materialize_configured_position(
         &mut strategy,
         instrument_id,

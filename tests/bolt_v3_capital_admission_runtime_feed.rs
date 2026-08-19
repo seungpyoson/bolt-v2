@@ -1412,7 +1412,6 @@ fn rebuild_evidence_failure_preserves_the_prior_ledger_and_lifecycle_phase() {
     partially_filled.open_quantity = Decimal::new(5, 0);
     partially_filled.filled_quantity = Decimal::new(5, 0);
     partially_filled.observed_at_ns = 1_100;
-    partially_filled.attribution.reserved_liability = Decimal::new(43, 1).to_string();
 
     let rebuild = admission
         .rebuild_capital_admission_open_order_reservations_for_test(vec![partially_filled], 1_100);
@@ -2699,9 +2698,9 @@ fn open_order_reservation(
             instrument_id: "instrument-yes.VENUE-A".to_string(),
             side: EvidenceOrderSide::Buy,
             submitted_quantity: "10".to_string(),
-            liability_factor: "0.4".to_string(),
-            additive_liability: "0.3".to_string(),
-            reserved_liability: liability.to_string(),
+            liability_factor: "0.40".to_string(),
+            additive_liability: "0.30".to_string(),
+            reserved_liability: "4.30".to_string(),
             observed_at_ns: 1_000,
         },
         submit_reservation_id: submit_reservation_id.to_string(),

@@ -1128,8 +1128,8 @@ owner_ruling = "current_contract_owner_ruling_2026_07_22"
 [[dispositions]]
 fact = "forced_reduction_admission_v1"
 consumer = "reservation_recovery_v1"
-action = "relevant"
-event_variant = "forced_reduction_admission_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_08_19"
 
 [[dispositions]]
 fact = "forced_reduction_admission_v1"

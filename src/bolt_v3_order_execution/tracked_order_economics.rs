@@ -2307,8 +2307,10 @@ mod tests {
 
         assert!(matches!(
             outcome,
-            BoltV3RestingSubmitTransactionOutcome::Attempt(attempt)
-                if attempt.kind() == BoltV3SubmitAttemptKind::Submitted
+            BoltV3RestingSubmitTransactionOutcome::Routed {
+                attempt,
+                identity_disposition: RestingOrderIdentityDisposition::RetainedActive,
+            } if attempt.kind() == BoltV3SubmitAttemptKind::Submitted
         ));
 
         assert_eq!(
@@ -2879,8 +2881,10 @@ mod tests {
         );
         assert!(matches!(
             outcome,
-            BoltV3RestingSubmitTransactionOutcome::Attempt(attempt)
-                if attempt.kind() == BoltV3SubmitAttemptKind::Submitted
+            BoltV3RestingSubmitTransactionOutcome::Routed {
+                attempt,
+                identity_disposition: RestingOrderIdentityDisposition::NotRetained,
+            } if attempt.kind() == BoltV3SubmitAttemptKind::Submitted
         ));
 
         let next = post_only_limit_order("MAKER-AFTER-COMMIT-CONFLICT");

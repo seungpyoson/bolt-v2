@@ -333,6 +333,14 @@ impl ExposureState {
                     {
                         Some(Self::UnsupportedObserved(observed))
                     }
+                    EntryTerminalPositionTruth::ZeroFill
+                        if matches!(
+                            &remainder.position,
+                            EntryRemainderPosition::CanonicallyFlat
+                        ) =>
+                    {
+                        Some(Self::Flat)
+                    }
                     EntryTerminalPositionTruth::CanonicallyFlat => Some(Self::Flat),
                     EntryTerminalPositionTruth::ZeroFill
                     | EntryTerminalPositionTruth::Supported(_)

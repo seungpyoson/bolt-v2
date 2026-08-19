@@ -1222,15 +1222,14 @@ fn forced_flat_submit_cancels_resting_entry_before_routing_exit() {
                 entry_client_order_id,
             )
             .expect("resting entry order should build through NT factory");
-        cache
-            .borrow_mut()
-            .add_order(
-                entry_order,
-                None,
-                Some(ClientId::from(strategy.config.client_id.as_str())),
-                true,
-            )
-            .expect("test cache should accept resting entry order");
+        seed_nt_working_order(&mut strategy, entry_order, position_id);
+        let mut partial_fill =
+            order_filled_event(entry_client_order_id, instrument_id, position_id);
+        partial_fill.last_qty = Quantity::new(1.0, 2);
+        apply_exit_order_event_to_nt_cache(
+            &mut strategy,
+            nautilus_model::events::OrderEventAny::Filled(partial_fill),
+        );
 
         let first_attempt = strategy
             .try_submit_exit_order_for_trigger(
@@ -2147,15 +2146,13 @@ fn position_closed_cancels_managed_resting_pending_entry_and_keeps_context() {
             entry_client_order_id,
         )
         .expect("resting entry order should build through NT factory");
-    cache
-        .borrow_mut()
-        .add_order(
-            entry_order,
-            None,
-            Some(ClientId::from(strategy.config.client_id.as_str())),
-            true,
-        )
-        .expect("test cache should accept resting entry order");
+    seed_nt_working_order(&mut strategy, entry_order, position_id);
+    let mut partial_fill = order_filled_event(entry_client_order_id, instrument_id, position_id);
+    partial_fill.last_qty = Quantity::new(1.0, 2);
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::Filled(partial_fill),
+    );
 
     close_nt_position(&mut strategy, position_id);
     strategy.on_position_closed(position_closed_event(instrument_id, position_id));

@@ -643,7 +643,7 @@ pub(crate) const fn disposition_for(
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
         (KnownFact::ForcedReductionAdmissionV1, KnownConsumer::ReservationRecoveryV1) => {
-            ConsumerDisposition::Relevant(KnownFact::ForcedReductionAdmissionV1)
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_08_19")
         }
         (KnownFact::ForcedReductionAdmissionV1, KnownConsumer::SettlementRecoveryV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")

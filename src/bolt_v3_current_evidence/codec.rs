@@ -4187,22 +4187,13 @@ mod tests {
 
         let mut retained_exit = terminal();
         retained_exit.lifecycle.outcome = OrderLifecycleOutcome::ExitPending;
-        let retained_record =
+        assert!(
             <CurrentCodecs as CodecFor<identities::TerminalSettlementV1>>::encode(
                 &retained_exit,
                 14,
             )
-            .expect("terminal settlement may retain governed exit authority");
-        let retained_line = std::str::from_utf8(retained_record.line())
-            .expect("encoded evidence must be UTF-8")
-            .trim_end_matches('\n');
-        assert_eq!(
-            <CurrentCodecs as CodecFor<identities::TerminalSettlementV1>>::decode(
-                retained_line,
-                1,
-            )
-            .expect("retained exit terminal settlement must decode"),
-            retained_exit
+            .is_err(),
+            "terminal settlement cannot retain non-flat exit authority"
         );
 
         let mut invalid = terminal();

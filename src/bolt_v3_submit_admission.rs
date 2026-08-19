@@ -5455,7 +5455,12 @@ fn rollback_unsubmitted_permit(
     let counter_values = match counter_rollback {
         Some(rollback) => match checked_admission_counter_rollback(inner, rollback) {
             Some(values) => Some(values),
-            None => return,
+            None => {
+                if let Some(capital_admission) = inner.capital_admission.as_mut() {
+                    capital_admission.gate.invalidate_reconciliation();
+                }
+                return;
+            }
         },
         None => None,
     };
@@ -5539,16 +5544,6 @@ fn apply_admission_counter_rollback(
         inner
             .evidence_free_non_reservation_admissions
             .remove(client_order_id);
-    }
-}
-
-#[cfg(test)]
-fn rollback_admission_counters(
-    inner: &mut BoltV3SubmitAdmissionInner,
-    rollback: &BoltV3SubmitAdmissionCounterRollback,
-) {
-    if let Some(values) = checked_admission_counter_rollback(inner, rollback) {
-        apply_admission_counter_rollback(inner, rollback, values);
     }
 }
 
@@ -5921,13 +5916,14 @@ mod fail_closed_invariant_tests {
             BoltV3EvidenceFreeNonReservationPhase::PermitHeld,
         );
 
-        rollback_admission_counters(
+        rollback_unsubmitted_permit(
             &mut inner,
-            &BoltV3SubmitAdmissionCounterRollback {
+            &[],
+            Some(&BoltV3SubmitAdmissionCounterRollback {
                 execution_client_id: "execution".to_string(),
                 order_count: 1,
                 uncommitted_evidence_free_client_order_ids: vec!["transient".to_string()],
-            },
+            }),
         );
 
         assert_eq!(inner.admitted_order_count, 0);
@@ -5945,14 +5941,38 @@ mod fail_closed_invariant_tests {
     }
 
     #[test]
-    fn inconsistent_counter_rollback_preserves_all_fail_closed_state() {
+    fn inconsistent_counter_rollback_preserves_state_and_invalidates_reconciliation() {
         for (total, client_count) in [(0, Some(1)), (1, Some(0)), (1, None)] {
-            let admission =
-                BoltV3SubmitAdmissionState::new(Arc::new(DecisionEvidenceRecorder::recording()));
+            let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
+                Arc::new(DecisionEvidenceRecorder::recording()),
+                BoltV3SubmitCapitalAdmissionConfig {
+                    venue_id: "venue".to_string(),
+                    account_id: "account".to_string(),
+                    product_kind: ProductKind::PredictionMarketBinary,
+                    collateral_currency: "USD".to_string(),
+                    capital_pool: CapitalPoolSnapshot {
+                        source: "test".to_string(),
+                        observed_at_ns: 1,
+                        pool_id: "pool".to_string(),
+                        max_pool_liability: Decimal::ONE,
+                        committed_liability: Decimal::ZERO,
+                        max_snapshot_age_ns: 1,
+                    },
+                    policy: CapitalAdmissionPolicy {
+                        min_remaining_pool_balance: None,
+                        fee_slippage_policy: None,
+                    },
+                },
+            );
             let mut inner = admission
                 .inner
                 .lock()
                 .expect("submit admission fixture mutex should not be poisoned");
+            inner
+                .capital_admission
+                .as_mut()
+                .expect("capital admission fixture should be configured")
+                .gate = CapitalAdmissionGate::reconciled();
             inner.admitted_order_count = total;
             if let Some(client_count) = client_count {
                 inner
@@ -5965,13 +5985,14 @@ mod fail_closed_invariant_tests {
             );
             let before_client_counts = inner.admitted_order_count_by_execution_client.clone();
 
-            rollback_admission_counters(
+            rollback_unsubmitted_permit(
                 &mut inner,
-                &BoltV3SubmitAdmissionCounterRollback {
+                &[],
+                Some(&BoltV3SubmitAdmissionCounterRollback {
                     execution_client_id: "execution".to_string(),
                     order_count: 1,
                     uncommitted_evidence_free_client_order_ids: vec!["transient".to_string()],
-                },
+                }),
             );
 
             assert_eq!(inner.admitted_order_count, total);
@@ -5983,6 +6004,15 @@ mod fail_closed_invariant_tests {
                 inner
                     .evidence_free_non_reservation_admissions
                     .contains_key("transient")
+            );
+            assert!(
+                !inner
+                    .capital_admission
+                    .as_ref()
+                    .expect("capital admission fixture should remain configured")
+                    .gate
+                    .is_reconciled(),
+                "lost rollback ownership must latch reconciliation-invalid"
             );
         }
     }

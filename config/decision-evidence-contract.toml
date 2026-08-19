@@ -109,6 +109,7 @@ current_fact = "risk_reducing_exit_admission_v1"
 [[purposes]]
 id = "forced_reduction_admission"
 owner = "bolt_v3_decision_evidence"
+decode_only = true
 duties = ["action"]
 effect_policy = "risk_reducing_continues"
 sink = "machine"
@@ -167,14 +168,24 @@ current_identity = "entry_skip_observation_v1"
 current_fact = "entry_skip_observation_v1"
 
 [[purposes]]
-id = "exit_submission_decision"
+id = "exit_intent_decision"
 owner = "bolt_v3_decision_evidence"
 duties = ["action"]
 effect_policy = "risk_reducing_continues"
 sink = "machine"
 novelty_capability = "prohibited"
-current_identity = "exit_submission_decision_v1"
-current_fact = "exit_submission_decision_v1"
+current_identity = "exit_intent_decision_v1"
+current_fact = "exit_intent_decision_v1"
+
+[[purposes]]
+id = "exit_prepared_order"
+owner = "bolt_v3_decision_evidence"
+duties = ["action"]
+effect_policy = "risk_reducing_continues"
+sink = "machine"
+novelty_capability = "prohibited"
+current_identity = "exit_prepared_order_v1"
+current_fact = "exit_prepared_order_v1"
 
 [[purposes]]
 id = "exit_hold_decision"
@@ -309,7 +320,7 @@ current_fact = "provider_collateral_allowance_capture_failure_v1"
 [[census_dispositions]]
 ancestor = "admission_decision"
 disposition = "inherited"
-current_producers = ["submit_admission_admitted_entry", "submit_admission_rejected_entry", "submit_admission_exit", "submit_admission_forced_reduction"]
+current_producers = ["submit_admission_admitted_entry", "submit_admission_rejected_entry", "submit_admission_exit"]
 
 [[census_dispositions]]
 ancestor = "basket_admission_decision"
@@ -329,7 +340,7 @@ current_producers = ["edge_taker_entry_skip"]
 [[census_dispositions]]
 ancestor = "exit_decision"
 disposition = "inherited"
-current_producers = ["edge_taker_exit_submit_decision", "edge_taker_exit_hold_decision"]
+current_producers = ["edge_taker_exit_intent_decision", "edge_taker_exit_prepared_order", "edge_taker_exit_hold_decision"]
 
 [[census_dispositions]]
 ancestor = "exit_evaluation"
@@ -483,17 +494,6 @@ repeat_semantics = "every submit admission result remains append-complete"
 dedupe_key_evidence = "client_order_id event identity; no suppression"
 census_ancestor = "admission_decision"
 
-[[producers]]
-id = "submit_admission_forced_reduction"
-purpose = "forced_reduction_admission"
-classification = "event-keyed"
-runtime_wiring = "wired"
-reviewed_runtime_triggers = ["startup", "timer", "index-price", "position-event"]
-call_sites = ["src/bolt_v3_submit_admission.rs::record_admission_decision"]
-repeat_semantics = "every submit admission result remains append-complete"
-dedupe_key_evidence = "client_order_id event identity; no suppression"
-census_ancestor = "admission_decision"
-
 # `reserve_basket_submit_slots` below is `#[cfg(feature =
 # "test-current-evidence-inspection")]`, so it is an append path only when that
 # feature is on. It is listed because it is a real call site under the feature
@@ -555,19 +555,30 @@ classification = "already-deduped"
 runtime_wiring = "wired"
 reviewed_runtime_triggers = ["book"]
 call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_entry_skip_once"]
-repeat_semantics = "finite per-episode monotone suppression over the exact twenty registered entry-skip states"
-dedupe_key_evidence = "EvidenceEpisodeId binds stable strategy, target, venue and ordered market identity; config/evidence-novelty.toml enumerates the twenty canonical states, and payload churn or writer failure cannot reclaim a claimed state"
+repeat_semantics = "finite per-episode monotone suppression over the exact nineteen registered entry-skip states"
+dedupe_key_evidence = "EvidenceEpisodeId binds stable strategy, target, venue and ordered market identity; config/evidence-novelty.toml enumerates the nineteen canonical states, and payload churn or writer failure cannot reclaim a claimed state"
 census_ancestor = "entry_skip"
 
 [[producers]]
-id = "edge_taker_exit_submit_decision"
-purpose = "exit_submission_decision"
+id = "edge_taker_exit_intent_decision"
+purpose = "exit_intent_decision"
 classification = "already-deduped"
 runtime_wiring = "wired"
 reviewed_runtime_triggers = ["startup", "quote", "book", "timer"]
-call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_decision_once"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_intent_or_hold_once"]
 repeat_semantics = "current last-key guard suppresses only adjacent repeats and re-emits A-B-A; migrate to the closed exit-outcome domain"
 dedupe_key_evidence = "current key includes market and position identity plus semantic outcome; the required monotone state excludes volatile timing fields"
+census_ancestor = "exit_decision"
+
+[[producers]]
+id = "edge_taker_exit_prepared_order"
+purpose = "exit_prepared_order"
+classification = "already-deduped"
+runtime_wiring = "wired"
+reviewed_runtime_triggers = ["startup", "quote", "book", "timer"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_prepared_order"]
+repeat_semantics = "one fact per successfully prepared exit attempt; no cross-attempt suppression"
+dedupe_key_evidence = "each prepared fact is bound to the final prepared client order identity"
 census_ancestor = "exit_decision"
 
 [[producers]]
@@ -576,7 +587,7 @@ purpose = "exit_hold_decision"
 classification = "already-deduped"
 runtime_wiring = "wired"
 reviewed_runtime_triggers = ["startup", "quote", "book", "timer"]
-call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_decision_once"]
+call_sites = ["src/strategies/binary_oracle_edge_taker/mod.rs::record_exit_intent_or_hold_once"]
 repeat_semantics = "current last-key guard suppresses only adjacent repeats and re-emits A-B-A; migrate to the closed exit-outcome domain"
 dedupe_key_evidence = "current key includes market and position identity plus semantic outcome; the required monotone state excludes volatile timing fields"
 census_ancestor = "exit_decision"
@@ -684,14 +695,14 @@ census_ancestor = "venue_truth_capture_failure"
 id = "blocked_strategy_input_observation_v1"
 purpose = "blocked_strategy_input_observation"
 kind = "blocked_strategy_input_observation"
-schema_version = 1
+schema_version = 3
 gate_id = "bolt_v3.strategy_input_snapshot"
 
 [[identities]]
 id = "submit_linked_strategy_input_snapshot_v1"
 purpose = "submit_linked_strategy_input_snapshot"
 kind = "strategy_input_snapshot"
-schema_version = 16
+schema_version = 18
 gate_id = "bolt_v3.strategy_input_snapshot"
 
 [[identities]]
@@ -712,28 +723,28 @@ gate_id = "bolt_v3.order_intent"
 id = "admitted_entry_admission_v1"
 purpose = "admitted_entry_admission"
 kind = "admission_decision"
-schema_version = 16
+schema_version = 17
 gate_id = "bolt_v3.submit_admission"
 
 [[identities]]
 id = "rejected_entry_admission_v1"
 purpose = "rejected_entry_admission"
 kind = "rejected_entry_admission"
-schema_version = 1
+schema_version = 2
 gate_id = "bolt_v3.submit_admission"
 
 [[identities]]
 id = "risk_reducing_exit_admission_v1"
 purpose = "risk_reducing_exit_admission"
 kind = "risk_reducing_exit_admission"
-schema_version = 1
+schema_version = 2
 gate_id = "bolt_v3.submit_admission"
 
 [[identities]]
 id = "forced_reduction_admission_v1"
 purpose = "forced_reduction_admission"
 kind = "forced_reduction_admission"
-schema_version = 1
+schema_version = 2
 gate_id = "bolt_v3.submit_admission"
 
 [[identities]]
@@ -754,7 +765,7 @@ gate_id = "bolt_v3.submit_admission"
 id = "capital_admission_rebuild_v1"
 purpose = "capital_admission_rebuild"
 kind = "capital_admission_rebuild"
-schema_version = 16
+schema_version = 17
 gate_id = "bolt_v3.capital_admission_rebuild"
 
 [[identities]]
@@ -768,28 +779,35 @@ gate_id = "bolt_v3.submit_admission"
 id = "entry_skip_observation_v1"
 purpose = "entry_skip_observation"
 kind = "entry_skip"
-schema_version = 16
+schema_version = 18
 gate_id = "bolt_v3.entry_skip"
 
 [[identities]]
-id = "exit_submission_decision_v1"
-purpose = "exit_submission_decision"
-kind = "exit_submission_decision"
+id = "exit_intent_decision_v1"
+purpose = "exit_intent_decision"
+kind = "exit_intent_decision"
 schema_version = 1
+gate_id = "bolt_v3.exit_decision"
+
+[[identities]]
+id = "exit_prepared_order_v1"
+purpose = "exit_prepared_order"
+kind = "exit_prepared_order"
+schema_version = 2
 gate_id = "bolt_v3.exit_decision"
 
 [[identities]]
 id = "exit_hold_decision_v1"
 purpose = "exit_hold_decision"
 kind = "exit_hold_decision"
-schema_version = 1
+schema_version = 2
 gate_id = "bolt_v3.exit_decision"
 
 [[identities]]
 id = "exit_evaluation_v1"
 purpose = "exit_evaluation"
 kind = "exit_evaluation"
-schema_version = 16
+schema_version = 18
 gate_id = "bolt_v3.exit_evaluation"
 
 [[identities]]
@@ -895,8 +913,12 @@ id = "entry_skip_observation_v1"
 identity = "entry_skip_observation_v1"
 
 [[facts]]
-id = "exit_submission_decision_v1"
-identity = "exit_submission_decision_v1"
+id = "exit_intent_decision_v1"
+identity = "exit_intent_decision_v1"
+
+[[facts]]
+id = "exit_prepared_order_v1"
+identity = "exit_prepared_order_v1"
 
 [[facts]]
 id = "exit_hold_decision_v1"
@@ -1106,8 +1128,8 @@ owner_ruling = "current_contract_owner_ruling_2026_07_22"
 [[dispositions]]
 fact = "forced_reduction_admission_v1"
 consumer = "reservation_recovery_v1"
-action = "relevant"
-event_variant = "forced_reduction_admission_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_08_19"
 
 [[dispositions]]
 fact = "forced_reduction_admission_v1"
@@ -1248,25 +1270,49 @@ action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
-fact = "exit_submission_decision_v1"
+fact = "exit_intent_decision_v1"
 consumer = "reservation_recovery_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
-fact = "exit_submission_decision_v1"
+fact = "exit_intent_decision_v1"
 consumer = "settlement_recovery_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
-fact = "exit_submission_decision_v1"
+fact = "exit_intent_decision_v1"
 consumer = "booking_recovery_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
 
 [[dispositions]]
-fact = "exit_submission_decision_v1"
+fact = "exit_intent_decision_v1"
+consumer = "shadow_pnl_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_prepared_order_v1"
+consumer = "reservation_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_prepared_order_v1"
+consumer = "settlement_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_prepared_order_v1"
+consumer = "booking_recovery_v1"
+action = "irrelevant"
+owner_ruling = "current_contract_owner_ruling_2026_07_22"
+
+[[dispositions]]
+fact = "exit_prepared_order_v1"
 consumer = "shadow_pnl_v1"
 action = "irrelevant"
 owner_ruling = "current_contract_owner_ruling_2026_07_22"
@@ -1570,10 +1616,16 @@ action = "relevant"
 event_variant = "entry_skip_observation_v1"
 
 [[dispositions]]
-fact = "exit_submission_decision_v1"
+fact = "exit_intent_decision_v1"
 consumer = "backtest_run_guard_v1"
 action = "relevant"
-event_variant = "exit_submission_decision_v1"
+event_variant = "exit_intent_decision_v1"
+
+[[dispositions]]
+fact = "exit_prepared_order_v1"
+consumer = "backtest_run_guard_v1"
+action = "relevant"
+event_variant = "exit_prepared_order_v1"
 
 [[dispositions]]
 fact = "exit_hold_decision_v1"

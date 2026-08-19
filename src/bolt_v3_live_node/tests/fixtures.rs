@@ -119,55 +119,12 @@ pub(super) fn write_admitted_entry_reservation(
                     stale_reason: None,
                     loss_snapshot_observed_at_ns: None,
                     loss_eval_now_ns: None,
+                    economics: None,
                 },
                 reservation: Some(reservation.clone()),
             },
         )
         .expect("admitted reservation attribution should write");
-}
-
-pub(super) fn write_admitted_forced_reduction(
-    loaded: &LoadedBoltV3Config,
-    client_order_id: &str,
-    instrument_id: &str,
-) {
-    let outcome = crate::bolt_v3_current_evidence::DecisionEvidenceRuntime::open(loaded)
-        .expect("current decision evidence runtime should open")
-        .recorder()
-        .record_forced_reduction_admission(
-            crate::bolt_v3_current_evidence::ForcedReductionAdmissionFact {
-                details: crate::bolt_v3_current_evidence::AdmissionDetails {
-                    strategy_id: "strategy-1".to_string(),
-                    execution_client_id: "execution-1".to_string(),
-                    client_order_id: client_order_id.to_string(),
-                    instrument_id: instrument_id.to_string(),
-                    notional: "1".to_string(),
-                    loss_halt_reasons: Vec::new(),
-                    snapshot_present: false,
-                    snapshot_observed_at_ns: None,
-                    admission_now_ns: 1_000,
-                    snapshot_age_ns: None,
-                    max_snapshot_age_ns: None,
-                    snapshot_source: None,
-                    per_trade_pnl_present: false,
-                    daily_pnl_present: false,
-                    rolling_pnl_present: false,
-                    current_equity_present: false,
-                    peak_equity_present: false,
-                    last_account_state_observed_at_ns: None,
-                    last_portfolio_snapshot_observed_at_ns: None,
-                    last_position_event_observed_at_ns: None,
-                    stale_reason: None,
-                    loss_snapshot_observed_at_ns: None,
-                    loss_eval_now_ns: None,
-                },
-                outcome: crate::bolt_v3_current_evidence::AdmissionDecisionOutcome::Admitted,
-            },
-        );
-    assert!(matches!(
-        outcome,
-        crate::bolt_v3_current_evidence::NonBlockingRecordOutcome::Appended(_)
-    ));
 }
 
 pub(super) fn fake_bolt_v3_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
@@ -537,6 +494,9 @@ pub(super) fn test_registration_controls(
     BoltV3StrategyExecutionControls {
         submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(writer)),
         order_execution_policy: crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+        economics_inputs:
+            crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore::default(),
+        position_authority: None,
         settlement_runtime_sink: None,
         settlement_recovery: None,
         booking_recovery: None,

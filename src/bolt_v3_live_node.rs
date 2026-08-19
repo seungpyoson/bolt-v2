@@ -22,9 +22,9 @@
 //!   without entering the NT runner loop from the build path
 //! - wires the existing `crate::nt_runtime_capture` from the
 //!   `[persistence]` / `[persistence.streaming]` blocks
-//! - permits only the kill-switch forced-reduction flatten effect to hand an
-//!   already-admitted order to NT risk execution; ordinary strategy order
-//!   construction and policy stay outside this module
+//! - rejects automatic kill-switch flattening during config loading while the
+//!   supported economics slice is `quote_only`; this module owns no flatten
+//!   executor or alternate order-submit path
 //! - installs module-level logger filters from provider-owned bindings
 //!   that suppress NT credential info logs even when the root TOML log
 //!   level is `INFO`
@@ -94,7 +94,9 @@ use nautilus_model::{
         TradeTick, option_chain::StrikeRange,
     },
     enums::{BarIntervalType, BookType},
-    identifiers::{AccountId, ClientId, InstrumentId, OptionSeriesId, StrategyId, Venue},
+    identifiers::{
+        AccountId, ClientId, ClientOrderId, InstrumentId, OptionSeriesId, StrategyId, Venue,
+    },
     instruments::{Instrument, InstrumentAny},
     types::Price,
 };
@@ -224,6 +226,7 @@ use crate::{
         BoltV3OrderRejectObserverFeed, OrderRejectObserverFeedSubscription,
         subscribe_order_reject_observer_feed_with_health_emitter,
     },
+    bolt_v3_position_authority_feed::BoltV3PositionAuthorityRuntime,
     bolt_v3_providers::{
         self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
         ProviderRuntimeApprovals, ReferencePriceIdentifierKind, reference_price_provider_metadata,
@@ -249,6 +252,7 @@ use crate::{
         BoltV3SubmitCapitalAdmissionMissingNtAccountCacheBalance,
         BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
         BoltV3SubmitCapitalAdmissionOpenOrderSnapshot, BoltV3SubmitCapitalAdmissionRebuildDecision,
+        BoltV3SubmitTerminalReservationDecision,
     },
     bolt_v3_validate::parse_decimal_string,
     nt_runtime_capture::{
@@ -345,6 +349,7 @@ pub struct BoltV3LiveNodeRuntime {
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     order_reject_observer_feed: Option<Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
+    position_authority_runtime: Option<BoltV3PositionAuthorityRuntime>,
     capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
     submit_admission_nt_projection_subscription: Option<SubmitAdmissionNtProjectionSubscription>,
     submit_admission_nt_projection_trigger: Option<Rc<dyn Fn()>>,
@@ -452,6 +457,7 @@ struct BoltV3LiveNodeRuntimeFeeds {
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     order_reject_observer_feed: Option<Arc<Mutex<BoltV3OrderRejectObserverFeed>>>,
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
+    position_authority_runtime: Option<BoltV3PositionAuthorityRuntime>,
     capital_admission_runtime_feed: Option<Arc<Mutex<CapitalAdmissionRuntimeFeed>>>,
     submit_admission_nt_projection_subscription: Option<SubmitAdmissionNtProjectionSubscription>,
     submit_admission_nt_projection_trigger: Option<Rc<dyn Fn()>>,
@@ -477,6 +483,7 @@ struct BoltV3DecisionEvidenceProducerGuards {
     loss_protection_guards: BoltV3LossProtectionRuntimeGuards,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     order_reject_observer_feed_subscription: Option<OrderRejectObserverFeedSubscription>,
+    position_authority_runtime: Option<BoltV3PositionAuthorityRuntime>,
     submit_admission_nt_projection_subscription: Option<SubmitAdmissionNtProjectionSubscription>,
     provider_collateral_allowance_runtime_guard:
         Option<BoltV3ProviderCollateralAllowanceRuntimeGuard>,
@@ -497,11 +504,13 @@ impl BoltV3DecisionEvidenceProducerStopper for BoltV3DecisionEvidenceProducerGua
                 loss_protection_guards,
                 loss_runtime_feed_subscription,
                 order_reject_observer_feed_subscription,
+                position_authority_runtime,
                 submit_admission_nt_projection_subscription,
                 provider_collateral_allowance_runtime_guard,
             } = self;
             drop(loss_runtime_feed_subscription);
             drop(order_reject_observer_feed_subscription);
+            drop(position_authority_runtime);
             drop(submit_admission_nt_projection_subscription);
             if let Some(guard) = provider_collateral_allowance_runtime_guard {
                 guard.stop_and_join();
@@ -863,6 +872,7 @@ impl BoltV3LiveNodeRuntime {
             loss_runtime_feed_subscription: feeds.loss_runtime_feed_subscription,
             order_reject_observer_feed: feeds.order_reject_observer_feed,
             order_reject_observer_feed_subscription: feeds.order_reject_observer_feed_subscription,
+            position_authority_runtime: feeds.position_authority_runtime,
             capital_admission_runtime_feed: feeds.capital_admission_runtime_feed,
             submit_admission_nt_projection_subscription: feeds
                 .submit_admission_nt_projection_subscription,
@@ -1415,6 +1425,7 @@ impl BoltV3LiveNodeRuntime {
             order_reject_observer_feed_subscription: self
                 .order_reject_observer_feed_subscription
                 .take(),
+            position_authority_runtime: self.position_authority_runtime.take(),
             submit_admission_nt_projection_subscription: self
                 .submit_admission_nt_projection_subscription
                 .take(),
@@ -1556,8 +1567,18 @@ impl BoltV3LiveNodeRuntime {
             }
             None => (None, None, None, None),
         };
-        let nt_projection_epoch = submit_admission.capital_admission_nt_projection_epoch();
+        let terminal_capabilities = submit_admission.terminal_reservation_capabilities();
         let cache = cache.borrow();
+        let terminal_observations = terminal_capabilities
+            .into_iter()
+            .filter(|capability| {
+                cache
+                    .order(&ClientOrderId::from(capability.client_order_id()))
+                    .is_some_and(|order| {
+                        order.is_closed() || order.leaves_qty().as_decimal() == Decimal::ZERO
+                    })
+            })
+            .collect::<Vec<_>>();
         let open_order_snapshots = reconciliation_account_ids
             .iter()
             .flat_map(|account_id| {
@@ -1623,6 +1644,22 @@ impl BoltV3LiveNodeRuntime {
             };
         drop(cache);
 
+        for capability in terminal_observations {
+            match submit_admission.retire_terminal_reservation(capability, now_ns) {
+                BoltV3SubmitTerminalReservationDecision::Retired
+                | BoltV3SubmitTerminalReservationDecision::NotRetained => {}
+                decision @ (BoltV3SubmitTerminalReservationDecision::StaleCapability
+                | BoltV3SubmitTerminalReservationDecision::RevisionExhausted
+                | BoltV3SubmitTerminalReservationDecision::LedgerMismatch
+                | BoltV3SubmitTerminalReservationDecision::EvidenceRejected) => {
+                    log::error!(
+                        "bolt-v3 capital admission terminal reservation retirement failed: decision={decision:?}"
+                    );
+                }
+            }
+        }
+        let nt_projection_epoch = submit_admission.capital_admission_state_revision();
+
         let canonical_projection = CapitalAdmissionNtCacheProjection {
             accepted_allowance_observed_at_ns,
             account_balances: cached_account_balances,
@@ -1646,7 +1683,6 @@ impl BoltV3LiveNodeRuntime {
 
         let mut reservations = Vec::with_capacity(open_order_snapshots.len());
         let mut live_non_reservation_client_order_ids = BTreeSet::new();
-        let mut live_forced_reduction_client_order_ids = BTreeSet::new();
         let mut all_open_orders_attributed = projection_complete;
         let committed_admission_authority =
             submit_admission.committed_admission_authority_snapshot();
@@ -1657,10 +1693,6 @@ impl BoltV3LiveNodeRuntime {
             };
             let client_order_id = evidence.client_order_id.clone();
             if committed_admission_authority.authorizes_non_reservation_order(&client_order_id) {
-                if committed_admission_authority.authorizes_forced_reduction_order(&client_order_id)
-                {
-                    live_forced_reduction_client_order_ids.insert(client_order_id.clone());
-                }
                 live_non_reservation_client_order_ids.insert(client_order_id);
                 continue;
             }
@@ -1681,7 +1713,6 @@ impl BoltV3LiveNodeRuntime {
         if !all_open_orders_attributed {
             reservations.clear();
             live_non_reservation_client_order_ids.clear();
-            live_forced_reduction_client_order_ids.clear();
         }
 
         let commit_components = canonical_components
@@ -1699,7 +1730,6 @@ impl BoltV3LiveNodeRuntime {
                 all_open_orders_attributed,
                 reservations,
                 live_non_reservation_client_order_ids,
-                live_forced_reduction_client_order_ids,
             },
             now_ns,
         );
@@ -3315,9 +3345,23 @@ fn build_live_node_with_clients_and_submit_approval_limits(
     );
     let settlement_recovery = Some(Arc::clone(&settlement_recovery));
     let booking_recovery = Some(Arc::clone(&booking_recovery));
+    let economics_inputs =
+        crate::bolt_v3_economics_runtime::AuthoritativeEconomicsInputStore::default();
+    let position_authority_runtime =
+        crate::bolt_v3_strategy_registration::prepare_position_authority_runtime(
+            loaded,
+            node.kernel().cache(),
+        )
+        .map_err(|error| {
+            BoltV3LiveNodeError::StrategyRegistration(BoltV3StrategyRegistrationError::Evidence {
+                message: format!("position authority runtime construction failed: {error:#}"),
+            })
+        })?;
     let strategy_execution_controls = BoltV3StrategyExecutionControls {
         submit_admission: submit_admission.clone(),
         order_execution_policy,
+        economics_inputs: economics_inputs.clone(),
+        position_authority: Some(position_authority_runtime.feed()),
         settlement_runtime_sink,
         settlement_recovery,
         booking_recovery,
@@ -3372,7 +3416,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
             &mut node,
             loaded,
-            resolved,
             crate::strategy_bindings::production_runtime_bindings(),
             strategy_execution_controls,
             evidence_runtime.strategy_evidence_handles(),
@@ -3382,7 +3425,6 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         register_bolt_v3_strategies_on_node_with_bindings(
             &mut node,
             loaded,
-            resolved,
             crate::strategy_bindings::production_runtime_bindings(),
             strategy_execution_controls,
             evidence_runtime.strategy_evidence_handles(),
@@ -3433,19 +3475,15 @@ fn build_live_node_with_clients_and_submit_approval_limits(
         }
     };
     // Configure the durable kill-switch loss-protection accumulator after
-    // strategies are registered (its flatten targets are the registered NT
-    // strategy ids) and seed it from the durable store. `seed_from_store` can
+    // strategies are registered and seed it from the durable store.
+    // `seed_from_store` can
     // fail closed (e.g. an armed durable record with no loss snapshot becomes
     // `FailedManualIntervention`) and override the kill-switch state established
     // above by `recover_kill_switch_state_before_live_node_build`, so re-sync NT
     // trading state from the final loss-protection state — otherwise a
     // fail-closed seed would latch admission while leaving NT trading `Active`.
-    let loss_protection = configure_bolt_v3_kill_switch_loss_protection(
-        loaded,
-        &node,
-        evidence_runtime.order_execution_evidence(),
-        submit_admission.clone(),
-    )?;
+    let loss_protection =
+        configure_bolt_v3_kill_switch_loss_protection(loaded, &node, submit_admission.clone())?;
     debug_assert!(
         !settlement_runtime_sink_backends.loss_protection() || loss_protection.is_some(),
         "kill-switch settlement sink backend must match loss-protection construction"
@@ -3487,6 +3525,7 @@ fn build_live_node_with_clients_and_submit_approval_limits(
             loss_runtime_feed_subscription,
             order_reject_observer_feed,
             order_reject_observer_feed_subscription,
+            position_authority_runtime: Some(position_authority_runtime),
             capital_admission_runtime_feed,
             submit_admission_nt_projection_subscription,
             submit_admission_nt_projection_trigger,

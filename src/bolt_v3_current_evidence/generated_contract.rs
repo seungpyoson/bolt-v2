@@ -9,13 +9,13 @@ pub(crate) enum KnownProducer {
     SubmitAdmissionAdmittedEntry,
     SubmitAdmissionRejectedEntry,
     SubmitAdmissionExit,
-    SubmitAdmissionForcedReduction,
     BasketAdmissionGranted,
     BasketAdmissionRejected,
     CapitalAdmissionRebuild,
     SubmitReservationFill,
     EdgeTakerEntrySkip,
-    EdgeTakerExitSubmitDecision,
+    EdgeTakerExitIntentDecision,
+    EdgeTakerExitPreparedOrder,
     EdgeTakerExitHoldDecision,
     EdgeTakerExitEvaluation,
     SubmitAdmissionLossHalt,
@@ -43,7 +43,8 @@ pub enum KnownPurpose {
     CapitalAdmissionRebuild,
     SubmitReservationFill,
     EntrySkipObservation,
-    ExitSubmissionDecision,
+    ExitIntentDecision,
+    ExitPreparedOrder,
     ExitHoldDecision,
     ExitEvaluation,
     LossGovernorHalt,
@@ -70,7 +71,8 @@ pub(crate) enum KnownIdentity {
     CapitalAdmissionRebuildV1,
     SubmitReservationFillV1,
     EntrySkipObservationV1,
-    ExitSubmissionDecisionV1,
+    ExitIntentDecisionV1,
+    ExitPreparedOrderV1,
     ExitHoldDecisionV1,
     ExitEvaluationV1,
     LossGovernorHaltV1,
@@ -97,7 +99,8 @@ pub(crate) const ALL_IDENTITIES: &[KnownIdentity] = &[
     KnownIdentity::CapitalAdmissionRebuildV1,
     KnownIdentity::SubmitReservationFillV1,
     KnownIdentity::EntrySkipObservationV1,
-    KnownIdentity::ExitSubmissionDecisionV1,
+    KnownIdentity::ExitIntentDecisionV1,
+    KnownIdentity::ExitPreparedOrderV1,
     KnownIdentity::ExitHoldDecisionV1,
     KnownIdentity::ExitEvaluationV1,
     KnownIdentity::LossGovernorHaltV1,
@@ -137,7 +140,9 @@ pub(crate) mod identities {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct EntrySkipObservationV1;
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct ExitSubmissionDecisionV1;
+    pub(crate) struct ExitIntentDecisionV1;
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct ExitPreparedOrderV1;
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) struct ExitHoldDecisionV1;
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,7 +178,8 @@ pub(crate) enum KnownFact {
     CapitalAdmissionRebuildV1,
     SubmitReservationFillV1,
     EntrySkipObservationV1,
-    ExitSubmissionDecisionV1,
+    ExitIntentDecisionV1,
+    ExitPreparedOrderV1,
     ExitHoldDecisionV1,
     ExitEvaluationV1,
     LossGovernorHaltV1,
@@ -241,7 +247,8 @@ pub(crate) const fn current_identity_for_purpose(purpose: KnownPurpose) -> Known
         KnownPurpose::CapitalAdmissionRebuild => KnownIdentity::CapitalAdmissionRebuildV1,
         KnownPurpose::SubmitReservationFill => KnownIdentity::SubmitReservationFillV1,
         KnownPurpose::EntrySkipObservation => KnownIdentity::EntrySkipObservationV1,
-        KnownPurpose::ExitSubmissionDecision => KnownIdentity::ExitSubmissionDecisionV1,
+        KnownPurpose::ExitIntentDecision => KnownIdentity::ExitIntentDecisionV1,
+        KnownPurpose::ExitPreparedOrder => KnownIdentity::ExitPreparedOrderV1,
         KnownPurpose::ExitHoldDecision => KnownIdentity::ExitHoldDecisionV1,
         KnownPurpose::ExitEvaluation => KnownIdentity::ExitEvaluationV1,
         KnownPurpose::LossGovernorHalt => KnownIdentity::LossGovernorHaltV1,
@@ -271,7 +278,8 @@ pub(crate) const fn sink_for_purpose(purpose: KnownPurpose) -> KnownSink {
         KnownPurpose::CapitalAdmissionRebuild => KnownSink::Machine,
         KnownPurpose::SubmitReservationFill => KnownSink::Machine,
         KnownPurpose::EntrySkipObservation => KnownSink::Observation,
-        KnownPurpose::ExitSubmissionDecision => KnownSink::Machine,
+        KnownPurpose::ExitIntentDecision => KnownSink::Machine,
+        KnownPurpose::ExitPreparedOrder => KnownSink::Machine,
         KnownPurpose::ExitHoldDecision => KnownSink::Observation,
         KnownPurpose::ExitEvaluation => KnownSink::Observation,
         KnownPurpose::LossGovernorHalt => KnownSink::Machine,
@@ -299,7 +307,8 @@ pub(crate) const fn effect_policy_for_purpose(purpose: KnownPurpose) -> EffectPo
         KnownPurpose::CapitalAdmissionRebuild => EffectPolicy::ReconciliationFailClosed,
         KnownPurpose::SubmitReservationFill => EffectPolicy::ReconciliationFailClosed,
         KnownPurpose::EntrySkipObservation => EffectPolicy::ObservationBoundedFailure,
-        KnownPurpose::ExitSubmissionDecision => EffectPolicy::RiskReducingContinues,
+        KnownPurpose::ExitIntentDecision => EffectPolicy::RiskReducingContinues,
+        KnownPurpose::ExitPreparedOrder => EffectPolicy::RiskReducingContinues,
         KnownPurpose::ExitHoldDecision => EffectPolicy::ObservationBoundedFailure,
         KnownPurpose::ExitEvaluation => EffectPolicy::ObservationBoundedFailure,
         KnownPurpose::LossGovernorHalt => EffectPolicy::PreserveResult,
@@ -327,13 +336,13 @@ pub(crate) const fn purpose_for_producer(producer: KnownProducer) -> KnownPurpos
         KnownProducer::SubmitAdmissionAdmittedEntry => KnownPurpose::AdmittedEntryAdmission,
         KnownProducer::SubmitAdmissionRejectedEntry => KnownPurpose::RejectedEntryAdmission,
         KnownProducer::SubmitAdmissionExit => KnownPurpose::RiskReducingExitAdmission,
-        KnownProducer::SubmitAdmissionForcedReduction => KnownPurpose::ForcedReductionAdmission,
         KnownProducer::BasketAdmissionGranted => KnownPurpose::BasketAdmissionGranted,
         KnownProducer::BasketAdmissionRejected => KnownPurpose::BasketAdmissionRejected,
         KnownProducer::CapitalAdmissionRebuild => KnownPurpose::CapitalAdmissionRebuild,
         KnownProducer::SubmitReservationFill => KnownPurpose::SubmitReservationFill,
         KnownProducer::EdgeTakerEntrySkip => KnownPurpose::EntrySkipObservation,
-        KnownProducer::EdgeTakerExitSubmitDecision => KnownPurpose::ExitSubmissionDecision,
+        KnownProducer::EdgeTakerExitIntentDecision => KnownPurpose::ExitIntentDecision,
+        KnownProducer::EdgeTakerExitPreparedOrder => KnownPurpose::ExitPreparedOrder,
         KnownProducer::EdgeTakerExitHoldDecision => KnownPurpose::ExitHoldDecision,
         KnownProducer::EdgeTakerExitEvaluation => KnownPurpose::ExitEvaluation,
         KnownProducer::SubmitAdmissionLossHalt => KnownPurpose::LossGovernorHalt,
@@ -368,7 +377,8 @@ pub(crate) const fn purpose_for_identity(identity: KnownIdentity) -> KnownPurpos
         KnownIdentity::CapitalAdmissionRebuildV1 => KnownPurpose::CapitalAdmissionRebuild,
         KnownIdentity::SubmitReservationFillV1 => KnownPurpose::SubmitReservationFill,
         KnownIdentity::EntrySkipObservationV1 => KnownPurpose::EntrySkipObservation,
-        KnownIdentity::ExitSubmissionDecisionV1 => KnownPurpose::ExitSubmissionDecision,
+        KnownIdentity::ExitIntentDecisionV1 => KnownPurpose::ExitIntentDecision,
+        KnownIdentity::ExitPreparedOrderV1 => KnownPurpose::ExitPreparedOrder,
         KnownIdentity::ExitHoldDecisionV1 => KnownPurpose::ExitHoldDecision,
         KnownIdentity::ExitEvaluationV1 => KnownPurpose::ExitEvaluation,
         KnownIdentity::LossGovernorHaltV1 => KnownPurpose::LossGovernorHalt,
@@ -402,7 +412,8 @@ pub(crate) const fn fact_for_identity(identity: KnownIdentity) -> KnownFact {
         KnownIdentity::CapitalAdmissionRebuildV1 => KnownFact::CapitalAdmissionRebuildV1,
         KnownIdentity::SubmitReservationFillV1 => KnownFact::SubmitReservationFillV1,
         KnownIdentity::EntrySkipObservationV1 => KnownFact::EntrySkipObservationV1,
-        KnownIdentity::ExitSubmissionDecisionV1 => KnownFact::ExitSubmissionDecisionV1,
+        KnownIdentity::ExitIntentDecisionV1 => KnownFact::ExitIntentDecisionV1,
+        KnownIdentity::ExitPreparedOrderV1 => KnownFact::ExitPreparedOrderV1,
         KnownIdentity::ExitHoldDecisionV1 => KnownFact::ExitHoldDecisionV1,
         KnownIdentity::ExitEvaluationV1 => KnownFact::ExitEvaluationV1,
         KnownIdentity::LossGovernorHaltV1 => KnownFact::LossGovernorHaltV1,
@@ -421,12 +432,12 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
     match identity {
         KnownIdentity::BlockedStrategyInputObservationV1 => IdentityDescriptor {
             kind: "blocked_strategy_input_observation",
-            schema_version: 1,
+            schema_version: 3,
             gate_id: "bolt_v3.strategy_input_snapshot",
         },
         KnownIdentity::SubmitLinkedStrategyInputSnapshotV1 => IdentityDescriptor {
             kind: "strategy_input_snapshot",
-            schema_version: 16,
+            schema_version: 18,
             gate_id: "bolt_v3.strategy_input_snapshot",
         },
         KnownIdentity::EntryOrderIntentV1 => IdentityDescriptor {
@@ -441,22 +452,22 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
         },
         KnownIdentity::AdmittedEntryAdmissionV1 => IdentityDescriptor {
             kind: "admission_decision",
-            schema_version: 16,
+            schema_version: 17,
             gate_id: "bolt_v3.submit_admission",
         },
         KnownIdentity::RejectedEntryAdmissionV1 => IdentityDescriptor {
             kind: "rejected_entry_admission",
-            schema_version: 1,
+            schema_version: 2,
             gate_id: "bolt_v3.submit_admission",
         },
         KnownIdentity::RiskReducingExitAdmissionV1 => IdentityDescriptor {
             kind: "risk_reducing_exit_admission",
-            schema_version: 1,
+            schema_version: 2,
             gate_id: "bolt_v3.submit_admission",
         },
         KnownIdentity::ForcedReductionAdmissionV1 => IdentityDescriptor {
             kind: "forced_reduction_admission",
-            schema_version: 1,
+            schema_version: 2,
             gate_id: "bolt_v3.submit_admission",
         },
         KnownIdentity::BasketAdmissionGrantedV1 => IdentityDescriptor {
@@ -471,7 +482,7 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
         },
         KnownIdentity::CapitalAdmissionRebuildV1 => IdentityDescriptor {
             kind: "capital_admission_rebuild",
-            schema_version: 16,
+            schema_version: 17,
             gate_id: "bolt_v3.capital_admission_rebuild",
         },
         KnownIdentity::SubmitReservationFillV1 => IdentityDescriptor {
@@ -481,22 +492,27 @@ pub(crate) const fn descriptor_for_identity(identity: KnownIdentity) -> Identity
         },
         KnownIdentity::EntrySkipObservationV1 => IdentityDescriptor {
             kind: "entry_skip",
-            schema_version: 16,
+            schema_version: 18,
             gate_id: "bolt_v3.entry_skip",
         },
-        KnownIdentity::ExitSubmissionDecisionV1 => IdentityDescriptor {
-            kind: "exit_submission_decision",
+        KnownIdentity::ExitIntentDecisionV1 => IdentityDescriptor {
+            kind: "exit_intent_decision",
             schema_version: 1,
+            gate_id: "bolt_v3.exit_decision",
+        },
+        KnownIdentity::ExitPreparedOrderV1 => IdentityDescriptor {
+            kind: "exit_prepared_order",
+            schema_version: 2,
             gate_id: "bolt_v3.exit_decision",
         },
         KnownIdentity::ExitHoldDecisionV1 => IdentityDescriptor {
             kind: "exit_hold_decision",
-            schema_version: 1,
+            schema_version: 2,
             gate_id: "bolt_v3.exit_decision",
         },
         KnownIdentity::ExitEvaluationV1 => IdentityDescriptor {
             kind: "exit_evaluation",
-            schema_version: 16,
+            schema_version: 18,
             gate_id: "bolt_v3.exit_evaluation",
         },
         KnownIdentity::LossGovernorHaltV1 => IdentityDescriptor {
@@ -627,7 +643,7 @@ pub(crate) const fn disposition_for(
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
         (KnownFact::ForcedReductionAdmissionV1, KnownConsumer::ReservationRecoveryV1) => {
-            ConsumerDisposition::Relevant(KnownFact::ForcedReductionAdmissionV1)
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_08_19")
         }
         (KnownFact::ForcedReductionAdmissionV1, KnownConsumer::SettlementRecoveryV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
@@ -698,16 +714,28 @@ pub(crate) const fn disposition_for(
         (KnownFact::EntrySkipObservationV1, KnownConsumer::ShadowPnlV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
-        (KnownFact::ExitSubmissionDecisionV1, KnownConsumer::ReservationRecoveryV1) => {
+        (KnownFact::ExitIntentDecisionV1, KnownConsumer::ReservationRecoveryV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
-        (KnownFact::ExitSubmissionDecisionV1, KnownConsumer::SettlementRecoveryV1) => {
+        (KnownFact::ExitIntentDecisionV1, KnownConsumer::SettlementRecoveryV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
-        (KnownFact::ExitSubmissionDecisionV1, KnownConsumer::BookingRecoveryV1) => {
+        (KnownFact::ExitIntentDecisionV1, KnownConsumer::BookingRecoveryV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
-        (KnownFact::ExitSubmissionDecisionV1, KnownConsumer::ShadowPnlV1) => {
+        (KnownFact::ExitIntentDecisionV1, KnownConsumer::ShadowPnlV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
+        }
+        (KnownFact::ExitPreparedOrderV1, KnownConsumer::ReservationRecoveryV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
+        }
+        (KnownFact::ExitPreparedOrderV1, KnownConsumer::SettlementRecoveryV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
+        }
+        (KnownFact::ExitPreparedOrderV1, KnownConsumer::BookingRecoveryV1) => {
+            ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
+        }
+        (KnownFact::ExitPreparedOrderV1, KnownConsumer::ShadowPnlV1) => {
             ConsumerDisposition::Irrelevant("current_contract_owner_ruling_2026_07_22")
         }
         (KnownFact::ExitHoldDecisionV1, KnownConsumer::ReservationRecoveryV1) => {
@@ -860,8 +888,11 @@ pub(crate) const fn disposition_for(
         (KnownFact::EntrySkipObservationV1, KnownConsumer::BacktestRunGuardV1) => {
             ConsumerDisposition::Relevant(KnownFact::EntrySkipObservationV1)
         }
-        (KnownFact::ExitSubmissionDecisionV1, KnownConsumer::BacktestRunGuardV1) => {
-            ConsumerDisposition::Relevant(KnownFact::ExitSubmissionDecisionV1)
+        (KnownFact::ExitIntentDecisionV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::ExitIntentDecisionV1)
+        }
+        (KnownFact::ExitPreparedOrderV1, KnownConsumer::BacktestRunGuardV1) => {
+            ConsumerDisposition::Relevant(KnownFact::ExitPreparedOrderV1)
         }
         (KnownFact::ExitHoldDecisionV1, KnownConsumer::BacktestRunGuardV1) => {
             ConsumerDisposition::Relevant(KnownFact::ExitHoldDecisionV1)
@@ -895,10 +926,10 @@ pub(crate) const fn disposition_for(
 }
 
 pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownIdentity> {
-    if kind == "blocked_strategy_input_observation" && schema_version == 1 {
+    if kind == "blocked_strategy_input_observation" && schema_version == 3 {
         return Some(KnownIdentity::BlockedStrategyInputObservationV1);
     }
-    if kind == "strategy_input_snapshot" && schema_version == 16 {
+    if kind == "strategy_input_snapshot" && schema_version == 18 {
         return Some(KnownIdentity::SubmitLinkedStrategyInputSnapshotV1);
     }
     if kind == "order_intent" && schema_version == 16 {
@@ -907,16 +938,16 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     if kind == "risk_reducing_exit_order_intent" && schema_version == 1 {
         return Some(KnownIdentity::RiskReducingExitOrderIntentV1);
     }
-    if kind == "admission_decision" && schema_version == 16 {
+    if kind == "admission_decision" && schema_version == 17 {
         return Some(KnownIdentity::AdmittedEntryAdmissionV1);
     }
-    if kind == "rejected_entry_admission" && schema_version == 1 {
+    if kind == "rejected_entry_admission" && schema_version == 2 {
         return Some(KnownIdentity::RejectedEntryAdmissionV1);
     }
-    if kind == "risk_reducing_exit_admission" && schema_version == 1 {
+    if kind == "risk_reducing_exit_admission" && schema_version == 2 {
         return Some(KnownIdentity::RiskReducingExitAdmissionV1);
     }
-    if kind == "forced_reduction_admission" && schema_version == 1 {
+    if kind == "forced_reduction_admission" && schema_version == 2 {
         return Some(KnownIdentity::ForcedReductionAdmissionV1);
     }
     if kind == "basket_admission_granted" && schema_version == 1 {
@@ -925,22 +956,25 @@ pub(crate) fn resolve_identity(kind: &str, schema_version: u32) -> Option<KnownI
     if kind == "basket_admission_rejected" && schema_version == 1 {
         return Some(KnownIdentity::BasketAdmissionRejectedV1);
     }
-    if kind == "capital_admission_rebuild" && schema_version == 16 {
+    if kind == "capital_admission_rebuild" && schema_version == 17 {
         return Some(KnownIdentity::CapitalAdmissionRebuildV1);
     }
     if kind == "submit_reservation_fill" && schema_version == 16 {
         return Some(KnownIdentity::SubmitReservationFillV1);
     }
-    if kind == "entry_skip" && schema_version == 16 {
+    if kind == "entry_skip" && schema_version == 18 {
         return Some(KnownIdentity::EntrySkipObservationV1);
     }
-    if kind == "exit_submission_decision" && schema_version == 1 {
-        return Some(KnownIdentity::ExitSubmissionDecisionV1);
+    if kind == "exit_intent_decision" && schema_version == 1 {
+        return Some(KnownIdentity::ExitIntentDecisionV1);
     }
-    if kind == "exit_hold_decision" && schema_version == 1 {
+    if kind == "exit_prepared_order" && schema_version == 2 {
+        return Some(KnownIdentity::ExitPreparedOrderV1);
+    }
+    if kind == "exit_hold_decision" && schema_version == 2 {
         return Some(KnownIdentity::ExitHoldDecisionV1);
     }
-    if kind == "exit_evaluation" && schema_version == 16 {
+    if kind == "exit_evaluation" && schema_version == 18 {
         return Some(KnownIdentity::ExitEvaluationV1);
     }
     if kind == "loss_governor_halt" && schema_version == 16 {

@@ -6,6 +6,7 @@ use crate::bolt_v3_capital_admission_state::{
 };
 use crate::bolt_v3_capital_reservation::{
     CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason, ReservationRequest,
+    RetainedReservation,
 };
 use crate::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, evaluate_loss_admission};
 
@@ -46,6 +47,7 @@ pub enum IntentSide {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntentOrderKind {
     Limit,
+    Market,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,8 +129,20 @@ pub struct CapitalAdmissionRebuildDecision {
     pub live_reserved_liability: Decimal,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapitalAdmissionReservationEvidence {
+    NtOpenOrder(ReservationRequest),
+    RetainedLifecycleReservation(RetainedReservation),
+}
+
+impl From<ReservationRequest> for CapitalAdmissionReservationEvidence {
+    fn from(request: ReservationRequest) -> Self {
+        Self::NtOpenOrder(request)
+    }
+}
+
 /// Serialize access to this gate behind one actor, mutex, or exclusive borrow.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CapitalAdmissionGate {
     reservation_ledger: ReservationLedger,
 }
@@ -157,34 +171,46 @@ impl CapitalAdmissionGate {
     pub fn rebuild_open_order_reservations(
         &mut self,
         pool: &CapitalPoolSnapshot,
-        open_order_reservations: &[ReservationRequest],
+        reservation_evidence: &[CapitalAdmissionReservationEvidence],
         now_ns: u64,
         min_remaining_pool_balance: Option<Decimal>,
     ) -> CapitalAdmissionRebuildDecision {
-        // Restart replay is a replacement operation: fail closed unless every recovered order
-        // reservation can be rebuilt from current NT-derived evidence.
-        self.reservation_ledger = ReservationLedger::unreconciled();
+        // Rebuild off to the side. A rejected candidate invalidates new admission without erasing
+        // liabilities already owned by the live ledger.
         let mut rebuilt_ledger = ReservationLedger::reconciled();
-        for (index, reservation) in open_order_reservations.iter().enumerate() {
-            if pool.pool_id != reservation.pool_id {
-                let attempted_reservation_count = open_order_reservations[..=index].len();
+        for (index, evidence) in reservation_evidence.iter().cloned().enumerate() {
+            let candidate = match evidence {
+                CapitalAdmissionReservationEvidence::NtOpenOrder(reservation)
+                    if pool.pool_id != reservation.pool_id =>
+                {
+                    Err(ReservationRejectionReason::PoolMismatch)
+                }
+                CapitalAdmissionReservationEvidence::NtOpenOrder(reservation) => {
+                    let decision = rebuilt_ledger.reserve(
+                        pool,
+                        &reservation,
+                        now_ns,
+                        min_remaining_pool_balance,
+                    );
+                    match decision.accepted {
+                        true => Ok(()),
+                        false => Err(decision
+                            .reason
+                            .unwrap_or(ReservationRejectionReason::InvalidRequest)),
+                    }
+                }
+                CapitalAdmissionReservationEvidence::RetainedLifecycleReservation(retained) => {
+                    rebuilt_ledger
+                        .carry_retained(&pool.pool_id, retained)
+                        .map(drop)
+                }
+            };
+            if let Err(reason) = candidate {
+                self.invalidate_reconciliation();
                 return CapitalAdmissionRebuildDecision {
                     accepted: false,
-                    reason: Some(ReservationRejectionReason::PoolMismatch),
-                    attempted_reservation_count,
-                    rebuilt_reservation_count: index,
-                    live_reserved_liability: self.live_reserved_liability(&pool.pool_id),
-                };
-            }
-
-            let decision =
-                rebuilt_ledger.reserve(pool, reservation, now_ns, min_remaining_pool_balance);
-            if !decision.accepted {
-                let attempted_reservation_count = open_order_reservations[..=index].len();
-                return CapitalAdmissionRebuildDecision {
-                    accepted: false,
-                    reason: decision.reason,
-                    attempted_reservation_count,
+                    reason: Some(reason),
+                    attempted_reservation_count: index + 1,
                     rebuilt_reservation_count: index,
                     live_reserved_liability: self.live_reserved_liability(&pool.pool_id),
                 };
@@ -195,10 +221,30 @@ impl CapitalAdmissionGate {
         CapitalAdmissionRebuildDecision {
             accepted: true,
             reason: None,
-            attempted_reservation_count: open_order_reservations.len(),
-            rebuilt_reservation_count: open_order_reservations.len(),
+            attempted_reservation_count: reservation_evidence.len(),
+            rebuilt_reservation_count: reservation_evidence.len(),
             live_reserved_liability: self.live_reserved_liability(&pool.pool_id),
         }
+    }
+
+    pub fn retained_reservation(
+        &self,
+        pool_id: &str,
+        collateral_group_id: &str,
+        reservation_id: &str,
+    ) -> Result<RetainedReservation, ReservationRejectionReason> {
+        self.reservation_ledger
+            .retained_reservation(pool_id, collateral_group_id, reservation_id)
+    }
+
+    pub fn remove_existing(
+        &mut self,
+        pool_id: &str,
+        collateral_group_id: &str,
+        reservation_id: &str,
+    ) -> crate::bolt_v3_capital_reservation::ReservationReleaseDecision {
+        self.reservation_ledger
+            .remove_existing(pool_id, collateral_group_id, reservation_id)
     }
 
     pub fn evaluate_and_reserve(
@@ -623,10 +669,10 @@ mod tests {
     use super::{
         CapitalAdmissionEvidenceKind, CapitalAdmissionGate, CapitalAdmissionGateInputs,
         CapitalAdmissionInputs, CapitalAdmissionPolicy, CapitalAdmissionReason,
-        CapitalAdmissionRequest, FeeSlippagePolicy, IntentLiquidity, IntentOrderKind, IntentSide,
-        LiabilityError, PredictionMarketAdmissionSnapshot,
-        PredictionMarketBinaryLiabilityCalculator, ProductAdmissionSnapshot, ProductKind,
-        evaluate_capital_admission,
+        CapitalAdmissionRequest, CapitalAdmissionReservationEvidence, FeeSlippagePolicy,
+        IntentLiquidity, IntentOrderKind, IntentSide, LiabilityError,
+        PredictionMarketAdmissionSnapshot, PredictionMarketBinaryLiabilityCalculator,
+        ProductAdmissionSnapshot, ProductKind, evaluate_capital_admission,
     };
 
     fn policy() -> CapitalAdmissionPolicy {
@@ -1144,7 +1190,7 @@ mod tests {
 
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
-            &[foreign_reservation],
+            &[foreign_reservation.into()],
             1_000,
             None,
         );
@@ -1215,8 +1261,12 @@ mod tests {
         let open_reservation = rebuilt_open_order_reservation("intent-open");
         let mut gate = CapitalAdmissionGate::unreconciled();
 
-        let rebuild =
-            gate.rebuild_open_order_reservations(&capital_pool, &[open_reservation], 1_000, None);
+        let rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[open_reservation.into()],
+            1_000,
+            None,
+        );
 
         assert!(rebuild.accepted);
         assert_eq!(rebuild.rebuilt_reservation_count, 1);
@@ -1296,7 +1346,7 @@ mod tests {
 
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
-            &[invalid_reservation],
+            &[invalid_reservation.into()],
             1_000,
             None,
         );
@@ -1349,7 +1399,7 @@ mod tests {
 
         let rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
-            &[open_reservation, invalid_reservation],
+            &[open_reservation.into(), invalid_reservation.into()],
             1_000,
             None,
         );
@@ -1382,7 +1432,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_restart_rebuild_after_prior_success_clears_stale_reservations() {
+    fn failed_restart_rebuild_after_prior_success_preserves_live_reservations() {
         let loss_snapshot = LossSnapshot {
             source: Some(LossSnapshotSource::NtPortfolioSnapshot),
             observed_at_ns: 1_000,
@@ -1400,14 +1450,18 @@ mod tests {
         let invalid_reservation = invalid_rebuilt_open_order_reservation("intent-invalid");
         let mut gate = CapitalAdmissionGate::unreconciled();
 
-        let initial_rebuild =
-            gate.rebuild_open_order_reservations(&capital_pool, &[open_reservation], 1_000, None);
+        let initial_rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[open_reservation.into()],
+            1_000,
+            None,
+        );
         assert!(initial_rebuild.accepted);
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
 
         let failed_rebuild = gate.rebuild_open_order_reservations(
             &capital_pool,
-            &[invalid_reservation],
+            &[invalid_reservation.into()],
             1_000,
             None,
         );
@@ -1417,7 +1471,9 @@ mod tests {
             failed_rebuild.reason,
             Some(ReservationRejectionReason::MissingEvidence)
         );
-        assert_eq!(failed_rebuild.live_reserved_liability, Decimal::ZERO);
+        assert_eq!(failed_rebuild.live_reserved_liability, Decimal::new(430, 2));
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
+        assert!(!gate.is_reconciled());
 
         let decision = gate.evaluate_and_reserve(CapitalAdmissionGateInputs {
             request: &request_with_intent("intent-new"),
@@ -1434,6 +1490,36 @@ mod tests {
                 ReservationRejectionReason::ReconciliationRequired
             )]
         );
-        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
+    }
+
+    #[test]
+    fn retained_lifecycle_reservation_carries_exact_live_liability_without_readmission() {
+        let initial_pool = single_order_capital_pool();
+        let reservation = rebuilt_open_order_reservation("intent-retained");
+        let mut gate = CapitalAdmissionGate::unreconciled();
+        let initial =
+            gate.rebuild_open_order_reservations(&initial_pool, &[reservation.into()], 1_000, None);
+        assert!(initial.accepted);
+
+        gate.invalidate_reconciliation();
+        let retained = gate
+            .retained_reservation("pool-1", "group-1", "intent-retained")
+            .expect("exact live reservation should remain available while unreconciled");
+        let shrunken_newer_pool = CapitalPoolSnapshot {
+            observed_at_ns: 2_000,
+            max_pool_liability: Decimal::ONE,
+            ..initial_pool
+        };
+        let evidence =
+            [CapitalAdmissionReservationEvidence::RetainedLifecycleReservation(retained)];
+
+        let rebuilt =
+            gate.rebuild_open_order_reservations(&shrunken_newer_pool, &evidence, 2_000, None);
+
+        assert!(rebuilt.accepted);
+        assert_eq!(rebuilt.rebuilt_reservation_count, 1);
+        assert_eq!(rebuilt.live_reserved_liability, Decimal::new(430, 2));
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
     }
 }

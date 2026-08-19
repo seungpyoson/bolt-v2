@@ -3,6 +3,7 @@ use nautilus_model::{
     identifiers::{ClientOrderId, InstrumentId, PositionId},
     types::Quantity,
 };
+use rust_decimal::{Decimal, prelude::FromPrimitive};
 
 use crate::{
     bolt_v3_current_evidence::{
@@ -15,6 +16,10 @@ use crate::{
     bolt_v3_market_families::OutcomeSide,
     bolt_v3_realized_volatility::RealizedVolBlockReason,
     bolt_v3_timestamp_domain::{LocalReceiveMs, VenueEventMs},
+    economics::{
+        ExitVsHoldDecision, FeeAdjustedExitVsHoldComparison, FeeAdjustedLegValue,
+        compare_fee_adjusted_exit_vs_hold,
+    },
 };
 
 use super::{
@@ -56,7 +61,7 @@ pub(super) struct ExitRealizedVolatilityGateReceipt {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct ExitSubmissionDecision {
+pub(super) struct ExitIntentDecision {
     pub(super) evaluation: ExitEvaluation,
     pub(super) instrument_id: Option<InstrumentId>,
     pub(super) order_type: Option<OrderType>,
@@ -156,7 +161,7 @@ impl ExitEvaluationTriggerContext {
     }
 }
 
-impl ExitSubmissionDecision {
+impl ExitIntentDecision {
     pub(super) fn execution_config(&self) -> Option<ExitOrderExecutionConfig> {
         Some(ExitOrderExecutionConfig {
             side: self.order_side?,
@@ -217,15 +222,9 @@ pub(super) struct ExitEvaluationLogFields {
     pub(super) fair_probability_up: Option<f64>,
     pub(super) fair_probability_down: Option<f64>,
     pub(super) uncertainty_band_probability: Option<f64>,
-    pub(super) up_fee_bps: Option<f64>,
-    pub(super) down_fee_bps: Option<f64>,
     pub(super) hold_ev_bps: Option<f64>,
     pub(super) exit_ev_bps: Option<f64>,
     pub(super) exit_decision: Option<ExitDecision>,
-    pub(super) historical_entry_fee_rate_known: bool,
-    pub(super) historical_entry_fee_rate_reason: &'static str,
-    pub(super) final_fee_amount_known: bool,
-    pub(super) final_fee_amount_reason: &'static str,
     pub(super) submission_instrument_id: Option<InstrumentId>,
     pub(super) submission_order_side: Option<OrderSide>,
     pub(super) submission_price: Option<f64>,
@@ -269,8 +268,6 @@ pub(super) fn exit_decision_details(
     let fair_probability_up = option_evidence_number(fields.fair_probability_up);
     let fair_probability_down = option_evidence_number(fields.fair_probability_down);
     let uncertainty_band_probability = option_evidence_number(fields.uncertainty_band_probability);
-    let up_fee_bps = option_evidence_number(fields.up_fee_bps);
-    let down_fee_bps = option_evidence_number(fields.down_fee_bps);
     let hold_ev_bps = option_evidence_number(fields.hold_ev_bps);
     let exit_ev_bps = option_evidence_number(fields.exit_ev_bps);
     let realized_vol = option_evidence_number(fields.realized_vol);
@@ -298,8 +295,6 @@ pub(super) fn exit_decision_details(
         fair_probability_up,
         fair_probability_down,
         uncertainty_band_probability,
-        up_fee_bps,
-        down_fee_bps,
         hold_ev_bps,
         exit_ev_bps,
         realized_vol,
@@ -391,16 +386,51 @@ pub(super) fn evaluate_exit_decision(
         return ExitDecision::Hold;
     }
 
-    if exit_ev_bps > hold_ev_bps + exit_hysteresis_bps {
-        ExitDecision::Exit
-    } else {
-        ExitDecision::Hold
+    let Some(hold_ev_bps) = Decimal::from_f64(hold_ev_bps) else {
+        return ExitDecision::Hold;
+    };
+    let Some(exit_ev_bps) = Decimal::from_f64(exit_ev_bps) else {
+        return ExitDecision::Hold;
+    };
+    let Some(exit_hysteresis_bps) = Decimal::from_f64(exit_hysteresis_bps) else {
+        return ExitDecision::Hold;
+    };
+    compare_fee_adjusted_exit_vs_hold(
+        FeeAdjustedLegValue::proven_zero_execution_economics(hold_ev_bps),
+        FeeAdjustedLegValue::proven_zero_execution_economics(exit_ev_bps),
+        exit_hysteresis_bps,
+    )
+    .map(exit_decision_from_fee_adjusted_comparison)
+    .unwrap_or(ExitDecision::Hold)
+}
+
+pub(super) const fn exit_decision_from_fee_adjusted_comparison(
+    comparison: FeeAdjustedExitVsHoldComparison,
+) -> ExitDecision {
+    match comparison.decision() {
+        ExitVsHoldDecision::Hold => ExitDecision::Hold,
+        ExitVsHoldDecision::Exit => ExitDecision::Exit,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strategy_consumes_shared_fee_adjusted_hold_result() {
+        let comparison = compare_fee_adjusted_exit_vs_hold(
+            FeeAdjustedLegValue::proven_zero_execution_economics(Decimal::new(495, 3)),
+            FeeAdjustedLegValue::new(Decimal::new(500, 3), Decimal::new(-75, 4)),
+            Decimal::ZERO,
+        )
+        .expect("shared fee-adjusted comparison should succeed");
+
+        assert_eq!(
+            exit_decision_from_fee_adjusted_comparison(comparison),
+            ExitDecision::Hold
+        );
+    }
 
     #[test]
     fn exit_decision_evidence_preserves_observed_inputs_from_log_fields() {
@@ -441,15 +471,9 @@ mod tests {
             fair_probability_up: Some(0.55),
             fair_probability_down: Some(0.45),
             uncertainty_band_probability: Some(0.02),
-            up_fee_bps: Some(1.25),
-            down_fee_bps: Some(2.5),
             hold_ev_bps: Some(12.5),
             exit_ev_bps: Some(11.25),
             exit_decision: Some(ExitDecision::Exit),
-            historical_entry_fee_rate_known: true,
-            historical_entry_fee_rate_reason: "known",
-            final_fee_amount_known: false,
-            final_fee_amount_reason: "pending_fill",
             submission_instrument_id: Some(InstrumentId::from("SUBMISSION.POLYMARKET")),
             submission_order_side: Some(OrderSide::Sell),
             submission_price: Some(0.49),
@@ -485,8 +509,6 @@ mod tests {
             evidence.uncertainty_band_probability.as_deref(),
             Some("0.02")
         );
-        assert_eq!(evidence.up_fee_bps.as_deref(), Some("1.25"));
-        assert_eq!(evidence.down_fee_bps.as_deref(), Some("2.5"));
         assert_eq!(
             evidence.position_instrument_id.as_deref(),
             Some("UP.POLYMARKET")

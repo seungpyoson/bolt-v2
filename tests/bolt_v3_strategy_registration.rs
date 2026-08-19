@@ -14,7 +14,6 @@ use bolt_v2::{
     },
     bolt_v3_iv::config::IvRootConfig,
     bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
-    bolt_v3_providers::FeeProvider,
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     bolt_v3_strategy_context::StrategyBuildContext,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
@@ -25,10 +24,8 @@ use bolt_v2::{
         registry::{StrategyBuilder, ValidationError},
     },
 };
-use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::{ClientId, InstrumentId, StrategyId, Venue};
-use rust_decimal::Decimal;
 use std::{
     collections::BTreeMap,
     sync::{
@@ -37,7 +34,13 @@ use std::{
     },
 };
 
-struct NoopFeeProvider;
+fn test_order_economics() -> bolt_v2::bolt_v3_order_execution::BoltV3OrderEconomicsHandle {
+    support::economics::polymarket_order_economics_for(
+        "polymarket_main",
+        &["token-yes.POLYMARKET"],
+        1,
+    )
+}
 
 fn raw_edge_taker_config(
     strategy: &bolt_v2::bolt_v3_config::LoadedStrategy,
@@ -60,7 +63,6 @@ fn strategy_registration_test_runtime(
     loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
 ) -> (
     LiveNode,
-    bolt_v2::bolt_v3_secrets::ResolvedBoltV3Secrets,
     bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyExecutionControls,
     Arc<bolt_v2::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
 ) {
@@ -75,6 +77,8 @@ fn strategy_registration_test_runtime(
             submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone())),
             order_execution_policy:
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            economics_inputs: support::economics::polymarket_inputs(loaded),
+            position_authority: None,
             settlement_runtime_sink: None,
             settlement_recovery: None,
             booking_recovery: None,
@@ -89,7 +93,7 @@ fn strategy_registration_test_runtime(
     let node = builder
         .build()
         .expect("v3 LiveNode should build before strategy registration");
-    (node, resolved, execution_controls, decision_evidence)
+    (node, execution_controls, decision_evidence)
 }
 
 const RV_DATA_CLIENT_ID: &str = "<DATA_CLIENT_ID>";
@@ -163,16 +167,6 @@ fn add_root_chainlink_feed_binding(root: &mut BoltV3RootConfig, instrument_id: &
         .push(toml::Value::Table(binding));
 }
 
-impl FeeProvider for NoopFeeProvider {
-    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-        None
-    }
-
-    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-        async { Ok(()) }.boxed()
-    }
-}
-
 fn assert_unsupported_executable_entry_order_shape(raw: &toml::Value, label: &str) {
     let mut errors: Vec<ValidationError> = Vec::new();
     BinaryOracleEdgeTakerBuilder::validate_config(
@@ -189,7 +183,7 @@ fn assert_unsupported_executable_entry_order_shape(raw: &toml::Value, label: &st
     );
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
+        test_order_economics(),
         writer.recorder(),
         Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
@@ -198,6 +192,34 @@ fn assert_unsupported_executable_entry_order_shape(raw: &toml::Value, label: &st
     assert!(
         BinaryOracleEdgeTakerBuilder::build_typed(raw, &context).is_err(),
         "{label} entry runtime table must not parse into the strategy config"
+    );
+}
+
+fn assert_unsupported_executable_exit_order_shape(raw: &toml::Value, label: &str) {
+    let mut errors: Vec<ValidationError> = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(
+        raw,
+        "strategies.configured_updown_main.parameters.runtime",
+        &mut errors,
+    );
+    assert!(
+        errors.iter().any(|error| {
+            error.field == "strategies.configured_updown_main.parameters.runtime.exit_order"
+                && error.code == "unsupported_executable_exit_order_shape"
+        }),
+        "{label} exit runtime table should reject unsupported executable exit shape: {errors:?}"
+    );
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    let context = StrategyBuildContext::new(
+        test_order_economics(),
+        writer.recorder(),
+        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
+        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+        support::fixture_execution_venue(),
+    );
+    assert!(
+        BinaryOracleEdgeTakerBuilder::build_typed(raw, &context).is_err(),
+        "{label} exit runtime table must not parse into the strategy config"
     );
 }
 
@@ -768,7 +790,7 @@ fn surfaced_runtime_config_builds_without_legacy_realized_volatility_fields() {
 
     let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
     let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
+        test_order_economics(),
         writer.recorder(),
         Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
         bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
@@ -836,6 +858,8 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
             submit_admission: admission.clone(),
             order_execution_policy:
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            economics_inputs: support::economics::polymarket_inputs(&loaded),
+            position_authority: None,
             settlement_runtime_sink: None,
             settlement_recovery: None,
             booking_recovery: None,
@@ -855,7 +879,6 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
         bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
             &mut node,
             &loaded,
-            &resolved,
             TEST_BINDINGS,
             execution_controls,
             decision_evidence.clone(),
@@ -898,7 +921,7 @@ fn settlement_registration_error_after_config_mutation(
 
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let (mut node, resolved, execution_controls, decision_evidence) =
+    let (mut node, execution_controls, decision_evidence) =
         strategy_registration_test_runtime(&loaded);
     mutate(&mut loaded);
 
@@ -906,7 +929,6 @@ fn settlement_registration_error_after_config_mutation(
         bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
             &mut node,
             &loaded,
-            &resolved,
             TEST_BINDINGS,
             execution_controls,
             decision_evidence,
@@ -1013,6 +1035,8 @@ fn assert_invalid_second_execution_route_fails_before_binding_preparation(
             submit_admission: Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence.clone())),
             order_execution_policy:
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            economics_inputs: support::economics::polymarket_inputs(&loaded),
+            position_authority: None,
             settlement_runtime_sink: None,
             settlement_recovery: None,
             booking_recovery: None,
@@ -1034,7 +1058,6 @@ fn assert_invalid_second_execution_route_fails_before_binding_preparation(
         bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
             &mut node,
             &loaded,
-            &resolved,
             &bindings,
             execution_controls,
             decision_evidence,
@@ -1080,7 +1103,7 @@ fn non_settlement_registration_resolves_every_venue_before_any_binding_preparati
 }
 
 #[test]
-fn fee_provider_preflight_failure_for_second_strategy_runs_no_binding_preparation() {
+fn economics_preflight_failure_for_second_strategy_runs_no_binding_preparation() {
     assert_invalid_second_execution_route_fails_before_binding_preparation(
         bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeCapabilities {
             realized_volatility: false,
@@ -1097,7 +1120,7 @@ fn fee_provider_preflight_failure_for_second_strategy_runs_no_binding_preparatio
                 .clients
                 .insert("binance_reference".to_string(), client);
         },
-        "has no registered fee-provider binding",
+        "has no economics binding",
     );
 }
 
@@ -1126,7 +1149,7 @@ fn production_registration_error_with_invalid_second_edge_strategy(
     invalid.config.order_id_tag = format!("{next_order_id_tag:03}");
     mutate(&mut invalid);
 
-    let (mut node, resolved, execution_controls, decision_evidence) =
+    let (mut node, execution_controls, decision_evidence) =
         strategy_registration_test_runtime(&loaded);
     loaded.strategies = vec![valid, invalid];
 
@@ -1134,7 +1157,6 @@ fn production_registration_error_with_invalid_second_edge_strategy(
         bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
             &mut node,
             &loaded,
-            &resolved,
             bolt_v2::strategy_bindings::production_runtime_bindings(),
             execution_controls,
             decision_evidence,
@@ -1232,14 +1254,13 @@ fn signal_client_aliases_execution_client_without_a_second_route() {
         .expect("edge fixture must declare one signal source")
         .data_client_id = execution_client_id;
 
-    let (mut node, resolved, execution_controls, decision_evidence) =
+    let (mut node, execution_controls, decision_evidence) =
         strategy_registration_test_runtime(&loaded);
 
     let summary =
         bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
             &mut node,
             &loaded,
-            &resolved,
             bolt_v2::strategy_bindings::production_runtime_bindings(),
             execution_controls,
             decision_evidence,
@@ -1289,7 +1310,7 @@ fn duplicate_prepared_strategy_ids_fail_before_any_strategy_is_registered() {
             + 1
     );
     loaded.strategies = vec![valid, duplicate];
-    let (mut node, resolved, execution_controls, decision_evidence) =
+    let (mut node, execution_controls, decision_evidence) =
         strategy_registration_test_runtime(&loaded);
     let bindings = [
         bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding {
@@ -1309,7 +1330,6 @@ fn duplicate_prepared_strategy_ids_fail_before_any_strategy_is_registered() {
         bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
             &mut node,
             &loaded,
-            &resolved,
             &bindings,
             execution_controls,
             decision_evidence,
@@ -1341,7 +1361,7 @@ fn already_registered_order_id_tag_fails_before_any_new_strategy_is_registered()
 
     let loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture v3 config should load");
-    let (mut node, resolved, execution_controls, decision_evidence) =
+    let (mut node, execution_controls, decision_evidence) =
         strategy_registration_test_runtime(&loaded);
     node.add_strategy(support::stub_runtime_strategy::StubRuntimeStrategy::new(
         "BOLT-V3-ALREADY-REGISTERED",
@@ -1365,7 +1385,6 @@ fn already_registered_order_id_tag_fails_before_any_new_strategy_is_registered()
         bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
             &mut node,
             &loaded,
-            &resolved,
             &bindings,
             execution_controls,
             decision_evidence,
@@ -1405,8 +1424,6 @@ fn strategy_validation_rejects_unknown_settlement_currency_without_unwinding() {
 fn non_runtime_strategy_registration_rejects_iv_enabled_config() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
-        .expect("fixture secrets should resolve");
     let mut empty_loaded = loaded.clone();
     empty_loaded.strategies.clear();
     let mut node = make_bolt_v3_live_node_builder(&empty_loaded)
@@ -1425,6 +1442,8 @@ fn non_runtime_strategy_registration_rejects_iv_enabled_config() {
             submit_admission: admission,
             order_execution_policy:
                 bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
+            economics_inputs: support::economics::polymarket_inputs(&loaded),
+            position_authority: None,
             settlement_runtime_sink: None,
             settlement_recovery: None,
             booking_recovery: None,
@@ -1435,7 +1454,6 @@ fn non_runtime_strategy_registration_rejects_iv_enabled_config() {
         bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
             &mut node,
             &loaded,
-            &resolved,
             &[],
             execution_controls,
             decision_evidence,
@@ -1902,7 +1920,7 @@ fn binary_oracle_runtime_mapping_rejects_market_if_touched_entry_order_runtime_s
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_market_if_touched_exit_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -1959,26 +1977,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_tr
         Some(false)
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "MarketIfTouched exit runtime table should validate: {errors:?}"
-    );
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
-        writer.recorder(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
-        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
-        .expect("MarketIfTouched exit runtime table should parse into the strategy config");
+    assert_unsupported_executable_exit_order_shape(&raw, "MarketIfTouched");
 }
 
 #[test]
@@ -2054,7 +2053,7 @@ fn binary_oracle_runtime_mapping_rejects_trailing_stop_market_entry_order_runtim
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_trailing_stop_market_exit_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -2121,26 +2120,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round
         Some("ticks")
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "TrailingStopMarket exit runtime table should validate: {errors:?}"
-    );
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
-        writer.recorder(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
-        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
-        .expect("TrailingStopMarket exit runtime table should parse into the strategy config");
+    assert_unsupported_executable_exit_order_shape(&raw, "TrailingStopMarket");
 }
 
 #[test]
@@ -2308,7 +2288,7 @@ fn binary_oracle_runtime_mapping_preserves_post_only_gtc_exit_order() {
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_stop_limit_exit_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_stop_limit_exit_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -2357,30 +2337,11 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_exit_order_round_trip() {
         Some(true)
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "StopLimit exit runtime table should validate: {errors:?}"
-    );
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
-        writer.recorder(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
-        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
-        .expect("StopLimit exit runtime table should parse into the strategy config");
+    assert_unsupported_executable_exit_order_shape(&raw, "StopLimit");
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_preserves_limit_if_touched_exit_order_round_trip() {
+fn binary_oracle_runtime_mapping_rejects_limit_if_touched_exit_order_runtime_shape() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let strategy_index = loaded
@@ -2429,26 +2390,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_exit_order_round_tri
         Some(true)
     );
 
-    let mut errors: Vec<ValidationError> = Vec::new();
-    BinaryOracleEdgeTakerBuilder::validate_config(
-        &raw,
-        "strategies.configured_updown_main.parameters.runtime",
-        &mut errors,
-    );
-    assert!(
-        errors.is_empty(),
-        "LimitIfTouched exit runtime table should validate: {errors:?}"
-    );
-    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
-    let context = StrategyBuildContext::new(
-        Arc::new(NoopFeeProvider),
-        writer.recorder(),
-        Arc::new(BoltV3SubmitAdmissionState::new(writer.recorder())),
-        bolt_v2::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
-        support::fixture_execution_venue(),
-    );
-    BinaryOracleEdgeTakerBuilder::build_typed(&raw, &context)
-        .expect("LimitIfTouched exit runtime table should parse into the strategy config");
+    assert_unsupported_executable_exit_order_shape(&raw, "LimitIfTouched");
 }
 
 #[test]
@@ -2910,20 +2852,6 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_without_feed
 }
 
 #[test]
-fn binary_oracle_runtime_mapping_uses_market_family_target_projection() {
-    let source = include_str!("../src/strategies/binary_oracle_edge_taker/archetype.rs");
-
-    assert!(
-        !source.contains("updown::deserialize_target_block"),
-        "binary_oracle_edge_taker runtime mapping must not deserialize an updown target directly"
-    );
-    assert!(
-        source.contains("target_runtime_fields_from_target"),
-        "binary_oracle_edge_taker runtime mapping should consume the market-family target projection"
-    );
-}
-
-#[test]
 fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -2942,46 +2870,7 @@ fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
 }
 
 #[test]
-fn strategy_registration_resolves_fee_provider_through_shared_provider_boundary() {
-    let source = include_str!("../src/bolt_v3_strategy_registration.rs");
-    assert!(
-        source.contains("resolve_fee_provider"),
-        "shared strategy assembly should call the generic fee-provider resolver"
-    );
-
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let temp = support::TempCaseDir::new("bolt-v3-fee-provider-boundary");
-    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
-    support::current_evidence::prepare_current_evidence_generation(&loaded);
-
-    let (node, _summary) =
-        build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
-            .expect("configured Polymarket strategy should register through provider boundary");
-
-    assert_eq!(
-        node.registered_strategy_ids(),
-        vec![StrategyId::from("binary_oracle_edge_taker-001")]
-    );
-}
-
-#[test]
-fn fee_provider_resolution_does_not_warm_during_registration() {
-    let resolver_source = include_str!("../src/bolt_v3_providers/mod.rs");
-    let archetype_source = include_str!("../src/strategies/binary_oracle_edge_taker/archetype.rs");
-
-    assert!(
-        !resolver_source.contains(".warm("),
-        "fee-provider resolver must construct only; fee warm remains in strategy runtime readiness"
-    );
-    assert!(
-        !archetype_source.contains(".warm("),
-        "runtime registration must not warm fee providers"
-    );
-}
-
-#[test]
-fn binary_oracle_data_only_client_fails_settlement_identity_before_fee_provider() {
+fn binary_oracle_data_only_client_fails_settlement_identity_before_economics() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let temp = support::TempCaseDir::new("bolt-v3-decision-evidence-data-only-exec-client");
@@ -3014,244 +2903,5 @@ fn binary_oracle_data_only_client_fails_settlement_identity_before_fee_provider(
     assert_eq!(
         message,
         "bolt-v3 strategy registration failed: strategies.configured_updown_main (binary_oracle_edge_taker) registration failed: settlement capability requires execution account id for execution_client_id `polymarket_data_only`"
-    );
-}
-
-#[test]
-fn fee_provider_source_fence_blocks_concrete_provider_in_shared_layers() {
-    const SOURCE_FENCE_MAX_FILE_BYTES: u64 = 1024 * 1024;
-
-    fn forbidden_fee_provider_reference(line: &str) -> bool {
-        line.contains("bolt_v3_providers::polymarket")
-            || line.contains("polymarket::")
-            || line.contains("build_fee_provider")
-    }
-
-    fn source_contains_forbidden_fee_provider_reference(source: &str) -> bool {
-        source.lines().any(forbidden_fee_provider_reference)
-    }
-
-    fn strip_rust_comments(source: &str) -> String {
-        enum State {
-            Code,
-            LineComment,
-            BlockComment,
-            String { escaped: bool },
-            RawString { hashes: usize },
-        }
-
-        fn raw_string_hashes_at(chars: &[char], index: usize) -> Option<usize> {
-            if chars.get(index) != Some(&'r') {
-                return None;
-            }
-            let mut cursor = index + 1;
-            let mut hashes = 0;
-            while chars.get(cursor) == Some(&'#') {
-                hashes += 1;
-                cursor += 1;
-            }
-            (chars.get(cursor) == Some(&'"')).then_some(hashes)
-        }
-
-        let chars = source.chars().collect::<Vec<_>>();
-        let mut output = String::with_capacity(source.len());
-        let mut state = State::Code;
-        let mut index = 0;
-        while let Some(&current) = chars.get(index) {
-            match state {
-                State::Code => {
-                    if chars.get(index) == Some(&'/') && chars.get(index + 1) == Some(&'/') {
-                        state = State::LineComment;
-                        index += 2;
-                    } else if chars.get(index) == Some(&'/') && chars.get(index + 1) == Some(&'*') {
-                        state = State::BlockComment;
-                        index += 2;
-                    } else if let Some(hashes) = raw_string_hashes_at(&chars, index) {
-                        output.push('r');
-                        index += 1;
-                        for _ in 0..hashes {
-                            output.push('#');
-                            index += 1;
-                        }
-                        output.push('"');
-                        index += 1;
-                        state = State::RawString { hashes };
-                    } else if current == '"' {
-                        output.push(current);
-                        state = State::String { escaped: false };
-                        index += 1;
-                    } else {
-                        output.push(current);
-                        index += 1;
-                    }
-                }
-                State::LineComment => {
-                    if current == '\n' {
-                        output.push(current);
-                        state = State::Code;
-                    }
-                    index += 1;
-                }
-                State::BlockComment => {
-                    if current == '\n' {
-                        output.push(current);
-                        index += 1;
-                    } else if current == '*' && chars.get(index + 1) == Some(&'/') {
-                        state = State::Code;
-                        index += 2;
-                    } else {
-                        index += 1;
-                    }
-                }
-                State::String { escaped } => {
-                    output.push(current);
-                    state = if escaped {
-                        State::String { escaped: false }
-                    } else if current == '\\' {
-                        State::String { escaped: true }
-                    } else if current == '"' {
-                        State::Code
-                    } else {
-                        State::String { escaped: false }
-                    };
-                    index += 1;
-                }
-                State::RawString { hashes } => {
-                    output.push(current);
-                    if current == '"' {
-                        let closes_raw_string =
-                            (1..=hashes).all(|offset| chars.get(index + offset) == Some(&'#'));
-                        if closes_raw_string {
-                            for offset in 1..=hashes {
-                                output.push(chars[index + offset]);
-                            }
-                            index += hashes + 1;
-                            state = State::Code;
-                        } else {
-                            index += 1;
-                        }
-                    } else {
-                        index += 1;
-                    }
-                }
-            }
-        }
-        output
-    }
-
-    fn read_source_fence_target(repo_root: &std::path::Path, relative: &str) -> String {
-        let path = repo_root.join(relative);
-        let metadata = std::fs::metadata(&path).expect("source-fence target metadata should load");
-        assert!(
-            metadata.is_file(),
-            "source-fence target must be a file: {relative}"
-        );
-        assert!(
-            metadata.len() <= SOURCE_FENCE_MAX_FILE_BYTES,
-            "source-fence target {relative} is {} bytes; limit is {SOURCE_FENCE_MAX_FILE_BYTES}",
-            metadata.len()
-        );
-        std::fs::read_to_string(path).expect("source-fence target should be readable")
-    }
-
-    assert!(
-        source_contains_forbidden_fee_provider_reference("let _ = polymarket::build_fee_provider;"),
-        "positive control must catch direct concrete provider construction"
-    );
-    assert!(
-        !source_contains_forbidden_fee_provider_reference(&strip_rust_comments(
-            "// let _ = polymarket::build_fee_provider;"
-        )),
-        "negative control must ignore direct construction in line comments"
-    );
-    assert!(
-        !source_contains_forbidden_fee_provider_reference(&strip_rust_comments(
-            "/* let _ = polymarket::build_fee_provider; */"
-        )),
-        "negative control must ignore direct construction in block comments"
-    );
-    assert_eq!(
-        strip_rust_comments("let text = \"// this is string content\";"),
-        "let text = \"// this is string content\";",
-        "comment stripping must not treat line-comment markers inside strings as comments"
-    );
-
-    fn push_rs_files(repo_root: &std::path::Path, directory: &str, files: &mut Vec<String>) {
-        fn push_rs_files_from_path(
-            repo_root: &std::path::Path,
-            path: &std::path::Path,
-            files: &mut Vec<String>,
-        ) {
-            for entry in std::fs::read_dir(path).expect("source-fence directory should be readable")
-            {
-                let entry = entry.expect("source-fence directory entry should be readable");
-                let file_type = entry
-                    .file_type()
-                    .expect("source-fence directory entry type should be readable");
-                let path = entry.path();
-                if file_type.is_dir() {
-                    push_rs_files_from_path(repo_root, &path, files);
-                } else if file_type.is_file()
-                    && path.extension().is_some_and(|extension| extension == "rs")
-                {
-                    files.push(
-                        path.strip_prefix(repo_root)
-                            .unwrap()
-                            .to_string_lossy()
-                            .replace('\\', "/"),
-                    );
-                }
-            }
-        }
-
-        push_rs_files_from_path(repo_root, &repo_root.join(directory), files);
-    }
-
-    let recursive_temp = support::TempCaseDir::new("fee-provider-source-fence-recursive");
-    let nested_strategy_dir = recursive_temp.path().join("src/strategies/nested");
-    std::fs::create_dir_all(&nested_strategy_dir)
-        .expect("recursive source-fence control directory should be created");
-    std::fs::write(nested_strategy_dir.join("mod.rs"), "")
-        .expect("recursive source-fence control Rust file should be created");
-    std::fs::write(nested_strategy_dir.join("notes.txt"), "")
-        .expect("recursive source-fence control non-Rust file should be created");
-    let mut recursive_control_files = Vec::new();
-    push_rs_files(
-        recursive_temp.path(),
-        "src/strategies",
-        &mut recursive_control_files,
-    );
-    recursive_control_files.sort();
-    assert_eq!(
-        recursive_control_files,
-        vec!["src/strategies/nested/mod.rs".to_string()],
-        "source-fence collection must recurse into nested strategy modules and ignore non-Rust files"
-    );
-
-    let repo_root = support::repo_path("");
-    let mut files = Vec::new();
-    push_rs_files(&repo_root, "src/bolt_v3_archetypes", &mut files);
-    push_rs_files(&repo_root, "src/strategies", &mut files);
-    files.extend([
-        "src/bolt_v3_strategy_registration.rs".to_string(),
-        "src/bolt_v3_submit_admission.rs".to_string(),
-        "src/bolt_v3_order_intent.rs".to_string(),
-    ]);
-
-    let mut violations = Vec::new();
-    files.sort();
-    files.dedup();
-    for relative in files {
-        let source = strip_rust_comments(&read_source_fence_target(&repo_root, &relative));
-        for (line_index, line) in source.lines().enumerate() {
-            if forbidden_fee_provider_reference(line) {
-                violations.push(format!("{}:{}", relative, line_index + 1));
-            }
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "concrete provider construction leaked into shared registration layers: {violations:?}"
     );
 }

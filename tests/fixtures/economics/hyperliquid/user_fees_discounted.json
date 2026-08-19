@@ -1,0 +1,17 @@
+{
+  "dailyUserVlm": [],
+  "feeSchedule": {},
+  "userCrossRate": "0.000315",
+  "userAddRate": "-0.00001",
+  "userSpotCrossRate": "0.00049",
+  "userSpotAddRate": "-0.00002",
+  "activeReferralDiscount": "0.04",
+  "trial": null,
+  "feeTrialReward": "0.0",
+  "nextTrialAvailableTimestamp": null,
+  "stakingLink": null,
+  "activeStakingDiscount": {
+    "bpsOfMaxSupply": "4.75",
+    "discount": "0.30"
+  }
+}

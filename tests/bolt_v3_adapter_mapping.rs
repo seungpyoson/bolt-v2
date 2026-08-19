@@ -1484,7 +1484,6 @@ http_timeout_secs = 60
 max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
-fee_cache_ttl_secs = 300
 transport_backend = "sockudo"
 "#;
     let root: BoltV3RootConfig =

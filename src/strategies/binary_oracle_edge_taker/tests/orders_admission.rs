@@ -12,8 +12,7 @@ fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Zero fee leaves the notional unchanged; with no optional gate armed,
     // production admission now allows the submit to reach NT.
-    let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
+    let mut strategy = test_strategy_with_decision_evidence_and_submit_admission(
         recording_decision_evidence(),
         submit_admission.clone(),
     );
@@ -79,8 +78,7 @@ fn shadow_policy_records_evidence_and_admission_without_nt_submit() {
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
     );
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-    let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
+    let mut strategy = test_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
         submit_admission.clone(),
     );
@@ -172,8 +170,7 @@ fn provider_limited_submit_admission_allows_nt_submit_after_evidence() {
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Zero fee keeps the notional (0.50) under the 1.0 cap so admission
     // succeeds; the test then proves the registered submit reaches NT.
-    let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
+    let mut strategy = test_strategy_with_decision_evidence_and_submit_admission(
         recording_decision_evidence(),
         submit_admission.clone(),
     );
@@ -235,8 +232,7 @@ fn submit_context_routes_non_empty_nt_params_to_submit_order() {
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Zero fee leaves the 0.50 notional under the 1.0 cap; this test
     // exercises submit-param routing, not the fee-inclusive cap.
-    let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
+    let mut strategy = test_strategy_with_decision_evidence_and_submit_admission(
         recording_decision_evidence(),
         submit_admission.clone(),
     );
@@ -295,17 +291,15 @@ fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
     let submit_admission =
         submit_admission_with_provider_cap(Decimal::new(1, 0), recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-    // Zero fee isolates the assertion to "compiled order price drives the
-    // notional": the compiled 2.0 notional still exceeds the 1.0 cap, while
+    // The compiled 1.5 notional still exceeds the 1.0 cap, while
     // the understated intent price (0.50) must NOT be what is checked.
-    let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
+    let mut strategy = test_strategy_with_decision_evidence_and_submit_admission(
         recording_decision_evidence(),
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
-    let quantity = Quantity::new(1.0, 2);
-    let price = Price::new(2.0, 2);
+    let quantity = Quantity::new(2.0, 2);
+    let price = Price::new(0.75, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
     let order = nautilus_model::orders::OrderAny::Limit(
         nautilus_model::orders::LimitOrder::new_checked(
@@ -345,25 +339,28 @@ fn submit_admission_uses_compiled_limit_order_notional_not_prebuild_intent() {
         );
     understated_intent.price = "0.50".to_string();
 
-    let error = strategy
+    let outcome = strategy
         .submit_order_with_decision_evidence(
             understated_intent,
             BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect_err("compiled order notional above cap must reject before NT submit");
+        .expect("admission rejection should remain a typed route outcome");
 
+    assert_eq!(outcome.kind(), BoltV3SubmitAttemptKind::AdmissionRejected);
     assert!(
-        error.to_string().contains("notional cap is exceeded"),
-        "{error:#}"
+        outcome
+            .diagnostic()
+            .is_some_and(|reason| reason.contains("notional cap is exceeded")),
+        "{outcome:?}"
     );
     assert_eq!(submit_admission.admitted_order_count(), 0);
 }
 
 #[test]
 fn quote_quantity_submit_admission_matches_nt_effective_notional_for_limit_buy() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::Limit;
@@ -408,7 +405,7 @@ fn quote_quantity_submit_admission_matches_nt_effective_notional_for_limit_buy()
 
 #[test]
 fn quote_quantity_sell_limit_submit_admission_floors_to_quote_quantity() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::Limit;
@@ -455,7 +452,7 @@ fn quote_quantity_sell_limit_submit_admission_floors_to_quote_quantity() {
 
 #[test]
 fn quote_quantity_sell_limit_missing_quote_uses_submitted_quote_quantity() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.entry_order.order_type = OrderType::Limit;
     strategy.config.entry_order.is_quote_quantity = true;
@@ -495,7 +492,7 @@ fn quote_quantity_sell_limit_missing_quote_uses_submitted_quote_quantity() {
 
 #[test]
 fn quote_quantity_sell_limit_missing_context_fails_closed() {
-    let mut builder = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut builder = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut builder);
     builder.config.entry_order.order_type = OrderType::Limit;
     builder.config.entry_order.is_quote_quantity = true;
@@ -515,8 +512,7 @@ fn quote_quantity_sell_limit_missing_context_fails_closed() {
         .expect("quote-quantity sell limit order should build through the strategy factory path");
     assert!(order.is_quote_quantity());
 
-    let mut strategy_without_instrument =
-        ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy_without_instrument = ready_to_trade_strategy_with_bound_economics();
     let cache = register_test_strategy(&mut strategy_without_instrument);
     cache
         .borrow_mut()
@@ -543,7 +539,7 @@ fn quote_quantity_sell_limit_missing_context_fails_closed() {
 
 #[test]
 fn quote_quantity_sell_stop_limit_submit_admission_floors_to_quote_quantity() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::StopLimit;
@@ -597,7 +593,7 @@ fn quote_quantity_sell_stop_limit_submit_admission_floors_to_quote_quantity() {
 
 #[test]
 fn quote_quantity_sell_stop_limit_missing_quote_uses_submitted_quote_quantity() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.entry_order.order_type = OrderType::StopLimit;
     strategy.config.entry_order.trigger_price = Some(0.52);
@@ -642,7 +638,7 @@ fn quote_quantity_sell_stop_limit_missing_quote_uses_submitted_quote_quantity() 
 
 #[test]
 fn quote_quantity_sell_stop_limit_missing_context_fails_closed() {
-    let mut builder = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut builder = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut builder);
     builder.config.entry_order.order_type = OrderType::StopLimit;
     builder.config.entry_order.trigger_price = Some(0.52);
@@ -667,8 +663,7 @@ fn quote_quantity_sell_stop_limit_missing_context_fails_closed() {
     assert!(order.is_quote_quantity());
     assert!(matches!(order, OrderAny::StopLimit(_)));
 
-    let mut strategy_without_instrument =
-        ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy_without_instrument = ready_to_trade_strategy_with_bound_economics();
     let cache = register_test_strategy(&mut strategy_without_instrument);
     cache
         .borrow_mut()
@@ -695,7 +690,7 @@ fn quote_quantity_sell_stop_limit_missing_context_fails_closed() {
 
 #[test]
 fn quote_quantity_submit_admission_uses_limit_price_when_nt_cache_quote_missing() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.config.entry_order.order_type = OrderType::Limit;
     strategy.config.entry_order.is_quote_quantity = true;
@@ -735,7 +730,7 @@ fn quote_quantity_submit_admission_uses_limit_price_when_nt_cache_quote_missing(
 
 #[test]
 fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cached_quote() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::Market;
@@ -799,7 +794,7 @@ fn base_quantity_market_entry_admission_values_at_instrument_price_ceiling() {
     // happens to be priced at. A firm-limit entry (fill <= limit) needs no
     // such adjustment; this test pins the ceiling valuation for the
     // market-style shape that lacks a firm price.
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::Market;
@@ -849,7 +844,7 @@ fn base_quantity_market_entry_admission_values_at_instrument_price_ceiling() {
 
 #[test]
 fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cached_trade() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
     strategy.config.entry_order.order_type = OrderType::Market;
@@ -906,26 +901,22 @@ fn quote_quantity_market_submit_admission_uses_submitted_quote_quantity_with_cac
 
 #[test]
 fn over_notional_submit_admission_rejects_before_nt_submit() {
-    // Coarse over-cap rejection: raw notional = price*qty = 2.0*1.0 = 2.0
+    // Coarse over-cap rejection: raw notional = price*qty = 0.75*2.0 = 1.5
     // already exceeds the 1.0 cap, so this rejects with OR without the
     // fee-inclusive scaling and is NOT a discriminating test of the
-    // fee multiplier at `binary_oracle_edge_taker.rs:3972`. The fee
-    // multiplier is pinned by the discriminating pair
-    // `fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit`
-    // / `zero_fee_submit_admission_admits_at_same_cap` below; this test
-    // only proves a grossly over-cap raw notional is rejected before NT
-    // submit.
+    // fee-inclusive authority. The bound-liability tests below pin that
+    // distinction; this test only proves a grossly over-cap raw notional is
+    // rejected before NT submit.
     let submit_admission =
         submit_admission_with_provider_cap(Decimal::ONE, recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-    let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
+    let mut strategy = test_strategy_with_decision_evidence_and_submit_admission(
         recording_decision_evidence(),
         submit_admission.clone(),
     );
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
-    let quantity = Quantity::new(1.0, 2);
-    let price = Price::new(2.0, 2);
+    let quantity = Quantity::new(2.0, 2);
+    let price = Price::new(0.75, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
     let order = nautilus_model::orders::OrderAny::Limit(
         nautilus_model::orders::LimitOrder::new_checked(
@@ -963,49 +954,46 @@ fn over_notional_submit_admission_rejects_before_nt_submit() {
         &order,
     );
 
-    let error = strategy
+    let outcome = strategy
         .submit_order_with_decision_evidence(
             intent,
             BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect_err("fee-inclusive over-cap notional must reject before NT submit");
+        .expect("admission rejection should remain a typed route outcome");
 
+    assert_eq!(outcome.kind(), BoltV3SubmitAttemptKind::AdmissionRejected);
     assert!(
-        error.to_string().contains("notional cap is exceeded"),
-        "{error:#}"
+        outcome
+            .diagnostic()
+            .is_some_and(|reason| reason.contains("notional cap is exceeded")),
+        "{outcome:?}"
     );
     assert_eq!(submit_admission.admitted_order_count(), 0);
 }
 
 #[test]
-fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
-    // Strict-inequality boundary: raw notional = price*qty = 1.0*1.0 = 1.0;
-    // at 25 bps the fee-inclusive admission notional is
-    // 1.0 * (1 + 25/10000) = 1.0025, set EXACTLY equal to the cap. The
+fn bound_economics_liability_passes_at_cap_boundary() {
+    // The TOML-bound Polymarket schedule prices a 0.50 x 1.00 taker fill at
+    // 0.50 gross plus 0.00750 protocol cost. Set the 0.50750 full liability
+    // EXACTLY equal to the cap. The
     // admission gate rejects only when notional STRICTLY exceeds the cap
     // (`request.notional > report.max_notional_per_order()`), so this must
     // be ADMITTED and reach NT submit.
     //
-    // NOTE: this is NOT a fee-discrimination test — with the cap set to the
-    // fee-inclusive value, the raw 1.0 notional admits with OR without the
-    // fee multiplier (1.0 <= 1.0025 either way). It only pins the strict
-    // `>` boundary. Fee discrimination at
-    // `binary_oracle_edge_taker.rs:3972` is pinned by the
-    // `fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit`
-    // / `zero_fee_submit_admission_admits_at_same_cap` pair below.
+    let evidence = recording_decision_evidence();
     let submit_admission =
-        submit_admission_with_provider_cap(Decimal::new(10025, 4), recording_decision_evidence());
+        submit_admission_with_provider_cap(Decimal::new(50750, 5), evidence.clone());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-    let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
-        recording_decision_evidence(),
+    let mut strategy = test_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
         submit_admission.clone(),
     );
+    use_fee_bearing_economics(&mut strategy);
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
-    let price = Price::new(1.0, 2);
+    let price = Price::new(0.50, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
     let order = nautilus_model::orders::OrderAny::Limit(
         nautilus_model::orders::LimitOrder::new_checked(
@@ -1050,41 +1038,63 @@ fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect("fee-inclusive notional exactly at the cap must reach NT submit");
+        .expect("bound economics liability exactly at the cap must reach NT submit");
     assert_eq!(
         submit_admission.admitted_order_count(),
         1,
-        "fee-inclusive notional exactly at the cap must be admitted"
+        "bound economics liability exactly at the cap must be admitted"
     );
+    let economics = evidence
+        .recorded_facts()
+        .expect("recorded current evidence must decode")
+        .into_iter()
+        .find_map(|fact| match fact {
+            CurrentFact::AdmittedEntryAdmission(fact) => fact.details.economics,
+            _ => None,
+        })
+        .expect("bound economics admission must record the authoritative quote");
+    assert_eq!(
+        economics
+            .core_total
+            .parse::<Decimal>()
+            .expect("recorded core total must be decimal"),
+        Decimal::new(-750, 5)
+    );
+    economics
+        .core_edge_ratio
+        .parse::<Decimal>()
+        .expect("recorded core edge ratio must be decimal");
+    let bounded_component = economics
+        .components
+        .iter()
+        .find(|component| {
+            matches!(
+                component.treatment,
+                crate::bolt_v3_current_evidence::AdmissionEconomicsTreatment::RiskBound { .. }
+            )
+        })
+        .expect("fee-bearing admission must retain its bounded component lineage");
+    assert!(bounded_component.point_valuation.is_some());
+    assert!(bounded_component.debit_risk_bound.is_some());
+    assert!(bounded_component.debit_risk_bound_valuation.is_some());
 }
 
 #[test]
-fn fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit() {
-    // DISCRIMINATING test for the fee-inclusive scaling at
-    // `binary_oracle_edge_taker.rs:3972`. The cap is set STRICTLY BETWEEN the
-    // raw notional and the fee-inclusive notional so the rejection is caused
-    // by the fee multiplier specifically, not by the raw notional:
-    //   raw notional      = price*qty = 1.00 * 1.00 = 1.0000
-    //   cap               = 1.001  (Decimal::new(1001, 3))
-    //   fee-inclusive     = 1.00 * (1 + 25/10000) = 1.0025
-    // Since 1.0000 <= 1.001 < 1.0025, the order is admitted with the raw
-    // notional but rejected with the fee-inclusive notional. This test must
-    // FAIL if line 3972 is deleted: without the fee scaling the cap sees the
-    // raw 1.0000 (<= 1.001) and admits, so the expected reject never fires.
-    // The zero-fee CONTROL `zero_fee_submit_admission_admits_at_same_cap`
-    // below uses the SAME raw 1.00 notional and SAME 1.001 cap and ADMITS,
-    // proving the rejection here is caused by the fee scaling.
+fn bound_economics_liability_rejects_between_raw_and_full_cost() {
+    // The 0.501 cap sits strictly between the 0.50 raw reservation and the
+    // TOML/provider-derived 0.50750 full liability, proving raw order notional
+    // cannot bypass the bound economics authority.
     let submit_admission =
-        submit_admission_with_provider_cap(Decimal::new(1001, 3), recording_decision_evidence());
+        submit_admission_with_provider_cap(Decimal::new(501, 3), recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-    let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
+    let mut strategy = test_strategy_with_decision_evidence_and_submit_admission(
         recording_decision_evidence(),
         submit_admission.clone(),
     );
+    use_fee_bearing_economics(&mut strategy);
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
-    let price = Price::new(1.0, 2);
+    let price = Price::new(0.50, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
     let order = nautilus_model::orders::OrderAny::Limit(
         nautilus_model::orders::LimitOrder::new_checked(
@@ -1122,46 +1132,40 @@ fn fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit() {
         &order,
     );
 
-    let error = strategy
+    let outcome = strategy
         .submit_order_with_decision_evidence(
             intent,
             BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect_err(
-            "fee-inclusive notional pushed strictly over the cap by fee scaling must reject before NT submit",
-        );
+        .expect("admission rejection should remain a typed route outcome");
 
+    assert_eq!(outcome.kind(), BoltV3SubmitAttemptKind::AdmissionRejected);
     assert!(
-        error.to_string().contains("notional cap is exceeded"),
-        "{error:#}"
+        outcome
+            .diagnostic()
+            .is_some_and(|reason| reason.contains("notional cap is exceeded")),
+        "{outcome:?}"
     );
     assert_eq!(submit_admission.admitted_order_count(), 0);
 }
 
 #[test]
-fn zero_fee_submit_admission_admits_at_same_cap() {
-    // Zero-fee CONTROL for
-    // `fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit`.
-    // SAME raw notional (price*qty = 1.00 * 1.00 = 1.0000) and SAME cap
-    // (1.001) as the reject test, but the fee is ZERO so no scaling is
-    // applied:
-    //   admission notional = 1.0000 * (1 + 0/10000) = 1.0000 <= 1.001
-    // and the order is ADMITTED. Together with the reject test this pair proves the
-    // rejection there is caused by the fee scaling specifically, not by the
-    // raw notional (which admits at this cap when the fee is zero).
+fn bound_economics_liability_cannot_fall_back_to_raw_order_notional() {
+    // The TOML/provider-derived 0.50750 liability must not fall back to the
+    // 0.50 raw reservation.
     let submit_admission =
-        submit_admission_with_provider_cap(Decimal::new(1001, 3), recording_decision_evidence());
+        submit_admission_with_provider_cap(Decimal::new(501, 3), recording_decision_evidence());
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-    let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
+    let mut strategy = test_strategy_with_decision_evidence_and_submit_admission(
         recording_decision_evidence(),
         submit_admission.clone(),
     );
+    use_fee_bearing_economics(&mut strategy);
     register_test_strategy_with_instrument(&mut strategy, &instrument_id);
     let quantity = Quantity::new(1.0, 2);
-    let price = Price::new(1.0, 2);
+    let price = Price::new(0.50, 2);
     let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
     let order = nautilus_model::orders::OrderAny::Limit(
         nautilus_model::orders::LimitOrder::new_checked(
@@ -1199,18 +1203,25 @@ fn zero_fee_submit_admission_admits_at_same_cap() {
         &order,
     );
 
-    strategy
+    let outcome = strategy
         .submit_order_with_decision_evidence(
             intent,
             BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect("zero-fee notional below the cap must reach NT submit");
+        .expect("admission rejection should remain a typed route outcome");
+    assert_eq!(outcome.kind(), BoltV3SubmitAttemptKind::AdmissionRejected);
+    assert!(
+        outcome
+            .diagnostic()
+            .is_some_and(|reason| reason.contains("notional cap is exceeded")),
+        "{outcome:?}"
+    );
     assert_eq!(
         submit_admission.admitted_order_count(),
-        1,
-        "zero-fee notional below the cap must be admitted at the same cap the fee-scaled order is rejected at"
+        0,
+        "raw order notional must not authorize the order"
     );
 }
 
@@ -1230,7 +1241,6 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
                 order_quantity: Decimal::new(1, 0),
                 intent_kind: crate::bolt_v3_submit_admission::BoltV3SubmitIntentKind::Entry,
                 risk_reducing_exit_proof: None,
-                kill_switch_forced_reduction: None,
                 admission_evidence: None,
             },
         )
@@ -1239,8 +1249,7 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
     // Zero fee keeps the 0.50 notional under the 1.0 cap so the rejection is
     // the count-exhausted check, not the notional cap.
-    let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-        RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
+    let mut strategy = test_strategy_with_decision_evidence_and_submit_admission(
         recording_decision_evidence(),
         submit_admission.clone(),
     );
@@ -1284,25 +1293,28 @@ fn exhausted_count_submit_admission_rejects_before_nt_submit() {
         &order,
     );
 
-    let error = strategy
+    let outcome = strategy
         .submit_order_with_decision_evidence(
             intent,
             BoltV3SubmitIntentKind::Entry,
             order,
             BoltV3SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
         )
-        .expect_err("exhausted count cap must reject before NT submit");
+        .expect("admission rejection should remain a typed route outcome");
 
+    assert_eq!(outcome.kind(), BoltV3SubmitAttemptKind::AdmissionRejected);
     assert!(
-        error.to_string().contains("order count cap is exhausted"),
-        "{error:#}"
+        outcome
+            .diagnostic()
+            .is_some_and(|reason| reason.contains("order count cap is exhausted")),
+        "{outcome:?}"
     );
     assert_eq!(submit_admission.admitted_order_count(), 1);
 }
 
 #[test]
 fn market_quote_quantity_entry_submission_sizes_from_current_book_notional() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     set_active_books_best_prices(&mut strategy, 0.40, 0.41);
     strategy.config.entry_order.order_type = OrderType::Market;
@@ -1350,7 +1362,7 @@ fn market_quote_quantity_entry_submission_sizes_from_current_book_notional() {
 
 #[test]
 fn market_quote_quantity_entry_submission_blocks_below_venue_minimum() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     set_active_books_best_prices(&mut strategy, 0.40, 0.41);
     strategy.config.entry_order.order_type = OrderType::Market;
@@ -1379,7 +1391,7 @@ fn market_quote_quantity_entry_submission_blocks_below_venue_minimum() {
 
 #[test]
 fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     configure_limit_base_entry_order(&mut strategy);
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
@@ -1433,47 +1445,8 @@ fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
 }
 
 #[test]
-fn submit_admission_test_helper_uses_explicit_execution_client_id() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-    configure_limit_base_entry_order(&mut strategy);
-    let _cache = register_test_strategy(&mut strategy);
-    let instrument_id = selected_entry_instrument(&strategy);
-    let quantity = Quantity::new(2.0, 2);
-    let price = Price::new(0.50, 2);
-    let order = strategy
-        .build_configured_entry_order(
-            instrument_id,
-            OrderSide::Buy,
-            quantity,
-            price,
-            ClientOrderId::from("O-19700101-000000-001-HL-1"),
-        )
-        .expect("configured entry order should build");
-    let intent = crate::bolt_v3_order_execution::order_intent_details_from_compiled_order(
-        strategy.config.strategy_id.clone(),
-        price.to_string(),
-        &order,
-    );
-
-    let admission = build_submit_admission_request_from_order(
-        BoltV3SubmitAdmissionRequestInput {
-            execution_client_id: "hyperliquid_perps",
-            intent_kind: BoltV3SubmitIntentKind::Entry,
-            intent: &intent,
-            order: &order,
-            valuation: OrderValuationContext::empty(),
-            risk_reducing_exit_position: None,
-        },
-        |_| Ok(Decimal::ZERO),
-    )
-    .expect("entry intent should map into submit admission");
-
-    assert_eq!(admission.execution_client_id, "hyperliquid_perps");
-}
-
-#[test]
 fn market_if_touched_gtd_order_objects_preserve_nt_expire_time() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
     strategy.config.entry_order.order_type = OrderType::MarketIfTouched;
@@ -1505,7 +1478,7 @@ fn market_if_touched_gtd_order_objects_preserve_nt_expire_time() {
 
 #[test]
 fn post_only_exit_submission_price_uses_passive_book_price() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.config.exit_order.order_type = OrderType::Limit;
     strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
     strategy.config.exit_order.is_post_only = true;
@@ -1528,10 +1501,10 @@ fn post_only_exit_submission_price_uses_passive_book_price() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert!(decision.forced_flat_reasons.is_empty());
     assert_eq!(decision.order_side, Some(OrderSide::Sell));
@@ -1540,8 +1513,10 @@ fn post_only_exit_submission_price_uses_passive_book_price() {
 
 #[test]
 fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.config.exit_order.is_quote_quantity = true;
+    strategy.config.forced_exit_order.is_quote_quantity = true;
+    strategy.active.phase = SelectionPhase::Freeze;
     strategy
         .pricing
         .set_selected_pricing_spot(Some(fast_spot("bybit", 3_099.5, 1_200)));
@@ -1559,10 +1534,10 @@ fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used()
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert_eq!(
         decision.blocked_reason,
@@ -1574,7 +1549,7 @@ fn exit_quote_quantity_config_is_blocked_before_base_position_quantity_is_used()
 
 #[test]
 fn exit_quote_quantity_order_build_is_rejected_before_nt_factory() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let _cache = register_test_strategy(&mut strategy);
     strategy.config.exit_order.is_quote_quantity = true;
     let instrument_id = selected_entry_instrument(&strategy);
@@ -1596,7 +1571,7 @@ fn exit_quote_quantity_order_build_is_rejected_before_nt_factory() {
 
 #[test]
 fn reduce_only_entry_order_build_is_rejected_before_nt_factory() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let _cache = register_test_strategy(&mut strategy);
     strategy.config.entry_order.is_reduce_only = true;
     let instrument_id = selected_entry_instrument(&strategy);
@@ -1618,7 +1593,7 @@ fn reduce_only_entry_order_build_is_rejected_before_nt_factory() {
 
 #[test]
 fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.active.phase = SelectionPhase::Freeze;
     strategy.config.exit_order.order_type = OrderType::Limit;
     strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
@@ -1640,10 +1615,10 @@ fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert_eq!(decision.forced_flat_reasons, vec![ForcedFlatReason::Freeze]);
     assert_eq!(decision.order_type, Some(OrderType::Market));
@@ -1655,7 +1630,7 @@ fn forced_flat_exit_uses_forced_exit_order_when_normal_exit_is_post_only() {
 
 #[test]
 fn forced_flat_exit_order_object_uses_configured_ioc_market_shape() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.active.phase = SelectionPhase::Freeze;
     strategy.config.exit_order.order_type = OrderType::Limit;
@@ -1677,9 +1652,9 @@ fn forced_flat_exit_order_object_uses_configured_ioc_market_shape() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
     let price = Price::new(
         decision
             .price
@@ -1717,7 +1692,7 @@ fn forced_flat_exit_order_object_uses_configured_ioc_market_shape() {
 
 #[test]
 fn forced_flat_exit_order_object_uses_configured_forced_exit_template() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     register_test_strategy_with_active_instruments(&mut strategy);
     strategy.active.phase = SelectionPhase::Freeze;
     strategy.config.exit_order.order_type = OrderType::Market;
@@ -1739,9 +1714,9 @@ fn forced_flat_exit_order_object_uses_configured_forced_exit_template() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
     let price = Price::new(
         decision
             .price
@@ -1780,7 +1755,7 @@ fn forced_flat_exit_order_object_uses_configured_forced_exit_template() {
 
 #[test]
 fn post_only_maker_order_objects_preserve_nt_limit_gtc_fields() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -1818,7 +1793,7 @@ fn post_only_maker_order_objects_preserve_nt_limit_gtc_fields() {
 
 #[test]
 fn gtd_limit_order_objects_preserve_nt_expire_time() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
@@ -1847,7 +1822,7 @@ fn gtd_limit_order_objects_preserve_nt_expire_time() {
 
 #[test]
 fn non_gtd_limit_order_objects_preserve_nt_expire_time() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
@@ -1874,7 +1849,7 @@ fn non_gtd_limit_order_objects_preserve_nt_expire_time() {
 
 #[test]
 fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     configure_limit_base_entry_order(&mut strategy);
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
@@ -1927,31 +1902,10 @@ fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
 
 #[test]
 fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
-    let mut raw = valid_raw_config();
-    let exit_order = raw
-        .as_table_mut()
-        .expect("valid config must be a table")
-        .get_mut("exit_order")
-        .expect("valid config should include exit_order")
-        .as_table_mut()
-        .expect("exit_order should be a table");
-    exit_order.insert(
-        "order_type".to_string(),
-        Value::String("stop_market".to_string()),
-    );
-    exit_order.insert(
-        "time_in_force".to_string(),
-        Value::String("gtc".to_string()),
-    );
-    exit_order.insert("trigger_price".to_string(), Value::Float(0.52));
-    exit_order.insert(
-        "trigger_instrument_id".to_string(),
-        Value::String("TRIGGER.SOURCE".to_string()),
-    );
-    let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
-        .expect("trigger_instrument_id should parse through runtime config");
+    let config = BinaryOracleEdgeTakerBuilder::parse_config(&valid_raw_config())
+        .expect("canonical runtime config should parse");
     let context = StrategyBuildContext::new(
-        RecordingFeeProvider::cold(),
+        fixture_order_economics(),
         recording_decision_evidence(),
         Arc::new(
             crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(
@@ -1964,12 +1918,16 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);
     let _cache = register_test_strategy(&mut strategy);
     let trigger_instrument_id = InstrumentId::from("TRIGGER.SOURCE");
+    strategy.config.entry_order.order_type = OrderType::StopMarket;
+    strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
+    strategy.config.entry_order.trigger_price = Some(0.52);
+    strategy.config.entry_order.trigger_instrument_id = Some(trigger_instrument_id);
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
 
     let order = strategy
-        .build_configured_exit_order(
+        .build_configured_entry_order(
             instrument_id,
-            OrderSide::Sell,
+            OrderSide::Buy,
             Quantity::new(2.0, 2),
             Price::new(0.40, 2),
             ClientOrderId::from("O-19700101-000000-001-021-1"),
@@ -1984,22 +1942,10 @@ fn triggered_order_objects_preserve_nt_trigger_instrument_id() {
 
 #[test]
 fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
-    let mut raw = valid_raw_config();
-    let exit_order = raw
-        .as_table_mut()
-        .expect("valid config must be a table")
-        .get_mut("exit_order")
-        .expect("valid config should include exit_order")
-        .as_table_mut()
-        .expect("exit_order should be a table");
-    exit_order.insert(
-        "trigger_instrument_id".to_string(),
-        Value::String("TRIGGER.SOURCE".to_string()),
-    );
-    let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
-        .expect("trigger_instrument_id should parse through runtime config");
+    let config = BinaryOracleEdgeTakerBuilder::parse_config(&valid_raw_config())
+        .expect("canonical runtime config should parse");
     let context = StrategyBuildContext::new(
-        RecordingFeeProvider::cold(),
+        fixture_order_economics(),
         recording_decision_evidence(),
         Arc::new(
             crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(
@@ -2011,12 +1957,13 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
     );
     let mut strategy = BinaryOracleEdgeTaker::new(config, context);
     let _cache = register_test_strategy(&mut strategy);
+    strategy.config.entry_order.trigger_instrument_id = Some(InstrumentId::from("TRIGGER.SOURCE"));
     let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
 
     let error = strategy
-        .build_configured_exit_order(
+        .build_configured_entry_order(
             instrument_id,
-            OrderSide::Sell,
+            OrderSide::Buy,
             Quantity::new(2.0, 2),
             Price::new(0.40, 2),
             ClientOrderId::from("O-19700101-000000-001-022-1"),
@@ -2031,7 +1978,7 @@ fn non_triggered_order_rejects_trigger_instrument_id_before_factory() {
 
 #[test]
 fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
@@ -2066,8 +2013,8 @@ fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
         price.to_string(),
         &order,
     );
-    let admission = build_submit_admission_request_from_order(
-        BoltV3SubmitAdmissionRequestInput {
+    let admission = crate::bolt_v3_submit_admission::order_admission_facts(
+        &BoltV3SubmitAdmissionRequestInput {
             execution_client_id: "polymarket_main",
             intent_kind: BoltV3SubmitIntentKind::Entry,
             intent: &intent,
@@ -2075,9 +2022,8 @@ fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
             valuation: OrderValuationContext::empty(),
             risk_reducing_exit_position: None,
         },
-        |_| Ok(Decimal::ZERO),
     )
-    .expect("StopLimit admission should derive from the compiled NT order");
+    .expect("StopLimit admission facts should derive from the compiled NT order");
 
     let OrderAny::StopLimit(order) = order else {
         panic!("StopLimit config should build an NT stop-limit order");
@@ -2092,7 +2038,7 @@ fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
     assert!(!order.is_reduce_only());
     assert!(!order.is_quote_quantity());
     assert_eq!(
-        admission.notional,
+        admission.reservation_basis,
         Decimal::from_str("0.800").expect("expected decimal should parse")
     );
 
@@ -2124,7 +2070,7 @@ fn stop_limit_order_objects_preserve_nt_price_trigger_and_admission() {
 
 #[test]
 fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
@@ -2159,8 +2105,8 @@ fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
         price.to_string(),
         &order,
     );
-    let admission = build_submit_admission_request_from_order(
-        BoltV3SubmitAdmissionRequestInput {
+    let admission = crate::bolt_v3_submit_admission::order_admission_facts(
+        &BoltV3SubmitAdmissionRequestInput {
             execution_client_id: "polymarket_main",
             intent_kind: BoltV3SubmitIntentKind::Entry,
             intent: &intent,
@@ -2168,9 +2114,8 @@ fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
             valuation: OrderValuationContext::empty(),
             risk_reducing_exit_position: None,
         },
-        |_| Ok(Decimal::ZERO),
     )
-    .expect("LimitIfTouched admission should derive from the compiled NT order");
+    .expect("LimitIfTouched admission facts should derive from the compiled NT order");
 
     let OrderAny::LimitIfTouched(order) = order else {
         panic!("LimitIfTouched config should build an NT limit-if-touched order");
@@ -2186,7 +2131,7 @@ fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
     assert!(!order.is_reduce_only());
     assert!(!order.is_quote_quantity());
     assert_eq!(
-        admission.notional,
+        admission.reservation_basis,
         Decimal::from_str("0.800").expect("expected decimal should parse")
     );
 
@@ -2218,7 +2163,7 @@ fn limit_if_touched_order_objects_preserve_nt_price_trigger_and_admission() {
 
 #[test]
 fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     configure_limit_base_entry_order(&mut strategy);
     let cache = register_test_strategy(&mut strategy);
     add_active_instruments_to_cache(&strategy, &cache);
@@ -2291,6 +2236,7 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
         "a market-style TrailingStopMarket entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
     );
 
+    strategy.config.entry_order.time_in_force = TimeInForce::Fok;
     let managed_position = materialize_configured_position(
         &mut strategy,
         instrument_id,
@@ -2301,7 +2247,7 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
     set_managed_position(
         &mut strategy,
         managed_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
     let exit_fallback_price = Price::new(0.45, 2);
@@ -2372,7 +2318,7 @@ fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission(
 
 #[test]
 fn trailing_stop_market_order_objects_use_nt_default_types_when_omitted() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let _cache = register_test_strategy(&mut strategy);
     strategy.config.entry_order.order_type = OrderType::TrailingStopMarket;
     strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -2407,7 +2353,7 @@ fn trailing_stop_market_rejects_required_nt_fields_before_factory() {
     let quantity = Quantity::new(1.0, 2);
     let price = Price::new(0.40, 2);
 
-    let mut missing_offset = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut missing_offset = ready_to_trade_strategy_with_bound_economics();
     let _cache = register_test_strategy(&mut missing_offset);
     missing_offset.config.entry_order.order_type = OrderType::TrailingStopMarket;
     missing_offset.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -2429,8 +2375,7 @@ fn trailing_stop_market_rejects_required_nt_fields_before_factory() {
     );
 
     for trailing_offset in [0.0, -0.01] {
-        let mut invalid_offset =
-            ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let mut invalid_offset = ready_to_trade_strategy_with_bound_economics();
         let _cache = register_test_strategy(&mut invalid_offset);
         invalid_offset.config.entry_order.order_type = OrderType::TrailingStopMarket;
         invalid_offset.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -2455,7 +2400,7 @@ fn trailing_stop_market_rejects_required_nt_fields_before_factory() {
         );
     }
 
-    let mut missing_trigger = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut missing_trigger = ready_to_trade_strategy_with_bound_economics();
     let _cache = register_test_strategy(&mut missing_trigger);
     missing_trigger.config.entry_order.order_type = OrderType::TrailingStopMarket;
     missing_trigger.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -2481,7 +2426,7 @@ fn trailing_stop_market_rejects_required_nt_fields_before_factory() {
         "{missing_trigger_error}"
     );
 
-    let mut is_post_only = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut is_post_only = ready_to_trade_strategy_with_bound_economics();
     let _cache = register_test_strategy(&mut is_post_only);
     is_post_only.config.entry_order.order_type = OrderType::TrailingStopMarket;
     is_post_only.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -2507,7 +2452,7 @@ fn trailing_stop_market_rejects_required_nt_fields_before_factory() {
 
 #[test]
 fn configured_order_build_rejects_nt_model_invalid_tif_before_factory() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     configure_limit_base_entry_order(&mut strategy);
     let _cache = register_test_strategy(&mut strategy);
     let instrument_id = selected_entry_instrument(&strategy);
@@ -2668,10 +2613,10 @@ fn stop_market_exit_submission_uses_trigger_price_without_book_liquidity() {
     set_managed_position(
         &mut strategy,
         position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert_eq!(decision.blocked_reason, None);
     assert_eq!(decision.forced_flat_reasons, vec![ForcedFlatReason::Freeze]);
@@ -2683,7 +2628,7 @@ fn stop_market_exit_submission_uses_trigger_price_without_book_liquidity() {
 
 #[test]
 fn stop_market_exit_ev_uses_trigger_price_instead_of_live_book() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.config.exit_order.order_type = OrderType::StopMarket;
     strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
     strategy.config.exit_order.trigger_price = Some(0.40);
@@ -2700,10 +2645,10 @@ fn stop_market_exit_ev_uses_trigger_price_instead_of_live_book() {
     set_managed_position(
         &mut strategy,
         position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
     let exit_ev_bps = decision
         .evaluation
         .exit_ev_bps
@@ -2794,15 +2739,13 @@ fn task5_forced_flat_predicates_cover_current_strategy_visible_triggers() {
 }
 
 #[test]
-fn historical_entry_fee_rate_exit_ev_uses_entry_fee_from_submission_time() {
-    let (mut strategy, fee_provider) =
-        ready_to_trade_strategy_with_recording_fees(Decimal::new(100, 2), Decimal::ZERO);
+fn strategy_exit_ev_uses_gross_entry_and_exit_prices() {
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let client_order_id = ClientOrderId::from("ENTRY-HIST-FEE-001");
     let pending = pending_entry_state(&mut strategy, client_order_id);
     let instrument_id = pending.instrument_id;
     set_pending_entry(&mut strategy, pending);
 
-    fee_provider.set_fee(&instrument_id.to_string(), Decimal::new(300, 2));
     let position_id = PositionId::from("P-HIST-FEE-001");
     seed_nt_open_position(
         &mut strategy,
@@ -2825,56 +2768,15 @@ fn historical_entry_fee_rate_exit_ev_uses_entry_fee_from_submission_time() {
         .expect("entry fill should preserve configured outcome side");
     let exit_ev_bps = strategy
         .current_exit_ev_bps_at(outcome_side, &order_config)
-        .expect("historical entry fee test should produce exit EV");
-    let total_entry_cost = 0.450 * (1.0 + 1.0 / BPS_DENOMINATOR);
-    let net_exit_value = 0.500 * (1.0 - 3.0 / BPS_DENOMINATOR);
-    let expected_exit_ev_bps =
-        ((net_exit_value - total_entry_cost) / total_entry_cost) * BPS_DENOMINATOR;
+        .expect("gross entry and exit prices should produce exit EV");
+    let expected_exit_ev_bps = ((0.500 - 0.450) / 0.450) * BPS_DENOMINATOR;
 
     assert!((exit_ev_bps - expected_exit_ev_bps).abs() < 1e-9);
 }
 
 #[test]
-fn historical_entry_fee_rate_logs_known_for_strategy_managed_positions() {
-    let (mut strategy, fee_provider) =
-        ready_to_trade_strategy_with_recording_fees(Decimal::new(100, 2), Decimal::ZERO);
-    let client_order_id = ClientOrderId::from("ENTRY-HIST-LOG-001");
-    let pending = pending_entry_state(&mut strategy, client_order_id);
-    let instrument_id = pending.instrument_id;
-    set_pending_entry(&mut strategy, pending);
-
-    fee_provider.set_fee(&instrument_id.to_string(), Decimal::new(300, 2));
-    let position_id = PositionId::from("P-HIST-LOG-001");
-    seed_nt_open_position(
-        &mut strategy,
-        instrument_id,
-        position_id,
-        Quantity::new(10.0, 2),
-        0.450,
-    );
-    strategy.on_order_filled(&order_filled_event(
-        client_order_id,
-        instrument_id,
-        position_id,
-    ));
-
-    let decision = strategy.exit_submission_decision_at(1_200);
-    let fields = strategy.exit_evaluation_log_fields_at(
-        1_200,
-        ExitEvaluationTriggerContext::unknown(1_200),
-        &decision,
-    );
-
-    assert!(fields.historical_entry_fee_rate_known);
-    assert_eq!(
-        fields.historical_entry_fee_rate_reason,
-        "captured_from_strategy_entry_state"
-    );
-}
-
-#[test]
 fn quarantined_legacy_short_position_blocks_exit_submission() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let instrument_id = InstrumentId::from("0xcondition-legacy-222.POLYMARKET");
     let mut tracked_book = OutcomeBookState::from_instrument_id(instrument_id);
     tracked_book.last_observed_instrument_id = Some(instrument_id);
@@ -2887,18 +2789,16 @@ fn quarantined_legacy_short_position_blocks_exit_submission() {
             lifecycle: BoltV3PositionMarketLifecycle::missing(),
             instrument_id,
             position_id: PositionId::from("P-LEGACY-SHORT-001"),
-            outcome_fees: OutcomeFeeState::empty(),
-            historical_entry_fee_bps: None,
             entry_order_side: OrderSide::Sell,
             side: PositionSide::Short,
             quantity: Quantity::new(5.0, 2),
             avg_px_open: 0.480,
             book: tracked_book,
         },
-        UnsupportedObservedReason::BootstrappedUnsupportedContract,
+        UnsupportedObservedReason::LiveUnsupportedContract,
     );
 
-    let decision = strategy.exit_submission_decision_at(2_000);
+    let decision = strategy.exit_intent_decision_at(2_000);
 
     assert_eq!(decision.evaluation.exit_decision, None);
     assert_eq!(decision.instrument_id, None);
@@ -2916,8 +2816,8 @@ fn quarantined_legacy_short_position_blocks_exit_submission() {
 }
 
 #[test]
-fn task6_exit_submission_decision_forced_flat_submits_for_open_up_position() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+fn forced_flat_exit_intent_submits_for_open_up_position() {
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.active.phase = SelectionPhase::Freeze;
     let open_position = OpenPositionState {
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
@@ -2931,8 +2831,6 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_up_position() {
         ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-001"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
@@ -2942,10 +2840,10 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_up_position() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert_eq!(decision.order_side, Some(OrderSide::Sell));
     assert_eq!(
@@ -2958,8 +2856,8 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_up_position() {
 }
 
 #[test]
-fn task6_exit_submission_decision_forced_flat_submits_for_open_down_position() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+fn forced_flat_exit_intent_submits_for_open_down_position() {
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.active.phase = SelectionPhase::Freeze;
     let open_position = OpenPositionState {
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
@@ -2973,8 +2871,6 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_down_position() {
         ),
         instrument_id: strategy.active.books.down.instrument_id.unwrap(),
         position_id: PositionId::from("P-DOWN-001"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(12.0, 2),
@@ -2984,10 +2880,10 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_down_position() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert_eq!(decision.order_side, Some(OrderSide::Sell));
     assert_eq!(
@@ -3000,8 +2896,8 @@ fn task6_exit_submission_decision_forced_flat_submits_for_open_down_position() {
 }
 
 #[test]
-fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+fn exit_intent_uses_live_hold_vs_exit_boundary() {
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let open_position = OpenPositionState {
         lifecycle: BoltV3PositionMarketLifecycle::from_entry_context(
             Some("MKT-1".to_string()),
@@ -3014,8 +2910,6 @@ fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
         ),
         instrument_id: strategy.active.books.up.instrument_id.unwrap(),
         position_id: PositionId::from("P-UP-002"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
@@ -3025,7 +2919,7 @@ fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy
         .pricing
@@ -3034,7 +2928,7 @@ fn task6_exit_submission_decision_uses_live_hold_vs_exit_boundary() {
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
 
-    let decision = strategy.exit_submission_decision_at(1_200);
+    let decision = strategy.exit_intent_decision_at(1_200);
 
     assert!(decision.forced_flat_reasons.is_empty());
     assert_eq!(decision.order_side, Some(OrderSide::Sell));

@@ -14,8 +14,8 @@ use crate::{
         SettlementRecoveryFacts,
     },
     bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter,
-    bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
-    bolt_v3_providers::FeeProvider,
+    bolt_v3_order_execution::{BoltV3OrderEconomicsHandle, BoltV3OrderExecutionPolicy},
+    bolt_v3_position_authority_feed::BoltV3PositionAuthorityCapability,
     bolt_v3_realized_volatility::RealizedVolSnapshot,
     bolt_v3_realized_volatility_runtime::RealizedVolSurfaceRuntime,
     bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle,
@@ -72,11 +72,12 @@ impl SettlementCapability {
 
 #[derive(Clone)]
 pub struct StrategyBuildContext {
-    fee_provider: Arc<dyn FeeProvider>,
+    order_economics: BoltV3OrderEconomicsHandle,
     decision_evidence: StrategyDecisionEvidence,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     order_execution_policy: BoltV3OrderExecutionPolicy,
     execution_venue: Venue,
+    position_authority: Option<BoltV3PositionAuthorityCapability>,
     realized_volatility: Option<RealizedVolatilityCapability>,
     settlement: Option<SettlementCapability>,
 }
@@ -156,21 +157,47 @@ impl StrategyBuildContext {
     /// selected market's venue equals this one (a wrong-venue selection from the shared NT cache
     /// would otherwise be possible once a second venue's instruments coexist in the cache).
     pub fn new(
-        fee_provider: Arc<dyn FeeProvider>,
+        order_economics: BoltV3OrderEconomicsHandle,
         decision_evidence: impl Into<StrategyDecisionEvidence>,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
         order_execution_policy: BoltV3OrderExecutionPolicy,
         execution_venue: Venue,
     ) -> Self {
         Self {
-            fee_provider,
+            order_economics,
             decision_evidence: decision_evidence.into(),
             submit_admission,
             order_execution_policy,
             execution_venue,
+            position_authority: None,
             realized_volatility: None,
             settlement: None,
         }
+    }
+
+    pub fn order_economics(&self) -> &BoltV3OrderEconomicsHandle {
+        &self.order_economics
+    }
+
+    pub fn with_position_authority(
+        mut self,
+        position_authority: BoltV3PositionAuthorityCapability,
+    ) -> Self {
+        self.position_authority = Some(position_authority);
+        self
+    }
+
+    pub(crate) fn position_authority(&self) -> Option<&BoltV3PositionAuthorityCapability> {
+        self.position_authority.as_ref()
+    }
+
+    #[cfg(test)]
+    pub fn with_order_economics_for_test(
+        mut self,
+        order_economics: BoltV3OrderEconomicsHandle,
+    ) -> Self {
+        self.order_economics = order_economics;
+        self
     }
 
     #[cfg(test)]
@@ -234,14 +261,6 @@ impl StrategyBuildContext {
             .get_or_insert_default()
             .health_transition_emitter = emitter;
         self
-    }
-
-    pub fn fee_provider(&self) -> &dyn FeeProvider {
-        self.fee_provider.as_ref()
-    }
-
-    pub fn fee_provider_arc(&self) -> Arc<dyn FeeProvider> {
-        self.fee_provider.clone()
     }
 
     pub(crate) fn edge_taker_evidence(&self) -> Option<EdgeTakerEvidence> {

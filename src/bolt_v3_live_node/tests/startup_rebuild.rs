@@ -213,7 +213,6 @@ fn current_process_admission_remains_attributed_on_nt_reprojection() {
         order_quantity: Decimal::new(10, 0),
         intent_kind: crate::bolt_v3_submit_admission::BoltV3SubmitIntentKind::Entry,
         risk_reducing_exit_proof: None,
-        kill_switch_forced_reduction: None,
         admission_evidence: Some(
             crate::bolt_v3_submit_admission::BoltV3CompiledOrderAdmissionEvidence {
                 venue_id: "POLYMARKET".to_string(),
@@ -259,51 +258,6 @@ fn current_process_admission_remains_attributed_on_nt_reprojection() {
         runtime
             .submit_admission
             .capital_admission_has_live_reservation("current-process-client-order")
-    );
-}
-
-#[test]
-fn startup_rebuild_derives_forced_reduction_liveness_from_nt_and_committed_evidence() {
-    let temp = tempfile::tempdir().expect("tempdir should create");
-    let mut loaded = loaded_config_with_submit_sizer_recovery(temp.path());
-    for pool in loaded
-        .root
-        .risk
-        .capital_pools
-        .as_mut()
-        .expect("fixture should configure capital pools")
-    {
-        pool.enforce_submit_admission = false;
-    }
-    write_admitted_forced_reduction(
-        &loaded,
-        "startup-forced-reduction",
-        "condition-fixture-yes.POLYMARKET",
-    );
-    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
-        .expect("fixture v3 LiveNode should build");
-    assert!(!runtime.capital_admission_configured());
-    assert!(!runtime.capital_admission_runtime_feed_configured());
-    seed_accepted_open_limit_order(
-        &runtime,
-        generic_limit_order(
-            "startup-forced-reduction",
-            "condition-fixture-yes.POLYMARKET",
-            OrderSide::Sell,
-            Quantity::from(1),
-            Price::from("0.40"),
-        ),
-        "POLYMARKET-001",
-    );
-
-    let rebuild = runtime.rebuild_capital_admission_from_nt_cache(2_000);
-
-    assert!(rebuild.accepted);
-    assert_eq!(
-        runtime
-            .submit_admission
-            .reconciled_live_forced_reduction_order_count(),
-        Some(1)
     );
 }
 

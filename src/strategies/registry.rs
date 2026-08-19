@@ -145,29 +145,13 @@ mod tests {
     use std::sync::Arc;
 
     use anyhow::{Context, anyhow};
-    use futures_util::future::{BoxFuture, FutureExt};
     use nautilus_common::actor::DataActor;
-    use nautilus_model::identifiers::{InstrumentId, StrategyId, Venue};
+    use nautilus_model::identifiers::{StrategyId, Venue};
     use nautilus_trading::{StrategyConfig, StrategyCore};
 
-    use crate::{
-        bolt_v3_providers::FeeProvider, bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
-    };
+    use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
 
     use super::*;
-
-    #[derive(Debug, Clone)]
-    struct NoopFeeProvider;
-
-    impl FeeProvider for NoopFeeProvider {
-        fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<rust_decimal::Decimal> {
-            None
-        }
-
-        fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-            async { Ok(()) }.boxed()
-        }
-    }
 
     #[derive(Debug)]
     struct TestStrategy {
@@ -237,7 +221,7 @@ mod tests {
         let decision_evidence =
             Arc::new(crate::bolt_v3_current_evidence::DecisionEvidenceRecorder::recording());
         StrategyBuildContext::new(
-            Arc::new(NoopFeeProvider),
+            crate::bolt_v3_economics_test_support::fixture_order_economics(),
             decision_evidence.clone(),
             Arc::new(BoltV3SubmitAdmissionState::new(decision_evidence)),
             crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),

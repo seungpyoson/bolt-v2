@@ -5,7 +5,7 @@ use bolt_v2::{
         BoltV3KillSwitchActionRequest, BoltV3KillSwitchActionRouter,
         BoltV3KillSwitchActionRouterError, BoltV3KillSwitchActionScope,
     },
-    bolt_v3_submit_admission::BoltV3KillSwitchForcedReductionClaim,
+    bolt_v3_kill_switch_flatten::BoltV3KillSwitchForcedReductionClaim,
 };
 use nautilus_model::enums::TradingState;
 use nautilus_model::identifiers::{AccountId, InstrumentId};

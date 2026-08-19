@@ -55,17 +55,17 @@ require-live-profile:
 
 # Repository-wide formatting (root + BTE workspaces).
 fmt: check-workspace
-    cargo fmt
+    cargo fmt --all
     cargo fmt --manifest-path "{{bte_root}}/Cargo.toml"
 
 clippy: check-workspace
-    cargo clippy --locked --features test-current-evidence-inspection --lib --bins -- -D warnings
+    cargo clippy --workspace --locked --features test-current-evidence-inspection --lib --bins -- -D warnings
 
 test *args: check-workspace
-    cargo nextest run --locked --no-fail-fast --features test-current-evidence-inspection {{args}}
+    cargo nextest run --workspace --locked --no-fail-fast --features test-current-evidence-inspection {{args}}
 
 test-archive archive *args: check-workspace
-    cargo nextest archive --locked --features test-current-evidence-inspection --archive-file "{{archive}}" {{args}}
+    cargo nextest archive --workspace --locked --features test-current-evidence-inspection --archive-file "{{archive}}" {{args}}
 
 test-archive-run archive extract_root *args: check-workspace
     cargo nextest run --archive-file "{{archive}}" --extract-to "{{extract_root}}" --extract-overwrite --workspace-remap "{{repo_root}}" {{args}}

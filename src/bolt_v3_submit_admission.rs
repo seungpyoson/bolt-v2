@@ -1,7 +1,7 @@
 use crate::bolt_v3_capital_admission::{
     CapitalAdmissionGate, CapitalAdmissionGateInputs, CapitalAdmissionPolicy,
-    CapitalAdmissionRequest, IntentLiquidity, IntentOrderKind, IntentSide,
-    ProductAdmissionSnapshot, ProductKind,
+    CapitalAdmissionRequest, CapitalAdmissionReservationEvidence, IntentLiquidity, IntentOrderKind,
+    IntentSide, ProductAdmissionSnapshot, ProductKind,
 };
 use crate::bolt_v3_capital_admission_state::{
     NtDerivedCapitalAdmissionState, OrderLifecycleCapitalAdmissionSnapshot,
@@ -14,11 +14,16 @@ use crate::bolt_v3_capital_reservation::{
 #[cfg(test)]
 use crate::bolt_v3_current_evidence::DecisionEvidenceRecorder;
 use crate::bolt_v3_current_evidence::{
-    AdmissionDecisionOutcome, AdmissionDetails, AdmissionRejectionReason,
+    AdmissionDecisionOutcome, AdmissionDetails, AdmissionEconomicsCalculationFactor,
+    AdmissionEconomicsClass, AdmissionEconomicsComponent, AdmissionEconomicsDetails,
+    AdmissionEconomicsInventoryApplication, AdmissionEconomicsKind, AdmissionEconomicsNativeEffect,
+    AdmissionEconomicsNativeUnit, AdmissionEconomicsPointEstimate,
+    AdmissionEconomicsRiskBoundAuthority, AdmissionEconomicsScope, AdmissionEconomicsSource,
+    AdmissionEconomicsTreatment, AdmissionEconomicsValuation, AdmissionRejectionReason,
     AdmittedEntryAdmissionFact, BasketAdmissionDetails, BasketAdmissionGrantedFact,
     BasketAdmissionIntentKind, BasketAdmittedLeg, CapitalAdmissionRebuildFact,
     CapitalAdmissionRebuildOutcome, CapitalAdmissionRebuildSource, CapitalAdmissionRejectionReason,
-    CommittedAdmission, EvidenceOrderSide, ForcedReductionAdmissionFact, LossGovernorHaltFact,
+    CommittedAdmission, EvidenceOrderSide, LossGovernorHaltFact,
     LossHaltReason as EvidenceLossHaltReason, LossSnapshotSource,
     LossSnapshotStaleReason as EvidenceLossSnapshotStaleReason, NonBlockingRecordOutcome,
     OrderIntentDetails, OrderRejectFact, OrderRejectReason, OrderRejectSource,
@@ -33,6 +38,7 @@ use crate::bolt_v3_current_evidence::{
 use crate::bolt_v3_current_evidence::{
     BasketAdmissionRejectedFact, BasketAdmissionRejectionReason,
 };
+use crate::bolt_v3_economics_runtime::{EconomicsAdmission, EconomicsAdmissionPurpose};
 use crate::bolt_v3_evidence_sampling::{EpisodeFirstNs, evict_oldest_episodes_over_cap};
 use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use crate::bolt_v3_loss_governor::{
@@ -42,6 +48,8 @@ use crate::bolt_v3_loss_governor::{
 };
 use crate::bolt_v3_numeric::{is_positive_finite, notional_float_tolerance};
 use crate::bolt_v3_provider_collateral_allowance::ProviderCollateralAllowanceCaptureFailureEvidence;
+use crate::economics::EconomicsError;
+use crate::integrations::nautilus::economics::economics_order_binding;
 use anyhow::Context;
 use nautilus_model::{
     data::{QuoteTick, TradeTick},
@@ -54,7 +62,7 @@ use rust_decimal::Decimal;
 use std::{
     collections::{BTreeMap, BTreeSet},
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -62,10 +70,8 @@ use std::{
 pub enum BoltV3SubmitIntentKind {
     Entry,
     RiskReducingExit,
-    KillSwitchForcedReduction,
 }
 
-const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
 pub const PROVIDER_COLLATERAL_ALLOWANCE_CAPTURE_FAILURE_RESERVATION_SOURCE: &str =
     "provider_collateral_allowance_capture_failure";
 
@@ -209,6 +215,9 @@ fn admission_outcome_key(outcome: &AdmissionDecisionOutcome) -> &'static str {
         AdmissionDecisionOutcome::Rejected(
             AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
         ) => "rejected_kill_switch_forced_reduction_cap_exceeded",
+        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::EconomicsSealRejected) => {
+            "rejected_economics_seal"
+        }
         AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CapitalAdmission) => {
             "rejected_capital_admission"
         }
@@ -286,14 +295,11 @@ impl EpisodeFirstNs for RejectEpisode {
 #[derive(Debug)]
 struct BoltV3SubmitAdmissionInner {
     kill_switch_state: KillSwitchState,
-    kill_switch_forced_reduction_policy: Option<BoltV3KillSwitchForcedReductionPolicy>,
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
     admitted_order_count: u32,
     admitted_order_count_by_execution_client: BTreeMap<String, u32>,
-    capital_admission_nt_projection_epoch: u64,
-    forced_reduction_liveness_reconciled: bool,
+    capital_admission_state_revision: u64,
     live_non_reservation_client_order_ids: BTreeSet<String>,
-    live_kill_switch_forced_reduction_client_order_ids: BTreeSet<String>,
     committed_admission_authority: ReservationRecoveryFacts,
     loss_policy: Option<LossGovernorPolicy>,
     loss_snapshot: Option<LossSnapshot>,
@@ -303,7 +309,7 @@ struct BoltV3SubmitAdmissionInner {
     capital_admission: Option<BoltV3SubmitCapitalAdmissionState>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct BoltV3SubmitCapitalAdmissionState {
     venue_id: String,
     account_id: String,
@@ -317,15 +323,55 @@ struct BoltV3SubmitCapitalAdmissionState {
     provider_collateral_allowance_capture_failure_observed_at_ns: Option<u64>,
     gate: CapitalAdmissionGate,
     next_sequence: u64,
-    client_order_reservations: BTreeMap<String, BoltV3SubmitReservationIndex>,
+    client_order_reservations: BTreeMap<String, BoltV3SubmitReservationRecord>,
+    unresolved_lifecycle_reservations: (usize, usize),
     fill_evidence_integrity_failed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct BoltV3SubmitReservationIndex {
-    submit_reservation_id: String,
-    collateral_group_id: String,
+struct BoltV3SubmitReservationRecord {
+    attribution: ReservationAttribution,
+    phase: BoltV3SubmitReservationPhase,
+    phase_revision: u64,
+    unresolved_in_projection: bool,
     fill_metadata: Option<BoltV3SubmitReservationFillMetadata>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3SubmitReservationPhase {
+    Reserved,
+    SinkInvoked,
+    ObservedOpen,
+}
+
+#[cfg(any(test, feature = "test-current-evidence-inspection"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoltV3SubmitReservationLifecycleSnapshot {
+    pub phase: BoltV3SubmitReservationPhase,
+    pub phase_revision: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct BoltV3SubmitTerminalReservationCapability {
+    client_order_id: String,
+    phase: BoltV3SubmitReservationPhase,
+    phase_revision: u64,
+}
+
+impl BoltV3SubmitTerminalReservationCapability {
+    pub(crate) fn client_order_id(&self) -> &str {
+        &self.client_order_id
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoltV3SubmitTerminalReservationDecision {
+    Retired,
+    NotRetained,
+    StaleCapability,
+    RevisionExhausted,
+    LedgerMismatch,
+    EvidenceRejected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,6 +404,7 @@ pub struct BoltV3SubmitCapitalAdmissionNtComponents {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3SubmitCapitalAdmissionOpenOrderReservation {
     pub client_order_id: String,
+    pub attribution: ReservationAttribution,
     pub submit_reservation_id: String,
     pub collateral_group_id: String,
     pub liability: Decimal,
@@ -380,7 +427,6 @@ pub struct BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
     pub all_open_orders_attributed: bool,
     pub reservations: Vec<BoltV3SubmitCapitalAdmissionOpenOrderReservation>,
     pub live_non_reservation_client_order_ids: BTreeSet<String>,
-    pub live_forced_reduction_client_order_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -432,6 +478,8 @@ struct BoltV3SubmitCapitalAdmissionRebuildAuditContext {
     source: CapitalAdmissionRebuildSource,
     observed_open_order_count: usize,
     all_open_orders_attributed: bool,
+    unresolved_sink_invoked_reservation_count: usize,
+    unresolved_observed_open_reservation_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -544,14 +592,11 @@ impl BoltV3SubmitAdmissionState {
         Self {
             inner: Arc::new(Mutex::new(BoltV3SubmitAdmissionInner {
                 kill_switch_state: KillSwitchState::Armed,
-                kill_switch_forced_reduction_policy: None,
                 live_submit_approval_limits,
                 admitted_order_count: 0,
                 admitted_order_count_by_execution_client: BTreeMap::new(),
-                capital_admission_nt_projection_epoch: 0,
-                forced_reduction_liveness_reconciled: false,
+                capital_admission_state_revision: 0,
                 live_non_reservation_client_order_ids: BTreeSet::new(),
-                live_kill_switch_forced_reduction_client_order_ids: BTreeSet::new(),
                 committed_admission_authority: ReservationRecoveryFacts::default(),
                 loss_policy,
                 loss_snapshot: None,
@@ -575,6 +620,7 @@ impl BoltV3SubmitAdmissionState {
                         gate: CapitalAdmissionGate::unreconciled(),
                         next_sequence: 0,
                         client_order_reservations: BTreeMap::new(),
+                        unresolved_lifecycle_reservations: (0, 0),
                         fill_evidence_integrity_failed: false,
                     }
                 }),
@@ -638,11 +684,11 @@ impl BoltV3SubmitAdmissionState {
         }
     }
 
-    pub(crate) fn capital_admission_nt_projection_epoch(&self) -> u64 {
+    pub(crate) fn capital_admission_state_revision(&self) -> u64 {
         self.inner
             .lock()
             .expect("submit admission state mutex should not be poisoned")
-            .capital_admission_nt_projection_epoch
+            .capital_admission_state_revision
     }
 
     #[cfg(any(test, feature = "test-current-evidence-inspection"))]
@@ -676,10 +722,13 @@ impl BoltV3SubmitAdmissionState {
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        advance_capital_admission_nt_projection_epoch(
-            &mut inner.capital_admission_nt_projection_epoch,
-        );
-        inner.forced_reduction_liveness_reconciled = false;
+        if advance_capital_admission_state_revision(&mut inner.capital_admission_state_revision)
+            .is_err()
+        {
+            log::error!(
+                "capital admission state revision exhausted while invalidating the NT projection"
+            );
+        }
         if let Some(capital_admission) = inner.capital_admission.as_mut() {
             capital_admission.gate.invalidate_reconciliation();
         }
@@ -724,10 +773,17 @@ impl BoltV3SubmitAdmissionState {
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        advance_capital_admission_nt_projection_epoch(
-            &mut inner.capital_admission_nt_projection_epoch,
-        );
-        inner.forced_reduction_liveness_reconciled = false;
+        if advance_capital_admission_state_revision(&mut inner.capital_admission_state_revision)
+            .is_err()
+        {
+            if let Some(capital_admission) = inner.capital_admission.as_mut() {
+                capital_admission.gate.invalidate_reconciliation();
+            }
+            log::error!(
+                "capital admission state revision exhausted while recording a collateral allowance capture failure"
+            );
+            return;
+        }
         if let Some(capital_admission) = inner.capital_admission.as_mut() {
             capital_admission.gate.invalidate_reconciliation();
             capital_admission.provider_collateral_allowance_capture_failure_source =
@@ -866,6 +922,173 @@ impl BoltV3SubmitAdmissionState {
             })
     }
 
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
+    pub fn remove_capital_ledger_reservation_only_for_test(&self, client_order_id: &str) -> bool {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        let Some(capital_admission) = inner.capital_admission.as_mut() else {
+            return false;
+        };
+        let Some(record) = capital_admission
+            .client_order_reservations
+            .get(client_order_id)
+        else {
+            return false;
+        };
+        let pool_id = record.attribution.capital_pool_id.clone();
+        let reservation_id = record.attribution.submit_reservation_id.clone();
+        capital_admission
+            .gate
+            .rollback_uncommitted_reservation(&pool_id, &reservation_id)
+            .is_some()
+    }
+
+    pub(crate) fn terminal_reservation_capabilities(
+        &self,
+    ) -> Vec<BoltV3SubmitTerminalReservationCapability> {
+        let inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        inner
+            .capital_admission
+            .as_ref()
+            .into_iter()
+            .flat_map(|state| state.client_order_reservations.iter())
+            .filter_map(|(client_order_id, record)| match record.phase {
+                BoltV3SubmitReservationPhase::SinkInvoked
+                | BoltV3SubmitReservationPhase::ObservedOpen => {
+                    Some(BoltV3SubmitTerminalReservationCapability {
+                        client_order_id: client_order_id.clone(),
+                        phase: record.phase,
+                        phase_revision: record.phase_revision,
+                    })
+                }
+                BoltV3SubmitReservationPhase::Reserved => None,
+            })
+            .collect()
+    }
+
+    pub(crate) fn retire_terminal_reservation(
+        &self,
+        capability: BoltV3SubmitTerminalReservationCapability,
+        observed_at_ns: u64,
+    ) -> BoltV3SubmitTerminalReservationDecision {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        let Some(live) = inner.capital_admission.as_ref() else {
+            return BoltV3SubmitTerminalReservationDecision::NotRetained;
+        };
+        let Some(record) = live
+            .client_order_reservations
+            .get(&capability.client_order_id)
+        else {
+            return BoltV3SubmitTerminalReservationDecision::NotRetained;
+        };
+        match (
+            record.phase,
+            record.phase_revision,
+            capability.phase,
+            capability.phase_revision,
+        ) {
+            (
+                BoltV3SubmitReservationPhase::SinkInvoked
+                | BoltV3SubmitReservationPhase::ObservedOpen,
+                record_revision,
+                capability_phase,
+                capability_revision,
+            ) if record.phase == capability_phase && record_revision == capability_revision => {}
+            _ => return BoltV3SubmitTerminalReservationDecision::StaleCapability,
+        }
+        let Some(next_revision) = inner.capital_admission_state_revision.checked_add(1) else {
+            if let Some(capital_admission) = inner.capital_admission.as_mut() {
+                capital_admission.gate.invalidate_reconciliation();
+            }
+            return BoltV3SubmitTerminalReservationDecision::RevisionExhausted;
+        };
+        let mut candidate = live.clone();
+        let Some(record) = candidate
+            .client_order_reservations
+            .get(&capability.client_order_id)
+            .cloned()
+        else {
+            if let Some(capital_admission) = inner.capital_admission.as_mut() {
+                capital_admission.gate.invalidate_reconciliation();
+            }
+            inner.capital_admission_state_revision = next_revision;
+            return BoltV3SubmitTerminalReservationDecision::LedgerMismatch;
+        };
+        let release = candidate.gate.remove_existing(
+            &record.attribution.capital_pool_id,
+            &record.attribution.collateral_group_id,
+            &record.attribution.submit_reservation_id,
+        );
+        if !release.accepted {
+            if let Some(capital_admission) = inner.capital_admission.as_mut() {
+                capital_admission.gate.invalidate_reconciliation();
+            }
+            inner.capital_admission_state_revision = next_revision;
+            return BoltV3SubmitTerminalReservationDecision::LedgerMismatch;
+        }
+        candidate
+            .client_order_reservations
+            .remove(&capability.client_order_id);
+        let unresolved = unresolved_reservation_counts(&candidate.client_order_reservations);
+        candidate.unresolved_lifecycle_reservations = unresolved;
+        let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
+            accepted: true,
+            reason: None,
+            attempted_reservation_count: 1,
+            rebuilt_reservation_count: 0,
+            live_reserved_liability: candidate
+                .gate
+                .live_reserved_liability(&candidate.capital_pool.pool_id),
+            missing_nt_account_cache_balance: None,
+        };
+        let audit_context = BoltV3SubmitCapitalAdmissionRebuildAuditContext {
+            observed_at_ns,
+            source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
+            observed_open_order_count: 0,
+            all_open_orders_attributed: true,
+            unresolved_sink_invoked_reservation_count: unresolved.0,
+            unresolved_observed_open_reservation_count: unresolved.1,
+        };
+        if !self.record_capital_admission_rebuild(&audit_context, &decision) {
+            if let Some(capital_admission) = inner.capital_admission.as_mut() {
+                capital_admission.gate.invalidate_reconciliation();
+            }
+            inner.capital_admission_state_revision = next_revision;
+            return BoltV3SubmitTerminalReservationDecision::EvidenceRejected;
+        }
+        inner.capital_admission = Some(candidate);
+        inner.capital_admission_state_revision = next_revision;
+        BoltV3SubmitTerminalReservationDecision::Retired
+    }
+
+    #[cfg(feature = "test-current-evidence-inspection")]
+    #[doc(hidden)]
+    pub fn retire_terminal_reservation_for_test(
+        &self,
+        client_order_id: &str,
+        observed_at_ns: u64,
+    ) -> bool {
+        let capability = self
+            .terminal_reservation_capabilities()
+            .into_iter()
+            .find(|capability| capability.client_order_id() == client_order_id);
+        capability.is_some_and(|capability| {
+            matches!(
+                self.retire_terminal_reservation(capability, observed_at_ns),
+                BoltV3SubmitTerminalReservationDecision::Retired
+            )
+        })
+    }
+
     pub fn capital_admission_reconciled(&self) -> Option<bool> {
         let inner = self
             .inner
@@ -880,17 +1103,14 @@ impl BoltV3SubmitAdmissionState {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn reconciled_live_forced_reduction_order_count(&self) -> Option<usize> {
-        let inner = self
-            .inner
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    pub fn unresolved_lifecycle_reservation_counts_for_test(&self) -> Option<(usize, usize)> {
+        self.inner
             .lock()
-            .expect("submit admission state mutex should not be poisoned");
-        inner.forced_reduction_liveness_reconciled.then_some(
-            inner
-                .live_kill_switch_forced_reduction_client_order_ids
-                .len(),
-        )
+            .expect("submit admission state mutex should not be poisoned")
+            .capital_admission
+            .as_ref()
+            .map(|state| state.unresolved_lifecycle_reservations)
     }
 
     pub(crate) fn capital_admission_open_order_reservation_from_attribution(
@@ -964,6 +1184,7 @@ impl BoltV3SubmitAdmissionState {
         )?;
         Some(BoltV3SubmitCapitalAdmissionOpenOrderReservation {
             client_order_id: evidence.client_order_id,
+            attribution: attribution.clone(),
             submit_reservation_id: attribution.submit_reservation_id.clone(),
             collateral_group_id: attribution.collateral_group_id.clone(),
             liability: open_liability,
@@ -994,7 +1215,6 @@ impl BoltV3SubmitAdmissionState {
                 all_open_orders_attributed: true,
                 reservations: open_order_reservations,
                 live_non_reservation_client_order_ids: BTreeSet::new(),
-                live_forced_reduction_client_order_ids: BTreeSet::new(),
             },
             now_ns,
         )
@@ -1036,8 +1256,6 @@ impl BoltV3SubmitAdmissionState {
         components: Option<BoltV3SubmitCapitalAdmissionNtComponents>,
         accepted_allowance_observed_at_ns: Option<u64>,
     ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
-        let live_forced_reduction_client_order_ids =
-            snapshot.live_forced_reduction_client_order_ids.clone();
         let live_non_reservation_client_order_ids =
             snapshot.live_non_reservation_client_order_ids.clone();
         let rebuilt_order_lifecycle = OrderLifecycleCapitalAdmissionSnapshot {
@@ -1046,20 +1264,22 @@ impl BoltV3SubmitAdmissionState {
             open_order_count: snapshot.observed_open_order_count,
             all_open_orders_attributed: snapshot.all_open_orders_attributed,
         };
-        let audit_context = BoltV3SubmitCapitalAdmissionRebuildAuditContext {
+        let mut audit_context = BoltV3SubmitCapitalAdmissionRebuildAuditContext {
             observed_at_ns: snapshot.observed_at_ns,
             source: snapshot.evidence_source,
             observed_open_order_count: snapshot.observed_open_order_count,
             all_open_orders_attributed: snapshot.all_open_orders_attributed,
+            unresolved_sink_invoked_reservation_count: 0,
+            unresolved_observed_open_reservation_count: 0,
         };
         let attempted_reservation_count = snapshot.observed_open_order_count;
         let mut inner = self
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        if expected_epoch.is_some_and(|expected_epoch| {
-            expected_epoch != inner.capital_admission_nt_projection_epoch
-        }) {
+        if expected_epoch
+            .is_some_and(|expected_epoch| expected_epoch != inner.capital_admission_state_revision)
+        {
             return BoltV3SubmitCapitalAdmissionRebuildDecision {
                 accepted: false,
                 reason: Some(ReservationRejectionReason::MissingEvidence),
@@ -1077,20 +1297,29 @@ impl BoltV3SubmitAdmissionState {
                 missing_nt_account_cache_balance: None,
             };
         }
-        if expected_epoch.is_some() {
-            advance_capital_admission_nt_projection_epoch(
-                &mut inner.capital_admission_nt_projection_epoch,
-            );
-        }
-        if snapshot.all_open_orders_attributed {
-            inner.live_non_reservation_client_order_ids = live_non_reservation_client_order_ids;
-            inner.live_kill_switch_forced_reduction_client_order_ids =
-                live_forced_reduction_client_order_ids;
-            inner.forced_reduction_liveness_reconciled = true;
-        } else {
-            inner.forced_reduction_liveness_reconciled = false;
-        }
-        let Some(capital_admission) = inner.capital_admission.as_mut() else {
+        let Some(candidate_phase_revision) = inner.capital_admission_state_revision.checked_add(1)
+        else {
+            if let Some(capital_admission) = inner.capital_admission.as_mut() {
+                capital_admission.gate.invalidate_reconciliation();
+            }
+            return BoltV3SubmitCapitalAdmissionRebuildDecision {
+                accepted: false,
+                reason: Some(ReservationRejectionReason::ReconciliationRequired),
+                attempted_reservation_count,
+                rebuilt_reservation_count: 0,
+                live_reserved_liability: inner
+                    .capital_admission
+                    .as_ref()
+                    .map(|capital_admission| {
+                        capital_admission
+                            .gate
+                            .live_reserved_liability(&capital_admission.capital_pool.pool_id)
+                    })
+                    .unwrap_or(Decimal::ZERO),
+                missing_nt_account_cache_balance: None,
+            };
+        };
+        let Some(mut candidate_capital_admission) = inner.capital_admission.clone() else {
             return BoltV3SubmitCapitalAdmissionRebuildDecision {
                 accepted: snapshot.all_open_orders_attributed,
                 reason: (!snapshot.all_open_orders_attributed)
@@ -1101,6 +1330,7 @@ impl BoltV3SubmitAdmissionState {
                 missing_nt_account_cache_balance: None,
             };
         };
+        let capital_admission = &mut candidate_capital_admission;
         if let Some(mut components) = components {
             if capital_admission
                 .provider_collateral_allowance_capture_failure_observed_at_ns
@@ -1117,8 +1347,7 @@ impl BoltV3SubmitAdmissionState {
             refresh_capital_admission_state_from_components(capital_admission, components);
         }
         if capital_admission.fill_evidence_integrity_failed {
-            capital_admission.gate = CapitalAdmissionGate::unreconciled();
-            capital_admission.client_order_reservations.clear();
+            capital_admission.gate.invalidate_reconciliation();
             refresh_capital_admission_reservation_snapshot_with_source(
                 capital_admission,
                 snapshot.observed_at_ns,
@@ -1130,17 +1359,23 @@ impl BoltV3SubmitAdmissionState {
                 reason: Some(ReservationRejectionReason::MissingEvidence),
                 attempted_reservation_count,
                 rebuilt_reservation_count: 0,
-                live_reserved_liability: Decimal::ZERO,
+                live_reserved_liability: capital_admission
+                    .gate
+                    .live_reserved_liability(&capital_admission.capital_pool.pool_id),
                 missing_nt_account_cache_balance: None,
             };
-            return self.finish_capital_admission_rebuild(&mut inner, &audit_context, decision);
+            return self.finish_capital_admission_rebuild(
+                &mut inner,
+                &audit_context,
+                candidate_phase_revision,
+                decision,
+            );
         }
         if !snapshot.all_open_orders_attributed {
             if let Some(state) = capital_admission.state.as_mut() {
                 apply_rebuild_order_lifecycle(state, rebuilt_order_lifecycle);
             }
-            capital_admission.gate = CapitalAdmissionGate::unreconciled();
-            capital_admission.client_order_reservations.clear();
+            capital_admission.gate.invalidate_reconciliation();
             refresh_capital_admission_reservation_snapshot_with_source(
                 capital_admission,
                 snapshot.observed_at_ns,
@@ -1157,11 +1392,15 @@ impl BoltV3SubmitAdmissionState {
                     .live_reserved_liability(&capital_admission.capital_pool.pool_id),
                 missing_nt_account_cache_balance: None,
             };
-            return self.finish_capital_admission_rebuild(&mut inner, &audit_context, decision);
+            return self.finish_capital_admission_rebuild(
+                &mut inner,
+                &audit_context,
+                candidate_phase_revision,
+                decision,
+            );
         }
         let Some(state) = capital_admission.state.as_ref() else {
-            capital_admission.gate = CapitalAdmissionGate::unreconciled();
-            capital_admission.client_order_reservations.clear();
+            capital_admission.gate.invalidate_reconciliation();
             let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
                 accepted: false,
                 reason: Some(ReservationRejectionReason::MissingEvidence),
@@ -1172,17 +1411,23 @@ impl BoltV3SubmitAdmissionState {
                     .live_reserved_liability(&capital_admission.capital_pool.pool_id),
                 missing_nt_account_cache_balance: None,
             };
-            return self.finish_capital_admission_rebuild(&mut inner, &audit_context, decision);
+            return self.finish_capital_admission_rebuild(
+                &mut inner,
+                &audit_context,
+                candidate_phase_revision,
+                decision,
+            );
         };
         capital_admission.capital_pool.source = state.portfolio.source.clone();
         capital_admission.capital_pool.observed_at_ns = state.portfolio.observed_at_ns;
 
+        let retained_index = capital_admission.client_order_reservations.clone();
         let mut rebuilt_index = BTreeMap::new();
-        let mut reservation_requests = Vec::with_capacity(snapshot.reservations.len());
+        let mut reservation_requests: Vec<CapitalAdmissionReservationEvidence> =
+            Vec::with_capacity(snapshot.reservations.len() + retained_index.len());
         for (index, reservation) in snapshot.reservations.into_iter().enumerate() {
             if rebuilt_index.contains_key(&reservation.client_order_id) {
-                capital_admission.gate = CapitalAdmissionGate::unreconciled();
-                capital_admission.client_order_reservations.clear();
+                capital_admission.gate.invalidate_reconciliation();
                 let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
                     accepted: false,
                     reason: Some(ReservationRejectionReason::DuplicateReservation),
@@ -1193,11 +1438,15 @@ impl BoltV3SubmitAdmissionState {
                         .live_reserved_liability(&capital_admission.capital_pool.pool_id),
                     missing_nt_account_cache_balance: None,
                 };
-                return self.finish_capital_admission_rebuild(&mut inner, &audit_context, decision);
+                return self.finish_capital_admission_rebuild(
+                    &mut inner,
+                    &audit_context,
+                    candidate_phase_revision,
+                    decision,
+                );
             }
             if !rebuilt_open_order_reservation_attribution_valid(&reservation) {
-                capital_admission.gate = CapitalAdmissionGate::unreconciled();
-                capital_admission.client_order_reservations.clear();
+                capital_admission.gate.invalidate_reconciliation();
                 let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
                     accepted: false,
                     reason: Some(ReservationRejectionReason::MissingEvidence),
@@ -1208,7 +1457,37 @@ impl BoltV3SubmitAdmissionState {
                         .live_reserved_liability(&capital_admission.capital_pool.pool_id),
                     missing_nt_account_cache_balance: None,
                 };
-                return self.finish_capital_admission_rebuild(&mut inner, &audit_context, decision);
+                return self.finish_capital_admission_rebuild(
+                    &mut inner,
+                    &audit_context,
+                    candidate_phase_revision,
+                    decision,
+                );
+            }
+            if retained_index
+                .get(&reservation.client_order_id)
+                .is_some_and(|retained| {
+                    retained.phase == BoltV3SubmitReservationPhase::Reserved
+                        || retained.attribution != reservation.attribution
+                })
+            {
+                capital_admission.gate.invalidate_reconciliation();
+                let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
+                    accepted: false,
+                    reason: Some(ReservationRejectionReason::MissingEvidence),
+                    attempted_reservation_count: index + 1,
+                    rebuilt_reservation_count: 0,
+                    live_reserved_liability: capital_admission
+                        .gate
+                        .live_reserved_liability(&capital_admission.capital_pool.pool_id),
+                    missing_nt_account_cache_balance: None,
+                };
+                return self.finish_capital_admission_rebuild(
+                    &mut inner,
+                    &audit_context,
+                    candidate_phase_revision,
+                    decision,
+                );
             }
 
             let submit_reservation_id = reservation.submit_reservation_id;
@@ -1218,52 +1497,179 @@ impl BoltV3SubmitAdmissionState {
             let observed_at_ns = reservation.observed_at_ns;
             rebuilt_index.insert(
                 reservation.client_order_id,
-                BoltV3SubmitReservationIndex {
-                    submit_reservation_id: submit_reservation_id.clone(),
-                    collateral_group_id: collateral_group_id.clone(),
+                BoltV3SubmitReservationRecord {
+                    attribution: reservation.attribution,
+                    phase: BoltV3SubmitReservationPhase::ObservedOpen,
+                    phase_revision: candidate_phase_revision,
+                    unresolved_in_projection: false,
                     fill_metadata: Some(BoltV3SubmitReservationFillMetadata {
                         instrument_id,
                         side,
                     }),
                 },
             );
-            reservation_requests.push(ReservationRequest {
-                request_id: submit_reservation_id,
-                pool_id: capital_admission.capital_pool.pool_id.clone(),
-                collateral_group_id,
-                liability: reservation.liability,
-                observed_at_ns,
-                evidence_label: reservation.evidence_label,
-            });
+            reservation_requests.push(
+                ReservationRequest {
+                    request_id: submit_reservation_id,
+                    pool_id: capital_admission.capital_pool.pool_id.clone(),
+                    collateral_group_id,
+                    liability: reservation.liability,
+                    observed_at_ns,
+                    evidence_label: reservation.evidence_label,
+                }
+                .into(),
+            );
         }
 
-        capital_admission.client_order_reservations.clear();
-        let decision = capital_admission.gate.rebuild_open_order_reservations(
+        for (client_order_id, mut record) in retained_index {
+            match (rebuilt_index.contains_key(&client_order_id), record.phase) {
+                (true, _) => {}
+                (
+                    false,
+                    BoltV3SubmitReservationPhase::SinkInvoked
+                    | BoltV3SubmitReservationPhase::ObservedOpen,
+                ) => {
+                    let retained = capital_admission.gate.retained_reservation(
+                        &record.attribution.capital_pool_id,
+                        &record.attribution.collateral_group_id,
+                        &record.attribution.submit_reservation_id,
+                    );
+                    let Ok(retained) = retained else {
+                        capital_admission.gate.invalidate_reconciliation();
+                        let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
+                            accepted: false,
+                            reason: Some(ReservationRejectionReason::MissingEvidence),
+                            attempted_reservation_count,
+                            rebuilt_reservation_count: 0,
+                            live_reserved_liability: capital_admission
+                                .gate
+                                .live_reserved_liability(&capital_admission.capital_pool.pool_id),
+                            missing_nt_account_cache_balance: None,
+                        };
+                        return self.finish_capital_admission_rebuild(
+                            &mut inner,
+                            &audit_context,
+                            candidate_phase_revision,
+                            decision,
+                        );
+                    };
+                    reservation_requests.push(
+                        CapitalAdmissionReservationEvidence::RetainedLifecycleReservation(retained),
+                    );
+                    record.unresolved_in_projection = true;
+                    rebuilt_index.insert(client_order_id, record);
+                }
+                (false, BoltV3SubmitReservationPhase::Reserved) => {
+                    capital_admission.gate.invalidate_reconciliation();
+                    let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
+                        accepted: false,
+                        reason: Some(ReservationRejectionReason::MissingEvidence),
+                        attempted_reservation_count,
+                        rebuilt_reservation_count: 0,
+                        live_reserved_liability: capital_admission
+                            .gate
+                            .live_reserved_liability(&capital_admission.capital_pool.pool_id),
+                        missing_nt_account_cache_balance: None,
+                    };
+                    return self.finish_capital_admission_rebuild(
+                        &mut inner,
+                        &audit_context,
+                        candidate_phase_revision,
+                        decision,
+                    );
+                }
+            }
+        }
+
+        let unresolved = unresolved_reservation_counts(&rebuilt_index);
+        audit_context.unresolved_sink_invoked_reservation_count = unresolved.0;
+        audit_context.unresolved_observed_open_reservation_count = unresolved.1;
+        capital_admission.unresolved_lifecycle_reservations = unresolved;
+
+        let mut candidate_gate = capital_admission.gate.clone();
+        let gate_decision = candidate_gate.rebuild_open_order_reservations(
             &capital_admission.capital_pool,
             &reservation_requests,
             now_ns,
             capital_admission.policy.min_remaining_pool_balance,
         );
-        if decision.accepted {
-            capital_admission.client_order_reservations = rebuilt_index;
-            if let Some(state) = capital_admission.state.as_mut() {
-                apply_rebuild_order_lifecycle(state, rebuilt_order_lifecycle);
-            }
-            refresh_capital_admission_reservation_snapshot(capital_admission, now_ns);
-        }
-
         let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
-            accepted: decision.accepted,
-            reason: decision.reason,
-            attempted_reservation_count: decision.attempted_reservation_count,
-            rebuilt_reservation_count: decision.rebuilt_reservation_count,
-            live_reserved_liability: decision.live_reserved_liability,
+            accepted: gate_decision.accepted,
+            reason: gate_decision.reason,
+            attempted_reservation_count: gate_decision.attempted_reservation_count,
+            rebuilt_reservation_count: gate_decision.rebuilt_reservation_count,
+            live_reserved_liability: gate_decision.live_reserved_liability,
             missing_nt_account_cache_balance: None,
         };
-        self.finish_capital_admission_rebuild(&mut inner, &audit_context, decision)
+        match decision.accepted {
+            false => {
+                capital_admission.gate.invalidate_reconciliation();
+                self.finish_capital_admission_rebuild(
+                    &mut inner,
+                    &audit_context,
+                    candidate_phase_revision,
+                    decision,
+                )
+            }
+            true => match self.record_capital_admission_rebuild(&audit_context, &decision) {
+                false => {
+                    let live_reserved_liability =
+                        inner
+                            .capital_admission
+                            .as_mut()
+                            .map_or(Decimal::ZERO, |live| {
+                                live.gate.invalidate_reconciliation();
+                                refresh_capital_admission_reservation_snapshot_with_source(
+                                    live,
+                                    audit_context.observed_at_ns,
+                                    audit_context.source.as_str().to_string(),
+                                    false,
+                                );
+                                live.gate
+                                    .live_reserved_liability(&live.capital_pool.pool_id)
+                            });
+                    inner.capital_admission_state_revision = candidate_phase_revision;
+                    BoltV3SubmitCapitalAdmissionRebuildDecision {
+                        accepted: false,
+                        reason: Some(ReservationRejectionReason::MissingEvidence),
+                        attempted_reservation_count: decision.attempted_reservation_count,
+                        rebuilt_reservation_count: 0,
+                        live_reserved_liability,
+                        missing_nt_account_cache_balance: None,
+                    }
+                }
+                true => {
+                    let prior_unresolved = inner
+                        .capital_admission
+                        .as_ref()
+                        .map(|state| state.unresolved_lifecycle_reservations)
+                        .unwrap_or((0, 0));
+                    if prior_unresolved != unresolved {
+                        log::warn!(
+                            "bolt-v3 capital admission unresolved lifecycle reservations changed: sink_invoked={} observed_open={}",
+                            unresolved.0,
+                            unresolved.1,
+                        );
+                    }
+                    capital_admission.gate = candidate_gate;
+                    capital_admission.client_order_reservations = rebuilt_index;
+                    if let Some(state) = capital_admission.state.as_mut() {
+                        apply_rebuild_order_lifecycle(state, rebuilt_order_lifecycle);
+                    }
+                    refresh_capital_admission_reservation_snapshot(capital_admission, now_ns);
+                    inner.capital_admission = Some(candidate_capital_admission);
+                    inner.capital_admission_state_revision = candidate_phase_revision;
+                    if audit_context.all_open_orders_attributed {
+                        inner.live_non_reservation_client_order_ids =
+                            live_non_reservation_client_order_ids;
+                    }
+                    decision
+                }
+            },
+        }
     }
 
-    #[cfg(feature = "test-current-evidence-inspection")]
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     #[doc(hidden)]
     pub fn rebuild_capital_admission_open_order_snapshot_for_test(
         &self,
@@ -1275,8 +1681,38 @@ impl BoltV3SubmitAdmissionState {
 
     #[cfg(feature = "test-current-evidence-inspection")]
     #[doc(hidden)]
-    pub fn capital_admission_nt_projection_epoch_for_test(&self) -> u64 {
-        self.capital_admission_nt_projection_epoch()
+    pub fn capital_admission_state_revision_for_test(&self) -> u64 {
+        self.capital_admission_state_revision()
+    }
+
+    #[cfg(feature = "test-current-evidence-inspection")]
+    #[doc(hidden)]
+    pub fn set_capital_admission_state_revision_for_test(&self, revision: u64) {
+        self.inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned")
+            .capital_admission_state_revision = revision;
+    }
+
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
+    pub fn capital_admission_reservation_lifecycle_for_test(
+        &self,
+        client_order_id: &str,
+    ) -> Option<BoltV3SubmitReservationLifecycleSnapshot> {
+        let inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        let record = inner
+            .capital_admission
+            .as_ref()?
+            .client_order_reservations
+            .get(client_order_id)?;
+        Some(BoltV3SubmitReservationLifecycleSnapshot {
+            phase: record.phase,
+            phase_revision: record.phase_revision,
+        })
     }
 
     #[cfg(feature = "test-current-evidence-inspection")]
@@ -1302,39 +1738,11 @@ impl BoltV3SubmitAdmissionState {
         &self,
         inner: &mut BoltV3SubmitAdmissionInner,
         context: &BoltV3SubmitCapitalAdmissionRebuildAuditContext,
+        failure_revision: u64,
         decision: BoltV3SubmitCapitalAdmissionRebuildDecision,
     ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
-        let outcome = if decision.accepted {
-            CapitalAdmissionRebuildOutcome::Accepted
-        } else {
-            CapitalAdmissionRebuildOutcome::Rejected(
-                decision
-                    .reason
-                    .map(capital_admission_rejection_reason)
-                    .unwrap_or(CapitalAdmissionRejectionReason::InvalidRequest),
-            )
-        };
-        let audit = CapitalAdmissionRebuildFact {
-            observed_at_ns: context.observed_at_ns,
-            source: context.source,
-            observed_open_order_count: context.observed_open_order_count,
-            all_open_orders_attributed: context.all_open_orders_attributed,
-            outcome,
-            attempted_reservation_count: decision.attempted_reservation_count,
-            recovered_reservation_count: decision.rebuilt_reservation_count,
-            live_reserved_liability: decision.live_reserved_liability.to_string(),
-        };
-        if self
-            .decision_evidence
-            .record_capital_admission_rebuild(audit)
-            .is_ok()
-        {
-            return decision;
-        }
-
         if let Some(capital_admission) = inner.capital_admission.as_mut() {
-            capital_admission.gate = CapitalAdmissionGate::unreconciled();
-            capital_admission.client_order_reservations.clear();
+            capital_admission.gate.invalidate_reconciliation();
             refresh_capital_admission_reservation_snapshot_with_source(
                 capital_admission,
                 context.observed_at_ns,
@@ -1342,6 +1750,11 @@ impl BoltV3SubmitAdmissionState {
                 false,
             );
         }
+        inner.capital_admission_state_revision = failure_revision;
+        if self.record_capital_admission_rebuild(context, &decision) {
+            return decision;
+        }
+
         BoltV3SubmitCapitalAdmissionRebuildDecision {
             accepted: false,
             reason: Some(ReservationRejectionReason::MissingEvidence),
@@ -1358,6 +1771,39 @@ impl BoltV3SubmitAdmissionState {
                 .unwrap_or(Decimal::ZERO),
             missing_nt_account_cache_balance: None,
         }
+    }
+
+    fn record_capital_admission_rebuild(
+        &self,
+        context: &BoltV3SubmitCapitalAdmissionRebuildAuditContext,
+        decision: &BoltV3SubmitCapitalAdmissionRebuildDecision,
+    ) -> bool {
+        let outcome = match decision.accepted {
+            true => CapitalAdmissionRebuildOutcome::Accepted,
+            false => CapitalAdmissionRebuildOutcome::Rejected(
+                decision
+                    .reason
+                    .map(capital_admission_rejection_reason)
+                    .unwrap_or(CapitalAdmissionRejectionReason::InvalidRequest),
+            ),
+        };
+        let audit = CapitalAdmissionRebuildFact {
+            observed_at_ns: context.observed_at_ns,
+            source: context.source,
+            observed_open_order_count: context.observed_open_order_count,
+            all_open_orders_attributed: context.all_open_orders_attributed,
+            outcome,
+            attempted_reservation_count: decision.attempted_reservation_count,
+            recovered_reservation_count: decision.rebuilt_reservation_count,
+            live_reserved_liability: decision.live_reserved_liability.to_string(),
+            unresolved_sink_invoked_reservation_count: context
+                .unresolved_sink_invoked_reservation_count,
+            unresolved_observed_open_reservation_count: context
+                .unresolved_observed_open_reservation_count,
+        };
+        self.decision_evidence
+            .record_capital_admission_rebuild(audit)
+            .is_ok()
     }
 
     pub fn record_capital_admission_fill_evidence(
@@ -1377,7 +1823,7 @@ impl BoltV3SubmitAdmissionState {
         let BoltV3SubmitAdmissionInner {
             committed_admission_authority,
             capital_admission,
-            capital_admission_nt_projection_epoch,
+            capital_admission_state_revision,
             ..
         } = &mut *inner;
         let Some(capital_admission) = capital_admission.as_mut() else {
@@ -1398,7 +1844,7 @@ impl BoltV3SubmitAdmissionState {
             .and_then(|index| {
                 index.fill_metadata.as_ref().map(|metadata| {
                     (
-                        index.submit_reservation_id.clone(),
+                        index.attribution.submit_reservation_id.clone(),
                         metadata.instrument_id.clone(),
                         metadata.side,
                     )
@@ -1421,12 +1867,11 @@ impl BoltV3SubmitAdmissionState {
                     })
             });
         let Some((submit_reservation_id, instrument_id, side)) = expected else {
-            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
-            fail_capital_admission_fill_evidence_integrity(
+            return reject_capital_admission_fill_evidence_integrity(
                 capital_admission,
+                capital_admission_state_revision,
                 update.observed_at_ns,
             );
-            return BoltV3SubmitReservationFillEvidenceDecision::unknown();
         };
         if update.trade_id.trim().len() != update.trade_id.len()
             || update.trade_id.is_empty()
@@ -1434,12 +1879,11 @@ impl BoltV3SubmitAdmissionState {
             || update.instrument_id != instrument_id
             || update.side != side
         {
-            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
-            fail_capital_admission_fill_evidence_integrity(
+            return reject_capital_admission_fill_evidence_integrity(
                 capital_admission,
+                capital_admission_state_revision,
                 update.observed_at_ns,
             );
-            return BoltV3SubmitReservationFillEvidenceDecision::unknown();
         }
         if let Some(existing) = committed_admission_authority.reservation_fill(
             &update.client_order_id,
@@ -1452,37 +1896,43 @@ impl BoltV3SubmitAdmissionState {
                     unknown_reservation: false,
                 };
             }
-            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
-            fail_capital_admission_fill_evidence_integrity(
+            return reject_capital_admission_fill_evidence_integrity(
                 capital_admission,
+                capital_admission_state_revision,
                 update.observed_at_ns,
             );
-            return BoltV3SubmitReservationFillEvidenceDecision::unknown();
         }
         let Some(index) = live_index else {
             log::warn!(
                 "bolt-v3 submit admission received new fill for non-live client_order_id={}",
                 update.client_order_id
             );
-            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
-            fail_capital_admission_fill_evidence_integrity(
+            return reject_capital_admission_fill_evidence_integrity(
                 capital_admission,
+                capital_admission_state_revision,
                 update.observed_at_ns,
             );
-            return BoltV3SubmitReservationFillEvidenceDecision::unknown();
         };
         if index.fill_metadata.is_none() {
-            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
-            fail_capital_admission_fill_evidence_integrity(
+            return reject_capital_admission_fill_evidence_integrity(
                 capital_admission,
+                capital_admission_state_revision,
                 update.observed_at_ns,
             );
-            return BoltV3SubmitReservationFillEvidenceDecision::unknown();
         }
-        advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
+        match advance_capital_admission_state_revision(capital_admission_state_revision) {
+            Ok(()) => {}
+            Err(_) => {
+                capital_admission.gate.invalidate_reconciliation();
+                log::error!(
+                    "capital admission state revision exhausted while recording fill evidence"
+                );
+                return BoltV3SubmitReservationFillEvidenceDecision::unknown();
+            }
+        }
         let fill_evidence = SubmitReservationFillFact {
             client_order_id: update.client_order_id.clone(),
-            submit_reservation_id: index.submit_reservation_id.clone(),
+            submit_reservation_id: index.attribution.submit_reservation_id.clone(),
             trade_id: update.trade_id.clone(),
             instrument_id: update.instrument_id.clone(),
             side: match update.side {
@@ -1537,12 +1987,15 @@ impl BoltV3SubmitAdmissionState {
             .expect("submit admission state mutex should not be poisoned");
         let BoltV3SubmitAdmissionInner {
             capital_admission,
-            capital_admission_nt_projection_epoch,
+            capital_admission_state_revision,
             ..
         } = &mut *inner;
         if let Some(capital_admission) = capital_admission.as_mut() {
-            advance_capital_admission_nt_projection_epoch(capital_admission_nt_projection_epoch);
-            fail_capital_admission_fill_evidence_integrity(capital_admission, observed_at_ns);
+            let _ = reject_capital_admission_fill_evidence_integrity(
+                capital_admission,
+                capital_admission_state_revision,
+                observed_at_ns,
+            );
         }
     }
 
@@ -1570,30 +2023,45 @@ impl BoltV3SubmitAdmissionState {
             .clone()
     }
 
-    pub fn configure_kill_switch_forced_reduction_policy(
-        &self,
-        policy: BoltV3KillSwitchForcedReductionPolicy,
-    ) {
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("submit admission state mutex should not be poisoned");
-        inner.kill_switch_forced_reduction_policy = Some(policy);
-        inner.forced_reduction_liveness_reconciled = false;
-    }
-
+    /// Test-only entrypoint for exercising admission policy independently of
+    /// the production economics seal.
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
     pub fn admit(
         &self,
         request: &BoltV3SubmitAdmissionRequest,
     ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
-        self.admit_at(request, current_unix_ns()?)
+        self.admit_at_inner(request, None, current_unix_ns()?)
     }
 
+    pub(crate) fn admit_with_economics_at(
+        &self,
+        request: &BoltV3SubmitAdmissionRequest,
+        economics: &EconomicsAdmission,
+        now_ns: u64,
+    ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
+        self.admit_at_inner(request, Some(economics), now_ns)
+    }
+
+    /// Test-only event-time entrypoint for admission policy tests that do not
+    /// exercise the production economics seal.
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[doc(hidden)]
     pub fn admit_at(
         &self,
         request: &BoltV3SubmitAdmissionRequest,
         now_ns: u64,
     ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
+        self.admit_at_inner(request, None, now_ns)
+    }
+
+    fn admit_at_inner(
+        &self,
+        request: &BoltV3SubmitAdmissionRequest,
+        economics: Option<&EconomicsAdmission>,
+        now_ns: u64,
+    ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
+        ensure_economics_available(economics, now_ns)?;
         let mut inner = self
             .inner
             .lock()
@@ -1608,9 +2076,13 @@ impl BoltV3SubmitAdmissionState {
                 }
                 evaluation.outcome =
                     AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CountCapExhausted);
-                if let Err(err) =
-                    self.record_admission_decision(&mut inner, request, &evaluation, now_ns)
-                {
+                if let Err(err) = self.record_admission_decision(
+                    &mut inner,
+                    request,
+                    &evaluation,
+                    economics,
+                    now_ns,
+                ) {
                     return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
                         reason: format!("{err:#}"),
                     });
@@ -1629,48 +2101,51 @@ impl BoltV3SubmitAdmissionState {
                 }
                 evaluation.outcome =
                     AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CountCapExhausted);
-                if let Err(err) =
-                    self.record_admission_decision(&mut inner, request, &evaluation, now_ns)
-                {
+                if let Err(err) = self.record_admission_decision(
+                    &mut inner,
+                    request,
+                    &evaluation,
+                    economics,
+                    now_ns,
+                ) {
                     return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
                         reason: format!("{err:#}"),
                     });
                 }
                 return Err(BoltV3SubmitAdmissionError::CountCapExhausted);
             };
-            let forced_reduction_client_order_id = (request.intent_kind
-                == BoltV3SubmitIntentKind::KillSwitchForcedReduction)
-                .then(|| request.client_order_id.clone());
             let counter_rollback = BoltV3SubmitAdmissionCounterRollback {
                 execution_client_id: request.execution_client_id.clone(),
                 order_count: next_admitted_order_count.saturating_sub(admitted_order_count_before),
-                forced_reduction_client_order_id: forced_reduction_client_order_id.clone(),
             };
             admitted_counter_update = Some((
                 next_admitted_order_count,
                 next_execution_client_count,
-                forced_reduction_client_order_id,
                 counter_rollback,
             ));
         }
-        let evidence_authority =
-            match self.record_admission_decision(&mut inner, request, &evaluation, now_ns) {
-                Ok(authority) => authority,
-                Err(err) => {
-                    if let Some(rollback) = evaluation.rollback.as_ref() {
-                        rollback_capital_admission_reservation(&mut inner, rollback);
-                    }
-                    return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
-                        reason: format!("{err:#}"),
-                    });
+        let evidence_authority = match self.record_admission_decision(
+            &mut inner,
+            request,
+            &evaluation,
+            economics,
+            now_ns,
+        ) {
+            Ok(authority) => authority,
+            Err(err) => {
+                if let Some(rollback) = evaluation.rollback.as_ref() {
+                    rollback_capital_admission_reservation(&mut inner, rollback);
                 }
-            };
+                return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                    reason: format!("{err:#}"),
+                });
+            }
+        };
         match evaluation.outcome {
             AdmissionDecisionOutcome::Admitted => {
                 let Some((
                     next_admitted_order_count,
                     next_execution_client_count,
-                    forced_reduction_client_order_id,
                     counter_rollback,
                 )) = admitted_counter_update
                 else {
@@ -1687,11 +2162,6 @@ impl BoltV3SubmitAdmissionState {
                     inner
                         .live_non_reservation_client_order_ids
                         .insert(request.client_order_id.clone());
-                }
-                if let Some(client_order_id) = forced_reduction_client_order_id {
-                    inner
-                        .live_kill_switch_forced_reduction_client_order_ids
-                        .insert(client_order_id);
                 }
                 Ok(BoltV3SubmitAdmissionPermit {
                     inner: self.inner.clone(),
@@ -1734,26 +2204,38 @@ impl BoltV3SubmitAdmissionState {
                 })
             }
             AdmissionDecisionOutcome::Rejected(
-                AdmissionRejectionReason::KillSwitchForcedReductionProofInvalid,
-            ) => Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionProofInvalid),
-            AdmissionDecisionOutcome::Rejected(
-                AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
-            ) => Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded),
+                AdmissionRejectionReason::KillSwitchForcedReductionProofInvalid
+                | AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
+            ) => Err(retired_forced_reduction_outcome_error()),
+            AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::EconomicsSealRejected) => {
+                Err(BoltV3SubmitAdmissionError::EconomicsSealRejected)
+            }
         }
     }
 
-    pub fn evaluate_and_record_without_consuming_capacity(
+    pub(crate) fn evaluate_and_record_without_consuming_capacity_with_economics_at(
         &self,
         request: &BoltV3SubmitAdmissionRequest,
+        economics: &EconomicsAdmission,
+        now_ns: u64,
     ) -> Result<(), BoltV3SubmitAdmissionError> {
+        self.evaluate_and_record_without_consuming_capacity_at(request, Some(economics), now_ns)
+    }
+
+    fn evaluate_and_record_without_consuming_capacity_at(
+        &self,
+        request: &BoltV3SubmitAdmissionRequest,
+        economics: Option<&EconomicsAdmission>,
+        now_ns: u64,
+    ) -> Result<(), BoltV3SubmitAdmissionError> {
+        ensure_economics_available(economics, now_ns)?;
         let mut inner = self
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        let now_ns = current_unix_ns()?;
         let evaluation = self.evaluate(&mut inner, request, now_ns);
         let record_result =
-            self.record_admission_decision(&mut inner, request, &evaluation, now_ns);
+            self.record_admission_decision(&mut inner, request, &evaluation, economics, now_ns);
         if let Some(rollback) = evaluation.rollback.as_ref() {
             rollback_capital_admission_reservation(&mut inner, rollback);
         }
@@ -1770,8 +2252,10 @@ impl BoltV3SubmitAdmissionState {
         inner: &mut BoltV3SubmitAdmissionInner,
         request: &BoltV3SubmitAdmissionRequest,
         evaluation: &BoltV3SubmitAdmissionEvaluation,
+        economics: Option<&EconomicsAdmission>,
         now_ns: u64,
     ) -> Result<RecordedAdmissionAuthority, anyhow::Error> {
+        let economics_details = economics.map(admission_economics_details).transpose()?;
         let details = AdmissionDetails {
             strategy_id: request.strategy_id.clone(),
             execution_client_id: request.execution_client_id.clone(),
@@ -1855,6 +2339,7 @@ impl BoltV3SubmitAdmissionState {
                 .loss_snapshot_diagnostics
                 .as_ref()
                 .map(|diagnostics| diagnostics.admission_now_ns),
+            economics: economics_details,
         };
         let result = match (request.intent_kind, evaluation.outcome) {
             (BoltV3SubmitIntentKind::Entry, AdmissionDecisionOutcome::Admitted) => {
@@ -1907,32 +2392,6 @@ impl BoltV3SubmitAdmissionState {
                     inner.committed_admission_authority = next_authority;
                 }
                 Ok(RecordedAdmissionAuthority::RiskReducing { evidence_committed })
-            }
-            (BoltV3SubmitIntentKind::KillSwitchForcedReduction, outcome) => {
-                let fact = ForcedReductionAdmissionFact { details, outcome };
-                let next_authority = if outcome == AdmissionDecisionOutcome::Admitted {
-                    let mut next_authority = inner.committed_admission_authority.clone();
-                    next_authority.apply(ReservationRecoveryEvent::ForcedReduction(Box::new(
-                        fact.clone(),
-                    )))?;
-                    Some(next_authority)
-                } else {
-                    None
-                };
-                let evidence_committed = match self
-                    .decision_evidence
-                    .record_forced_reduction_admission(fact.clone())
-                {
-                    NonBlockingRecordOutcome::Appended(_) => true,
-                    NonBlockingRecordOutcome::Failed(error) => {
-                        log::error!("forced-reduction admission evidence failed: {error}");
-                        false
-                    }
-                };
-                if evidence_committed && let Some(next_authority) = next_authority {
-                    inner.committed_admission_authority = next_authority;
-                }
-                Ok(RecordedAdmissionAuthority::ForcedReduction { evidence_committed })
             }
         };
         if evaluation.outcome == AdmissionDecisionOutcome::Admitted {
@@ -2168,11 +2627,12 @@ impl BoltV3SubmitAdmissionState {
                 })
             }
             AdmissionDecisionOutcome::Rejected(
-                AdmissionRejectionReason::KillSwitchForcedReductionProofInvalid,
-            ) => Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionProofInvalid),
-            AdmissionDecisionOutcome::Rejected(
-                AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
-            ) => Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded),
+                AdmissionRejectionReason::KillSwitchForcedReductionProofInvalid
+                | AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
+            ) => Err(retired_forced_reduction_outcome_error()),
+            AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::EconomicsSealRejected) => {
+                Err(BoltV3SubmitAdmissionError::EconomicsSealRejected)
+            }
         }
     }
 
@@ -2207,12 +2667,6 @@ impl BoltV3SubmitAdmissionState {
                 BoltV3SubmitIntentKind::Entry => BasketAdmissionIntentKind::Entry,
                 BoltV3SubmitIntentKind::RiskReducingExit => {
                     BasketAdmissionIntentKind::RiskReducingExit
-                }
-                BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
-                    outcome = AdmissionDecisionOutcome::Rejected(
-                        AdmissionRejectionReason::KillSwitchForcedReductionProofInvalid,
-                    );
-                    break;
                 }
             };
             let request = basket_submit_request(&details.strategy_id, execution_client_id, claim);
@@ -2259,13 +2713,13 @@ impl BoltV3SubmitAdmissionState {
                 live_submit_count_cap_outcome(current_count, claim_count, limits.max_order_count);
         }
 
-        if outcome != AdmissionDecisionOutcome::Admitted {
+        if let AdmissionDecisionOutcome::Rejected(reason) = outcome {
             rollback_capital_admission_reservations(&mut inner, &rollbacks);
             if let Some(evaluation) = rejected_evaluation.as_ref() {
                 Self::admission_result(&inner, evaluation)?;
             }
-            return Err(submit_admission_error_from_outcome(
-                outcome,
+            return Err(submit_admission_error_from_rejection(
+                reason,
                 inner.kill_switch_state.kind(),
             ));
         }
@@ -2287,7 +2741,6 @@ impl BoltV3SubmitAdmissionState {
         let counter_rollback = BoltV3SubmitAdmissionCounterRollback {
             execution_client_id: execution_client_id.to_string(),
             order_count: claim_count,
-            forced_reduction_client_order_id: None,
         };
 
         let grant_fact = BasketAdmissionGrantedFact {
@@ -2395,17 +2848,7 @@ impl BoltV3SubmitAdmissionState {
                 now_ns,
             );
         }
-        if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
-            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
-                Self::evaluate_kill_switch_forced_reduction(inner, request),
-                now_ns,
-            );
-        }
-        if matches!(
-            request.intent_kind,
-            BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit
-        ) && inner.kill_switch_state.kind() != KillSwitchStateKind::Armed
-        {
+        if inner.kill_switch_state.kind() != KillSwitchStateKind::Armed {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::KillSwitchLatched),
                 now_ns,
@@ -2497,16 +2940,8 @@ impl BoltV3SubmitAdmissionState {
                     .with_loss_snapshot_diagnostics(loss_snapshot_diagnostics);
                 }
             }
-            BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
-                unreachable!("kill-switch forced reduction is evaluated before normal admission")
-            }
         }
-        if inner.capital_admission.is_some()
-            && matches!(
-                request.intent_kind,
-                BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit
-            )
-        {
+        if inner.capital_admission.is_some() {
             let decision = evaluate_capital_admission_submit(inner, request, now_ns);
             if !decision.accepted {
                 return BoltV3SubmitAdmissionEvaluation::capital_admission_rejected(
@@ -2527,65 +2962,6 @@ impl BoltV3SubmitAdmissionState {
             now_ns,
         )
         .with_loss_snapshot_diagnostics(loss_snapshot_diagnostics)
-    }
-
-    fn evaluate_kill_switch_forced_reduction(
-        inner: &BoltV3SubmitAdmissionInner,
-        request: &BoltV3SubmitAdmissionRequest,
-    ) -> AdmissionDecisionOutcome {
-        let Some(policy) = inner.kill_switch_forced_reduction_policy.as_ref() else {
-            return AdmissionDecisionOutcome::Rejected(
-                AdmissionRejectionReason::KillSwitchForcedReductionProofInvalid,
-            );
-        };
-        let Some(claim) = request.kill_switch_forced_reduction.as_ref() else {
-            return AdmissionDecisionOutcome::Rejected(
-                AdmissionRejectionReason::KillSwitchForcedReductionProofInvalid,
-            );
-        };
-        let Some(halt_id) = forced_reduction_admissible_halt_id(&inner.kill_switch_state) else {
-            return AdmissionDecisionOutcome::Rejected(
-                AdmissionRejectionReason::KillSwitchForcedReductionProofInvalid,
-            );
-        };
-        if claim.halt_id() != halt_id || claim.policy_sha256() != policy.policy_sha256() {
-            return AdmissionDecisionOutcome::Rejected(
-                AdmissionRejectionReason::KillSwitchForcedReductionProofInvalid,
-            );
-        }
-        // KillSwitchState exposes the admissible halt id, not the planner's action id.
-        // The action binding is enforced when the flatten planner constructs the
-        // forced-reduction claim, and the strategy/policy fence confines claim
-        // construction to that owning path.
-        if request.notional <= Decimal::ZERO {
-            return AdmissionDecisionOutcome::Rejected(
-                AdmissionRejectionReason::NonPositiveNotional,
-            );
-        }
-        if request.notional > policy.max_notional_per_order() {
-            return AdmissionDecisionOutcome::Rejected(
-                AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
-            );
-        }
-        if inner
-            .live_kill_switch_forced_reduction_client_order_ids
-            .contains(&request.client_order_id)
-        {
-            return AdmissionDecisionOutcome::Rejected(
-                AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
-            );
-        }
-        if !inner.forced_reduction_liveness_reconciled
-            || inner
-                .live_kill_switch_forced_reduction_client_order_ids
-                .len()
-                >= policy.max_live_order_count() as usize
-        {
-            return AdmissionDecisionOutcome::Rejected(
-                AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
-            );
-        }
-        AdmissionDecisionOutcome::Admitted
     }
 
     pub fn admitted_order_count(&self) -> u32 {
@@ -2638,50 +3014,54 @@ fn loss_snapshot_stale_reason_to_evidence(
     }
 }
 
-fn submit_admission_error_from_outcome(
-    outcome: AdmissionDecisionOutcome,
+fn submit_admission_error_from_rejection(
+    reason: AdmissionRejectionReason,
     kill_switch_state: KillSwitchStateKind,
 ) -> BoltV3SubmitAdmissionError {
-    match outcome {
-        AdmissionDecisionOutcome::Admitted => {
-            unreachable!("admitted outcome does not convert to a submit admission error")
-        }
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::KillSwitchLatched) => {
+    match reason {
+        AdmissionRejectionReason::KillSwitchLatched => {
             BoltV3SubmitAdmissionError::KillSwitchLatched {
                 state: kill_switch_state,
             }
         }
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::LossGovernorHalted) => {
+        AdmissionRejectionReason::LossGovernorHalted => {
             BoltV3SubmitAdmissionError::LossGovernorHalted {
                 reasons: Vec::new(),
             }
         }
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::NonPositiveNotional) => {
+        AdmissionRejectionReason::NonPositiveNotional => {
             BoltV3SubmitAdmissionError::NonPositiveNotional
         }
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::NotionalCapExceeded) => {
+        AdmissionRejectionReason::NotionalCapExceeded => {
             BoltV3SubmitAdmissionError::NotionalCapExceeded
         }
-        AdmissionDecisionOutcome::Rejected(
-            AdmissionRejectionReason::ClientOrderAlreadyAuthorized,
-        ) => BoltV3SubmitAdmissionError::ClientOrderAlreadyAuthorized,
-        AdmissionDecisionOutcome::Rejected(
-            AdmissionRejectionReason::InvalidRiskReducingExitProof,
-        ) => BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof,
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CountCapExhausted) => {
+        AdmissionRejectionReason::ClientOrderAlreadyAuthorized => {
+            BoltV3SubmitAdmissionError::ClientOrderAlreadyAuthorized
+        }
+        AdmissionRejectionReason::InvalidRiskReducingExitProof => {
+            BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof
+        }
+        AdmissionRejectionReason::CountCapExhausted => {
             BoltV3SubmitAdmissionError::CountCapExhausted
         }
-        AdmissionDecisionOutcome::Rejected(AdmissionRejectionReason::CapitalAdmission) => {
+        AdmissionRejectionReason::CapitalAdmission => {
             BoltV3SubmitAdmissionError::CapitalAdmissionRejected {
                 reason: BoltV3CapitalAdmissionRejectReason::Rejected,
             }
         }
-        AdmissionDecisionOutcome::Rejected(
-            AdmissionRejectionReason::KillSwitchForcedReductionProofInvalid,
-        ) => BoltV3SubmitAdmissionError::KillSwitchForcedReductionProofInvalid,
-        AdmissionDecisionOutcome::Rejected(
-            AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded,
-        ) => BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded,
+        AdmissionRejectionReason::KillSwitchForcedReductionProofInvalid
+        | AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded => {
+            retired_forced_reduction_outcome_error()
+        }
+        AdmissionRejectionReason::EconomicsSealRejected => {
+            BoltV3SubmitAdmissionError::EconomicsSealRejected
+        }
+    }
+}
+
+fn retired_forced_reduction_outcome_error() -> BoltV3SubmitAdmissionError {
+    BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+        reason: "retired forced-reduction outcome reached current submit admission".to_string(),
     }
 }
 
@@ -2689,7 +3069,6 @@ fn submit_admission_error_from_outcome(
 enum RecordedAdmissionAuthority {
     CommittedEntry(CommittedAdmission),
     RiskReducing { evidence_committed: bool },
-    ForcedReduction { evidence_committed: bool },
     NoExternalActionAuthority,
 }
 
@@ -2697,8 +3076,7 @@ impl RecordedAdmissionAuthority {
     fn committed_open_order_authorization(&self) -> bool {
         match self {
             Self::CommittedEntry(_) => true,
-            Self::RiskReducing { evidence_committed }
-            | Self::ForcedReduction { evidence_committed } => *evidence_committed,
+            Self::RiskReducing { evidence_committed } => *evidence_committed,
             Self::NoExternalActionAuthority => false,
         }
     }
@@ -2711,7 +3089,6 @@ impl RecordedAdmissionAuthority {
                 Ok(BoltV3SubmitEvidenceAuthority::CommittedEntry(committed))
             }
             Self::RiskReducing { .. } => Ok(BoltV3SubmitEvidenceAuthority::RiskReducing),
-            Self::ForcedReduction { .. } => Ok(BoltV3SubmitEvidenceAuthority::ForcedReduction),
             Self::NoExternalActionAuthority => {
                 Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
                     reason: "admitted submit has no evidence authority".to_string(),
@@ -2726,14 +3103,13 @@ enum BoltV3SubmitEvidenceAuthority {
     CommittedEntry(CommittedAdmission),
     CommittedBasket(CommittedAdmission),
     RiskReducing,
-    ForcedReduction,
 }
 
 impl BoltV3SubmitEvidenceAuthority {
     fn consume(self) {
         match self {
             Self::CommittedEntry(committed) | Self::CommittedBasket(committed) => drop(committed),
-            Self::RiskReducing | Self::ForcedReduction => {}
+            Self::RiskReducing => {}
         }
     }
 }
@@ -2749,14 +3125,123 @@ pub struct BoltV3SubmitAdmissionPermit {
 
 impl BoltV3SubmitAdmissionPermit {
     pub fn commit_submitted(mut self) {
-        self.evidence_authority
-            .take()
-            .expect("submit permit must retain its evidence authority until commit")
-            .consume();
-        self.committed = true;
-        self.rollbacks.clear();
-        self.counter_rollback = None;
+        self.prepare_sink_invocation()
+            .expect("admitted reservation must remain exact until the submit boundary")
+            .commit();
     }
+
+    pub(crate) fn prepare_sink_invocation(
+        &mut self,
+    ) -> Result<BoltV3PreparedCapitalSinkInvocation<'_>, ReservationRejectionReason> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| ReservationRejectionReason::ReconciliationRequired)?;
+        let prepared = prepare_capital_sink_invocation(&inner, &self.rollbacks)?;
+        let evidence_authority = self
+            .evidence_authority
+            .take()
+            .ok_or(ReservationRejectionReason::ReconciliationRequired)?;
+        Ok(BoltV3PreparedCapitalSinkInvocation {
+            inner,
+            prepared: Some(prepared),
+            evidence_authority: Some(evidence_authority),
+            evidence_slot: &mut self.evidence_authority,
+            committed: &mut self.committed,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct PreparedCapitalSinkInvocationTransition {
+    candidate_capital_admission: Option<BoltV3SubmitCapitalAdmissionState>,
+    final_revision: u64,
+}
+
+#[must_use = "prepared capital admission must cross the submit boundary or remain refundable"]
+pub(crate) struct BoltV3PreparedCapitalSinkInvocation<'a> {
+    inner: MutexGuard<'a, BoltV3SubmitAdmissionInner>,
+    prepared: Option<PreparedCapitalSinkInvocationTransition>,
+    evidence_authority: Option<BoltV3SubmitEvidenceAuthority>,
+    evidence_slot: &'a mut Option<BoltV3SubmitEvidenceAuthority>,
+    committed: &'a mut bool,
+}
+
+impl BoltV3PreparedCapitalSinkInvocation<'_> {
+    pub(crate) fn commit(&mut self) {
+        if let Some(prepared) = self.prepared.take() {
+            commit_capital_sink_invocation(&mut self.inner, prepared);
+        }
+        if let Some(authority) = self.evidence_authority.take() {
+            authority.consume();
+        }
+        *self.committed = true;
+    }
+}
+
+impl Drop for BoltV3PreparedCapitalSinkInvocation<'_> {
+    fn drop(&mut self) {
+        *self.evidence_slot = self.evidence_authority.take();
+    }
+}
+
+fn prepare_capital_sink_invocation(
+    inner: &BoltV3SubmitAdmissionInner,
+    rollbacks: &[BoltV3CapitalAdmissionReservationRollback],
+) -> Result<PreparedCapitalSinkInvocationTransition, ReservationRejectionReason> {
+    if rollbacks.is_empty() {
+        return Ok(PreparedCapitalSinkInvocationTransition {
+            candidate_capital_admission: None,
+            final_revision: inner.capital_admission_state_revision,
+        });
+    }
+    let mut candidate_capital_admission = inner
+        .capital_admission
+        .clone()
+        .ok_or(ReservationRejectionReason::UnknownReservation)?;
+    let mut next_revision = inner.capital_admission_state_revision;
+    for rollback in rollbacks {
+        next_revision = next_revision
+            .checked_add(1)
+            .ok_or(ReservationRejectionReason::ReconciliationRequired)?;
+        let record = candidate_capital_admission
+            .client_order_reservations
+            .get(&rollback.client_order_id)
+            .ok_or(ReservationRejectionReason::UnknownReservation)?;
+        match (
+            record.phase,
+            record.attribution.submit_reservation_id == rollback.submit_reservation_id,
+            record.attribution.capital_pool_id == rollback.pool_id,
+        ) {
+            (BoltV3SubmitReservationPhase::Reserved, true, true) => {}
+            _ => return Err(ReservationRejectionReason::UnknownReservation),
+        }
+        candidate_capital_admission.gate.retained_reservation(
+            &record.attribution.capital_pool_id,
+            &record.attribution.collateral_group_id,
+            &record.attribution.submit_reservation_id,
+        )?;
+        let record = candidate_capital_admission
+            .client_order_reservations
+            .get_mut(&rollback.client_order_id)
+            .ok_or(ReservationRejectionReason::UnknownReservation)?;
+        record.phase = BoltV3SubmitReservationPhase::SinkInvoked;
+        record.phase_revision = next_revision;
+    }
+    Ok(PreparedCapitalSinkInvocationTransition {
+        candidate_capital_admission: Some(candidate_capital_admission),
+        final_revision: next_revision,
+    })
+}
+
+fn commit_capital_sink_invocation(
+    inner: &mut BoltV3SubmitAdmissionInner,
+    prepared: PreparedCapitalSinkInvocationTransition,
+) {
+    if let Some(candidate_capital_admission) = prepared.candidate_capital_admission {
+        inner.capital_admission = Some(candidate_capital_admission);
+    }
+    inner.capital_admission_state_revision = prepared.final_revision;
 }
 
 impl Drop for BoltV3SubmitAdmissionPermit {
@@ -2779,7 +3264,6 @@ impl Drop for BoltV3SubmitAdmissionPermit {
 struct BoltV3SubmitAdmissionCounterRollback {
     execution_client_id: String,
     order_count: u32,
-    forced_reduction_client_order_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -2867,105 +3351,6 @@ impl BoltV3SubmitAdmissionEvaluation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoltV3KillSwitchForcedReductionPolicy {
-    policy_sha256: String,
-    max_live_order_count: u32,
-    max_notional_per_order: Decimal,
-}
-
-impl BoltV3KillSwitchForcedReductionPolicy {
-    pub fn new(
-        policy_sha256: impl Into<String>,
-        max_live_order_count: u32,
-        max_notional_per_order: Decimal,
-    ) -> Result<Self, BoltV3KillSwitchForcedReductionError> {
-        let policy_sha256 = policy_sha256.into();
-        if policy_sha256.len() != 64 || !policy_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err(BoltV3KillSwitchForcedReductionError::InvalidPolicySha256);
-        }
-        if max_live_order_count == 0 {
-            return Err(BoltV3KillSwitchForcedReductionError::NonPositiveMaxLiveOrderCount);
-        }
-        if max_notional_per_order <= Decimal::ZERO {
-            return Err(BoltV3KillSwitchForcedReductionError::NonPositiveMaxNotional);
-        }
-        Ok(Self {
-            policy_sha256,
-            max_live_order_count,
-            max_notional_per_order,
-        })
-    }
-
-    pub fn policy_sha256(&self) -> &str {
-        &self.policy_sha256
-    }
-
-    pub fn max_live_order_count(&self) -> u32 {
-        self.max_live_order_count
-    }
-
-    pub fn max_notional_per_order(&self) -> Decimal {
-        self.max_notional_per_order
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoltV3KillSwitchForcedReductionClaim {
-    halt_id: String,
-    action_id: String,
-    policy_sha256: String,
-}
-
-impl BoltV3KillSwitchForcedReductionClaim {
-    pub fn new(
-        halt_id: impl Into<String>,
-        action_id: impl Into<String>,
-        policy_sha256: impl Into<String>,
-    ) -> Result<Self, BoltV3KillSwitchForcedReductionError> {
-        let halt_id = halt_id.into();
-        let action_id = action_id.into();
-        let policy_sha256 = policy_sha256.into();
-        if halt_id.trim().is_empty() {
-            return Err(BoltV3KillSwitchForcedReductionError::MissingHaltId);
-        }
-        if action_id.trim().is_empty() {
-            return Err(BoltV3KillSwitchForcedReductionError::MissingActionId);
-        }
-        if policy_sha256.len() != 64 || !policy_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err(BoltV3KillSwitchForcedReductionError::InvalidPolicySha256);
-        }
-        Ok(Self {
-            halt_id,
-            action_id,
-            policy_sha256,
-        })
-    }
-
-    pub fn halt_id(&self) -> &str {
-        &self.halt_id
-    }
-
-    pub fn action_id(&self) -> &str {
-        &self.action_id
-    }
-
-    pub fn policy_sha256(&self) -> &str {
-        &self.policy_sha256
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BoltV3KillSwitchForcedReductionError {
-    MissingHaltId,
-    MissingActionId,
-    InvalidPolicySha256,
-    NonPositiveMaxLiveOrderCount,
-    NonPositiveMaxNotional,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3RiskReducingExitProof {
     pub position_id: String,
     pub instrument_id: String,
@@ -3003,16 +3388,6 @@ impl BoltV3RiskReducingExitProof {
     }
 }
 
-impl BoltV3SubmitIntentKind {
-    pub fn is_venue_position_exit_clamp_eligible(self) -> bool {
-        matches!(
-            self,
-            BoltV3SubmitIntentKind::RiskReducingExit
-                | BoltV3SubmitIntentKind::KillSwitchForcedReduction
-        )
-    }
-}
-
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionRequest {
     pub strategy_id: String,
@@ -3024,7 +3399,6 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub order_quantity: Decimal,
     pub intent_kind: BoltV3SubmitIntentKind,
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
-    pub kill_switch_forced_reduction: Option<BoltV3KillSwitchForcedReductionClaim>,
     pub admission_evidence: Option<BoltV3CompiledOrderAdmissionEvidence>,
 }
 
@@ -3107,12 +3481,14 @@ fn reservation_fill_update_matches(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3CompiledOrderKind {
     Limit,
+    Market,
 }
 
 impl BoltV3CompiledOrderKind {
     fn to_capital_admission(self) -> IntentOrderKind {
         match self {
             Self::Limit => IntentOrderKind::Limit,
+            Self::Market => IntentOrderKind::Market,
         }
     }
 }
@@ -3181,7 +3557,6 @@ fn basket_submit_request(
         order_quantity: claim.order_quantity,
         intent_kind: claim.intent_kind,
         risk_reducing_exit_proof: claim.risk_reducing_exit_proof.clone(),
-        kill_switch_forced_reduction: None,
         admission_evidence: claim.admission_evidence.clone(),
     }
 }
@@ -3257,13 +3632,391 @@ fn compiled_order_price_source(fallback_price: String, order: &OrderAny) -> Stri
         .unwrap_or(fallback_price)
 }
 
-pub fn build_submit_admission_request_from_order<F>(
+#[derive(Debug)]
+pub struct BoltV3EconomicsSubmitAdmission {
+    request: BoltV3SubmitAdmissionRequest,
+    economics: EconomicsAdmission,
+    required_remaining_margin_ns: u64,
+}
+
+impl BoltV3EconomicsSubmitAdmission {
+    pub const fn request(&self) -> &BoltV3SubmitAdmissionRequest {
+        &self.request
+    }
+
+    pub const fn economics(&self) -> &EconomicsAdmission {
+        &self.economics
+    }
+
+    pub(crate) fn into_parts(self) -> (BoltV3SubmitAdmissionRequest, EconomicsAdmission, u64) {
+        (
+            self.request,
+            self.economics,
+            self.required_remaining_margin_ns,
+        )
+    }
+
+    pub(crate) fn with_compiled_order_admission_evidence(
+        mut self,
+        evidence: BoltV3CompiledOrderAdmissionEvidence,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            self.request.admission_evidence.is_none(),
+            "compiled-order admission evidence is single-authority"
+        );
+        let expected_side = match self.request.order_side {
+            OrderSide::Buy => BoltV3CompiledOrderSide::Buy,
+            OrderSide::Sell => BoltV3CompiledOrderSide::Sell,
+            OrderSide::NoOrderSide => {
+                anyhow::bail!("compiled-order admission evidence requires a sided order")
+            }
+        };
+        anyhow::ensure!(
+            evidence.side == expected_side && evidence.quantity == self.request.order_quantity,
+            "compiled-order admission evidence does not bind the final order"
+        );
+        self.request.admission_evidence = Some(evidence);
+        Ok(self)
+    }
+}
+
+pub(crate) fn validate_economics_remaining_margin_at(
+    economics: &EconomicsAdmission,
+    required_margin_ns: u64,
+    now_ns: u64,
+) -> Result<(), BoltV3SubmitAdmissionError> {
+    let requested_at_ns = economics.request().requested_at_ns;
+    let valid_until_ns = economics.quote().valid_until_ns();
+    if now_ns < requested_at_ns
+        || valid_until_ns
+            .checked_sub(now_ns)
+            .is_none_or(|remaining| remaining < required_margin_ns)
+    {
+        return Err(
+            BoltV3SubmitAdmissionError::EconomicsRemainingMarginUnavailable {
+                requested_at_ns,
+                valid_until_ns,
+                observed_at_ns: now_ns,
+                required_margin_ns,
+            },
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_economics_submit_authority(
+    request: &BoltV3SubmitAdmissionRequest,
+    economics: &EconomicsAdmission,
+    order: &OrderAny,
+    execution_client_id: &str,
+) -> Result<(), BoltV3SubmitAdmissionError> {
+    if economics_order_binding(order).ok().as_ref() != Some(economics.order_binding())
+        || request.notional != economics.full_reservation_liability()
+        || request.execution_client_id != execution_client_id
+        || economics.request().execution_client_id.as_str() != execution_client_id
+    {
+        return Err(BoltV3SubmitAdmissionError::EconomicsOrderMismatch);
+    }
+    Ok(())
+}
+
+fn ensure_economics_available(
+    economics: Option<&EconomicsAdmission>,
+    now_ns: u64,
+) -> Result<(), BoltV3SubmitAdmissionError> {
+    if let Some(economics) = economics {
+        economics
+            .quote()
+            .capability_health()
+            .allows_admission(now_ns)
+            .map_err(BoltV3SubmitAdmissionError::EconomicsUnavailable)?;
+    }
+    Ok(())
+}
+
+fn admission_economics_details(
+    economics: &EconomicsAdmission,
+) -> anyhow::Result<AdmissionEconomicsDetails> {
+    let quote = economics.quote();
+    let missing_forecast_component_ids = quote
+        .missing_forecast_component_ids()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>();
+    let mut components = Vec::with_capacity(quote.components().len());
+    for evaluated in quote.components() {
+        let component = evaluated.component();
+        components.push(AdmissionEconomicsComponent {
+            component_id: component.component_id.to_string(),
+            class: match component.class {
+                crate::economics::EconomicClass::Charge => AdmissionEconomicsClass::Charge,
+                crate::economics::EconomicClass::Credit => AdmissionEconomicsClass::Credit,
+            },
+            economic_kind: admission_economics_kind(component.kind),
+            scope: admission_economics_scope(&component.scope),
+            point_estimate: match &component.point_estimate {
+                crate::economics::PointEstimate::NonZero(effect) => {
+                    AdmissionEconomicsPointEstimate::NonZero {
+                        effect: admission_economics_native_effect(effect),
+                    }
+                }
+                crate::economics::PointEstimate::ProvenZero { factor_id } => {
+                    AdmissionEconomicsPointEstimate::ProvenZero {
+                        factor_id: factor_id.to_string(),
+                    }
+                }
+            },
+            point_valuation: evaluated.point_valuation().map(Into::into),
+            debit_risk_bound: component
+                .debit_risk_bound
+                .as_ref()
+                .map(admission_economics_native_effect),
+            debit_risk_bound_valuation: evaluated.debit_risk_bound_valuation().map(Into::into),
+            treatment: admission_economics_treatment(component.admission_treatment),
+            calculation_factors: component
+                .calculation_factors
+                .iter()
+                .map(|factor| AdmissionEconomicsCalculationFactor {
+                    factor_id: factor.factor_id.to_string(),
+                    value: factor.value.to_string(),
+                })
+                .collect(),
+            formula_id: component.formula_id.to_string(),
+            source: AdmissionEconomicsSource {
+                source_id: component.source.source.to_string(),
+                snapshot_id: component.source.snapshot_id.to_string(),
+                source_at_ns: component.source.source_at_ns,
+                fetched_at_ns: component.source.fetched_at_ns,
+                valid_until_ns: component.source.valid_until_ns,
+            },
+        });
+    }
+    let source_snapshot_ids = quote
+        .source_snapshot_ids()
+        .iter()
+        .chain(economics.net_edge().basis.source_snapshot_ids.iter())
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    Ok(AdmissionEconomicsDetails {
+        decision_correlation_id: quote.decision_correlation_id().to_string(),
+        core_total: quote.core_total().to_string(),
+        core_net_edge: economics.net_edge().core_net_edge.to_string(),
+        core_edge_ratio: economics.net_edge().core_edge_ratio.to_string(),
+        forecast_net_edge: economics.net_edge().forecast_net_edge.to_string(),
+        forecast_complete: quote.forecast_complete(),
+        missing_forecast_component_ids: missing_forecast_component_ids.into_iter().collect(),
+        valid_until_ns: quote.valid_until_ns(),
+        forecast_valid_until_ns: quote.forecast_valid_until_ns(),
+        source_snapshot_ids,
+        reservation_basis: economics.reservation_basis().to_string(),
+        full_reservation_liability: economics.full_reservation_liability().to_string(),
+        components,
+    })
+}
+
+fn admission_economics_kind(kind: crate::economics::EconomicKind) -> AdmissionEconomicsKind {
+    match kind {
+        crate::economics::EconomicKind::Execution(
+            crate::economics::ExecutionKind::ProtocolTrading,
+        ) => AdmissionEconomicsKind::ProtocolTrading,
+        crate::economics::EconomicKind::Execution(
+            crate::economics::ExecutionKind::AttachedRoutingCharge,
+        ) => AdmissionEconomicsKind::AttachedRoutingCharge,
+        crate::economics::EconomicKind::Carry(crate::economics::CarryKind::Funding) => {
+            AdmissionEconomicsKind::Funding
+        }
+        crate::economics::EconomicKind::Carry(crate::economics::CarryKind::BorrowInterest) => {
+            AdmissionEconomicsKind::BorrowInterest
+        }
+        crate::economics::EconomicKind::Carry(
+            crate::economics::CarryKind::SuppliedBalanceInterest,
+        ) => AdmissionEconomicsKind::SuppliedBalanceInterest,
+        crate::economics::EconomicKind::Incentive(crate::economics::IncentiveKind::MakerRebate) => {
+            AdmissionEconomicsKind::MakerRebate
+        }
+        crate::economics::EconomicKind::Incentive(
+            crate::economics::IncentiveKind::LiquidityReward,
+        ) => AdmissionEconomicsKind::LiquidityReward,
+        crate::economics::EconomicKind::Incentive(
+            crate::economics::IncentiveKind::HoldingReward,
+        ) => AdmissionEconomicsKind::HoldingReward,
+        crate::economics::EconomicKind::Incentive(
+            crate::economics::IncentiveKind::ReferralReward,
+        ) => AdmissionEconomicsKind::ReferralReward,
+        crate::economics::EconomicKind::Incentive(crate::economics::IncentiveKind::FeeCredit) => {
+            AdmissionEconomicsKind::FeeCredit
+        }
+    }
+}
+
+fn admission_economics_scope(scope: &crate::economics::EconomicScope) -> AdmissionEconomicsScope {
+    match scope {
+        crate::economics::EconomicScope::Decision {
+            decision_correlation_id,
+        } => AdmissionEconomicsScope::Decision {
+            decision_correlation_id: decision_correlation_id.to_string(),
+        },
+        crate::economics::EconomicScope::PositionInterval {
+            position_id,
+            starts_at_ns,
+            ends_at_ns,
+        } => AdmissionEconomicsScope::PositionInterval {
+            position_id: position_id.to_string(),
+            starts_at_ns: *starts_at_ns,
+            ends_at_ns: *ends_at_ns,
+        },
+        crate::economics::EconomicScope::Action { action_id } => AdmissionEconomicsScope::Action {
+            action_id: action_id.to_string(),
+        },
+    }
+}
+
+fn admission_economics_native_effect(
+    effect: &crate::economics::SignedNativeEffect,
+) -> AdmissionEconomicsNativeEffect {
+    match effect {
+        crate::economics::SignedNativeEffect::CurrencyAmount {
+            amount,
+            currency_id,
+        } => AdmissionEconomicsNativeEffect {
+            amount: amount.to_string(),
+            unit: AdmissionEconomicsNativeUnit::Currency {
+                currency_id: currency_id.to_string(),
+            },
+            inventory_application: None,
+        },
+        crate::economics::SignedNativeEffect::AssetQuantity {
+            quantity,
+            asset_id,
+            inventory_application,
+        } => AdmissionEconomicsNativeEffect {
+            amount: quantity.to_string(),
+            unit: AdmissionEconomicsNativeUnit::Asset {
+                asset_id: asset_id.to_string(),
+            },
+            inventory_application: Some(match inventory_application {
+                crate::economics::InventoryApplication::AlreadyAppliedToGrossFill => {
+                    AdmissionEconomicsInventoryApplication::AlreadyAppliedToGrossFill
+                }
+                crate::economics::InventoryApplication::ApplyOnceToNetPortfolio => {
+                    AdmissionEconomicsInventoryApplication::ApplyOnceToNetPortfolio
+                }
+            }),
+        },
+    }
+}
+
+impl From<&crate::economics::ValuationEvidence> for AdmissionEconomicsValuation {
+    fn from(valuation: &crate::economics::ValuationEvidence) -> Self {
+        Self {
+            native_effect: admission_economics_native_effect(&valuation.native_effect),
+            normalized_amount: valuation.normalized_amount.to_string(),
+            reporting_currency: valuation.reporting_currency.to_string(),
+            route_id: valuation.route_id.as_ref().map(ToString::to_string),
+            source_snapshot_ids: valuation
+                .source_snapshot_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            valued_at_ns: valuation.valued_at_ns,
+            valid_until_ns: valuation.valid_until_ns,
+        }
+    }
+}
+
+fn admission_economics_treatment(
+    treatment: crate::economics::AdmissionTreatment,
+) -> AdmissionEconomicsTreatment {
+    match treatment {
+        crate::economics::AdmissionTreatment::GuaranteedConditionalOnAction => {
+            AdmissionEconomicsTreatment::GuaranteedConditionalOnAction
+        }
+        crate::economics::AdmissionTreatment::RiskBound { authority } => {
+            AdmissionEconomicsTreatment::RiskBound {
+                authority: match authority {
+                    crate::economics::RiskBoundAuthority::VenueMaximum => {
+                        AdmissionEconomicsRiskBoundAuthority::VenueMaximum
+                    }
+                    crate::economics::RiskBoundAuthority::VenueRateCapWithPriceStress => {
+                        AdmissionEconomicsRiskBoundAuthority::VenueRateCapWithPriceStress
+                    }
+                    crate::economics::RiskBoundAuthority::OperatorRiskLimit => {
+                        AdmissionEconomicsRiskBoundAuthority::OperatorRiskLimit
+                    }
+                },
+            }
+        }
+        crate::economics::AdmissionTreatment::ForecastOnly => {
+            AdmissionEconomicsTreatment::ForecastOnly
+        }
+    }
+}
+
+pub fn build_submit_admission_request_from_economics(
     input: BoltV3SubmitAdmissionRequestInput<'_>,
-    max_fee_bps_for_price: F,
-) -> anyhow::Result<BoltV3SubmitAdmissionRequest>
-where
-    F: FnOnce(Decimal) -> anyhow::Result<Decimal>,
-{
+    economics: EconomicsAdmission,
+    required_remaining_margin_ns: u64,
+) -> anyhow::Result<BoltV3EconomicsSubmitAdmission> {
+    let facts = order_admission_facts(&input)?;
+    let expected_purpose = match input.intent_kind {
+        BoltV3SubmitIntentKind::Entry => EconomicsAdmissionPurpose::TradingEdge,
+        BoltV3SubmitIntentKind::RiskReducingExit => EconomicsAdmissionPurpose::RiskReduction,
+    };
+    anyhow::ensure!(
+        economics.purpose() == expected_purpose,
+        "economics admission purpose does not match the final order intent"
+    );
+    anyhow::ensure!(
+        economics.order_binding()
+            == &economics_order_binding(input.order).map_err(|error| anyhow::anyhow!(error))?,
+        "economics admission does not bind the final order"
+    );
+    anyhow::ensure!(
+        economics.request().execution_client_id.as_str() == input.execution_client_id,
+        "economics admission execution client does not match the final order route"
+    );
+    anyhow::ensure!(
+        economics.request().instrument_id.as_str() == input.order.instrument_id().to_string(),
+        "economics admission instrument does not match the final order"
+    );
+    let expected_side = match input.order.order_side() {
+        OrderSide::Buy => crate::economics::OrderSide::Buy,
+        OrderSide::Sell => crate::economics::OrderSide::Sell,
+        OrderSide::NoOrderSide => anyhow::bail!("economics admission requires a sided order"),
+    };
+    anyhow::ensure!(
+        economics.request().order_side == expected_side,
+        "economics admission side does not match the final order"
+    );
+    anyhow::ensure!(
+        economics.reservation_basis() == facts.reservation_basis,
+        "economics admission reservation basis does not match the final order"
+    );
+    let notional = economics.full_reservation_liability();
+    let request = submit_admission_request_from_facts(input, facts, notional);
+    anyhow::ensure!(
+        required_remaining_margin_ns > 0,
+        "economics submit admission requires a positive remaining margin"
+    );
+    Ok(BoltV3EconomicsSubmitAdmission {
+        request,
+        economics,
+        required_remaining_margin_ns,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BoltV3OrderAdmissionFacts {
+    pub price: Decimal,
+    pub order_quantity: Decimal,
+    pub reservation_basis: Decimal,
+}
+
+pub(crate) fn order_admission_facts(
+    input: &BoltV3SubmitAdmissionRequestInput<'_>,
+) -> anyhow::Result<BoltV3OrderAdmissionFacts> {
     let client_order_id = input.order.client_order_id().to_string();
     let unsided_quote_quantity_market_style = input.order.is_quote_quantity()
         && matches!(
@@ -3320,8 +4073,7 @@ where
     } else {
         base_quantity_admission_notional(price, quantity)
     };
-    let max_fee_bps = max_fee_bps_for_price(price)?;
-    let notional = if input.order.price().is_none() && !input.order.is_quote_quantity() {
+    let reservation_basis = if input.order.price().is_none() && !input.order.is_quote_quantity() {
         let price_ceiling = input
             .valuation
             .instrument
@@ -3336,7 +4088,31 @@ where
     } else {
         notional
     };
-    let notional = fee_inclusive_admission_notional(notional, max_fee_bps)?;
+
+    Ok(BoltV3OrderAdmissionFacts {
+        price,
+        order_quantity: quantity,
+        reservation_basis,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn build_submit_admission_request_from_order_for_test(
+    input: BoltV3SubmitAdmissionRequestInput<'_>,
+) -> anyhow::Result<BoltV3SubmitAdmissionRequest> {
+    let facts = order_admission_facts(&input)?;
+    Ok(submit_admission_request_from_facts(
+        input,
+        facts,
+        facts.reservation_basis,
+    ))
+}
+
+fn submit_admission_request_from_facts(
+    input: BoltV3SubmitAdmissionRequestInput<'_>,
+    facts: BoltV3OrderAdmissionFacts,
+    notional: Decimal,
+) -> BoltV3SubmitAdmissionRequest {
     let intent_kind = input.intent_kind;
     let risk_reducing_exit_proof =
         if matches!(intent_kind, BoltV3SubmitIntentKind::RiskReducingExit) {
@@ -3348,25 +4124,24 @@ where
                     position_side: position.position_side,
                     exit_order_side: input.order.order_side(),
                     position_quantity: position.position_quantity,
-                    exit_quantity: quantity,
+                    exit_quantity: facts.order_quantity,
                 })
         } else {
             None
         };
 
-    Ok(BoltV3SubmitAdmissionRequest {
+    BoltV3SubmitAdmissionRequest {
         strategy_id: input.intent.strategy_id.clone(),
         execution_client_id: input.execution_client_id.to_string(),
-        client_order_id,
+        client_order_id: input.order.client_order_id().to_string(),
         instrument_id: input.order.instrument_id().to_string(),
         notional,
         order_side: input.order.order_side(),
-        order_quantity: quantity,
+        order_quantity: facts.order_quantity,
         intent_kind,
         risk_reducing_exit_proof,
-        kill_switch_forced_reduction: None,
         admission_evidence: None,
-    })
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -3542,61 +4317,6 @@ fn quote_quantity_effective_price(
     }
 }
 
-pub fn fee_inclusive_admission_notional(
-    notional: Decimal,
-    max_fee_bps: Decimal,
-) -> Result<Decimal, BoltV3SubmitAdmissionError> {
-    checked_fee_inclusive_admission_notional(notional, max_fee_bps)
-        .ok_or(BoltV3SubmitAdmissionError::NotionalArithmeticOverflow)
-}
-
-pub(crate) fn checked_fee_inclusive_admission_notional(
-    notional: Decimal,
-    max_fee_bps: Decimal,
-) -> Option<Decimal> {
-    let fee_rate = max_fee_bps.checked_div(Decimal::from(SUBMIT_ADMISSION_BPS_DENOMINATOR))?;
-    let fee_multiplier = Decimal::ONE.checked_add(fee_rate)?;
-    notional.checked_mul(fee_multiplier)
-}
-
-/// Cap-bypass-via-rounding guard for submit paths that carry an operator
-/// intent SEPARATE from the order actually built.
-///
-/// Callers must pass the base notional of the already-rounded order
-/// (`rounded_base_notional`) — i.e. the product of the venue-precision
-/// `Price`/`Quantity` actually submitted — together with the operator-intended
-/// raw notional that authorized the order. Banker's rounding to venue precision
-/// can round a quantity or price UP, so the rounded base notional can exceed the
-/// intended notional. When that happens this helper fails CLOSED: a rounded
-/// order may never debit more than the operator approved, so admission is
-/// refused rather than letting the cap be bypassed by rounding.
-///
-/// On success it returns the fee-inclusive admission notional computed from the
-/// rounded base, so the cap check downstream sees the same cash debit the venue
-/// will incur.
-///
-/// Scope: this guard is required precisely for any path where the operator
-/// approves an explicit `order_intent.notional` BEFORE the venue-precision order
-/// is constructed. Paths that build the venue-precision order first and derive
-/// admission notional from that already-rounded order structurally do not need
-/// this guard: the strict-`>` cap check in [`BoltV3SubmitAdmissionState::admit`]
-/// already evaluates the exact order handed to the venue — there is no separate
-/// unrounded intent for rounding to bypass. Both paths share the same
-/// fee-inclusive cap arithmetic via [`fee_inclusive_admission_notional`].
-pub fn rounded_order_admission_notional(
-    rounded_base_notional: Decimal,
-    intended_notional: Decimal,
-    max_fee_bps: Decimal,
-) -> Result<Decimal, BoltV3SubmitAdmissionError> {
-    if rounded_base_notional > intended_notional {
-        return Err(BoltV3SubmitAdmissionError::RoundedNotionalExceedsIntent {
-            rounded_base_notional,
-            intended_notional,
-        });
-    }
-    fee_inclusive_admission_notional(rounded_base_notional, max_fee_bps)
-}
-
 pub(crate) fn limit_notional_exceeds_sized_notional(
     limit_notional: f64,
     sized_notional: f64,
@@ -3622,18 +4342,6 @@ pub fn market_style_admission_ceiling_notional(
 ) -> Result<Decimal, BoltV3SubmitAdmissionError> {
     let ceiling = price_ceiling.ok_or(BoltV3SubmitAdmissionError::MissingPriceCeiling)?;
     Ok(base_quantity_admission_notional(ceiling, order_quantity))
-}
-
-fn forced_reduction_admissible_halt_id(state: &KillSwitchState) -> Option<&str> {
-    match state {
-        KillSwitchState::Halting { halt_id, .. }
-        | KillSwitchState::Halted { halt_id, .. }
-        | KillSwitchState::Flattening { halt_id } => Some(halt_id),
-        KillSwitchState::Armed
-        | KillSwitchState::Cancelling { .. }
-        | KillSwitchState::Flat { .. }
-        | KillSwitchState::FailedManualIntervention { .. } => None,
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3670,22 +4378,24 @@ pub enum BoltV3SubmitAdmissionError {
     NonPositiveNotional,
     NotionalCapExceeded,
     ClientOrderAlreadyAuthorized,
-    NotionalArithmeticOverflow,
     MissingPriceCeiling,
-    RoundedNotionalExceedsIntent {
-        rounded_base_notional: Decimal,
-        intended_notional: Decimal,
-    },
     ExchangeMutationCountOverflow,
     ExchangeMutationsObserved {
         mutation_count: u64,
     },
     InvalidRiskReducingExitProof,
+    EconomicsOrderMismatch,
+    EconomicsRemainingMarginUnavailable {
+        requested_at_ns: u64,
+        valid_until_ns: u64,
+        observed_at_ns: u64,
+        required_margin_ns: u64,
+    },
+    EconomicsUnavailable(EconomicsError),
     CapitalAdmissionRejected {
         reason: BoltV3CapitalAdmissionRejectReason,
     },
-    KillSwitchForcedReductionProofInvalid,
-    KillSwitchForcedReductionCapExceeded,
+    EconomicsSealRejected,
     EvidenceWriteFailed {
         reason: String,
     },
@@ -3725,19 +4435,9 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
                 f,
                 "bolt-v3 submit admission client-order identity is already durably authorized"
             ),
-            Self::NotionalArithmeticOverflow => {
-                write!(f, "bolt-v3 submit admission notional arithmetic overflowed")
-            }
             Self::MissingPriceCeiling => write!(
                 f,
                 "bolt-v3 submit admission refuses a market-style order without a declared instrument price ceiling"
-            ),
-            Self::RoundedNotionalExceedsIntent {
-                rounded_base_notional,
-                intended_notional,
-            } => write!(
-                f,
-                "bolt-v3 submit admission rejected: rounded order notional {rounded_base_notional} exceeded operator-intended notional {intended_notional}"
             ),
             Self::ExchangeMutationCountOverflow => {
                 write!(
@@ -3753,20 +4453,34 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
                 f,
                 "bolt-v3 submit admission risk-reducing exit proof is invalid"
             ),
+            Self::EconomicsOrderMismatch => write!(
+                f,
+                "bolt-v3 submit admission final order does not match its economics authority"
+            ),
+            Self::EconomicsRemainingMarginUnavailable {
+                requested_at_ns,
+                valid_until_ns,
+                observed_at_ns,
+                required_margin_ns,
+            } => write!(
+                f,
+                "bolt-v3 submit admission economics lacks remaining lifetime: requested_at_ns={requested_at_ns} valid_until_ns={valid_until_ns} observed_at_ns={observed_at_ns} required_margin_ns={required_margin_ns}"
+            ),
+            Self::EconomicsUnavailable(error) => {
+                write!(
+                    f,
+                    "bolt-v3 submit admission economics is unavailable: {error}"
+                )
+            }
             Self::CapitalAdmissionRejected { reason } => {
                 write!(
                     f,
                     "bolt-v3 submit admission capital admission rejected: {reason:?}"
                 )
             }
-            Self::KillSwitchForcedReductionProofInvalid => write!(
-                f,
-                "bolt-v3 submit admission kill-switch forced reduction proof is invalid"
-            ),
-            Self::KillSwitchForcedReductionCapExceeded => write!(
-                f,
-                "bolt-v3 submit admission kill-switch forced reduction cap is exceeded"
-            ),
+            Self::EconomicsSealRejected => {
+                write!(f, "bolt-v3 submit admission economics seal was rejected")
+            }
             Self::EvidenceWriteFailed { reason } => {
                 write!(
                     f,
@@ -3785,7 +4499,12 @@ fn evaluate_capital_admission_submit(
     request: &BoltV3SubmitAdmissionRequest,
     now_ns: u64,
 ) -> BoltV3CapitalAdmissionSubmitDecision {
-    let Some(capital_admission) = inner.capital_admission.as_mut() else {
+    let BoltV3SubmitAdmissionInner {
+        capital_admission_state_revision,
+        capital_admission,
+        ..
+    } = inner;
+    let Some(capital_admission) = capital_admission.as_mut() else {
         return accepted_without_reservation();
     };
     let Some(evidence) = request.admission_evidence.as_ref() else {
@@ -3879,6 +4598,12 @@ fn evaluate_capital_admission_submit(
         );
     }
 
+    let Some(reservation_revision) = capital_admission_state_revision.checked_add(1) else {
+        capital_admission.gate.invalidate_reconciliation();
+        return rejected_capital_admission(
+            BoltV3CapitalAdmissionRejectReason::ReconciliationRequired,
+        );
+    };
     capital_admission.next_sequence += 1;
     let submit_reservation_id = format!(
         "{}#{}",
@@ -3957,15 +4682,18 @@ fn evaluate_capital_admission_submit(
     };
     capital_admission.client_order_reservations.insert(
         request.client_order_id.clone(),
-        BoltV3SubmitReservationIndex {
-            submit_reservation_id: submit_reservation_id.clone(),
-            collateral_group_id: product.collateral_coupled_group_id.clone(),
+        BoltV3SubmitReservationRecord {
+            attribution: reservation_attribution.clone(),
+            phase: BoltV3SubmitReservationPhase::Reserved,
+            phase_revision: reservation_revision,
+            unresolved_in_projection: false,
             fill_metadata: Some(BoltV3SubmitReservationFillMetadata {
                 instrument_id: request.instrument_id.clone(),
                 side: evidence.side,
             }),
         },
     );
+    *capital_admission_state_revision = reservation_revision;
     BoltV3CapitalAdmissionSubmitDecision {
         accepted: true,
         reason: BoltV3CapitalAdmissionRejectReason::Rejected,
@@ -4014,21 +4742,13 @@ fn refresh_capital_admission_state_from_components(
     components: BoltV3SubmitCapitalAdmissionNtComponents,
 ) {
     if capital_admission.fill_evidence_integrity_failed {
-        capital_admission.gate = CapitalAdmissionGate::unreconciled();
+        capital_admission.gate.invalidate_reconciliation();
     }
     if capital_admission.gate.is_reconciled()
         && components.order_lifecycle.open_order_count > 0
         && !components.order_lifecycle.all_open_orders_attributed
     {
-        capital_admission.gate = CapitalAdmissionGate::unreconciled();
-    }
-    if !capital_admission.gate.is_reconciled()
-        && !capital_admission.fill_evidence_integrity_failed
-        && capital_admission.client_order_reservations.is_empty()
-        && components.order_lifecycle.open_order_count == 0
-        && components.order_lifecycle.all_open_orders_attributed
-    {
-        capital_admission.gate = CapitalAdmissionGate::reconciled();
+        capital_admission.gate.invalidate_reconciliation();
     }
     let state = compose_capital_admission_state_from_components(
         components,
@@ -4048,15 +4768,56 @@ fn fail_capital_admission_fill_evidence_integrity(
     observed_at_ns: u64,
 ) {
     capital_admission.fill_evidence_integrity_failed = true;
-    capital_admission.gate = CapitalAdmissionGate::unreconciled();
-    capital_admission.client_order_reservations.clear();
+    capital_admission.gate.invalidate_reconciliation();
     refresh_capital_admission_reservation_snapshot(capital_admission, observed_at_ns);
 }
 
-fn advance_capital_admission_nt_projection_epoch(epoch: &mut u64) {
-    *epoch = epoch
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CapitalAdmissionStateRevisionExhausted;
+
+fn advance_capital_admission_state_revision(
+    revision: &mut u64,
+) -> Result<(), CapitalAdmissionStateRevisionExhausted> {
+    let next = revision
         .checked_add(1)
-        .expect("capital admission NT projection epoch exhausted");
+        .ok_or(CapitalAdmissionStateRevisionExhausted)?;
+    *revision = next;
+    Ok(())
+}
+
+fn reject_capital_admission_fill_evidence_integrity(
+    capital_admission: &mut BoltV3SubmitCapitalAdmissionState,
+    revision: &mut u64,
+    observed_at_ns: u64,
+) -> BoltV3SubmitReservationFillEvidenceDecision {
+    match advance_capital_admission_state_revision(revision) {
+        Ok(()) => fail_capital_admission_fill_evidence_integrity(capital_admission, observed_at_ns),
+        Err(_) => {
+            capital_admission.gate.invalidate_reconciliation();
+            log::error!("capital admission state revision exhausted while rejecting fill evidence");
+        }
+    }
+    BoltV3SubmitReservationFillEvidenceDecision::unknown()
+}
+
+fn unresolved_reservation_counts(
+    records: &BTreeMap<String, BoltV3SubmitReservationRecord>,
+) -> (usize, usize) {
+    let sink_invoked = records
+        .values()
+        .filter(|record| {
+            record.unresolved_in_projection
+                && matches!(record.phase, BoltV3SubmitReservationPhase::SinkInvoked)
+        })
+        .count();
+    let observed_open = records
+        .values()
+        .filter(|record| {
+            record.unresolved_in_projection
+                && matches!(record.phase, BoltV3SubmitReservationPhase::ObservedOpen)
+        })
+        .count();
+    (sink_invoked, observed_open)
 }
 
 fn apply_rebuild_order_lifecycle(
@@ -4131,7 +4892,12 @@ fn nt_components_from_existing_capital_admission_state(
 fn rebuilt_open_order_reservation_attribution_valid(
     reservation: &BoltV3SubmitCapitalAdmissionOpenOrderReservation,
 ) -> bool {
-    if reservation.instrument_id.trim().is_empty()
+    if reservation.client_order_id != reservation.attribution.client_order_id
+        || reservation.submit_reservation_id != reservation.attribution.submit_reservation_id
+        || reservation.collateral_group_id != reservation.attribution.collateral_group_id
+        || reservation.instrument_id != reservation.attribution.instrument_id
+        || evidence_order_side(reservation.side) != reservation.attribution.side
+        || reservation.instrument_id.trim().is_empty()
         || reservation.open_quantity <= Decimal::ZERO
         || reservation.original_quantity <= Decimal::ZERO
         || reservation.filled_quantity < Decimal::ZERO
@@ -4206,21 +4972,50 @@ fn rollback_capital_admission_reservation(
     inner: &mut BoltV3SubmitAdmissionInner,
     rollback: &BoltV3CapitalAdmissionReservationRollback,
 ) {
+    let Some(next_revision) = inner.capital_admission_state_revision.checked_add(1) else {
+        if let Some(capital_admission) = inner.capital_admission.as_mut() {
+            capital_admission.gate.invalidate_reconciliation();
+        }
+        log::error!(
+            "bolt-v3 capital reservation rollback exhausted the lifecycle revision: client_order_id={}",
+            rollback.client_order_id,
+        );
+        return;
+    };
     let Some(capital_admission) = inner.capital_admission.as_mut() else {
         return;
     };
-    capital_admission
-        .gate
-        .rollback_uncommitted_reservation(&rollback.pool_id, &rollback.submit_reservation_id);
-    if capital_admission
+    let index_matches = capital_admission
         .client_order_reservations
         .get(&rollback.client_order_id)
-        .map(|current| current.submit_reservation_id.as_str())
-        == Some(rollback.submit_reservation_id.as_str())
-    {
-        capital_admission
-            .client_order_reservations
-            .remove(&rollback.client_order_id);
+        .is_some_and(|current| {
+            current.attribution.submit_reservation_id == rollback.submit_reservation_id
+        });
+    let ledger_removed = capital_admission
+        .gate
+        .rollback_uncommitted_reservation(&rollback.pool_id, &rollback.submit_reservation_id)
+        .is_some();
+    match (ledger_removed, index_matches) {
+        (true, true) => {
+            capital_admission
+                .client_order_reservations
+                .remove(&rollback.client_order_id);
+        }
+        (true, false) => {}
+        (false, true) => {
+            capital_admission.gate.invalidate_reconciliation();
+            log::error!(
+                "bolt-v3 capital reservation rollback found attribution without numerical liability: client_order_id={} reservation_id={}",
+                rollback.client_order_id,
+                rollback.submit_reservation_id,
+            );
+        }
+        (false, false) => return,
+    }
+    inner.capital_admission_state_revision = next_revision;
+    if ledger_removed {
+        capital_admission.unresolved_lifecycle_reservations =
+            unresolved_reservation_counts(&capital_admission.client_order_reservations);
     }
     refresh_capital_admission_reservation_snapshot(capital_admission, rollback.observed_at_ns);
 }
@@ -4253,11 +5048,6 @@ fn rollback_admission_counters(
         inner
             .admitted_order_count_by_execution_client
             .remove(&rollback.execution_client_id);
-    }
-    if let Some(client_order_id) = rollback.forced_reduction_client_order_id.as_ref() {
-        inner
-            .live_kill_switch_forced_reduction_client_order_ids
-            .remove(client_order_id);
     }
 }
 
@@ -4362,6 +5152,60 @@ mod notional_guard_tests {
 }
 
 #[cfg(test)]
+mod economics_health_tests {
+    use super::*;
+    use crate::{
+        bolt_v3_economics_runtime::{
+            EconomicsAdmission, EconomicsAdmissionPurpose, EconomicsOrderBinding,
+        },
+        economics::EconomicsError,
+    };
+
+    #[test]
+    fn expired_economics_fails_before_admission_mutates_state() {
+        let evidence = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = BoltV3SubmitAdmissionState::new(Arc::clone(&evidence));
+        let request = BoltV3SubmitAdmissionRequest {
+            strategy_id: "strategy-expired-economics".to_string(),
+            execution_client_id: "execution-client-expired-economics".to_string(),
+            client_order_id: "client-order-expired-economics".to_string(),
+            instrument_id: "instrument-expired-economics".to_string(),
+            notional: Decimal::ONE,
+            order_side: OrderSide::Buy,
+            order_quantity: Decimal::ONE,
+            intent_kind: BoltV3SubmitIntentKind::Entry,
+            risk_reducing_exit_proof: None,
+            admission_evidence: None,
+        };
+        let economics = EconomicsAdmission::for_routing_test_with_validity(
+            &request.execution_client_id,
+            &request.instrument_id,
+            crate::economics::OrderSide::Buy,
+            EconomicsOrderBinding::from_sha256([7; 32]),
+            EconomicsAdmissionPurpose::TradingEdge,
+            Decimal::ONE,
+            Decimal::ONE,
+            10,
+        );
+
+        assert!(matches!(
+            admission.admit_at_inner(&request, Some(&economics), 11),
+            Err(BoltV3SubmitAdmissionError::EconomicsUnavailable(
+                EconomicsError::RequiredCapabilityStale { valid_until_ns: 10 }
+            ))
+        ));
+        assert_eq!(admission.admitted_order_count(), 0);
+        assert_eq!(admission.reject_episode_count(), 0);
+        assert!(
+            evidence
+                .recorded_facts()
+                .expect("recorded current evidence must decode")
+                .is_empty()
+        );
+    }
+}
+
+#[cfg(test)]
 mod loss_governor_halt_evidence_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -4384,58 +5228,6 @@ mod loss_governor_halt_evidence_tests {
         );
         assert_eq!(LossSnapshotSource::Unknown.as_str(), "unknown");
         assert_eq!(LossSnapshotSource::Other.as_str(), "other");
-    }
-
-    #[derive(Default)]
-    struct CapturingLogger {
-        records: Mutex<Vec<(log::Level, String)>>,
-    }
-
-    impl log::Log for CapturingLogger {
-        fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
-            true
-        }
-
-        fn log(&self, record: &log::Record<'_>) {
-            self.records
-                .lock()
-                .expect("capturing logger mutex poisoned")
-                .push((record.level(), record.args().to_string()));
-        }
-
-        fn flush(&self) {}
-    }
-
-    impl CapturingLogger {
-        fn reset(&self) {
-            self.records
-                .lock()
-                .expect("capturing logger mutex poisoned")
-                .clear();
-        }
-
-        fn records(&self) -> Vec<(log::Level, String)> {
-            self.records
-                .lock()
-                .expect("capturing logger mutex poisoned")
-                .clone()
-        }
-    }
-
-    static CAPTURING_LOGGER: std::sync::OnceLock<&'static CapturingLogger> =
-        std::sync::OnceLock::new();
-    static CAPTURING_LOGGER_OBSERVERS: Mutex<()> = Mutex::new(());
-    fn install_capturing_logger() -> &'static CapturingLogger {
-        static INSTALL_OUTCOME: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        let logger =
-            CAPTURING_LOGGER.get_or_init(|| Box::leak(Box::new(CapturingLogger::default())));
-        let installed = *INSTALL_OUTCOME.get_or_init(|| log::set_logger(*logger).is_ok());
-        assert!(
-            installed,
-            "capturing logger could not claim the global log slot; another logger is installed"
-        );
-        log::set_max_level(log::LevelFilter::Trace);
-        *logger
     }
 
     fn stale_loss_snapshot() -> LossSnapshot {
@@ -4462,7 +5254,6 @@ mod loss_governor_halt_evidence_tests {
             order_quantity: Decimal::ONE,
             intent_kind: BoltV3SubmitIntentKind::Entry,
             risk_reducing_exit_proof: None,
-            kill_switch_forced_reduction: None,
             admission_evidence: None,
         }
     }
@@ -4609,11 +5400,12 @@ mod loss_governor_halt_evidence_tests {
 
     #[test]
     fn loss_governor_halt_evidence_write_failure_logs_error_and_rejects() {
-        let logger = install_capturing_logger();
-        let _observer_guard = CAPTURING_LOGGER_OBSERVERS
-            .lock()
-            .expect("capturing logger observer mutex poisoned");
-        logger.reset();
+        if !crate::bolt_v3_test_log_capture::enter_isolated_log_capture(
+            "loss_governor_halt_evidence_write_failure_logs_error_and_rejects",
+            "loss-governor-evidence-write",
+        ) {
+            return;
+        }
 
         let writer = failing_evidence();
         let admission = BoltV3SubmitAdmissionState::new_with_loss_governor(
@@ -4632,7 +5424,9 @@ mod loss_governor_halt_evidence_tests {
             "client-order-loss-halt-log-guard".to_string(),
         );
 
-        let result = admission.admit_at(&request, 1_200);
+        let (result, records) = crate::bolt_v3_test_log_capture::with_captured_logs(|| {
+            admission.admit_at(&request, 1_200)
+        });
 
         match result {
             Err(BoltV3SubmitAdmissionError::LossGovernorHalted { reasons }) => assert_eq!(
@@ -4651,8 +5445,7 @@ mod loss_governor_halt_evidence_tests {
             1,
             "the failing writer must still receive the halt evidence"
         );
-        let matching = logger
-            .records()
+        let matching = records
             .into_iter()
             .filter(|(_, message)| message.contains("loss governor halt evidence write failed"))
             .collect::<Vec<_>>();

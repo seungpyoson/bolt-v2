@@ -13,18 +13,20 @@
 //! `StrategyBuilder` impl) mirrors `binary_oracle_edge_taker` *structurally* —
 //! it does not copy taker behaviour.
 
-use std::time::Duration;
-
 use anyhow::Result;
 use nautilus_common::{actor::DataActor, timer::TimeEvent};
 use nautilus_model::{
     data::TradeTick,
     enums::OmsType,
-    identifiers::{ClientId, StrategyId},
+    events::{
+        OrderCancelRejected, OrderCanceled, OrderExpired, OrderFillVoided, OrderFilled,
+        OrderPendingCancel, OrderRejected,
+    },
+    identifiers::{ClientId, InstrumentId, StrategyId},
     instruments::{Instrument, InstrumentAny},
 };
 use nautilus_trading::{StrategyConfig, StrategyCore};
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, prelude::FromPrimitive};
 use toml::Value;
 
 use crate::bolt_v3_strategy_context::StrategyBuildContext;
@@ -39,7 +41,10 @@ use crate::{
     bolt_v3_maker_market_selection::MakerMarketPortfolioPolicy,
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig},
     bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
-    bolt_v3_maker_order_dispatch::{MakerOrderDispatchInput, MakerOrderDispatchOutcome},
+    bolt_v3_maker_order_dispatch::{
+        MakerOrderCommandAuthority, MakerOrderCommandFailure, MakerOrderCommandFailureKind,
+        MakerOrderDispatchInput, MakerOrderDispatchOutcome, MakerQuoteTransactionContext,
+    },
     bolt_v3_maker_order_plan::{
         MakerLegBinding, MakerMarketActionOrderInput, maker_order_plan_from_market_action,
     },
@@ -51,29 +56,25 @@ use crate::{
         maker_risk_mode_for_loss_decision,
     },
     bolt_v3_maker_runtime_order::{
-        MakerRuntimeLegOrderDispatchOutcome, MakerRuntimeOrderDispatchInput,
-        MakerRuntimeOrderDispatchOutcome, dispatch_maker_runtime_order_plan_with_command_router,
+        MakerRuntimeOrderDispatchInput, MakerRuntimeOrderDispatchOutcome,
+        dispatch_maker_runtime_order_plan_with_command_router,
     },
     bolt_v3_maker_runtime_quote::{
         MakerRuntimeQuoteBlockReason, MakerRuntimeQuoteDecision, MakerRuntimeQuoteInput,
-        MakerRuntimeQuoteSetInput, MakerRuntimeReferenceFairValueBlockReason,
-        MakerRuntimeReferenceFairValueDecision, MakerRuntimeReferenceFairValueInput,
-        blocked_runtime_quote_decision, maker_reference_current_price_fair_value_decision,
-        plan_maker_runtime_quote, runtime_window_contains,
+        MakerRuntimeQuoteSetInput, blocked_runtime_quote_decision, plan_maker_runtime_quote,
+        runtime_window_contains,
     },
     bolt_v3_numeric::NANOS_PER_MILLI_U64,
     bolt_v3_order_execution::{
-        BoltV3MakerOrderRoutingContext,
+        BoltV3MakerOrderRoutingContext, BoltV3RestingOrderCancelHealthSnapshot,
+        BoltV3RestingOrderDrainCapability, BoltV3TerminalValueEntry,
+        BoltV3TerminalValueEntryPolicy,
         route_maker_order_command as route_maker_order_command_through_policy,
     },
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_quote_lifecycle::{Leg, LegState, MarketAction, MarketQuote},
     bolt_v3_quoting::QuoteTargets,
-    bolt_v3_realized_volatility::RealizedVolSnapshot,
-    bolt_v3_reference_price::{ReferencePriceSelector, ReferenceQuote},
     bolt_v3_requote_budget::RequoteBudgetPair,
-    bolt_v3_target_identity::stable_identity_field_is_canonical,
-    bolt_v3_timestamp_domain::LocalReceiveMs,
     bolt_v3_trade_flow::SignedTradeFlowConfig,
     strategies::binary_oracle_maker::mu::MakerMuState,
     strategies::binary_oracle_maker::runtime::MakerRuntime,
@@ -101,6 +102,35 @@ const REQUOTE_THROTTLE_CANCEL_RESUBMIT_REST_COST: u64 = 2;
 const REQUOTE_THROTTLE_CANCEL_SUBMIT_COST: u64 = 0;
 const REQUOTE_THROTTLE_CANCEL_REST_COST: u64 = 1;
 
+#[derive(Debug)]
+enum MakerShutdownState {
+    Running,
+    Draining(BoltV3RestingOrderDrainCapability),
+    Stopped(BoltV3RestingOrderDrainCapability),
+}
+
+#[derive(Clone)]
+struct ActiveRetentionScope {
+    market_key: String,
+    market: MarketQuote,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryOracleMakerLifecycleError {
+    Draining,
+}
+
+impl std::fmt::Display for BinaryOracleMakerLifecycleError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Draining => formatter
+                .write_str("binary_oracle_maker is draining and cannot accept new quote work"),
+        }
+    }
+}
+
+impl std::error::Error for BinaryOracleMakerLifecycleError {}
+
 /// Binary-oracle market-making strategy. Carries the NautilusTrader envelope
 /// (`core`), its parsed config, and the per-instrument μ (informed-fraction)
 /// runtime state. Compiled maker order commands route through the shared
@@ -112,23 +142,45 @@ pub struct BinaryOracleMaker {
     context: StrategyBuildContext,
     mu: MakerMuState,
     runtime: MakerRuntime,
+    shutdown: MakerShutdownState,
+    retention_scopes: Vec<ActiveRetentionScope>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOracleMakerRuntimeQuoteRouteInput<'a> {
     pub quote_plan: MakerQuotePlanInputs<'a>,
-    pub quote_set: MakerRuntimeQuoteSetInput<'a>,
+    pub quote_set: MakerRuntimeQuoteSetInput,
     pub submit_template: &'a NtOrderTemplate,
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOracleMakerRuntimeQuoteRouteOutcome {
     pub quote: MakerRuntimeQuoteDecision,
     pub orders: Option<MakerRuntimeOrderDispatchOutcome>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MakerOrderCommandClass {
+    QuoteBearing { instrument_id: InstrumentId },
+    ScopeCancelAll,
+}
+
+impl MakerOrderCommandClass {
+    fn classify(command: &MakerCompiledOrderCommand) -> Self {
+        match command {
+            MakerCompiledOrderCommand::Submit { inputs, .. } => Self::QuoteBearing {
+                instrument_id: inputs.instrument_id,
+            },
+            MakerCompiledOrderCommand::Cancel { instrument_id, .. }
+            | MakerCompiledOrderCommand::Modify { instrument_id, .. } => Self::QuoteBearing {
+                instrument_id: *instrument_id,
+            },
+            MakerCompiledOrderCommand::CancelAll { .. } => Self::ScopeCancelAll,
+        }
+    }
 }
 
 /// The identity of a throttled-requote episode, which is what decides whether a
@@ -174,8 +226,6 @@ struct ThrottledMarket<'a> {
 /// instant: rotating families deliberately preload a future window so its market
 /// data can be subscribed before the window opens.
 struct ActiveQuoteAuthority {
-    family_key: String,
-    underlying_asset: String,
     interval_start_ms: u64,
     interval_end_ms: u64,
 }
@@ -221,124 +271,6 @@ fn requote_throttle_observation(
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BinaryOracleMakerRuntimeReferenceQuoteRouteInput<'a> {
-    pub reference_fair_value: BinaryOracleMakerReferenceFairValueInput<'a>,
-    pub quote_plan: MakerQuotePlanInputs<'a>,
-    pub quote_set: MakerRuntimeQuoteSetInput<'a>,
-    pub submit_template: &'a NtOrderTemplate,
-    pub price_precision: u8,
-    pub quantity_precision: u8,
-    pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
-}
-
-/// A validated opening strike bound to one configured market, asset, and window.
-///
-/// The route compares all three identity fields with the active runtime binding
-/// before fair-value evaluation. This prevents a numerically valid strike from a
-/// sibling market or cadence window from being reused accidentally.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BinaryOracleMakerStrikePrice<'a> {
-    market_key: &'a str,
-    underlying_asset: &'a str,
-    interval_start_ms: u64,
-    price: f64,
-}
-
-impl<'a> BinaryOracleMakerStrikePrice<'a> {
-    pub fn try_new(
-        market_key: &'a str,
-        underlying_asset: &'a str,
-        interval_start_ms: u64,
-        price: f64,
-    ) -> std::result::Result<Self, String> {
-        if !stable_identity_field_is_canonical(market_key) {
-            return Err("binary oracle maker strike market_key is invalid".to_string());
-        }
-        if underlying_asset.is_empty() || underlying_asset.chars().any(char::is_whitespace) {
-            return Err("binary oracle maker strike underlying_asset is invalid".to_string());
-        }
-        if interval_start_ms == 0 {
-            return Err(
-                "binary oracle maker strike interval_start_ms must be positive".to_string(),
-            );
-        }
-        if !price.is_finite() || price <= 0.0 {
-            return Err("binary oracle maker strike price must be positive and finite".to_string());
-        }
-        Ok(Self {
-            market_key,
-            underlying_asset,
-            interval_start_ms,
-            price,
-        })
-    }
-
-    #[must_use]
-    pub const fn market_key(&self) -> &str {
-        self.market_key
-    }
-
-    #[must_use]
-    pub const fn underlying_asset(&self) -> &str {
-        self.underlying_asset
-    }
-
-    #[must_use]
-    pub const fn interval_start_ms(&self) -> u64 {
-        self.interval_start_ms
-    }
-
-    #[must_use]
-    pub const fn price(&self) -> f64 {
-        self.price
-    }
-}
-
-/// Reference observations and pricing parameters whose market identity is
-/// validated against the active runtime binding inside the route. Family,
-/// cadence window, asset, and time to expiry come from that binding.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BinaryOracleMakerReferenceFairValueInput<'a> {
-    pub reference_quotes: &'a [ReferenceQuote],
-    pub strike: Option<BinaryOracleMakerStrikePrice<'a>>,
-    pub realized_volatility_snapshot: &'a RealizedVolSnapshot,
-    pub realized_volatility_max_source_age_ms: Option<u64>,
-    pub pricing_kurtosis: f64,
-    pub evaluation_receive_ms: LocalReceiveMs,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BinaryOracleMakerRuntimeReferenceQuoteRouteOutcome {
-    pub fair_value: MakerRuntimeReferenceFairValueDecision,
-    pub quote: Option<MakerRuntimeQuoteDecision>,
-    pub orders: Option<MakerRuntimeOrderDispatchOutcome>,
-    pub blocked_by: Option<BinaryOracleMakerRuntimeReferenceQuoteBlockReason>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinaryOracleMakerRuntimeReferenceQuoteBlockReason {
-    FairValue(MakerRuntimeReferenceFairValueBlockReason),
-    Quote(MakerRuntimeQuoteBlockReason),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BinaryOracleMakerMarketActionRouteInput<'a> {
-    pub action: MakerMarketActionOrderInput,
-    pub submit_template: &'a NtOrderTemplate,
-    pub price_precision: u8,
-    pub quantity_precision: u8,
-    pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct BinaryOracleMakerMarketActionRouteOutcome {
-    pub order: MakerRuntimeLegOrderDispatchOutcome,
-    pub orders: MakerRuntimeOrderDispatchOutcome,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOracleMakerRiskRouteInput<'a> {
     pub loss_decision: &'a LossAdmissionDecision,
     pub policy: MakerLossRiskPolicy,
@@ -351,13 +283,36 @@ pub struct BinaryOracleMakerRiskRouteInput<'a> {
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOracleMakerRiskRouteOutcome {
     pub risk: MakerRiskDecision,
     pub orders: Option<MakerRuntimeOrderDispatchOutcome>,
+}
+
+fn maker_command_terminal_value_entry(
+    command: &MakerCompiledOrderCommand,
+    fair_probability_up: f64,
+) -> Result<Option<BoltV3TerminalValueEntry>> {
+    let MakerCompiledOrderCommand::Submit { leg, inputs, .. } = command else {
+        return Ok(None);
+    };
+    let fair_probability_up = Decimal::from_f64(fair_probability_up)
+        .filter(|value| (Decimal::ZERO..=Decimal::ONE).contains(value))
+        .ok_or_else(|| anyhow::anyhow!("maker economics fair probability is invalid"))?;
+    let outcome_probability = match leg {
+        Leg::Yes => fair_probability_up,
+        Leg::No => Decimal::ONE - fair_probability_up,
+    };
+    anyhow::ensure!(
+        inputs.price.is_some() && inputs.quantity.as_f64() > 0.0,
+        "maker economics requires a positive priced submit"
+    );
+    Ok(Some(BoltV3TerminalValueEntry::try_new(
+        outcome_probability,
+        BoltV3TerminalValueEntryPolicy::Breakeven,
+    )?))
 }
 
 impl std::fmt::Debug for BinaryOracleMaker {
@@ -367,6 +322,7 @@ impl std::fmt::Debug for BinaryOracleMaker {
             .field("config", &self.config)
             .field("mu", &self.mu)
             .field("runtime", &self.runtime)
+            .field("shutdown", &self.shutdown)
             .finish_non_exhaustive()
     }
 }
@@ -391,6 +347,8 @@ impl BinaryOracleMaker {
             context,
             mu,
             runtime: MakerRuntime::empty(),
+            shutdown: MakerShutdownState::Running,
+            retention_scopes: Vec::new(),
         }
     }
 
@@ -403,6 +361,80 @@ impl BinaryOracleMaker {
     /// identities). Read by the integration tests and later runtime slices.
     pub fn runtime(&self) -> &MakerRuntime {
         &self.runtime
+    }
+
+    fn ensure_accepting_new_quotes(&self) -> Result<()> {
+        if !matches!(self.shutdown, MakerShutdownState::Running) {
+            return Err(BinaryOracleMakerLifecycleError::Draining.into());
+        }
+        Ok(())
+    }
+
+    fn begin_draining(&mut self) -> Result<usize> {
+        let now_ns = self.clock().timestamp_ns().as_u64();
+        match &mut self.shutdown {
+            MakerShutdownState::Running => {
+                let (capability, count) = self
+                    .context
+                    .order_economics()
+                    .latch_resting_order_drain_at_ns(now_ns)?;
+                self.shutdown = MakerShutdownState::Draining(capability);
+                Ok(count)
+            }
+            MakerShutdownState::Draining(capability) => {
+                capability.request_cancellation_at_ns(now_ns)
+            }
+            MakerShutdownState::Stopped(_) => Err(BinaryOracleMakerLifecycleError::Draining.into()),
+        }
+    }
+
+    fn reconcile_order_callback(
+        &mut self,
+        client_order_id: nautilus_model::identifiers::ClientOrderId,
+        fill_voided: bool,
+    ) {
+        let now_ns = self.clock().timestamp_ns().as_u64();
+        let cached_order = self.cache().order(&client_order_id);
+        let order_economics = self.context.order_economics().clone();
+        let result = if fill_voided {
+            order_economics.reconcile_fill_void_at(client_order_id, cached_order, now_ns)
+        } else {
+            order_economics.reconcile_tracked_order_at(client_order_id, cached_order, now_ns)
+        };
+        if let Err(error) = result {
+            log::error!(
+                "binary_oracle_maker order-event reconciliation failed: strategy_id={} client_order_id={} error={error:#}",
+                self.config.strategy_id,
+                client_order_id,
+            );
+        }
+        if let Err(error) = self.complete_draining_if_empty() {
+            log::error!(
+                "binary_oracle_maker graceful stop completion failed: strategy_id={} error={error:#}",
+                self.config.strategy_id,
+            );
+        }
+    }
+
+    fn complete_draining_if_empty(&mut self) -> Result<()> {
+        if !matches!(self.shutdown, MakerShutdownState::Draining(_)) {
+            return Ok(());
+        }
+        let order_economics = self.context.order_economics();
+        let resting_order_ids = order_economics.resting_order_ids()?;
+        let cancel_health = order_economics.resting_cancel_health()?;
+        let cancel_health_order_ids = cancel_health
+            .iter()
+            .map(BoltV3RestingOrderCancelHealthSnapshot::client_order_id)
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            cancel_health_order_ids == resting_order_ids,
+            "binary_oracle_maker drain cancellation health does not cover the exact tracked-order set: tracked={resting_order_ids:?} snapshots={cancel_health_order_ids:?}",
+        );
+        if !resting_order_ids.is_empty() {
+            return Ok(());
+        }
+        nautilus_common::component::Component::stop(self)
     }
 
     /// Validate the caller's market ownership against the active runtime before
@@ -425,19 +457,139 @@ impl BinaryOracleMaker {
             "binary_oracle_maker quote family does not match active runtime binding: market_key={market_key} runtime_family_key={runtime_family_key} input_family_key={input_family_key}"
         );
         Ok(ActiveQuoteAuthority {
-            family_key: runtime_family_key.to_string(),
-            underlying_asset: runtime_market.underlying_asset().to_string(),
             interval_start_ms: runtime_market.start_timestamp_milliseconds(),
             interval_end_ms: runtime_market.expiration_timestamp_milliseconds(),
         })
+    }
+
+    fn bind_retention_scope(&mut self, market_key: &str, market: &MarketQuote) -> Result<()> {
+        let lifecycle_identity = self
+            .runtime
+            .market(market_key)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "binary_oracle_maker cannot bind retention for inactive market: market_key={market_key}"
+                )
+            })?
+            .order_lifecycle_scope_identity();
+        anyhow::ensure!(
+            lifecycle_identity == market.scope_identity(),
+            "binary_oracle_maker quote authority lifecycle scope does not match the active runtime binding: market_key={market_key}"
+        );
+        if let Some(scope) = self
+            .retention_scopes
+            .iter()
+            .find(|scope| scope.market_key == market_key)
+        {
+            anyhow::ensure!(
+                scope.market.scope_identity() == lifecycle_identity
+                    && scope.market.shares_authority_with(market),
+                "binary_oracle_maker active market cannot replace its governed retention scope before lifecycle closure: market_key={market_key}"
+            );
+            return Ok(());
+        }
+        self.retention_scopes.push(ActiveRetentionScope {
+            market_key: market_key.to_string(),
+            market: market.clone(),
+        });
+        Ok(())
+    }
+
+    fn close_retired_retention_scopes(&mut self, now_ns: u64) -> Result<()> {
+        let retired = self
+            .retention_scopes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, scope)| {
+                let remains_active = self
+                    .runtime
+                    .market(&scope.market_key)
+                    .is_some_and(|market| {
+                        market.order_lifecycle_scope_identity() == scope.market.scope_identity()
+                    });
+                (!remains_active).then(|| (index, scope.market.clone()))
+            })
+            .collect::<Vec<_>>();
+        for (_, market) in &retired {
+            self.context
+                .order_economics()
+                .close_maker_quote_scope(market, now_ns)?;
+        }
+        for (index, _) in retired.into_iter().rev() {
+            self.retention_scopes.remove(index);
+        }
+        Ok(())
     }
 
     pub fn route_maker_order_command(
         &mut self,
         command: &MakerCompiledOrderCommand,
         submit_order_prefix: &str,
-        max_fee_bps: Decimal,
-    ) -> Result<MakerOrderDispatchOutcome> {
+        terminal_value_entry: Option<BoltV3TerminalValueEntry>,
+        authority: MakerOrderCommandAuthority,
+    ) -> std::result::Result<MakerOrderDispatchOutcome, MakerOrderCommandFailure> {
+        if matches!(
+            command,
+            MakerCompiledOrderCommand::Submit { .. } | MakerCompiledOrderCommand::Modify { .. }
+        ) {
+            self.ensure_accepting_new_quotes().map_err(|error| {
+                MakerOrderCommandFailure::new(MakerOrderCommandFailureKind::Lifecycle, error)
+            })?;
+        }
+        let authority = match (MakerOrderCommandClass::classify(command), authority) {
+            (
+                MakerOrderCommandClass::QuoteBearing { instrument_id },
+                MakerOrderCommandAuthority::Quote(transaction),
+            ) => {
+                let market_keys = self.runtime.market_keys_for_instrument(instrument_id);
+                let market_key = match market_keys.as_slice() {
+                    [market_key] => market_key,
+                    [] => {
+                        return Err(MakerOrderCommandFailure::new(
+                            MakerOrderCommandFailureKind::LifecycleScope,
+                            anyhow::anyhow!(
+                                "binary_oracle_maker retention scope has no active market for instrument: instrument_id={instrument_id}"
+                            ),
+                        ));
+                    }
+                    [_, _, ..] => {
+                        return Err(MakerOrderCommandFailure::new(
+                            MakerOrderCommandFailureKind::LifecycleScope,
+                            anyhow::anyhow!(
+                                "binary_oracle_maker retention scope is ambiguous for active instrument: instrument_id={instrument_id} market_keys={market_keys:?}"
+                            ),
+                        ));
+                    }
+                };
+                self.bind_retention_scope(market_key, transaction.market())
+                    .map_err(|error| {
+                        MakerOrderCommandFailure::new(
+                            MakerOrderCommandFailureKind::LifecycleScope,
+                            error,
+                        )
+                    })?;
+                MakerOrderCommandAuthority::Quote(transaction)
+            }
+            (
+                MakerOrderCommandClass::ScopeCancelAll,
+                MakerOrderCommandAuthority::ScopeCancelAll,
+            ) => MakerOrderCommandAuthority::ScopeCancelAll,
+            (
+                MakerOrderCommandClass::QuoteBearing { .. },
+                MakerOrderCommandAuthority::ScopeCancelAll,
+            ) => {
+                return Err(MakerOrderCommandFailure::new(
+                    MakerOrderCommandFailureKind::LifecycleScope,
+                    "binary_oracle_maker quote-bearing command is missing its lifecycle authority",
+                ));
+            }
+            (MakerOrderCommandClass::ScopeCancelAll, MakerOrderCommandAuthority::Quote(_)) => {
+                return Err(MakerOrderCommandFailure::new(
+                    MakerOrderCommandFailureKind::LifecycleScope,
+                    "binary_oracle_maker scope cancel-all cannot consume quote lifecycle authority",
+                ));
+            }
+        };
         let policy = self.context.order_execution_policy();
         let decision_evidence = self
             .context
@@ -446,6 +598,7 @@ impl BinaryOracleMaker {
         let submit_admission = self.context.submit_admission_arc();
         let strategy_id = self.config.strategy_id.clone();
         let execution_client_id = self.config.client_id.clone();
+        let order_economics = self.context.order_economics().clone();
         route_maker_order_command_through_policy(
             policy,
             self,
@@ -454,11 +607,13 @@ impl BinaryOracleMaker {
             BoltV3MakerOrderRoutingContext {
                 strategy_id: strategy_id.as_str(),
                 execution_client_id: execution_client_id.as_str(),
-                max_fee_bps,
+                order_economics: &order_economics,
+                terminal_value_entry,
             },
             MakerOrderDispatchInput {
                 command,
                 submit_order_prefix,
+                authority,
             },
         )
     }
@@ -549,9 +704,9 @@ impl BinaryOracleMaker {
     }
 
     /// `market_key` selects the active runtime market this cycle is quoting.
-    /// `MarketQuote` is leg lifecycle state and carries no key; the runtime binding
-    /// supplies the authoritative family, cadence, instruments, and order handles.
-    /// This route validates that authority before minting identities, then applies
+    /// `MarketQuote` carries the sealed cadence-and-instruments lifecycle scope;
+    /// the runtime binding supplies the authoritative family and order handles.
+    /// This route validates exact scope equality before minting identities, then applies
     /// each dispatch outcome back to the same runtime binding.
     pub fn route_maker_runtime_quote(
         &mut self,
@@ -560,6 +715,7 @@ impl BinaryOracleMaker {
         budget: &mut RequoteBudgetPair,
         input: BinaryOracleMakerRuntimeQuoteRouteInput<'_>,
     ) -> Result<BinaryOracleMakerRuntimeQuoteRouteOutcome> {
+        self.ensure_accepting_new_quotes()?;
         let BinaryOracleMakerRuntimeQuoteRouteInput {
             quote_plan,
             quote_set,
@@ -567,7 +723,6 @@ impl BinaryOracleMaker {
             price_precision,
             quantity_precision,
             submit_order_prefix,
-            max_fee_bps,
         } = input;
 
         let authority = self.ensure_active_quote_authority(market_key, quote_plan.family_key)?;
@@ -579,6 +734,7 @@ impl BinaryOracleMaker {
                 orders: None,
             });
         }
+        self.bind_retention_scope(market_key, market)?;
 
         let order_id_tag = self.config.order_id_tag.clone();
         let minted = self.runtime.mint_next_identities(market_key, &order_id_tag);
@@ -606,9 +762,52 @@ impl BinaryOracleMaker {
             self.update_requote_throttle_edge(market_key, market, budget, leg, decision, now_ms)?;
         }
         let orders = if let Some(order_plan) = quote_decision.order_plan.as_ref() {
+            let fair_probability_up = quote_decision
+                .quote_plan
+                .as_ref()
+                .expect("an order plan requires a quote plan")
+                .fair_probability_up;
             let mut route_command =
                 |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
-                    self.route_maker_order_command(command, submit_order_prefix, max_fee_bps)
+                    let terminal_value_entry =
+                        maker_command_terminal_value_entry(command, fair_probability_up).map_err(
+                            |error| {
+                                MakerOrderCommandFailure::new(
+                                    MakerOrderCommandFailureKind::SubmitPreparation,
+                                    error,
+                                )
+                            },
+                        )?;
+                    let authority = match command {
+                        MakerCompiledOrderCommand::Submit { leg, .. }
+                        | MakerCompiledOrderCommand::Cancel { leg, .. }
+                        | MakerCompiledOrderCommand::Modify { leg, .. } => {
+                            let proposal = match leg {
+                                Leg::Yes => planned.and_then(|set| set.yes.control.proposal),
+                                Leg::No => planned.and_then(|set| set.no.control.proposal),
+                            }
+                            .ok_or_else(|| {
+                                MakerOrderCommandFailure::new(
+                                    MakerOrderCommandFailureKind::LifecycleScope,
+                                    "binary_oracle_maker quote-bearing command has no governed lifecycle proposal",
+                                )
+                            })?;
+                            MakerOrderCommandAuthority::Quote(MakerQuoteTransactionContext::new(
+                                market.clone(),
+                                budget.clone(),
+                                proposal,
+                            ))
+                        }
+                        MakerCompiledOrderCommand::CancelAll { .. } => {
+                            MakerOrderCommandAuthority::ScopeCancelAll
+                        }
+                    };
+                    self.route_maker_order_command(
+                        command,
+                        submit_order_prefix,
+                        terminal_value_entry,
+                        authority,
+                    )
                 };
             Some(dispatch_maker_runtime_order_plan_with_command_router(
                 MakerRuntimeOrderDispatchInput {
@@ -623,204 +822,19 @@ impl BinaryOracleMaker {
         } else {
             None
         };
-        if let Some(orders) = orders.as_ref() {
-            self.runtime.apply_dispatch_outcome(market_key, orders);
+        if let Some(orders) = orders.as_ref()
+            && let Err(error) = self.runtime.apply_dispatch_outcome(market_key, orders)
+        {
+            self.context
+                .order_economics()
+                .mark_resting_registry_unhealthy();
+            return Err(error.into());
         }
 
         Ok(BinaryOracleMakerRuntimeQuoteRouteOutcome {
             quote: quote_decision,
             orders,
         })
-    }
-
-    pub fn route_maker_runtime_reference_quote(
-        &mut self,
-        market_key: &str,
-        market: &mut MarketQuote,
-        budget: &mut RequoteBudgetPair,
-        reference_selector: &mut ReferencePriceSelector,
-        input: BinaryOracleMakerRuntimeReferenceQuoteRouteInput<'_>,
-    ) -> Result<BinaryOracleMakerRuntimeReferenceQuoteRouteOutcome> {
-        let BinaryOracleMakerRuntimeReferenceQuoteRouteInput {
-            reference_fair_value,
-            quote_plan,
-            quote_set,
-            submit_template,
-            price_precision,
-            quantity_precision,
-            submit_order_prefix,
-            max_fee_bps,
-        } = input;
-
-        let authority = self.ensure_active_quote_authority(market_key, quote_plan.family_key)?;
-        anyhow::ensure!(
-            reference_selector.asset() == authority.underlying_asset,
-            "binary_oracle_maker reference selector asset does not match active runtime binding: market_key={market_key} runtime_underlying_asset={} selector_asset={}",
-            authority.underlying_asset,
-            reference_selector.asset()
-        );
-        let strike_price = match reference_fair_value.strike {
-            Some(strike) => {
-                anyhow::ensure!(
-                    strike.market_key() == market_key,
-                    "binary_oracle_maker strike market does not match active runtime binding: market_key={market_key} strike_market_key={}",
-                    strike.market_key()
-                );
-                anyhow::ensure!(
-                    strike.underlying_asset() == authority.underlying_asset,
-                    "binary_oracle_maker strike asset does not match active runtime binding: market_key={market_key} runtime_underlying_asset={} strike_underlying_asset={}",
-                    authority.underlying_asset,
-                    strike.underlying_asset()
-                );
-                anyhow::ensure!(
-                    strike.interval_start_ms() == authority.interval_start_ms,
-                    "binary_oracle_maker strike window does not match active runtime binding: market_key={market_key} runtime_interval_start_ms={} strike_interval_start_ms={}",
-                    authority.interval_start_ms,
-                    strike.interval_start_ms()
-                );
-                Some(strike.price())
-            }
-            None => None,
-        };
-
-        let fair_value = maker_reference_current_price_fair_value_decision(
-            reference_selector,
-            quote_set.now_ms,
-            MakerRuntimeReferenceFairValueInput {
-                family_key: &authority.family_key,
-                interval_start_ms: authority.interval_start_ms,
-                interval_end_ms: authority.interval_end_ms,
-                reference_quotes: reference_fair_value.reference_quotes,
-                strike_price,
-                seconds_to_market_end: Some(
-                    Duration::from_millis(
-                        authority.interval_end_ms.saturating_sub(quote_set.now_ms),
-                    )
-                    .as_secs(),
-                ),
-                realized_volatility_snapshot: reference_fair_value.realized_volatility_snapshot,
-                realized_volatility_max_source_age_ms: reference_fair_value
-                    .realized_volatility_max_source_age_ms,
-                pricing_kurtosis: reference_fair_value.pricing_kurtosis,
-                evaluation_receive_ms: reference_fair_value.evaluation_receive_ms,
-            },
-        );
-        let Some(reference_fair_value_result) = fair_value.fair_value.as_ref() else {
-            // A missing reference price ends any prior throttle episode because
-            // the legs were considered but not throttled. Window unavailability
-            // is different: no quote cycle occurred, so it must not manufacture
-            // an episode edge; cadence rollover or market retirement owns cleanup.
-            if fair_value.blocked_by
-                != Some(MakerRuntimeReferenceFairValueBlockReason::RuntimeWindowUnavailable)
-            {
-                for leg in [Leg::Yes, Leg::No] {
-                    self.update_requote_throttle_edge(
-                        market_key,
-                        market,
-                        budget,
-                        leg,
-                        None,
-                        quote_set.now_ms,
-                    )?;
-                }
-            }
-            return Ok(BinaryOracleMakerRuntimeReferenceQuoteRouteOutcome {
-                blocked_by: fair_value
-                    .blocked_by
-                    .map(BinaryOracleMakerRuntimeReferenceQuoteBlockReason::FairValue),
-                fair_value,
-                quote: None,
-                orders: None,
-            });
-        };
-        let oracle_fair_probability_up = reference_fair_value_result.fair_probability_up;
-        let quote_route = self.route_maker_runtime_quote(
-            market_key,
-            market,
-            budget,
-            BinaryOracleMakerRuntimeQuoteRouteInput {
-                quote_plan: MakerQuotePlanInputs {
-                    family_key: &authority.family_key,
-                    oracle_fair_probability_up,
-                    ..quote_plan
-                },
-                quote_set,
-                submit_template,
-                price_precision,
-                quantity_precision,
-                submit_order_prefix,
-                max_fee_bps,
-            },
-        )?;
-        // A routing error is now per-leg data, not a `?` abort; fail loud here to
-        // preserve this reference-quote route's prior fail-closed behavior.
-        if let Some(error) = quote_route
-            .orders
-            .as_ref()
-            .and_then(|orders| orders.routing_error())
-        {
-            anyhow::bail!(
-                "binary_oracle_maker reference-quote leg order routing failed: error={error}"
-            );
-        }
-        let BinaryOracleMakerRuntimeQuoteRouteOutcome { quote, orders } = quote_route;
-        let blocked_by = quote
-            .blocked_by
-            .map(BinaryOracleMakerRuntimeReferenceQuoteBlockReason::Quote);
-
-        Ok(BinaryOracleMakerRuntimeReferenceQuoteRouteOutcome {
-            fair_value,
-            quote: Some(quote),
-            orders,
-            blocked_by,
-        })
-    }
-
-    pub fn route_maker_market_action(
-        &mut self,
-        input: BinaryOracleMakerMarketActionRouteInput<'_>,
-    ) -> Result<BinaryOracleMakerMarketActionRouteOutcome> {
-        let BinaryOracleMakerMarketActionRouteInput {
-            action,
-            submit_template,
-            price_precision,
-            quantity_precision,
-            submit_order_prefix,
-            max_fee_bps,
-        } = input;
-
-        let action_kind = action.action;
-        let order_plan = maker_order_plan_from_market_action(action);
-
-        let mut route_command = |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
-            self.route_maker_order_command(command, submit_order_prefix, max_fee_bps)
-        };
-        let orders = dispatch_maker_runtime_order_plan_with_command_router(
-            MakerRuntimeOrderDispatchInput {
-                order_plan: &order_plan,
-                submit_template,
-                price_precision,
-                quantity_precision,
-                submit_order_prefix,
-            },
-            &mut route_command,
-        )?;
-        // A routing error is now per-leg data, not a `?` abort; fail loud here to
-        // preserve this market-action route's prior fail-closed behavior.
-        if let Some(error) = orders.routing_error() {
-            anyhow::bail!(
-                "binary_oracle_maker market-action leg order routing failed: error={error}"
-            );
-        }
-        let order = match action_kind {
-            MarketAction::Leg { leg: Leg::No, .. }
-            | MarketAction::CancelAllOneSide { leg: Leg::No } => orders.no.clone(),
-            MarketAction::Leg { leg: Leg::Yes, .. }
-            | MarketAction::CancelAllOneSide { leg: Leg::Yes }
-            | MarketAction::CancelAllBothLegs => orders.yes.clone(),
-        };
-
-        Ok(BinaryOracleMakerMarketActionRouteOutcome { order, orders })
     }
 
     pub fn route_maker_loss_risk(
@@ -840,31 +854,51 @@ impl BinaryOracleMaker {
             price_precision,
             quantity_precision,
             submit_order_prefix,
-            max_fee_bps,
         } = input;
         let mode = maker_risk_mode_for_loss_decision(&policy, loss_decision);
         let risk = apply_maker_risk_mode(market, mode);
-        let orders = if let Some(action) = risk.action {
+        let orders = match risk.action {
+            None => None,
             Some(
-                self.route_maker_market_action(BinaryOracleMakerMarketActionRouteInput {
-                    action: MakerMarketActionOrderInput {
-                        action,
-                        targets,
-                        yes_quantity,
-                        no_quantity,
-                        yes,
-                        no,
+                action @ (MarketAction::CancelAllBothLegs | MarketAction::CancelAllOneSide { .. }),
+            ) => {
+                let order_plan = maker_order_plan_from_market_action(MakerMarketActionOrderInput {
+                    action,
+                    targets,
+                    yes_quantity,
+                    no_quantity,
+                    yes,
+                    no,
+                });
+                let mut route_command =
+                    |command: &MakerCompiledOrderCommand, submit_order_prefix: &str| {
+                        self.route_maker_order_command(
+                            command,
+                            submit_order_prefix,
+                            None,
+                            MakerOrderCommandAuthority::ScopeCancelAll,
+                        )
+                    };
+                let routed = dispatch_maker_runtime_order_plan_with_command_router(
+                    MakerRuntimeOrderDispatchInput {
+                        order_plan: &order_plan,
+                        submit_template,
+                        price_precision,
+                        quantity_precision,
+                        submit_order_prefix,
                     },
-                    submit_template,
-                    price_precision,
-                    quantity_precision,
-                    submit_order_prefix,
-                    max_fee_bps,
-                })?
-                .orders,
-            )
-        } else {
-            None
+                    &mut route_command,
+                )?;
+                if let Some(error) = routed.command_failure() {
+                    anyhow::bail!("binary_oracle_maker risk cancellation failed: error={error}");
+                }
+                Some(routed)
+            }
+            Some(MarketAction::Leg { .. }) => {
+                anyhow::bail!(
+                    "binary_oracle_maker risk policy emitted a per-leg mutation outside the cancel-only authority boundary"
+                )
+            }
         };
 
         Ok(BinaryOracleMakerRiskRouteOutcome { risk, orders })
@@ -910,10 +944,12 @@ fn requote_action_cost_class(market: &MarketQuote, leg: Leg) -> Option<RequoteAc
             Some(RequoteActionCostClass::Cancel)
         }
         LegState::Resting => Some(RequoteActionCostClass::CancelResubmit),
+        LegState::ReplacementPendingBackoff => Some(RequoteActionCostClass::FreshSubmit),
         LegState::SubmitPending
         | LegState::RequotePending
         | LegState::ModifyPending
-        | LegState::CancelPending => None,
+        | LegState::CancelPending
+        | LegState::PoisonedReconciliationHold => None,
     }
 }
 
@@ -974,12 +1010,11 @@ fn requote_throttle_bound(
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryOracleMakerQuoteCycleInput<'a> {
     pub quote_plan: MakerQuotePlanInputs<'a>,
-    pub quote_set: MakerRuntimeQuoteSetInput<'a>,
+    pub quote_set: MakerRuntimeQuoteSetInput,
     pub submit_template: &'a NtOrderTemplate,
     pub price_precision: u8,
     pub quantity_precision: u8,
     pub submit_order_prefix: &'a str,
-    pub max_fee_bps: Decimal,
 }
 
 impl BinaryOracleMaker {
@@ -1033,7 +1068,8 @@ impl BinaryOracleMaker {
     /// subscribes to market data and tracks per-market runtime state; it never
     /// submits. Declared markets that do not resolve are logged (a fail-closed
     /// surface), never silently dropped.
-    fn refresh_active_markets(&mut self) {
+    fn refresh_active_markets(&mut self) -> Result<()> {
+        self.ensure_accepting_new_quotes()?;
         let now_milliseconds = self.now_milliseconds();
         let instruments = self.execution_venue_instruments();
         let policy = self.market_portfolio_policy();
@@ -1043,6 +1079,10 @@ impl BinaryOracleMaker {
             now_milliseconds,
             policy,
         );
+        let now_ns = now_milliseconds
+            .checked_mul(NANOS_PER_MILLI_U64)
+            .ok_or_else(|| anyhow::anyhow!("maker retention-scope clock overflow"))?;
+        self.close_retired_retention_scopes(now_ns)?;
         let client_id = self.data_client_id();
         for instrument_id in refresh.unsubscribe {
             self.unsubscribe_trades(instrument_id, Some(client_id), None);
@@ -1057,6 +1097,7 @@ impl BinaryOracleMaker {
                 miss,
             );
         }
+        Ok(())
     }
 
     /// Register the autonomous quote/refresh timer (period = `quote_interval_ms`).
@@ -1076,6 +1117,14 @@ impl BinaryOracleMaker {
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "binary_oracle_maker quote_interval_ms is invalid; it overflows the nanosecond clock unit: strategy_id={strategy_id} quote_interval_ms={quote_interval_ms}"
+                )
+            })?;
+        self.context
+            .order_economics()
+            .validate_cancel_recovery_cadence(interval_nanoseconds)
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "binary_oracle_maker quote timer cannot safely refresh resting economics: strategy_id={strategy_id} error={error:#}"
                 )
             })?;
         self.clock()
@@ -1130,7 +1179,6 @@ impl BinaryOracleMaker {
             price_precision,
             quantity_precision,
             submit_order_prefix,
-            max_fee_bps,
         } = input;
         let outcome = self.route_maker_runtime_quote(
             market_key,
@@ -1143,7 +1191,6 @@ impl BinaryOracleMaker {
                 price_precision,
                 quantity_precision,
                 submit_order_prefix,
-                max_fee_bps,
             },
         )?;
         if outcome.quote.blocked_by == Some(MakerRuntimeQuoteBlockReason::RuntimeWindowUnavailable)
@@ -1155,7 +1202,7 @@ impl BinaryOracleMaker {
             // this fail-loud check, so a partial two-leg dispatch never orphans the
             // sibling leg's assigned identity from the runtime's view. The MarketQuote
             // FSM and requote budget remain advanced consistently with that outcome.
-            if let Some(error) = orders.routing_error() {
+            if let Some(error) = orders.command_failure() {
                 anyhow::bail!(
                     "binary_oracle_maker leg order routing failed after identity reconcile: market_key={market_key} error={error}"
                 );
@@ -1176,12 +1223,45 @@ impl DataActor for BinaryOracleMaker {
         // Register the quote timer first: it is the only fallible step here, so a
         // registration failure aborts on_start before refresh_active_markets emits
         // any subscription side effects, leaving no half-started runtime behind.
+        let shutdown = std::mem::replace(&mut self.shutdown, MakerShutdownState::Running);
+        match shutdown {
+            MakerShutdownState::Running => {}
+            MakerShutdownState::Stopped(mut capability) => {
+                capability.reopen_after_component_start()?;
+            }
+            draining @ MakerShutdownState::Draining(_) => {
+                self.shutdown = draining;
+                anyhow::bail!("binary_oracle_maker cannot start while its drain is incomplete");
+            }
+        }
         self.register_quote_timer()?;
-        self.refresh_active_markets();
+        self.refresh_active_markets()?;
         Ok(())
     }
 
     fn on_stop(&mut self) -> anyhow::Result<()> {
+        if matches!(self.shutdown, MakerShutdownState::Running) {
+            let active = self.begin_draining()?;
+            anyhow::ensure!(
+                active == 0,
+                "binary_oracle_maker cannot finalize stop while active tracked records exist"
+            );
+        }
+        let shutdown = std::mem::replace(&mut self.shutdown, MakerShutdownState::Running);
+        let mut capability = match shutdown {
+            MakerShutdownState::Draining(capability) => capability,
+            MakerShutdownState::Stopped(capability) => {
+                self.shutdown = MakerShutdownState::Stopped(capability);
+                return Ok(());
+            }
+            MakerShutdownState::Running => {
+                anyhow::bail!("binary_oracle_maker stop requires its drain capability")
+            }
+        };
+        if let Err(error) = capability.finalize_retention_horizon() {
+            self.shutdown = MakerShutdownState::Draining(capability);
+            return Err(error);
+        }
         self.deregister_quote_timer();
         let client_id = self.data_client_id();
         for instrument_id in self.runtime.active_instrument_ids() {
@@ -1197,6 +1277,8 @@ impl DataActor for BinaryOracleMaker {
         // prior run consumed. (Cross-process restart durability needs a persisted
         // high-water — arming-time work, #869.)
         self.runtime.deactivate_all();
+        self.retention_scopes.clear();
+        self.shutdown = MakerShutdownState::Stopped(capability);
         Ok(())
     }
 
@@ -1207,13 +1289,76 @@ impl DataActor for BinaryOracleMaker {
 
     fn on_time_event(&mut self, event: &TimeEvent) -> anyhow::Result<()> {
         if event.name.as_str() == self.quote_timer_name() {
-            self.refresh_active_markets();
+            let order_economics = self.context.order_economics().clone();
+            let execution_policy = self.context.order_execution_policy();
+            let execution_client_id = self.config.client_id.clone();
+            let now_ms = self.now_milliseconds();
+            if matches!(self.shutdown, MakerShutdownState::Draining(_)) {
+                self.begin_draining()?;
+                let drive_result = order_economics.drive_all_resting_order_economics_at_ms(
+                    execution_policy,
+                    self,
+                    execution_client_id.as_str(),
+                    now_ms,
+                );
+                self.complete_draining_if_empty()?;
+                return drive_result;
+            }
+            order_economics.drive_all_resting_order_economics_at_ms(
+                execution_policy,
+                self,
+                execution_client_id.as_str(),
+                now_ms,
+            )?;
+            self.refresh_active_markets()?;
         }
         Ok(())
     }
 }
 
-nautilus_trading::nautilus_strategy!(BinaryOracleMaker, {});
+nautilus_trading::nautilus_strategy!(BinaryOracleMaker, {
+    fn stop(&mut self) -> bool {
+        match self.begin_draining() {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(error) => {
+                log::error!(
+                    "binary_oracle_maker cannot latch tracked-order drain during stop: strategy_id={} error={error:#}",
+                    self.config.strategy_id,
+                );
+                false
+            }
+        }
+    }
+
+    fn on_order_pending_cancel(&mut self, event: OrderPendingCancel) {
+        self.reconcile_order_callback(event.client_order_id, false);
+    }
+
+    fn on_order_cancel_rejected(&mut self, event: OrderCancelRejected) {
+        self.reconcile_order_callback(event.client_order_id, false);
+    }
+
+    fn on_order_canceled(&mut self, event: &OrderCanceled) {
+        self.reconcile_order_callback(event.client_order_id, false);
+    }
+
+    fn on_order_filled(&mut self, event: &OrderFilled) {
+        self.reconcile_order_callback(event.client_order_id, false);
+    }
+
+    fn on_order_fill_voided(&mut self, event: &OrderFillVoided) {
+        self.reconcile_order_callback(event.client_order_id, true);
+    }
+
+    fn on_order_expired(&mut self, event: OrderExpired) {
+        self.reconcile_order_callback(event.client_order_id, false);
+    }
+
+    fn on_order_rejected(&mut self, event: OrderRejected) {
+        self.reconcile_order_callback(event.client_order_id, false);
+    }
+});
 
 impl StrategyBuilder for BinaryOracleMakerBuilder {
     type Strategy = BinaryOracleMaker;
@@ -1243,12 +1388,18 @@ mod tests {
         bolt_v3_numeric::NANOS_PER_MILLI_U64,
         bolt_v3_order_execution::BoltV3OrderExecutionPolicy,
         bolt_v3_position_contract::BoltV3PositionMarketLifecycle,
-        bolt_v3_providers::FeeProvider,
         bolt_v3_strategy_context::StrategyDecisionEvidence,
         bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     };
-    use futures_util::{FutureExt, future::BoxFuture};
     use nautilus_core::{Params, UnixNanos};
+
+    fn reserve_fresh(budget: &RequoteBudgetPair, now_ms: u64) -> bool {
+        budget
+            .propose_fresh_submit(now_ms)
+            .and_then(|proposal| budget.reserve(proposal))
+            .and_then(crate::bolt_v3_requote_budget::RequoteBudgetReservation::commit)
+            .is_ok()
+    }
     use nautilus_model::{
         enums::{AggressorSide, AssetClass},
         identifiers::{InstrumentId, Symbol, TradeId, Venue},
@@ -1261,6 +1412,42 @@ mod tests {
     fn builder_kind_is_archetype_key() {
         assert_eq!(BinaryOracleMakerBuilder::kind(), "binary_oracle_maker");
         assert_eq!(BinaryOracleMakerBuilder::kind(), KEY);
+    }
+
+    #[test]
+    fn retired_retention_scope_index_survives_closure_failure() {
+        let context = test_context();
+        let order_economics = context.order_economics().clone();
+        let mut maker = BinaryOracleMaker::new(maker_config(600, 1000, 4), context);
+        let first = MarketQuote::new_for_test(false);
+        let second = MarketQuote::new_for_test(false);
+        maker.retention_scopes = vec![
+            ActiveRetentionScope {
+                market_key: "retired-first".to_string(),
+                market: first.clone(),
+            },
+            ActiveRetentionScope {
+                market_key: "retired-second".to_string(),
+                market: second.clone(),
+            },
+        ];
+        order_economics.poison_tracked_order_registry_for_test();
+
+        maker
+            .close_retired_retention_scopes(1)
+            .expect_err("failed closure must preserve every retired scope for retry");
+
+        assert_eq!(maker.retention_scopes.len(), 2);
+        assert!(
+            maker.retention_scopes[0]
+                .market
+                .shares_authority_with(&first)
+        );
+        assert!(
+            maker.retention_scopes[1]
+                .market
+                .shares_authority_with(&second)
+        );
     }
 
     #[test]
@@ -1288,9 +1475,6 @@ mod tests {
     const TEST_MU_FLOOR: f64 = 0.05;
     const TEST_REQUOTE_MIN_INTERVAL_MS: u64 = 500;
     const TEST_QUOTE_INTERVAL_MS: u64 = 1_000;
-
-    #[derive(Debug)]
-    struct NoopFeeProvider;
 
     #[allow(clippy::too_many_arguments)]
     fn maker_binary_option(
@@ -1350,16 +1534,6 @@ mod tests {
         ))
     }
 
-    impl FeeProvider for NoopFeeProvider {
-        fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
-            None
-        }
-
-        fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
-            async { Ok(()) }.boxed()
-        }
-    }
-
     fn test_context() -> StrategyBuildContext {
         let writer = Arc::new(DecisionEvidenceRecorder::recording());
         let evidence = StrategyDecisionEvidence::maker(
@@ -1367,7 +1541,7 @@ mod tests {
             OrderExecutionEvidence::new(&writer),
         );
         StrategyBuildContext::new(
-            Arc::new(NoopFeeProvider),
+            crate::bolt_v3_economics_test_support::fixture_order_economics(),
             evidence,
             Arc::new(BoltV3SubmitAdmissionState::new(writer)),
             BoltV3OrderExecutionPolicy::shadow(),
@@ -1533,11 +1707,11 @@ mod tests {
     fn requote_throttle_bound_throttles_same_millisecond_reemit() {
         use crate::bolt_v3_requote_budget::RequoteBudget;
 
-        let mut remaining_budget = RequoteBudgetPair::new(
+        let remaining_budget = RequoteBudgetPair::new(
             RequoteBudget::new(40, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
             RequoteBudget::new(100, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
         );
-        assert!(remaining_budget.try_reserve_fresh_submit(1_000));
+        assert!(reserve_fresh(&remaining_budget, 1_000));
         assert_eq!(remaining_budget.last_emit_ms(), Some(1_000));
 
         // Same-millisecond emits are exempt from the min-interval floor and must
@@ -1553,11 +1727,11 @@ mod tests {
             "same-millisecond emits with budget remaining must not be labeled MinInterval"
         );
 
-        let mut exhausted_budget = RequoteBudgetPair::new(
+        let exhausted_budget = RequoteBudgetPair::new(
             RequoteBudget::new(1, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
             RequoteBudget::new(100, 60_000, TEST_REQUOTE_MIN_INTERVAL_MS),
         );
-        assert!(exhausted_budget.try_reserve_fresh_submit(1_000));
+        assert!(reserve_fresh(&exhausted_budget, 1_000));
         assert_eq!(exhausted_budget.last_emit_ms(), Some(1_000));
 
         // Same millisecond, exhausted submit-command budget: the live gate would

@@ -251,7 +251,7 @@ fn test_strategy_with_realized_volatility_surface(
         crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(decision_evidence.clone()),
     );
     let context = StrategyBuildContext::new(
-        RecordingFeeProvider::cold(),
+        fixture_order_economics(),
         decision_evidence,
         submit_admission,
         crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy::live(),
@@ -953,6 +953,13 @@ fn resolution_strike_reissue_does_not_depend_on_index_unsubscribe_pairing() {
 
 #[test]
 fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_intent() {
+    if !crate::bolt_v3_test_log_capture::enter_isolated_log_capture(
+        "strategy_input_evidence_records_source_bound_entry_snapshot_before_order_intent",
+        "source-bound-entry-snapshot",
+    ) {
+        return;
+    }
+
     let evidence = recording_decision_evidence();
     let submit_admission = submit_admission_with_provider_cap(Decimal::new(1, 2), evidence.clone());
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
@@ -1251,7 +1258,7 @@ fn rv_clock_domain_amendment_submit_evidence_cannot_veto_admitted_order() {
         "the admitted order must reach submit routing"
     );
     assert!(
-        matches!(&strategy.exposure, ExposureState::PendingEntry(_)),
+        strategy.exposure.pending_entry_arm().is_some(),
         "submitted routing must retain pending entry exposure"
     );
     let events = evidence
@@ -1349,13 +1356,66 @@ fn submit_snapshot_failure_clears_pending_entry_and_never_reaches_submit_admissi
         "{error:#}"
     );
     assert!(
-        !matches!(strategy.exposure, ExposureState::PendingEntry(_)),
+        strategy.exposure.pending_entry_arm().is_none(),
         "snapshot failure must clear strategy-local pending-entry state"
     );
     assert_eq!(
         submit_admission.admitted_order_count(),
         0,
         "snapshot failure must stop before shared submit admission and NT submit"
+    );
+}
+
+#[test]
+fn final_basis_failure_precedes_edge_evidence_exposure_and_admission_mutation() {
+    let evidence = recording_decision_evidence();
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    );
+    let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+        evidence.clone(),
+        submit_admission.clone(),
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 1_200);
+    let mut decision = strategy.entry_submission_decision_at(1_200);
+    assert!(
+        decision.instrument_id.is_some(),
+        "fixture must admit an entry"
+    );
+    decision.planned_fill_legs = vec![BoltV3PlannedFillLeg {
+        price: Decimal::new(5, 1),
+        quantity: Decimal::ZERO,
+    }];
+
+    let error = strategy
+        .submit_admitted_entry_decision(1_200, decision)
+        .expect_err("invalid final economics basis must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("planned fill level must be positive")
+    );
+    assert!(
+        strategy.exposure.pending_entry_arm().is_none(),
+        "basis failure must precede pending-entry exposure"
+    );
+    assert_eq!(submit_admission.admitted_order_count(), 0);
+    let facts = evidence
+        .recorded_facts()
+        .expect("recorded evidence must decode");
+    assert!(
+        facts.iter().all(|fact| !matches!(
+            fact,
+            CurrentFact::SubmitLinkedStrategyInputSnapshot(_)
+                | CurrentFact::EntryOrderIntent(_)
+                | CurrentFact::AdmittedEntryAdmission(_)
+                | CurrentFact::RejectedEntryAdmission(_)
+        )),
+        "basis failure must precede strategy and admission evidence: {facts:?}"
     );
 }
 
@@ -1471,6 +1531,13 @@ fn admitted_entry_strategy_for_rv_receipt() -> (
 
 #[test]
 fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
+    if !crate::bolt_v3_test_log_capture::enter_isolated_log_capture(
+        "blocked_entry_replay_records_observed_spot_and_reference_inputs",
+        "blocked-entry-replay",
+    ) {
+        return;
+    }
+
     let replay = strategy_input_quote_replay();
     let evidence = recording_decision_evidence();
     let submit_admission = Arc::new(
@@ -1488,8 +1555,6 @@ fn blocked_entry_replay_records_observed_spot_and_reference_inputs() {
     strategy.active.price_to_beat = Some(replay.reference.price);
     strategy.active.interval_open = Some(replay.reference.price);
     strategy.active.warmup_count = strategy.config.warmup_tick_count;
-    strategy.active.outcome_fees.up_ready = true;
-    strategy.active.outcome_fees.down_ready = true;
     strategy.active.books.up.last_observed_instrument_id = strategy.active.books.up.instrument_id;
     strategy
         .active
@@ -1782,10 +1847,14 @@ fn shadow_policy_entries_do_not_exhaust_live_admission_count_cap() {
 }
 
 #[test]
-fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
+fn shadow_policy_exit_restores_managed_and_allows_a_later_attempt() {
     let evidence = recording_decision_evidence();
-    let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    let market = candidate_market("MKT-1", 1_000);
+    let submit_admission = submit_admission_with_canonical_position(
+        evidence.clone(),
+        InstrumentId::from(market.up.instrument_id.as_str()),
+        InstrumentId::from(market.down.instrument_id.as_str()),
+        Decimal::new(1_000, 0),
     );
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence.clone(),
@@ -1793,7 +1862,8 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
     );
     set_shadow_order_execution_policy(&mut strategy);
     strategy.active.phase = SelectionPhase::Freeze;
-    register_test_strategy_with_active_instruments(&mut strategy);
+    let (cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    add_active_instruments_to_cache(&strategy, &cache);
     let instrument_id = configured_outcome_instruments(&strategy)
         .into_iter()
         .next()
@@ -1809,25 +1879,30 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
     set_managed_position(
         &mut strategy,
         position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
-    let first_client_order_id = strategy
-        .try_submit_exit_order_for_trigger(
-            1_200,
-            ExitEvaluationTriggerContext::from_local_selection_handler(LocalReceiveMs::new(1_200)),
-        )
-        .expect("first shadow exit should pass evidence and admission")
-        .expect("first shadow exit should produce a would-be client order id");
+    assert_eq!(
+        strategy
+            .try_submit_exit_order_for_trigger(
+                1_200,
+                ExitEvaluationTriggerContext::from_local_selection_handler(LocalReceiveMs::new(
+                    1_200
+                )),
+            )
+            .expect("first shadow exit should return its typed policy outcome"),
+        None,
+        "a policy-skipped order was prepared but not submitted"
+    );
     assert_eq!(
         strategy.exposure_occupancy(),
-        Some(ExposureOccupancy::ExitPending),
-        "shadow exit must keep the live-mode pending-exit latch"
+        Some(ExposureOccupancy::ManagedPosition),
+        "a policy skip must not create a phantom pending exit"
     );
-    assert_eq!(
-        pending_exit_ref(&strategy).map(|pending| pending.client_order_id),
-        Some(first_client_order_id)
-    );
+
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_201_u64 * NANOS_PER_MILLI_U64));
 
     assert_eq!(
         strategy
@@ -1837,16 +1912,9 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
                     1_201,
                 )),
             )
-            .expect("latched shadow exit should not fail"),
+            .expect("a later shadow exit should return its typed policy outcome"),
         None,
-        "latched shadow exit should block repeated would-be exits"
-    );
-    assert_eq!(
-        strategy
-            .try_submit_exit_order(1_202)
-            .expect("same latched shadow exit should remain deduped"),
-        None,
-        "same latched shadow exit state should not flood decision evidence"
+        "restored managed exposure should remain eligible for a later attempt"
     );
     assert_eq!(
         submit_admission.admitted_order_count(),
@@ -1860,16 +1928,16 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
             .iter()
             .filter(|event| matches!(event, CurrentFact::RiskReducingExitOrderIntent(_)))
             .count(),
-        1,
-        "latched shadow exit should record one risk-reducing order intent"
+        2,
+        "each eligible attempt should record its own risk-reducing order intent"
     );
     let exit_decisions = evidence
         .recorded_facts()
         .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            CurrentFact::ExitSubmissionDecision(decision) => {
-                Some(RecordedExitDecision::Submission(*decision))
+            CurrentFact::ExitIntentDecision(decision) => {
+                Some(RecordedExitDecision::Intent(*decision))
             }
             CurrentFact::ExitHoldDecision(decision) => Some(RecordedExitDecision::Hold(*decision)),
             _ => None,
@@ -1877,13 +1945,13 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
         .collect::<Vec<_>>();
     assert_eq!(
         exit_decisions.len(),
-        2,
-        "exit action plus one pending-exit block should be recorded once each"
+        1,
+        "identical policy-skipped outcomes should remain episode-deduplicated"
     );
     assert!(matches!(
         exit_decisions[0],
-        RecordedExitDecision::Submission(ref record)
-            if record.outcome == ExitSubmissionOutcome::ExitFailClosed
+        RecordedExitDecision::Intent(ref record)
+            if record.outcome == ExitIntentOutcome::ExitFailClosed
     ));
     let first_details = exit_decisions[0].details();
     assert_eq!(
@@ -1903,14 +1971,6 @@ fn shadow_policy_exit_keeps_pending_exit_between_would_be_exits() {
     assert_eq!(first_details.rv_snapshot_blockers, Vec::new());
     assert_eq!(first_details.rv_gate_result, RvGateResult::Accepted);
     assert_eq!(first_details.rv_future_dating_delta_ms, None);
-    assert!(matches!(
-        exit_decisions[1],
-        RecordedExitDecision::Hold(ref record) if record.outcome == ExitHoldOutcome::Blocked
-    ));
-    assert_eq!(
-        exit_decisions[1].blocked_reason(),
-        Some(ExitBlockedReason::ExitAlreadyPending)
-    );
 }
 
 #[test]
@@ -1947,7 +2007,7 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
     set_managed_position(
         &mut strategy,
         position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
 
     let exit_eval_now_ms = strategy
@@ -2022,7 +2082,7 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
 
     let exit_decisions = recorded_exit_decisions(&evidence);
     assert_eq!(exit_decisions.len(), 1);
-    let RecordedExitDecision::Submission(decision) = &exit_decisions[0] else {
+    let RecordedExitDecision::Intent(decision) = &exit_decisions[0] else {
         panic!("freeze exit must record a submission decision");
     };
     let details = &decision.details;
@@ -2037,7 +2097,7 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
     // captured only as a diagnostic (rv_gate_result above), not as the exit
     // cause. RV-driven missing valuation input holds rather than liquidating by
     // default; that path is covered by the pricing / exposure tests.
-    assert_eq!(decision.outcome, ExitSubmissionOutcome::ExitFailClosed);
+    assert_eq!(decision.outcome, ExitIntentOutcome::ExitFailClosed);
     assert_eq!(
         details.forced_flat_reasons,
         vec![crate::bolt_v3_current_evidence::ForcedFlatReason::Freeze]
@@ -2055,24 +2115,12 @@ fn signal_quote_exit_decision_records_future_dated_realized_volatility_gate() {
     assert_eq!(details.fair_probability_down, None);
     assert_eq!(details.uncertainty_band_probability, None);
     assert!(
-        details.up_fee_bps.is_some(),
-        "exit decision evidence must preserve the up-side fee input"
-    );
-    assert!(
-        details.down_fee_bps.is_some(),
-        "exit decision evidence must preserve the down-side fee input"
-    );
-    assert!(
-        decision.submission.order_side != EvidenceOrderSide::Unspecified,
-        "exit decision evidence must preserve the submitted order side"
-    );
-    assert!(
-        !decision.submission.price.is_empty(),
-        "exit decision evidence must preserve the submitted order price"
-    );
-    assert!(
-        !decision.submission.quantity.is_empty(),
-        "exit decision evidence must preserve the submitted order quantity"
+        evidence
+            .recorded_facts()
+            .expect("recorded current evidence must decode")
+            .iter()
+            .any(|fact| matches!(fact, CurrentFact::ExitEvaluation(_))),
+        "the exit attempt must record its typed evaluation outcome even when preparation fails"
     );
     assert_eq!(details.exit_trigger_source, ExitTriggerSource::SignalQuote);
     assert_eq!(details.trigger_ts_event_ms, exit_eval_now_ms);
@@ -2414,9 +2462,8 @@ fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
     let mut realized_vol_not_ready = minimal_entry_submission_decision();
     realized_vol_not_ready.evaluation.pricing_blocked_by =
         vec![EntryPricingBlockReason::RealizedVolNotReady];
-    let mut fee_unavailable = minimal_entry_submission_decision();
-    fee_unavailable.evaluation.pricing_blocked_by =
-        vec![EntryPricingBlockReason::FeeUnavailable(OutcomeSide::Up)];
+    let mut spot_missing = minimal_entry_submission_decision();
+    spot_missing.evaluation.pricing_blocked_by = vec![EntryPricingBlockReason::SpotPriceMissing];
 
     strategy
         .record_entry_skip_once(
@@ -2426,11 +2473,7 @@ fn entry_skip_evidence_records_distinct_pricing_blockers_in_same_interval() {
         )
         .expect("first pricing-blocked skip should record");
     strategy
-        .record_entry_skip_once(
-            1_201,
-            &fee_unavailable,
-            EntrySkipReason::EntryPricingBlocked,
-        )
+        .record_entry_skip_once(1_201, &spot_missing, EntrySkipReason::EntryPricingBlocked)
         .expect("distinct pricing blocker in same interval should record");
 
     let entry_skips = evidence
@@ -2870,16 +2913,17 @@ fn minimal_entry_submission_decision() -> EntrySubmissionDecision {
         order_side: None,
         price: None,
         quantity_value: None,
+        planned_fill_legs: Vec::new(),
         client_order_id: None,
         blocked_reason: None,
     }
 }
 
 // A minimal exit decision with a non-`no_open_position` block reason, so it
-// clears the early-return guards in `record_exit_decision_once` and reaches the
+// clears the early-return guards in `record_exit_intent_or_hold_once` and reaches the
 // writer call.
-fn minimal_exit_submission_decision() -> ExitSubmissionDecision {
-    ExitSubmissionDecision {
+fn minimal_exit_prepared_order() -> ExitIntentDecision {
+    ExitIntentDecision {
         evaluation: ExitEvaluation {
             realized_volatility_receipt: ExitRealizedVolatilityGateReceipt {
                 gate_result: RvGateResult::MissingSnapshot,
@@ -2930,10 +2974,23 @@ fn minimal_exit_submission_decision() -> ExitSubmissionDecision {
     }
 }
 
+fn diagnostic_exit_attempt_outcome(
+    decision: &ExitIntentDecision,
+) -> crate::bolt_v3_current_evidence::ExitAttemptOutcome {
+    match decision.blocked_reason {
+        Some(blocked_reason) => {
+            crate::bolt_v3_current_evidence::ExitAttemptOutcome::Blocked { blocked_reason }
+        }
+        None => crate::bolt_v3_current_evidence::ExitAttemptOutcome::Held {
+            outcome: ExitHoldOutcome::Hold,
+        },
+    }
+}
+
 #[test]
 fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
     // A telemetry-write failure on the exit-decision evidence path MUST NOT
-    // propagate: record_exit_decision_once is called at the exit-submit chokepoint
+    // propagate: record_exit_intent_or_hold_once is called at the exit-submit chokepoint
     // immediately BEFORE the risk-reducing exit order is built and submitted. The
     // pre-fix `record_exit_decision(&evidence)?` propagated the writer Err, which
     // would abort the exit-submit callback and BLOCK a risk-reducing exit on a lost
@@ -2950,19 +3007,16 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
         return;
     }
 
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
-        failing_decision_evidence(),
-    );
+    let mut strategy = test_strategy_with_decision_evidence(failing_decision_evidence());
     let strategy_id = unique_log_capture_strategy_id("exit");
     strategy.config.strategy_id = strategy_id.clone();
 
-    let decision = minimal_exit_submission_decision();
+    let decision = minimal_exit_prepared_order();
     let result = with_captured_error_log(
         "binary_oracle_edge_taker exit decision evidence write failed",
         &strategy_id,
         || {
-            strategy.record_exit_decision_once(
+            strategy.record_exit_intent_or_hold_once(
                 1_000,
                 ExitEvaluationTriggerContext::unknown(1_000),
                 &decision,
@@ -2983,19 +3037,21 @@ fn exit_decision_evidence_write_failure_does_not_block_the_exit() {
 #[test]
 fn terminal_close_reclaims_exit_decision_for_reused_position_identity() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
-    let reused_exposure = strategy.exposure.clone();
-    let (instrument_id, position_id) = match &reused_exposure {
-        ExposureState::Managed(position) => (position.instrument_id, position.position_id),
-        other => panic!("exit fixture must begin managed, got {other:?}"),
-    };
+    let reused_managed = strategy
+        .exposure
+        .managed_position_context()
+        .cloned()
+        .expect("exit fixture must begin managed");
+    let instrument_id = reused_managed.instrument_id;
+    let position_id = reused_managed.position_id;
     let trigger = ExitEvaluationTriggerContext::unknown(1_200);
-    let decision = minimal_exit_submission_decision();
+    let decision = minimal_exit_prepared_order();
 
     strategy
-        .record_exit_decision_once(1_200, trigger, &decision)
+        .record_exit_intent_or_hold_once(1_200, trigger, &decision)
         .expect("the first position decision should record");
     strategy
-        .record_exit_decision_once(1_201, trigger, &decision)
+        .record_exit_intent_or_hold_once(1_201, trigger, &decision)
         .expect("an adjacent duplicate should be a successful no-op");
     assert_eq!(
         recorded_exit_decisions(&evidence).len(),
@@ -3013,9 +3069,9 @@ fn terminal_close_reclaims_exit_decision_for_reused_position_identity() {
     // NT netting reuses `{instrument}-{strategy}` as PositionId. Recreate the
     // same logical position identity and prove its first decision is not
     // suppressed by the predecessor's last one.
-    strategy.exposure = reused_exposure;
+    strategy.exposure.set_managed_for_test(reused_managed);
     strategy
-        .record_exit_decision_once(1_202, trigger, &decision)
+        .record_exit_intent_or_hold_once(1_202, trigger, &decision)
         .expect("the reused position identity should record its first decision");
     assert_eq!(
         recorded_exit_decisions(&evidence).len(),
@@ -3042,8 +3098,12 @@ fn exit_evidence_strategy_with_open_position() -> (
 fn exit_evidence_strategy_with_open_position_using_writer(
     evidence: Arc<crate::bolt_v3_current_evidence::DecisionEvidenceRecorder>,
 ) -> BinaryOracleEdgeTaker {
-    let submit_admission = Arc::new(
-        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new(evidence.clone()),
+    let market = candidate_market("MKT-1", 1_000);
+    let submit_admission = submit_admission_with_canonical_position(
+        evidence.clone(),
+        InstrumentId::from(market.up.instrument_id.as_str()),
+        InstrumentId::from(market.down.instrument_id.as_str()),
+        Decimal::new(1_000, 0),
     );
     let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
         evidence,
@@ -3069,7 +3129,7 @@ fn exit_evidence_strategy_with_open_position_using_writer(
     set_managed_position(
         &mut strategy,
         position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy
 }
@@ -3092,21 +3152,21 @@ fn recorded_exit_evaluations(
 /// Collect every recorded exit-decision evidence record, in order.
 #[derive(Debug, Clone)]
 enum RecordedExitDecision {
-    Submission(crate::bolt_v3_current_evidence::ExitSubmissionDecisionFact),
+    Intent(crate::bolt_v3_current_evidence::ExitIntentDecisionFact),
     Hold(crate::bolt_v3_current_evidence::ExitHoldDecisionFact),
 }
 
 impl RecordedExitDecision {
     fn details(&self) -> &crate::bolt_v3_current_evidence::ExitDecisionDetails {
         match self {
-            Self::Submission(record) => &record.details,
+            Self::Intent(record) => &record.details,
             Self::Hold(record) => &record.details,
         }
     }
 
     fn blocked_reason(&self) -> Option<crate::bolt_v3_current_evidence::ExitBlockedReason> {
         match self {
-            Self::Submission(_) => None,
+            Self::Intent(_) => None,
             Self::Hold(record) => record.blocked_reason,
         }
     }
@@ -3120,9 +3180,7 @@ fn recorded_exit_decisions(
         .expect("recorded current evidence must decode")
         .into_iter()
         .filter_map(|event| match event {
-            CurrentFact::ExitSubmissionDecision(record) => {
-                Some(RecordedExitDecision::Submission(*record))
-            }
+            CurrentFact::ExitIntentDecision(record) => Some(RecordedExitDecision::Intent(*record)),
             CurrentFact::ExitHoldDecision(record) => Some(RecordedExitDecision::Hold(*record)),
             _ => None,
         })
@@ -3183,8 +3241,8 @@ fn signal_quote_exit_uses_pinned_quote_receive_stamp_without_fallback() {
         "signal RV evaluation must use QuoteTick.ts_init, not its venue event stamp or strategy clock"
     );
     assert!(matches!(
-        records[0].decision,
-        crate::bolt_v3_current_evidence::ExitEvaluationDecision::Submission { .. }
+        records[0].outcome,
+        crate::bolt_v3_current_evidence::ExitAttemptOutcome::PolicySkipped { .. }
     ));
 }
 
@@ -3289,8 +3347,8 @@ fn exit_evaluation_evidence_write_failure_does_not_change_exit_submission() {
 #[test]
 fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
     // An entry skip is DECLINING new risk. record_entry_skip_once is called inside
-    // the entry-submit callback immediately before downstream safety logic (e.g.
-    // enforce_one_position_invariant). The pre-fix `record_entry_skip(&evidence)?`
+    // the entry-submit callback immediately before downstream safety logic. The
+    // pre-fix `record_entry_skip(&evidence)?`
     // propagated the writer Err, aborting the callback and SKIPPING that downstream
     // safety logic on a lost log line. The fix swaps `?` for a `log::error!` +
     // continue, so the helper returns Ok(()) even when the writer fails. The
@@ -3305,10 +3363,7 @@ fn entry_skip_evidence_write_failure_does_not_abort_the_strategy_callback() {
         return;
     }
 
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
-        failing_decision_evidence(),
-    );
+    let mut strategy = test_strategy_with_decision_evidence(failing_decision_evidence());
     let strategy_id = unique_log_capture_strategy_id("entry");
     strategy.config.strategy_id = strategy_id.clone();
 
@@ -3338,14 +3393,14 @@ fn exit_decision_evidence_reports_fast_venue_when_position_spot_is_absent() {
     strategy.active.market_id = Some("different-active-market".to_string());
 
     strategy
-        .record_exit_decision_once(
+        .record_exit_intent_or_hold_once(
             1_200,
             ExitEvaluationTriggerContext::new(
                 crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
                 1_200,
                 Some(1_180),
             ),
-            &minimal_exit_submission_decision(),
+            &minimal_exit_prepared_order(),
         )
         .expect("exit-decision evidence should record");
 
@@ -3428,14 +3483,6 @@ fn exit_evaluation_evidence_records_accepted_rv_gate() {
         record.uncertainty_band_probability.is_some(),
         "exit evaluation evidence must preserve the computed uncertainty band"
     );
-    assert!(
-        record.up_fee_bps.is_some(),
-        "exit evaluation evidence must preserve the up-side fee input"
-    );
-    assert!(
-        record.down_fee_bps.is_some(),
-        "exit evaluation evidence must preserve the down-side fee input"
-    );
 }
 
 #[test]
@@ -3449,7 +3496,7 @@ fn exit_evaluation_policy_exit_is_recordable_before_submission_linkage_exists() 
         1_200,
         Some(1_200),
     );
-    let decision = strategy.exit_submission_decision_for_trigger_at(1_200, trigger);
+    let decision = strategy.exit_intent_decision_for_trigger_at(1_200, trigger);
     assert!(matches!(
         decision.evaluation.exit_decision,
         Some(ExitDecision::Exit)
@@ -3459,7 +3506,11 @@ fn exit_evaluation_policy_exit_is_recordable_before_submission_linkage_exists() 
         "evaluation precedes order construction and cannot require submit linkage"
     );
 
-    strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
+    let outcome = crate::bolt_v3_current_evidence::ExitAttemptOutcome::PreparationRejected {
+        stage: crate::bolt_v3_current_evidence::ExitPreparationStage::OrderTemplate,
+        reason: "diagnostic test stops before order preparation".to_string(),
+    };
+    strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, &outcome);
 
     let records = recorded_exit_evaluations(&evidence);
     assert_eq!(
@@ -3468,9 +3519,78 @@ fn exit_evaluation_policy_exit_is_recordable_before_submission_linkage_exists() 
         "a diagnostic exit-policy result must be recordable before submission linkage exists"
     );
     assert!(matches!(
-        records[0].decision,
-        crate::bolt_v3_current_evidence::ExitEvaluationDecision::Submission { .. }
+        records[0].outcome,
+        crate::bolt_v3_current_evidence::ExitAttemptOutcome::PreparationRejected { .. }
     ));
+}
+
+#[test]
+fn executable_liquidity_failure_records_rejection_before_exposure_admission_or_routing() {
+    let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    let submit_admission = strategy.context.submit_admission_arc();
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_200_u64 * NANOS_PER_MILLI_U64));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some(TEST_SOURCE_ID.to_string()), 1.5, 1_200);
+    let managed = strategy
+        .exposure
+        .managed_position_context_mut()
+        .expect("exit evidence fixture should start with managed exposure");
+    managed.book.bid_levels.clear();
+    assert!(
+        managed.book.best_bid.is_some(),
+        "the fixture must retain a decision price while executable depth is absent"
+    );
+
+    let error = strategy
+        .try_submit_exit_order_for_trigger(
+            1_200,
+            ExitEvaluationTriggerContext::new(
+                crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
+                1_200,
+                Some(1_200),
+            ),
+        )
+        .expect_err("an empty executable sweep must fail before routing");
+    assert!(
+        error
+            .to_string()
+            .contains("risk-reducing IOC fill plan is unavailable"),
+        "unexpected preparation error: {error:#}"
+    );
+    assert_eq!(
+        strategy.exposure_occupancy(),
+        Some(ExposureOccupancy::ManagedPosition),
+        "preparation failure must not arm an exit attempt"
+    );
+    assert_eq!(submit_admission.admitted_order_count(), 0);
+
+    let facts = evidence
+        .recorded_facts()
+        .expect("recorded evidence must decode");
+    assert!(facts.iter().any(|fact| matches!(
+        fact,
+        CurrentFact::ExitEvaluation(evaluation)
+            if matches!(
+                evaluation.outcome,
+                crate::bolt_v3_current_evidence::ExitAttemptOutcome::PreparationRejected {
+                    stage: crate::bolt_v3_current_evidence::ExitPreparationStage::ExecutableLiquidity,
+                    ..
+                }
+            )
+    )));
+    assert!(
+        facts.iter().all(|fact| !matches!(
+            fact,
+            CurrentFact::ExitPreparedOrder(_)
+                | CurrentFact::RiskReducingExitOrderIntent(_)
+                | CurrentFact::RiskReducingExitAdmission(_)
+        )),
+        "preparation failure must not claim preparation, admission, or routing: {facts:?}"
+    );
 }
 
 #[test]
@@ -3478,15 +3598,16 @@ fn exit_evaluation_evidence_reports_fast_venue_when_position_spot_is_absent() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
     strategy.active.market_id = Some("different-active-market".to_string());
 
+    let decision = minimal_exit_prepared_order();
     strategy.record_exit_evaluation_evidence(
         1_200,
-        &minimal_exit_submission_decision(),
+        &decision,
         ExitEvaluationTriggerContext::new(
             crate::bolt_v3_current_evidence::ExitTriggerSource::SignalQuote,
             1_200,
             Some(1_180),
         ),
-        false,
+        &diagnostic_exit_attempt_outcome(&decision),
     );
 
     let records = recorded_exit_evaluations(&evidence);
@@ -3505,7 +3626,7 @@ fn exit_evaluation_evidence_reports_fast_venue_when_position_spot_is_absent() {
 #[test]
 fn exit_evaluation_evidence_omits_non_finite_optional_numbers() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
-    let mut decision = minimal_exit_submission_decision();
+    let mut decision = minimal_exit_prepared_order();
     decision.evaluation.hold_ev_bps = Some(f64::NAN);
     decision.evaluation.exit_ev_bps = Some(f64::INFINITY);
     decision.price = Some(f64::NAN);
@@ -3518,7 +3639,7 @@ fn exit_evaluation_evidence_omits_non_finite_optional_numbers() {
             1_200,
             Some(1_180),
         ),
-        false,
+        &diagnostic_exit_attempt_outcome(&decision),
     );
 
     let records = recorded_exit_evaluations(&evidence);
@@ -3527,8 +3648,8 @@ fn exit_evaluation_evidence_omits_non_finite_optional_numbers() {
     assert_eq!(record.hold_ev_bps, None);
     assert_eq!(record.exit_ev_bps, None);
     assert!(matches!(
-        record.decision,
-        crate::bolt_v3_current_evidence::ExitEvaluationDecision::Hold { .. }
+        record.outcome,
+        crate::bolt_v3_current_evidence::ExitAttemptOutcome::Blocked { .. }
     ));
 }
 
@@ -3627,10 +3748,9 @@ fn diagnostic_exit_evaluation_holds_when_receive_time_is_structurally_absent() {
         crate::bolt_v3_current_evidence::RvGateResult::MissingEvaluationEventTime
     );
     assert_eq!(
-        record.decision,
-        crate::bolt_v3_current_evidence::ExitEvaluationDecision::Hold {
-            outcome: ExitHoldOutcome::Blocked,
-            blocked_reason: Some(ExitBlockedReason::ExitHold),
+        record.outcome,
+        crate::bolt_v3_current_evidence::ExitAttemptOutcome::Blocked {
+            blocked_reason: ExitBlockedReason::ExitHold,
         },
         "missing receive-domain input must record the explicit hold block, never liquidate by default"
     );
@@ -3645,7 +3765,7 @@ fn exit_evaluation_dedupe_does_not_oscillate_across_trigger_sources() {
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
-    let decision = minimal_exit_submission_decision();
+    let decision = minimal_exit_prepared_order();
 
     for trigger_context in [
         ExitEvaluationTriggerContext::new(
@@ -3669,7 +3789,12 @@ fn exit_evaluation_dedupe_does_not_oscillate_across_trigger_sources() {
             Some(1_240),
         ),
     ] {
-        strategy.record_exit_evaluation_evidence(1_240, &decision, trigger_context, false);
+        strategy.record_exit_evaluation_evidence(
+            1_240,
+            &decision,
+            trigger_context,
+            &diagnostic_exit_attempt_outcome(&decision),
+        );
     }
 
     let records = recorded_exit_evaluations(&evidence);
@@ -3686,7 +3811,7 @@ fn exit_evaluation_dedupe_ignores_alternating_consuming_venue_clock_lead() {
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
-    let decision = minimal_exit_submission_decision();
+    let decision = minimal_exit_prepared_order();
 
     for (index, event_ts_ms) in [1_200, 1_199, 1_200, 1_199, 1_200, 1_199]
         .into_iter()
@@ -3700,7 +3825,7 @@ fn exit_evaluation_dedupe_ignores_alternating_consuming_venue_clock_lead() {
                 event_ts_ms,
                 Some(1_210 + index as u64),
             ),
-            false,
+            &diagnostic_exit_attempt_outcome(&decision),
         );
     }
 
@@ -3744,7 +3869,7 @@ fn rv_clock_domain_amendment_exit_decision_and_evidence_stay_stable_across_trigg
 
     let mut expected_outcome = None;
     for trigger_context in trigger_contexts {
-        let decision = strategy.exit_submission_decision_for_trigger_at(1_240, trigger_context);
+        let decision = strategy.exit_intent_decision_for_trigger_at(1_240, trigger_context);
         let outcome = (
             decision.evaluation.exit_decision,
             decision.blocked_reason,
@@ -3758,7 +3883,12 @@ fn rv_clock_domain_amendment_exit_decision_and_evidence_stay_stable_across_trigg
         } else {
             expected_outcome = Some(outcome);
         }
-        strategy.record_exit_evaluation_evidence(1_240, &decision, trigger_context, false);
+        strategy.record_exit_evaluation_evidence(
+            1_240,
+            &decision,
+            trigger_context,
+            &diagnostic_exit_attempt_outcome(&decision),
+        );
     }
 
     let records = recorded_exit_evaluations(&evidence);
@@ -3774,13 +3904,19 @@ fn rv_clock_domain_amendment_exit_decision_and_evidence_stay_stable_across_trigg
 }
 
 #[test]
-fn exit_evaluation_evidence_flood_guard_collapses_repeated_outcomes() {
+fn policy_skipped_exit_attempts_remain_distinct_and_retryable() {
     let (mut strategy, evidence) = exit_evidence_strategy_with_open_position();
+    let (_cache, clock) = register_test_strategy_with_clock(&mut strategy);
     strategy
         .pricing
         .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 1.5, 1_200);
 
-    // First evaluation submits a would-be exit (one record, outcome key = Exit).
+    // Every shadow attempt is a distinct prepared order and therefore a distinct
+    // durable attempt outcome. Policy skip restores Managed, so a later evaluation
+    // is eligible to prepare another order.
+    clock
+        .borrow_mut()
+        .set_time(UnixNanos::from(1_200 * NANOS_PER_MILLI_U64));
     strategy
         .try_submit_exit_order_for_trigger(
             1_200,
@@ -3792,11 +3928,10 @@ fn exit_evaluation_evidence_flood_guard_collapses_repeated_outcomes() {
         )
         .expect("first shadow exit should pass evidence and admission");
 
-    // The position is now latched as ExitPending. Drive four MORE evaluations: every
-    // one produces the identical latched outcome key (Hold / exit_already_pending /
-    // Accepted). The first latched tick is a key change (one record); the remaining
-    // three are identical and MUST be suppressed by the flood guard.
     for tick in 1_201..=1_204 {
+        clock
+            .borrow_mut()
+            .set_time(UnixNanos::from(tick * NANOS_PER_MILLI_U64));
         assert_eq!(
             strategy
                 .try_submit_exit_order_for_trigger(
@@ -3807,20 +3942,22 @@ fn exit_evaluation_evidence_flood_guard_collapses_repeated_outcomes() {
                         Some(tick),
                     ),
                 )
-                .expect("latched exit evaluation should not error"),
+                .expect("a later shadow exit attempt should remain eligible"),
             None,
-            "a latched exit must not submit a repeated would-be order"
+            "a policy-skipped exit prepares but does not submit"
         );
     }
 
     let records = recorded_exit_evaluations(&evidence);
     assert_eq!(
         records.len(),
-        2,
-        "the flood guard must collapse five identical-outcome exit ticks into one \
-         submit record plus one latched-transition record (without the guard this \
-         would be five records)"
+        5,
+        "each prepared policy-skipped attempt must remain independently auditable"
     );
+    assert!(records.iter().all(|record| matches!(
+        record.outcome,
+        crate::bolt_v3_current_evidence::ExitAttemptOutcome::PolicySkipped { .. }
+    )));
 }
 
 const RV_RECEIPT_SNAPSHOT_AS_OF_MS: u64 = 1_350;
@@ -3911,15 +4048,15 @@ fn rv_clock_domain_amendment_exit_records_share_the_captured_receipt() {
         Some(RV_RECEIPT_TRIGGER_RECEIVE_MS),
     );
     let decision =
-        strategy.exit_submission_decision_for_trigger_at(RV_RECEIPT_LIFECYCLE_NOW_MS, trigger);
+        strategy.exit_intent_decision_for_trigger_at(RV_RECEIPT_LIFECYCLE_NOW_MS, trigger);
     strategy
-        .record_exit_decision_once(RV_RECEIPT_LIFECYCLE_NOW_MS, trigger, &decision)
+        .record_exit_intent_or_hold_once(RV_RECEIPT_LIFECYCLE_NOW_MS, trigger, &decision)
         .expect("exit decision evidence should record");
     strategy.record_exit_evaluation_evidence(
         RV_RECEIPT_LIFECYCLE_NOW_MS,
         &decision,
         trigger,
-        false,
+        &diagnostic_exit_attempt_outcome(&decision),
     );
 
     let decisions = recorded_exit_decisions(&evidence);
@@ -4007,37 +4144,41 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
         evaluation.forced_flat_reasons.clear();
         evaluation.exit_decision = None;
         evaluation.blocked_reason = Some(blocked_reason);
-        decisions.push(strategy.exit_submission_decision_from_evaluation(evaluation));
+        decisions.push(strategy.exit_intent_decision_from_evaluation(evaluation));
     }
 
     let mut unavailable = base.clone();
     unavailable.forced_flat_reasons.clear();
     unavailable.exit_decision = None;
     unavailable.blocked_reason = None;
-    decisions.push(strategy.exit_submission_decision_from_evaluation(unavailable));
+    decisions.push(strategy.exit_intent_decision_from_evaluation(unavailable));
 
     let mut hold = base.clone();
     hold.forced_flat_reasons.clear();
     hold.exit_decision = Some(ExitDecision::Hold);
     hold.blocked_reason = None;
-    decisions.push(strategy.exit_submission_decision_from_evaluation(hold));
+    decisions.push(strategy.exit_intent_decision_from_evaluation(hold));
 
-    let saved_exposure = strategy.exposure.clone();
-    strategy.exposure = ExposureState::Flat;
-    decisions.push(strategy.exit_submission_decision_from_evaluation(base.clone()));
-    strategy.exposure = saved_exposure;
+    let saved_managed = strategy
+        .exposure
+        .managed_position_context()
+        .cloned()
+        .expect("exit decision fixture must begin managed");
+    strategy.exposure.set_flat_for_test();
+    decisions.push(strategy.exit_intent_decision_from_evaluation(base.clone()));
+    strategy.exposure.set_managed_for_test(saved_managed);
 
     let saved_exit_order = strategy.config.exit_order.clone();
     strategy.config.exit_order.side = "not-an-order-side".to_string();
-    decisions.push(strategy.exit_submission_decision_from_evaluation(base.clone()));
+    decisions.push(strategy.exit_intent_decision_from_evaluation(base.clone()));
     strategy.config.exit_order = saved_exit_order.clone();
 
     strategy.config.exit_order.is_quote_quantity = true;
-    decisions.push(strategy.exit_submission_decision_from_evaluation(base.clone()));
+    decisions.push(strategy.exit_intent_decision_from_evaluation(base.clone()));
     strategy.config.exit_order = saved_exit_order.clone();
 
     strategy.config.exit_order.position_side = "short".to_string();
-    decisions.push(strategy.exit_submission_decision_from_evaluation(base.clone()));
+    decisions.push(strategy.exit_intent_decision_from_evaluation(base.clone()));
     strategy.config.exit_order = saved_exit_order;
 
     for decision in &decisions {
@@ -4088,7 +4229,7 @@ fn rv_clock_domain_amendment_exit_receipt_is_retained_across_submission_shapes()
     for (index, decision) in decisions.iter().enumerate() {
         strategy.last_recorded_exit_decision = None;
         strategy
-            .record_exit_decision_once(
+            .record_exit_intent_or_hold_once(
                 RV_RECEIPT_LIFECYCLE_NOW_MS + index as u64,
                 trigger,
                 decision,
@@ -4157,28 +4298,28 @@ fn rv_clock_domain_amendment_exit_receipt_is_fully_immutable_after_snapshot_repl
         Some(RV_RECEIPT_TRIGGER_RECEIVE_MS),
     );
     let decision =
-        strategy.exit_submission_decision_for_trigger_at(RV_RECEIPT_LIFECYCLE_NOW_MS, trigger);
+        strategy.exit_intent_decision_for_trigger_at(RV_RECEIPT_LIFECYCLE_NOW_MS, trigger);
     strategy
-        .record_exit_decision_once(RV_RECEIPT_LIFECYCLE_NOW_MS, trigger, &decision)
+        .record_exit_intent_or_hold_once(RV_RECEIPT_LIFECYCLE_NOW_MS, trigger, &decision)
         .expect("original exit decision evidence should record");
     strategy.record_exit_evaluation_evidence(
         RV_RECEIPT_LIFECYCLE_NOW_MS,
         &decision,
         trigger,
-        false,
+        &diagnostic_exit_attempt_outcome(&decision),
     );
 
     strategy.last_recorded_exit_decision = None;
     strategy.last_exit_evidence_outcome.clear();
     replace_rv_with_distinguishable_snapshot(&mut strategy);
     strategy
-        .record_exit_decision_once(RV_RECEIPT_LIFECYCLE_NOW_MS + 1, trigger, &decision)
+        .record_exit_intent_or_hold_once(RV_RECEIPT_LIFECYCLE_NOW_MS + 1, trigger, &decision)
         .expect("post-replacement exit decision evidence should record");
     strategy.record_exit_evaluation_evidence(
         RV_RECEIPT_LIFECYCLE_NOW_MS + 1,
         &decision,
         trigger,
-        false,
+        &diagnostic_exit_attempt_outcome(&decision),
     );
 
     let decisions = recorded_exit_decisions(&evidence);
@@ -4316,13 +4457,18 @@ fn rv_clock_domain_amendment_valid_surface_without_snapshot_keeps_forced_flat_ex
         1_200,
         Some(1_200),
     );
-    let decision = strategy.exit_submission_decision_for_trigger_at(1_200, trigger);
+    let decision = strategy.exit_intent_decision_for_trigger_at(1_200, trigger);
     assert_eq!(decision.evaluation.exit_decision, Some(ExitDecision::Exit));
     assert_eq!(decision.blocked_reason, None);
     strategy
-        .record_exit_decision_once(1_200, trigger, &decision)
+        .record_exit_intent_or_hold_once(1_200, trigger, &decision)
         .expect("forced-flat decision should record without an RV snapshot");
-    strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
+    strategy.record_exit_evaluation_evidence(
+        1_200,
+        &decision,
+        trigger,
+        &diagnostic_exit_attempt_outcome(&decision),
+    );
 
     let decisions = recorded_exit_decisions(&evidence);
     let evaluations = recorded_exit_evaluations(&evidence);
@@ -4416,12 +4562,17 @@ fn rv_clock_domain_amendment_exit_evaluation_conversion_failure_skips_record() {
     } else {
         1_200
     };
-    let decision = strategy.exit_submission_decision_for_trigger_at(1_200, trigger);
+    let decision = strategy.exit_intent_decision_for_trigger_at(1_200, trigger);
     let decision_before = decision.clone();
     let exposure_before = strategy.exposure.clone();
 
     rv_clock_domain_amendment_assert_one_field_error(&strategy_id, field, || {
-        strategy.record_exit_evaluation_evidence(now_ms, &decision, trigger, false);
+        strategy.record_exit_evaluation_evidence(
+            now_ms,
+            &decision,
+            trigger,
+            &diagnostic_exit_attempt_outcome(&decision),
+        );
     });
 
     assert_eq!(
@@ -4461,14 +4612,24 @@ fn rv_clock_domain_amendment_exit_evidence_failure_is_non_aborting() {
             u64::MAX,
             Some(1_200),
         );
-        let decision = strategy.exit_submission_decision_for_trigger_at(1_200, trigger);
+        let decision = strategy.exit_intent_decision_for_trigger_at(1_200, trigger);
         let exposure_before = strategy.exposure.clone();
         rv_clock_domain_amendment_assert_one_field_error(
             &strategy_id,
             "trigger_ts_event_ms",
             || {
-                strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
-                strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
+                strategy.record_exit_evaluation_evidence(
+                    1_200,
+                    &decision,
+                    trigger,
+                    &diagnostic_exit_attempt_outcome(&decision),
+                );
+                strategy.record_exit_evaluation_evidence(
+                    1_200,
+                    &decision,
+                    trigger,
+                    &diagnostic_exit_attempt_outcome(&decision),
+                );
             },
         );
         assert_eq!(strategy.exposure, exposure_before);
@@ -4490,11 +4651,21 @@ fn rv_clock_domain_amendment_exit_evidence_failure_is_non_aborting() {
         1_200,
         Some(1_200),
     );
-    let decision = strategy.exit_submission_decision_for_trigger_at(1_200, trigger);
+    let decision = strategy.exit_intent_decision_for_trigger_at(1_200, trigger);
     let exposure_before = strategy.exposure.clone();
     rv_clock_domain_amendment_assert_one_field_error(&strategy_id, "write failed", || {
-        strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
-        strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
+        strategy.record_exit_evaluation_evidence(
+            1_200,
+            &decision,
+            trigger,
+            &diagnostic_exit_attempt_outcome(&decision),
+        );
+        strategy.record_exit_evaluation_evidence(
+            1_200,
+            &decision,
+            trigger,
+            &diagnostic_exit_attempt_outcome(&decision),
+        );
     });
     assert_eq!(strategy.exposure, exposure_before);
     assert_eq!(
@@ -4537,7 +4708,7 @@ fn rv_clock_domain_amendment_extreme_exit_deltas_are_lossless() {
             trigger_event_ms,
             Some(trigger_receive_ms),
         );
-        let decision = strategy.exit_submission_decision_for_trigger_at(1_200, trigger);
+        let decision = strategy.exit_intent_decision_for_trigger_at(1_200, trigger);
         assert_eq!(
             decision
                 .evaluation
@@ -4552,9 +4723,14 @@ fn rv_clock_domain_amendment_extreme_exit_deltas_are_lossless() {
             strategy.exposure.clone(),
         );
         strategy
-            .record_exit_decision_once(1_200, trigger, &decision)
+            .record_exit_intent_or_hold_once(1_200, trigger, &decision)
             .expect("extreme delta must not abort decision evidence");
-        strategy.record_exit_evaluation_evidence(1_200, &decision, trigger, false);
+        strategy.record_exit_evaluation_evidence(
+            1_200,
+            &decision,
+            trigger,
+            &diagnostic_exit_attempt_outcome(&decision),
+        );
 
         let expected_delta = i128::from(snapshot_as_of_ms) - i128::from(trigger_event_ms);
         let expected_positive = u64::try_from(expected_delta)
@@ -4726,11 +4902,11 @@ fn rv_clock_domain_amendment_entry_skip_records_each_registered_reason_once() {
     // twelve RV gate/watermark bits, which is not its axis under the frozen
     // registry -- that domain belongs to the blocked-snapshot producer, whose
     // own twelve-bit test still stands beside this one. Entry skip's registered
-    // domain is the twenty skip reasons, so that is what is exercised here, and
+    // domain is the nineteen skip reasons, so that is what is exercised here, and
     // exhaustively: a reason added to the enum without a registry state fails
     // the mapping's exhaustive match at compile time, and a reason that stops
     // recording fails the count below.
-    const REGISTERED_REASONS: [EntrySkipReason; 20] = [
+    const REGISTERED_REASONS: [EntrySkipReason; 19] = [
         EntrySkipReason::StrategyCoreNotRegistered,
         EntrySkipReason::EntryGateBlocked,
         EntrySkipReason::EntryPricingBlocked,
@@ -4746,7 +4922,6 @@ fn rv_clock_domain_amendment_entry_skip_records_each_registered_reason_once() {
         EntrySkipReason::QuantityNotPositive,
         EntrySkipReason::PositionContractInvalid,
         EntrySkipReason::EntryPositionContractUnsupported,
-        EntrySkipReason::HistoricalEntryFeeUnavailable,
         EntrySkipReason::OnePositionInvariantViolation,
         EntrySkipReason::EntryMalformedRejected,
         EntrySkipReason::EntryBalanceRejected,
@@ -5006,10 +5181,7 @@ fn selecting_a_market_binds_the_episode_identity_every_producer_keys_on() {
     // That failure is invisible by construction, which is exactly why it needs a
     // test that goes through selection rather than around it.
     let evidence = recording_decision_evidence();
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
-        evidence,
-    );
+    let mut strategy = test_strategy_with_decision_evidence(evidence);
 
     strategy.active.evidence_identity = None;
     assert!(
@@ -5668,10 +5840,7 @@ fn rv_clock_domain_amendment_existing_reset_sites_clear_rv_state() {
 
 #[test]
 fn rv_clock_domain_amendment_entry_skip_writer_failure_marks_seen() {
-    let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-        RecordingFeeProvider::cold(),
-        failing_decision_evidence(),
-    );
+    let mut strategy = test_strategy_with_decision_evidence(failing_decision_evidence());
     let decision = minimal_entry_submission_decision();
     assert!(
         strategy

@@ -20,9 +20,10 @@ use super::{
         AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
         BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact, CurrentFact,
         EntryOrderIntentFact, EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact,
-        ExitSubmissionDecisionFact, ForcedReductionAdmissionFact, LossGovernorHaltFact,
-        OrderLifecycleFact, OrderRejectFact, ProviderCollateralAllowanceCaptureFailureFact,
-        RejectedEntryAdmissionFact, RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
+        ExitIntentDecisionFact, ExitPreparedOrderFact, ForcedReductionAdmissionFact,
+        LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact,
+        ProviderCollateralAllowanceCaptureFailureFact, RejectedEntryAdmissionFact,
+        RequoteThrottleObservationFact, RiskReducingExitAdmissionFact,
         RiskReducingExitOrderIntentFact, SettlementFact, SubmitLinkedStrategyInputSnapshotFact,
         SubmitReservationFillFact, TerminalSettlementFact,
     },
@@ -303,19 +304,35 @@ impl CodecFor<identities::SubmitLinkedStrategyInputSnapshotV1> for CurrentCodecs
     }
 }
 
-impl CodecFor<identities::ExitSubmissionDecisionV1> for CurrentCodecs {
-    type Input = ExitSubmissionDecisionFact;
-    type Fact = ExitSubmissionDecisionFact;
+impl CodecFor<identities::ExitPreparedOrderV1> for CurrentCodecs {
+    type Input = ExitPreparedOrderFact;
+    type Fact = ExitPreparedOrderFact;
 
     fn encode(
         input: &Self::Input,
         recorded_at_utc_ns: i64,
     ) -> Result<EncodedEvidenceRecord, RecordFailure> {
-        exit::encode_submission(input.clone(), recorded_at_utc_ns)
+        exit::encode_prepared_order(input.clone(), recorded_at_utc_ns)
     }
 
     fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
-        exit::decode_submission(line, line_number)
+        exit::decode_prepared_order(line, line_number)
+    }
+}
+
+impl CodecFor<identities::ExitIntentDecisionV1> for CurrentCodecs {
+    type Input = ExitIntentDecisionFact;
+    type Fact = ExitIntentDecisionFact;
+
+    fn encode(
+        input: &Self::Input,
+        recorded_at_utc_ns: i64,
+    ) -> Result<EncodedEvidenceRecord, RecordFailure> {
+        exit::encode_intent(input.clone(), recorded_at_utc_ns)
+    }
+
+    fn decode(line: &str, line_number: usize) -> Result<Self::Fact> {
+        exit::decode_intent(line, line_number)
     }
 }
 
@@ -448,15 +465,6 @@ pub(crate) fn encode_risk_reducing_exit_admission(
     )
 }
 
-pub(crate) fn encode_forced_reduction_admission(
-    fact: ForcedReductionAdmissionFact,
-) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    <CurrentCodecs as CodecFor<identities::ForcedReductionAdmissionV1>>::encode(
-        &fact,
-        current_utc_ns()?,
-    )
-}
-
 pub(crate) fn encode_risk_reducing_exit_order_intent(
     fact: RiskReducingExitOrderIntentFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
@@ -556,13 +564,16 @@ pub(crate) fn encode_submit_linked_strategy_input_snapshot(
     )
 }
 
-pub(crate) fn encode_exit_submission_decision(
-    fact: ExitSubmissionDecisionFact,
+pub(crate) fn encode_exit_prepared_order(
+    fact: ExitPreparedOrderFact,
 ) -> Result<EncodedEvidenceRecord, RecordFailure> {
-    <CurrentCodecs as CodecFor<identities::ExitSubmissionDecisionV1>>::encode(
-        &fact,
-        current_utc_ns()?,
-    )
+    <CurrentCodecs as CodecFor<identities::ExitPreparedOrderV1>>::encode(&fact, current_utc_ns()?)
+}
+
+pub(crate) fn encode_exit_intent_decision(
+    fact: ExitIntentDecisionFact,
+) -> Result<EncodedEvidenceRecord, RecordFailure> {
+    <CurrentCodecs as CodecFor<identities::ExitIntentDecisionV1>>::encode(&fact, current_utc_ns()?)
 }
 
 pub(crate) fn encode_exit_hold_decision(
@@ -679,9 +690,14 @@ pub(super) fn decode_current_fact(
                 identities::EntrySkipObservationV1,
             >>::decode(line, line_number)?))
         }
-        KnownIdentity::ExitSubmissionDecisionV1 => {
-            CurrentFact::ExitSubmissionDecision(Box::new(<CurrentCodecs as CodecFor<
-                identities::ExitSubmissionDecisionV1,
+        KnownIdentity::ExitIntentDecisionV1 => {
+            CurrentFact::ExitIntentDecision(Box::new(<CurrentCodecs as CodecFor<
+                identities::ExitIntentDecisionV1,
+            >>::decode(line, line_number)?))
+        }
+        KnownIdentity::ExitPreparedOrderV1 => {
+            CurrentFact::ExitPreparedOrder(Box::new(<CurrentCodecs as CodecFor<
+                identities::ExitPreparedOrderV1,
             >>::decode(line, line_number)?))
         }
         KnownIdentity::ExitHoldDecisionV1 => {
@@ -831,6 +847,17 @@ fn validate_envelope(
 mod tests {
     use super::super::facts::*;
     use super::*;
+
+    fn prepared_exit_linkage() -> PreparedOrderLinkage {
+        SubmissionLinkage {
+            instrument_id: "YES-USD.POLYMARKET".to_string(),
+            order_side: EvidenceOrderSide::Sell,
+            price: "0.6".to_string(),
+            quantity: "1".to_string(),
+            client_order_id: "exit-1".to_string(),
+        }
+        .into()
+    }
 
     macro_rules! unit_wire_coverage {
         ($type:ty, [$($variant:ident => $wire:literal),+ $(,)?]) => {
@@ -1029,6 +1056,7 @@ mod tests {
                 "kill_switch_forced_reduction_proof_invalid",
             KillSwitchForcedReductionCapExceeded =>
                 "kill_switch_forced_reduction_cap_exceeded",
+            EconomicsSealRejected => "economics_seal_rejected",
             CapitalAdmission => "capital_admission"
         ]
     );
@@ -1079,7 +1107,6 @@ mod tests {
             QuantityNotPositive => "quantity_not_positive",
             PositionContractInvalid => "position_contract_invalid",
             EntryPositionContractUnsupported => "entry_position_contract_unsupported",
-            HistoricalEntryFeeUnavailable => "historical_entry_fee_unavailable",
             OnePositionInvariantViolation => "one_position_invariant_violation",
             EntryMalformedRejected => "entry_malformed_rejected",
             EntryBalanceRejected => "entry_balance_rejected",
@@ -1117,7 +1144,6 @@ mod tests {
             Self::BookCrossed => Self::BookCrossed => "book_crossed",
             Self::IntervalOpenMissing => Self::IntervalOpenMissing => "interval_open_missing",
             Self::WarmupIncomplete => Self::WarmupIncomplete => "warmup_incomplete",
-            Self::FeesNotReady => Self::FeesNotReady => "fees_not_ready",
             Self::RecoveryMode => Self::RecoveryMode => "recovery_mode",
             Self::MarketCoolingDown => Self::MarketCoolingDown => "market_cooling_down",
             Self::SpotSpikeCooldown => Self::SpotSpikeCooldown => "spot_spike_cooldown",
@@ -1136,8 +1162,7 @@ mod tests {
             InvalidCost => "invalid_cost",
             UnsupportedOrderShape => "unsupported_order_shape",
             EdgeBelowThreshold => "edge_below_threshold",
-            SpreadOrSlippageWipedEdge => "spread_or_slippage_wiped_edge",
-            FeeUnavailable => "fee_unavailable"
+            SpreadOrSlippageWipedEdge => "spread_or_slippage_wiped_edge"
         ]
     );
     payload_wire_coverage!(
@@ -1156,8 +1181,6 @@ mod tests {
                 Self::UncertaintyBandUnavailable => "uncertainty_band_unavailable",
             Self::FairProbabilityUnavailable =>
                 Self::FairProbabilityUnavailable => "fair_probability_unavailable",
-            Self::FeeUnavailable(OutcomeSide::Up) =>
-                Self::FeeUnavailable(_) => "fee_unavailable",
             Self::ExecutableEntryCostUnavailable(OutcomeSide::Up) =>
                 Self::ExecutableEntryCostUnavailable(_) => "executable_entry_cost_unavailable",
             Self::ExecutableEdgeUnavailable(
@@ -1286,23 +1309,62 @@ mod tests {
         ]
     );
     unit_wire_coverage!(
-        ExitSubmissionOutcome,
+        ExitIntentOutcome,
         [Exit => "exit", ExitFailClosed => "exit_fail_closed"]
     );
     unit_wire_coverage!(
         ExitHoldOutcome,
         [Hold => "hold", Blocked => "blocked"]
     );
-    payload_wire_coverage!(
-        ExitEvaluationDecision,
+    unit_wire_coverage!(
+        ExitPreparationStage,
         [
-            Self::Submission {
-                outcome: ExitSubmissionOutcome::Exit,
-            } => Self::Submission { .. } => "submit",
-            Self::Hold {
+            OrderTemplate => "order_template",
+            InstrumentAuthority => "instrument_authority",
+            PositionAuthority => "position_authority",
+            ExecutableLiquidity => "executable_liquidity",
+            EconomicsSeal => "economics_seal"
+        ]
+    );
+    payload_wire_coverage!(
+        ExitAttemptOutcome,
+        [
+            Self::Held {
                 outcome: ExitHoldOutcome::Hold,
-                blocked_reason: None,
-            } => Self::Hold { .. } => "hold"
+            } => Self::Held { .. } => "held",
+            Self::Blocked {
+                blocked_reason: ExitBlockedReason::ExitHold,
+            } => Self::Blocked { .. } => "blocked",
+            Self::PreparationRejected {
+                stage: ExitPreparationStage::EconomicsSeal,
+                reason: "rejected".to_string(),
+            } => Self::PreparationRejected { .. } => "preparation_rejected",
+            Self::RouteRejected {
+                prepared_order: prepared_exit_linkage(),
+                reason: "rejected".to_string(),
+            } => Self::RouteRejected { .. } => "route_rejected",
+            Self::IntentEvidenceRejected {
+                prepared_order: prepared_exit_linkage(),
+                reason: "rejected".to_string(),
+            } => Self::IntentEvidenceRejected { .. } => "intent_evidence_rejected",
+            Self::AdmissionRejected {
+                prepared_order: prepared_exit_linkage(),
+                reason: "rejected".to_string(),
+            } => Self::AdmissionRejected { .. } => "admission_rejected",
+            Self::PolicySkipped {
+                prepared_order: prepared_exit_linkage(),
+            } => Self::PolicySkipped { .. } => "policy_skipped",
+            Self::PreSinkRejected {
+                prepared_order: prepared_exit_linkage(),
+                reason: "rejected".to_string(),
+            } => Self::PreSinkRejected { .. } => "pre_sink_rejected",
+            Self::SinkInvokedUnknown {
+                submitted_order: prepared_exit_linkage().into(),
+                diagnostic: "unknown".to_string(),
+            } => Self::SinkInvokedUnknown { .. } => "sink_invoked_unknown",
+            Self::Submitted {
+                submitted_order: prepared_exit_linkage().into(),
+            } => Self::Submitted { .. } => "submitted"
         ]
     );
     unit_wire_coverage!(OutcomeSide, [Up => "up", Down => "down"]);
@@ -1321,7 +1383,6 @@ mod tests {
             BoundaryReclassification => "boundary_reclassification",
             EntryFillMaterialized => "entry_fill_materialized",
             EntryReconcilePending => "entry_reconcile_pending",
-            PositionTruthRematerialized => "position_truth_rematerialized",
             PositionClosed => "position_closed",
             ResidualRemanaged => "residual_remanaged",
             RestartOpenOrderAdopted => "restart_open_order_adopted",
@@ -1398,8 +1459,11 @@ mod tests {
             KnownIdentity::EntrySkipObservationV1 => {
                 frozen_corpus!("entry_skip_observation.jsonl")
             }
-            KnownIdentity::ExitSubmissionDecisionV1 => {
-                frozen_corpus!("exit_submission_decision.jsonl")
+            KnownIdentity::ExitIntentDecisionV1 => {
+                frozen_corpus!("exit_intent_decision.jsonl")
+            }
+            KnownIdentity::ExitPreparedOrderV1 => {
+                frozen_corpus!("exit_prepared_order.jsonl")
             }
             KnownIdentity::ExitHoldDecisionV1 => frozen_corpus!("exit_hold_decision.jsonl"),
             KnownIdentity::ExitEvaluationV1 => frozen_corpus!("exit_evaluation.jsonl"),
@@ -1456,9 +1520,12 @@ mod tests {
             KnownIdentity::EntrySkipObservationV1 => Some(accepted_noncanonical_fixture!(
                 "entry_skip_observation.jsonl"
             )),
-            KnownIdentity::ExitSubmissionDecisionV1 => Some(accepted_noncanonical_fixture!(
-                "exit_submission_decision.jsonl"
-            )),
+            KnownIdentity::ExitIntentDecisionV1 => {
+                Some(accepted_noncanonical_fixture!("exit_intent_decision.jsonl"))
+            }
+            KnownIdentity::ExitPreparedOrderV1 => {
+                Some(accepted_noncanonical_fixture!("exit_prepared_order.jsonl"))
+            }
             KnownIdentity::ExitHoldDecisionV1 => {
                 Some(accepted_noncanonical_fixture!("exit_hold_decision.jsonl"))
             }
@@ -1563,8 +1630,13 @@ mod tests {
             >>::encode(
                 value.as_ref(), recorded_at_utc_ns
             ),
-            CurrentFact::ExitSubmissionDecision(value) => <CurrentCodecs as CodecFor<
-                identities::ExitSubmissionDecisionV1,
+            CurrentFact::ExitIntentDecision(value) => <CurrentCodecs as CodecFor<
+                identities::ExitIntentDecisionV1,
+            >>::encode(
+                value.as_ref(), recorded_at_utc_ns
+            ),
+            CurrentFact::ExitPreparedOrder(value) => <CurrentCodecs as CodecFor<
+                identities::ExitPreparedOrderV1,
             >>::encode(
                 value.as_ref(), recorded_at_utc_ns
             ),
@@ -1761,7 +1833,6 @@ mod tests {
             .map(|(value, _)| value)
             .collect::<Vec<_>>();
         for (side, _) in OutcomeSide::wire_coverage_values() {
-            values.push(EntryPricingBlockReason::FeeUnavailable(side));
             values.push(EntryPricingBlockReason::ExecutableEntryCostUnavailable(
                 side,
             ));
@@ -1858,7 +1929,6 @@ mod tests {
                 absent_numbers.details.uncertainty_band_probability = None;
                 absent_numbers.details.expected_edge_basis_points = None;
                 absent_numbers.details.worst_case_edge_basis_points = None;
-                absent_numbers.details.fee_rate_basis_points = None;
                 cases.push(CurrentFact::BlockedStrategyInputObservation(Box::new(
                     absent_numbers,
                 )));
@@ -2164,24 +2234,39 @@ mod tests {
                         .map(|case| CurrentFact::EntrySkipObservation(Box::new(case))),
                 );
             }
-            CurrentFact::ExitSubmissionDecision(value) => {
+            CurrentFact::ExitIntentDecision(value) => {
                 cases.extend(
                     exit_detail_cases(&value.details)
                         .into_iter()
                         .map(|details| {
-                            CurrentFact::ExitSubmissionDecision(Box::new(
-                                ExitSubmissionDecisionFact {
-                                    details,
-                                    outcome: value.outcome,
-                                    submission: value.submission.clone(),
-                                },
-                            ))
+                            CurrentFact::ExitIntentDecision(Box::new(ExitIntentDecisionFact {
+                                details,
+                                outcome: value.outcome,
+                            }))
                         }),
                 );
-                for (outcome, _) in ExitSubmissionOutcome::wire_coverage_values() {
+                for (outcome, _) in ExitIntentOutcome::wire_coverage_values() {
                     let mut case = value.as_ref().clone();
                     case.outcome = outcome;
-                    cases.push(CurrentFact::ExitSubmissionDecision(Box::new(case)));
+                    cases.push(CurrentFact::ExitIntentDecision(Box::new(case)));
+                }
+            }
+            CurrentFact::ExitPreparedOrder(value) => {
+                cases.extend(
+                    exit_detail_cases(&value.details)
+                        .into_iter()
+                        .map(|details| {
+                            CurrentFact::ExitPreparedOrder(Box::new(ExitPreparedOrderFact {
+                                details,
+                                outcome: value.outcome,
+                                prepared_order: value.prepared_order.clone(),
+                            }))
+                        }),
+                );
+                for (outcome, _) in ExitIntentOutcome::wire_coverage_values() {
+                    let mut case = value.as_ref().clone();
+                    case.outcome = outcome;
+                    cases.push(CurrentFact::ExitPreparedOrder(Box::new(case)));
                 }
             }
             CurrentFact::ExitHoldDecision(value) => {
@@ -2209,17 +2294,9 @@ mod tests {
                     case.exit_trigger_source = exit_trigger_source;
                     cases.push(CurrentFact::ExitEvaluation(Box::new(case)));
                 }
-                for (outcome, _) in ExitSubmissionOutcome::wire_coverage_values() {
+                for (outcome, _) in ExitAttemptOutcome::wire_coverage_values() {
                     let mut case = value.as_ref().clone();
-                    case.decision = ExitEvaluationDecision::Submission { outcome };
-                    cases.push(CurrentFact::ExitEvaluation(Box::new(case)));
-                }
-                for (blocked_reason, _) in ExitBlockedReason::wire_coverage_values() {
-                    let mut case = value.as_ref().clone();
-                    case.decision = ExitEvaluationDecision::Hold {
-                        outcome: ExitHoldOutcome::Blocked,
-                        blocked_reason: Some(blocked_reason),
-                    };
+                    case.outcome = outcome;
                     cases.push(CurrentFact::ExitEvaluation(Box::new(case)));
                 }
                 for (gate_result, _) in RvGateResult::wire_coverage_values() {
@@ -2470,8 +2547,6 @@ mod tests {
         nulls.fair_probability_up = None;
         nulls.fair_probability_down = None;
         nulls.uncertainty_band_probability = None;
-        nulls.up_fee_bps = None;
-        nulls.down_fee_bps = None;
         nulls.hold_ev_bps = None;
         nulls.exit_ev_bps = None;
         nulls.realized_vol = None;
@@ -2503,8 +2578,6 @@ mod tests {
         present.fair_probability_up = Some("0.5".to_string());
         present.fair_probability_down = Some("0.5".to_string());
         present.uncertainty_band_probability = Some("0.01".to_string());
-        present.up_fee_bps = Some("1".to_string());
-        present.down_fee_bps = Some("1".to_string());
         present.hold_ev_bps = Some("1".to_string());
         present.exit_ev_bps = Some("2".to_string());
         present.realized_vol = Some("0.2".to_string());
@@ -2530,7 +2603,6 @@ mod tests {
         nulls.position_id = None;
         nulls.market_id = None;
         nulls.instrument_id = None;
-        nulls.client_order_id = None;
         nulls.trigger_ts_event_ms = None;
         nulls.trigger_ts_init_ms = None;
         nulls.rv_as_of_ms = None;
@@ -2544,8 +2616,6 @@ mod tests {
         nulls.fair_probability_up = None;
         nulls.fair_probability_down = None;
         nulls.uncertainty_band_probability = None;
-        nulls.up_fee_bps = None;
-        nulls.down_fee_bps = None;
         nulls.hold_ev_bps = None;
         nulls.exit_ev_bps = None;
 
@@ -2553,7 +2623,6 @@ mod tests {
         present.position_id = Some("position-coverage".to_string());
         present.market_id = Some("market-coverage".to_string());
         present.instrument_id = Some("YES-USD.POLYMARKET".to_string());
-        present.client_order_id = Some("client-order-coverage".to_string());
         present.trigger_ts_event_ms = Some(34);
         present.trigger_ts_init_ms = Some(34);
         present.rv_as_of_ms = Some(33);
@@ -2567,8 +2636,6 @@ mod tests {
         present.fair_probability_up = Some("0.5".to_string());
         present.fair_probability_down = Some("0.5".to_string());
         present.uncertainty_band_probability = Some("0.01".to_string());
-        present.up_fee_bps = Some("1".to_string());
-        present.down_fee_bps = Some("1".to_string());
         present.hold_ev_bps = Some("1".to_string());
         present.exit_ev_bps = Some("2".to_string());
 
@@ -2679,8 +2746,6 @@ mod tests {
         nulls.sized_worst_case_ev_bps = None;
         nulls.sized_edge_cents_per_share = None;
         nulls.theta_scaled_min_edge_bps = None;
-        nulls.up_fee_bps = None;
-        nulls.down_fee_bps = None;
         nulls.submission_blocked_reason = None;
         nulls.stale_reference_after_ms = None;
         nulls.last_reference_ts_ms = None;
@@ -2705,8 +2770,6 @@ mod tests {
         present.sized_worst_case_ev_bps = Some("5".to_string());
         present.sized_edge_cents_per_share = Some("0.01".to_string());
         present.theta_scaled_min_edge_bps = Some("5".to_string());
-        present.up_fee_bps = Some("1".to_string());
-        present.down_fee_bps = Some("1".to_string());
         present.submission_blocked_reason = Some(EntrySkipReason::EntryPricingBlocked);
         present.stale_reference_after_ms = Some(5_000);
         present.last_reference_ts_ms = Some(1);
@@ -2962,6 +3025,8 @@ mod tests {
             attempted_reservation_count: 2,
             recovered_reservation_count: 2,
             live_reserved_liability: "10".to_string(),
+            unresolved_sink_invoked_reservation_count: 1,
+            unresolved_observed_open_reservation_count: 1,
         }
     }
 
@@ -3048,6 +3113,71 @@ mod tests {
             stale_reason: None,
             loss_snapshot_observed_at_ns: Some(10),
             loss_eval_now_ns: Some(12),
+            economics: None,
+        }
+    }
+
+    fn admission_economics_details() -> AdmissionEconomicsDetails {
+        AdmissionEconomicsDetails {
+            decision_correlation_id: "client-1".to_string(),
+            core_total: "-0.1".to_string(),
+            core_net_edge: "0.4".to_string(),
+            core_edge_ratio: "0.04".to_string(),
+            forecast_net_edge: "0.4".to_string(),
+            forecast_complete: true,
+            missing_forecast_component_ids: vec![],
+            valid_until_ns: 20,
+            forecast_valid_until_ns: Some(20),
+            source_snapshot_ids: vec!["economics-snapshot-1".to_string()],
+            reservation_basis: "10".to_string(),
+            full_reservation_liability: "10.1".to_string(),
+            components: vec![AdmissionEconomicsComponent {
+                component_id: "platform_fee".to_string(),
+                class: AdmissionEconomicsClass::Charge,
+                economic_kind: AdmissionEconomicsKind::ProtocolTrading,
+                scope: AdmissionEconomicsScope::Decision {
+                    decision_correlation_id: "client-1".to_string(),
+                },
+                point_estimate: AdmissionEconomicsPointEstimate::NonZero {
+                    effect: AdmissionEconomicsNativeEffect {
+                        amount: "-0.1".to_string(),
+                        unit: AdmissionEconomicsNativeUnit::Currency {
+                            currency_id: "USDC".to_string(),
+                        },
+                        inventory_application: None,
+                    },
+                },
+                point_valuation: Some(AdmissionEconomicsValuation {
+                    native_effect: AdmissionEconomicsNativeEffect {
+                        amount: "-0.1".to_string(),
+                        unit: AdmissionEconomicsNativeUnit::Currency {
+                            currency_id: "USDC".to_string(),
+                        },
+                        inventory_application: None,
+                    },
+                    normalized_amount: "-0.1".to_string(),
+                    reporting_currency: "USDC".to_string(),
+                    route_id: None,
+                    source_snapshot_ids: vec![],
+                    valued_at_ns: 10,
+                    valid_until_ns: None,
+                }),
+                debit_risk_bound: None,
+                debit_risk_bound_valuation: None,
+                treatment: AdmissionEconomicsTreatment::GuaranteedConditionalOnAction,
+                calculation_factors: vec![AdmissionEconomicsCalculationFactor {
+                    factor_id: "fee_rate".to_string(),
+                    value: "0.01".to_string(),
+                }],
+                formula_id: "price-times-quantity-times-rate".to_string(),
+                source: AdmissionEconomicsSource {
+                    source_id: "market-info".to_string(),
+                    snapshot_id: "economics-snapshot-1".to_string(),
+                    source_at_ns: 9,
+                    fetched_at_ns: 9,
+                    valid_until_ns: 20,
+                },
+            }],
         }
     }
 
@@ -3107,8 +3237,6 @@ mod tests {
             sized_worst_case_ev_bps: None,
             sized_edge_cents_per_share: None,
             theta_scaled_min_edge_bps: None,
-            up_fee_bps: None,
-            down_fee_bps: None,
             submission_blocked_reason: Some(
                 super::super::facts::EntrySkipReason::EntryPricingBlocked,
             ),
@@ -3172,7 +3300,6 @@ mod tests {
             fast_venue_jitter_ms: Some(1),
             fast_venue_incoherent: false,
             lead_agreement_corr: Some("1".to_string()),
-            fee_rate_basis_points: purpose_numeric("0"),
             selected_side: None,
         }
     }
@@ -3194,8 +3321,6 @@ mod tests {
             fair_probability_up: Some("0.5".to_string()),
             fair_probability_down: Some("0.5".to_string()),
             uncertainty_band_probability: Some("0.01".to_string()),
-            up_fee_bps: Some("0".to_string()),
-            down_fee_bps: Some("0".to_string()),
             hold_ev_bps: Some("1".to_string()),
             exit_ev_bps: Some("2".to_string()),
             realized_vol: None,
@@ -3282,9 +3407,10 @@ mod tests {
         assert_domain!(StrategyInputMarketSelectionOutcome);
         assert_domain!(ExitTriggerSource);
         assert_domain!(ExitBlockedReason);
-        assert_domain!(ExitSubmissionOutcome);
+        assert_domain!(ExitIntentOutcome);
         assert_domain!(ExitHoldOutcome);
-        assert_domain!(ExitEvaluationDecision);
+        assert_domain!(ExitPreparationStage);
+        assert_domain!(ExitAttemptOutcome);
         assert_domain!(OutcomeSide);
         assert_domain!(SettlementBookingErrorReason);
         assert_domain!(OrderLifecycleTransition);
@@ -3659,7 +3785,8 @@ mod tests {
             KnownIdentity::CapitalAdmissionRebuildV1,
             KnownIdentity::SubmitReservationFillV1,
             KnownIdentity::EntrySkipObservationV1,
-            KnownIdentity::ExitSubmissionDecisionV1,
+            KnownIdentity::ExitIntentDecisionV1,
+            KnownIdentity::ExitPreparedOrderV1,
             KnownIdentity::ExitHoldDecisionV1,
             KnownIdentity::ExitEvaluationV1,
             KnownIdentity::LossGovernorHaltV1,
@@ -3743,9 +3870,13 @@ mod tests {
         entry_skip["entry_skip"]["now_ms"] = 0.into();
         mutation_is_rejected(KnownIdentity::EntrySkipObservationV1, &entry_skip);
 
-        let mut exit_submission = positive_value(KnownIdentity::ExitSubmissionDecisionV1);
-        exit_submission["exit_decision"]["details"]["strategy_id"] = "".into();
-        mutation_is_rejected(KnownIdentity::ExitSubmissionDecisionV1, &exit_submission);
+        let mut exit_intent = positive_value(KnownIdentity::ExitIntentDecisionV1);
+        exit_intent["exit_intent"]["details"]["strategy_id"] = "".into();
+        mutation_is_rejected(KnownIdentity::ExitIntentDecisionV1, &exit_intent);
+
+        let mut exit_prepared_order = positive_value(KnownIdentity::ExitPreparedOrderV1);
+        exit_prepared_order["exit_prepared_order"]["details"]["strategy_id"] = "".into();
+        mutation_is_rejected(KnownIdentity::ExitPreparedOrderV1, &exit_prepared_order);
 
         let mut exit_hold = positive_value(KnownIdentity::ExitHoldDecisionV1);
         exit_hold["exit_decision"]["blocked_reason"] = "no_open_position".into();
@@ -4053,6 +4184,25 @@ mod tests {
             .expect("encoded terminal settlement must decode"),
             expected_terminal
         );
+
+        let mut retained_exit = terminal();
+        retained_exit.lifecycle.outcome = OrderLifecycleOutcome::ExitPending;
+        assert!(
+            <CurrentCodecs as CodecFor<identities::TerminalSettlementV1>>::encode(
+                &retained_exit,
+                14,
+            )
+            .is_err(),
+            "terminal settlement cannot retain non-flat exit authority"
+        );
+
+        let mut invalid = terminal();
+        invalid.lifecycle.outcome = OrderLifecycleOutcome::Managed;
+        assert!(
+            <CurrentCodecs as CodecFor<identities::TerminalSettlementV1>>::encode(&invalid, 15)
+                .is_err(),
+            "terminal settlement cannot claim a nonterminal managed outcome"
+        );
     }
 
     #[test]
@@ -4174,6 +4324,83 @@ mod tests {
                 .expect("capital rebuild must decode"),
             expected
         );
+    }
+
+    #[test]
+    fn capital_admission_rebuild_rejects_unresolved_count_overflow() {
+        let mut fact = capital_rebuild();
+        fact.unresolved_sink_invoked_reservation_count = usize::MAX;
+        fact.unresolved_observed_open_reservation_count = 1;
+
+        assert!(
+            <CurrentCodecs as CodecFor<identities::CapitalAdmissionRebuildV1>>::encode(&fact, 18)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn capital_admission_rebuild_schema_cutover_is_strict() {
+        let baseline = positive_value(KnownIdentity::CapitalAdmissionRebuildV1);
+
+        for field in [
+            "unresolved_sink_invoked_reservation_count",
+            "unresolved_observed_open_reservation_count",
+        ] {
+            let mut missing = baseline.clone();
+            missing["decision"]
+                .as_object_mut()
+                .expect("capital rebuild decision must be an object")
+                .remove(field);
+            mutation_is_rejected(KnownIdentity::CapitalAdmissionRebuildV1, &missing);
+        }
+
+        let mut unknown = baseline.clone();
+        unknown["decision"]
+            .as_object_mut()
+            .expect("capital rebuild decision must be an object")
+            .insert("unresolved_reservation_count".to_string(), 2.into());
+        mutation_is_rejected(KnownIdentity::CapitalAdmissionRebuildV1, &unknown);
+
+        let mut retired_schema = baseline;
+        retired_schema["schema_version"] = 16.into();
+        mutation_is_rejected(KnownIdentity::CapitalAdmissionRebuildV1, &retired_schema);
+    }
+
+    #[test]
+    fn exit_evaluation_schema_cutover_is_strict() {
+        let sink_invoked_unknown = positive_corpus(KnownIdentity::ExitEvaluationV1)
+            .lines()
+            .find_map(|line| {
+                let value: serde_json::Value = serde_json::from_str(line).ok()?;
+                (value.pointer("/exit_evaluation/outcome/action")
+                    == Some(&serde_json::Value::String(
+                        "sink_invoked_unknown".to_string(),
+                    )))
+                .then_some(value)
+            })
+            .expect("positive exit corpus must cover sink-invoked-unknown");
+
+        let mut retired_schema = sink_invoked_unknown.clone();
+        retired_schema["schema_version"] = 17.into();
+        mutation_is_rejected(KnownIdentity::ExitEvaluationV1, &retired_schema);
+
+        let mut retired_outcome = sink_invoked_unknown;
+        let outcome = retired_outcome["exit_evaluation"]["outcome"]
+            .as_object_mut()
+            .expect("exit outcome must be an object");
+        let submitted_order = outcome
+            .remove("submitted_order")
+            .expect("sink-invoked-unknown must carry the submitted order");
+        let diagnostic = outcome
+            .remove("diagnostic")
+            .expect("sink-invoked-unknown must carry a diagnostic");
+        outcome.insert(
+            "action".to_string(),
+            serde_json::Value::String("sink_rejected".to_string()),
+        );
+        outcome.insert("prepared_order".to_string(), submitted_order);
+        outcome.insert("reason".to_string(), diagnostic);
+        mutation_is_rejected(KnownIdentity::ExitEvaluationV1, &retired_outcome);
     }
 
     #[test]
@@ -4342,6 +4569,93 @@ mod tests {
     }
 
     #[test]
+    fn admission_economics_rejects_contradictory_forecast_health() {
+        let mut details = admission_details();
+        let mut economics = admission_economics_details();
+        economics.forecast_complete = false;
+        details.economics = Some(economics);
+        let fact = AdmittedEntryAdmissionFact {
+            details,
+            reservation: None,
+        };
+
+        assert!(
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::encode(&fact, 24)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn admission_economics_rejects_a_valuation_for_a_different_native_effect() {
+        let mut economics = admission_economics_details();
+        economics.components[0]
+            .point_valuation
+            .as_mut()
+            .expect("fixture component must have a point valuation")
+            .native_effect
+            .amount = "-0.2".to_string();
+        let mut details = admission_details();
+        details.economics = Some(economics);
+        let fact = AdmittedEntryAdmissionFact {
+            details,
+            reservation: None,
+        };
+
+        assert!(
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::encode(&fact, 25)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn admission_economics_component_lineage_round_trips() {
+        let expected_economics = admission_economics_details();
+        let mut details = admission_details();
+        details.economics = Some(expected_economics.clone());
+        let fact = AdmittedEntryAdmissionFact {
+            details,
+            reservation: None,
+        };
+
+        let record =
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::encode(&fact, 25)
+                .expect("valid economics component lineage must encode");
+        let line = std::str::from_utf8(record.line())
+            .expect("encoded evidence must be UTF-8")
+            .trim_end_matches('\n');
+        let decoded =
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::decode(line, 1)
+                .expect("valid economics component lineage must decode");
+
+        assert_eq!(decoded.details.economics, Some(expected_economics));
+    }
+
+    #[test]
+    fn admission_economics_rejects_unknown_nested_component_fields() {
+        let mut details = admission_details();
+        details.economics = Some(admission_economics_details());
+        let fact = AdmittedEntryAdmissionFact {
+            details,
+            reservation: None,
+        };
+        let record =
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::encode(&fact, 26)
+                .expect("valid economics component lineage must encode");
+        let mut line: serde_json::Value =
+            serde_json::from_slice(record.line()).expect("encoded evidence must be valid JSON");
+        line.pointer_mut("/decision/economics/components/0/scope")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("component scope must be an object")
+            .insert("unexpected".to_string(), serde_json::Value::Bool(true));
+        let line = serde_json::to_string(&line).expect("mutated evidence must serialize");
+
+        assert!(
+            <CurrentCodecs as CodecFor<identities::AdmittedEntryAdmissionV1>>::decode(&line, 1)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn order_reject_identity_round_trips_and_rejects_invalid_admission_shape() {
         let expected = order_reject();
         let record = <CurrentCodecs as CodecFor<identities::OrderRejectV1>>::encode(&expected, 28)
@@ -4441,28 +4755,26 @@ mod tests {
 
     #[test]
     fn exit_identities_are_role_pure_and_round_trip() {
-        let submission = ExitSubmissionDecisionFact {
+        let submission = ExitPreparedOrderFact {
             details: exit_decision_details(),
-            outcome: ExitSubmissionOutcome::Exit,
-            submission: SubmissionLinkage {
+            outcome: ExitIntentOutcome::Exit,
+            prepared_order: SubmissionLinkage {
                 instrument_id: "YES-USD.POLYMARKET".to_string(),
                 order_side: EvidenceOrderSide::Sell,
                 price: "0.6".to_string(),
                 quantity: "1".to_string(),
                 client_order_id: "exit-1".to_string(),
-            },
+            }
+            .into(),
         };
         let submission_record =
-            <CurrentCodecs as CodecFor<identities::ExitSubmissionDecisionV1>>::encode(
-                &submission,
-                35,
-            )
-            .expect("valid exit submission must encode");
+            <CurrentCodecs as CodecFor<identities::ExitPreparedOrderV1>>::encode(&submission, 35)
+                .expect("valid exit submission must encode");
         let submission_line = std::str::from_utf8(submission_record.line())
             .expect("encoded evidence must be UTF-8")
             .trim_end_matches('\n');
         assert_eq!(
-            <CurrentCodecs as CodecFor<identities::ExitSubmissionDecisionV1>>::decode(
+            <CurrentCodecs as CodecFor<identities::ExitPreparedOrderV1>>::decode(
                 submission_line,
                 1,
             )
@@ -4498,7 +4810,6 @@ mod tests {
             position_id: Some("position-1".to_string()),
             market_id: Some("market-1".to_string()),
             instrument_id: Some("YES-USD.POLYMARKET".to_string()),
-            client_order_id: Some("exit-1".to_string()),
             exit_eval_now_ms: 37,
             exit_trigger_source: ExitTriggerSource::SignalQuote,
             trigger_ts_event_ms: Some(37),
@@ -4521,13 +4832,10 @@ mod tests {
             fair_probability_up: Some("0.5".to_string()),
             fair_probability_down: Some("0.5".to_string()),
             uncertainty_band_probability: Some("0.01".to_string()),
-            up_fee_bps: Some("0".to_string()),
-            down_fee_bps: Some("0".to_string()),
             hold_ev_bps: Some("1".to_string()),
             exit_ev_bps: Some("2".to_string()),
-            decision: ExitEvaluationDecision::Hold {
+            outcome: ExitAttemptOutcome::Held {
                 outcome: ExitHoldOutcome::Hold,
-                blocked_reason: None,
             },
             forced_flat_reasons: vec![],
         };

@@ -63,8 +63,6 @@ pub const STRATEGY_PARAM_BAR_TYPE: &str = "bar_type";
 pub const STRATEGY_PARAM_TRADE_SIZE: &str = "trade_size";
 /// Strategy parameter key for the normalized binary-oracle builder TOML.
 pub const STRATEGY_PARAM_CONFIG_TOML: &str = "config_toml";
-/// Strategy parameter key for the backtest fee-provider assumption.
-pub const STRATEGY_PARAM_FEE_BPS: &str = "fee_bps";
 /// Strategy parameter key for the bounded evidence-rejection episode map.
 pub const STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT: &str =
     "evidence_reject_episode_max_count";
@@ -147,14 +145,12 @@ pub fn registered_strategy_parameters(registry_key: &str) -> Option<&'static [&'
             STRATEGY_PARAM_CONFIG_TOML,
             STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES,
             STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
-            STRATEGY_PARAM_FEE_BPS,
             STRATEGY_PARAM_ORDER_EXECUTION_MODE,
         ]),
         STRATEGY_BINARY_ORACLE_MAKER => Some(&[
             STRATEGY_PARAM_CONFIG_TOML,
             STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES,
             STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
-            STRATEGY_PARAM_FEE_BPS,
             STRATEGY_PARAM_ORDER_EXECUTION_MODE,
         ]),
         STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE => Some(&[
@@ -368,8 +364,71 @@ pub struct StrategySource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StrategyConfigOverlaySource {
-    pub production_root_config_path: String,
     pub override_delta: ManifestBacktestConfigOverride,
+}
+
+/// Historical provider authority and the production economics configuration
+/// used to interpret it. Binary-oracle replay requires this contract; it never
+/// accepts a strategy-local scalar fee assumption.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestEconomicsSource {
+    pub production_root_config_path: String,
+    /// SHA-256 of the complete production config bundle loaded from the root.
+    /// Replay rejects the run if the mutable path no longer resolves to these
+    /// exact bytes.
+    pub production_config_bundle_checksum: String,
+    pub inputs: Vec<ManifestEconomicsInput>,
+}
+
+/// One exact instrument/product authority captured for replay. The opaque
+/// provider table is decoded only by the provider selected by the configured
+/// execution client.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestEconomicsInput {
+    pub instrument_id: String,
+    pub product_surface_id: String,
+    pub authority: BTreeMap<String, ManifestEconomicsAuthorityValue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub valuation_observations: Vec<ManifestEconomicsValuationObservation>,
+}
+
+/// Provider-owned historical data without floating-point representation.
+/// Venue decimal fields travel as strings and are parsed by the provider.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ManifestEconomicsAuthorityValue {
+    String(String),
+    Integer(i64),
+    Boolean(bool),
+    Array(Vec<ManifestEconomicsAuthorityValue>),
+    Table(BTreeMap<String, ManifestEconomicsAuthorityValue>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ManifestEconomicsValuationObservation {
+    MarketQuote {
+        client_id: String,
+        instrument_id: String,
+        base_currency: String,
+        quote_currency: String,
+        price: String,
+        snapshot_id: String,
+        observed_at_ns: u64,
+        fetched_at_ns: u64,
+        valid_until_ns: u64,
+    },
+    ProviderExactConversion {
+        source_id: String,
+        from_unit: String,
+        to_unit: String,
+        snapshot_id: String,
+        observed_at_ns: u64,
+        fetched_at_ns: u64,
+        valid_until_ns: u64,
+    },
 }
 
 /// String-only backtest config delta encoded in the run manifest.
@@ -709,6 +768,8 @@ pub struct BacktestingRunManifest {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub proof_pin_reason_detail: Option<String>,
     pub strategy: StrategySource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub economics: Option<ManifestEconomicsSource>,
     /// SHA-256 of the effective typed strategy config.
     pub strategy_config_hash: String,
     pub venue: ManifestVenueConfig,
@@ -784,6 +845,10 @@ pub enum ManifestError {
         expected_prefix: String,
     },
     InvalidStrategyConfigOverlay {
+        field: &'static str,
+        message: String,
+    },
+    InvalidEconomicsSource {
         field: &'static str,
         message: String,
     },
@@ -926,6 +991,9 @@ impl std::fmt::Display for ManifestError {
                 "{field} {uri:?} is outside the allowed strategy source prefix {expected_prefix:?}"
             ),
             Self::InvalidStrategyConfigOverlay { field, message } => {
+                write!(f, "invalid {field}: {message}")
+            }
+            Self::InvalidEconomicsSource { field, message } => {
                 write!(f, "invalid {field}: {message}")
             }
             Self::InvalidStartingBalance { balance } => {
@@ -1141,7 +1209,6 @@ fn validate_strategy_source(
             let mut required_parameters = vec![
                 STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES,
                 STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
-                STRATEGY_PARAM_FEE_BPS,
                 STRATEGY_PARAM_ORDER_EXECUTION_MODE,
             ];
             if !has_config_overlay {
@@ -1151,7 +1218,6 @@ fn validate_strategy_source(
                 if !strategy.parameters.contains_key(parameter) {
                     return Err(ManifestError::MissingField(match parameter {
                         STRATEGY_PARAM_CONFIG_TOML => "strategy.parameters.config_toml",
-                        STRATEGY_PARAM_FEE_BPS => "strategy.parameters.fee_bps",
                         STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES => {
                             "strategy.parameters.evidence_read_max_bytes"
                         }
@@ -1185,15 +1251,6 @@ fn validate_strategy_source(
                     .map_err(|_| {
                         ManifestError::MissingField("strategy.parameters.order_execution_mode")
                     })?;
-            let fee_bps = strategy
-                .parameters
-                .get(STRATEGY_PARAM_FEE_BPS)
-                .expect("presence checked above");
-            let fee_bps = rust_decimal::Decimal::from_str(fee_bps)
-                .map_err(|_| ManifestError::MissingField("strategy.parameters.fee_bps"))?;
-            if fee_bps < rust_decimal::Decimal::ZERO {
-                return Err(ManifestError::MissingField("strategy.parameters.fee_bps"));
-            }
             if !has_config_overlay {
                 let raw_config = strategy
                     .parameters
@@ -1230,13 +1287,11 @@ fn validate_strategy_source(
                 STRATEGY_PARAM_CONFIG_TOML,
                 STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES,
                 STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
-                STRATEGY_PARAM_FEE_BPS,
                 STRATEGY_PARAM_ORDER_EXECUTION_MODE,
             ] {
                 if !strategy.parameters.contains_key(parameter) {
                     return Err(ManifestError::MissingField(match parameter {
                         STRATEGY_PARAM_CONFIG_TOML => "strategy.parameters.config_toml",
-                        STRATEGY_PARAM_FEE_BPS => "strategy.parameters.fee_bps",
                         STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES => {
                             "strategy.parameters.evidence_read_max_bytes"
                         }
@@ -1270,15 +1325,6 @@ fn validate_strategy_source(
                     .map_err(|_| {
                         ManifestError::MissingField("strategy.parameters.order_execution_mode")
                     })?;
-            let fee_bps = strategy
-                .parameters
-                .get(STRATEGY_PARAM_FEE_BPS)
-                .expect("presence checked above");
-            let fee_bps = rust_decimal::Decimal::from_str(fee_bps)
-                .map_err(|_| ManifestError::MissingField("strategy.parameters.fee_bps"))?;
-            if fee_bps < rust_decimal::Decimal::ZERO {
-                return Err(ManifestError::MissingField("strategy.parameters.fee_bps"));
-            }
             let raw_config = strategy
                 .parameters
                 .get(STRATEGY_PARAM_CONFIG_TOML)
@@ -1394,10 +1440,6 @@ fn validate_strategy_config_overlay(
     }
     for (field, value) in [
         (
-            "strategy.config_overlay.production_root_config_path",
-            overlay.production_root_config_path.as_str(),
-        ),
-        (
             "strategy.config_overlay.override_delta.label",
             overlay.override_delta.label.as_str(),
         ),
@@ -1474,6 +1516,73 @@ fn validate_strategy_config_overlay(
                 message: format!(
                     "duplicate selector {}:{}",
                     selector.data_client_id, selector.instrument_id
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_manifest_economics(
+    strategy: &StrategySource,
+    economics: Option<&ManifestEconomicsSource>,
+) -> Result<(), ManifestError> {
+    let requires_economics = matches!(
+        strategy.registry_key.as_str(),
+        STRATEGY_BINARY_ORACLE_EDGE_TAKER | STRATEGY_BINARY_ORACLE_MAKER
+    );
+    let Some(economics) = economics else {
+        return if requires_economics {
+            Err(ManifestError::MissingField("economics"))
+        } else {
+            Ok(())
+        };
+    };
+    if !requires_economics {
+        return Err(ManifestError::InvalidEconomicsSource {
+            field: "economics",
+            message: format!(
+                "strategy {:?} does not consume execution economics",
+                strategy.registry_key
+            ),
+        });
+    }
+    if economics.production_root_config_path.trim().is_empty() {
+        return Err(ManifestError::MissingField(
+            "economics.production_root_config_path",
+        ));
+    }
+    validate_strategy_source_hash(
+        "economics.production_config_bundle_checksum",
+        &economics.production_config_bundle_checksum,
+    )?;
+    if economics.inputs.is_empty() {
+        return Err(ManifestError::MissingField("economics.inputs"));
+    }
+    let mut scopes = BTreeSet::new();
+    for input in &economics.inputs {
+        input.instrument_id.parse::<InstrumentId>().map_err(|_| {
+            ManifestError::InvalidInstrumentId {
+                instrument_id: input.instrument_id.clone(),
+            }
+        })?;
+        if input.product_surface_id.trim().is_empty() {
+            return Err(ManifestError::MissingField(
+                "economics.inputs.product_surface_id",
+            ));
+        }
+        if input.authority.is_empty() {
+            return Err(ManifestError::InvalidEconomicsSource {
+                field: "economics.inputs.authority",
+                message: "provider authority table must not be empty".to_string(),
+            });
+        }
+        if !scopes.insert((&input.instrument_id, &input.product_surface_id)) {
+            return Err(ManifestError::InvalidEconomicsSource {
+                field: "economics.inputs",
+                message: format!(
+                    "duplicate authority for {} on {}",
+                    input.instrument_id, input.product_surface_id
                 ),
             });
         }
@@ -2287,6 +2396,7 @@ impl BacktestingRunManifest {
         ensure_catalog_inputs_match_fidelity(&self.catalog_inputs, accepted.fidelity_class)?;
         ensure_order_book_delta_inputs_require_l2_mbp(&self.catalog_inputs, &self.venue.book_type)?;
         validate_strategy_source(&self.strategy, &self.artifact_root)?;
+        validate_manifest_economics(&self.strategy, self.economics.as_ref())?;
         validate_starting_balances(&self.venue.starting_balances)?;
         for venue in &self.additional_venues {
             validate_starting_balances(&venue.starting_balances)?;
@@ -3649,6 +3759,7 @@ mod tests {
                 experiment_result_hash: None,
                 config_overlay: None,
             },
+            economics: None,
             strategy_config_hash: TEST_SHA256_ZERO.to_string(),
             venue: ManifestVenueConfig {
                 nt_venue: TEST_NT_VENUE.to_string(),
@@ -4411,7 +4522,7 @@ mod tests {
             },
         );
         assert_hash_changes("manifest_schema_version", |manifest| {
-            manifest.manifest_schema_version = "backtesting-run-manifest.v2".to_string();
+            manifest.manifest_schema_version = "backtesting-run-manifest.v0".to_string();
         });
         assert_hash_changes("target_bolt_v2_branch", |manifest| {
             manifest.target_bolt_v2_branch = "release/backtesting".to_string();
@@ -4425,6 +4536,9 @@ mod tests {
         assert_hash_changes("strategy_config_hash", |manifest| {
             manifest.strategy_config_hash =
                 "2222222222222222222222222222222222222222222222222222222222222222".to_string();
+        });
+        assert_hash_changes("economics", |manifest| {
+            manifest.economics = Some(binary_oracle_economics_source());
         });
         assert_hash_changes("catalog_hash", |manifest| {
             manifest.catalog_hash =
@@ -4839,7 +4953,6 @@ mod tests {
 
     fn binary_oracle_config_overlay() -> StrategyConfigOverlaySource {
         StrategyConfigOverlaySource {
-            production_root_config_path: "config/root.toml".to_string(),
             override_delta: ManifestBacktestConfigOverride {
                 label: "production config + documented multi-venue RV override".to_string(),
                 strategy_instance_id: "binary_oracle_btc".to_string(),
@@ -4861,6 +4974,22 @@ mod tests {
         }
     }
 
+    fn binary_oracle_economics_source() -> ManifestEconomicsSource {
+        ManifestEconomicsSource {
+            production_root_config_path: "config/root.toml".to_string(),
+            production_config_bundle_checksum: "0".repeat(64),
+            inputs: vec![ManifestEconomicsInput {
+                instrument_id: "BTC-USDT.SIM".to_string(),
+                product_surface_id: "condition-replay".to_string(),
+                authority: BTreeMap::from([(
+                    "captured".to_string(),
+                    ManifestEconomicsAuthorityValue::Boolean(true),
+                )]),
+                valuation_observations: Vec::new(),
+            }],
+        }
+    }
+
     fn binary_oracle_overlay_manifest() -> BacktestingRunManifest {
         let mut manifest = valid_manifest();
         manifest.strategy.registry_key = STRATEGY_BINARY_ORACLE_EDGE_TAKER.to_string();
@@ -4873,13 +5002,13 @@ mod tests {
                 STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT.to_string(),
                 "4096".to_string(),
             ),
-            (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
             (
                 STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
                 "shadow".to_string(),
             ),
         ]);
         manifest.strategy.config_overlay = Some(binary_oracle_config_overlay());
+        manifest.economics = Some(binary_oracle_economics_source());
         manifest.strategy_config_hash =
             "2222222222222222222222222222222222222222222222222222222222222222".to_string();
         manifest
@@ -4933,12 +5062,12 @@ mod tests {
                 STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT.to_string(),
                 "4096".to_string(),
             ),
-            (STRATEGY_PARAM_FEE_BPS.to_string(), "0".to_string()),
             (
                 STRATEGY_PARAM_ORDER_EXECUTION_MODE.to_string(),
                 "shadow".to_string(),
             ),
         ]);
+        manifest.economics = Some(binary_oracle_economics_source());
         manifest.strategy_config_hash =
             "3333333333333333333333333333333333333333333333333333333333333333".to_string();
         manifest
@@ -4991,6 +5120,38 @@ mod tests {
         manifest
             .validate(&binary_option_accepted_dataset())
             .expect("binary-oracle maker inline config should validate");
+    }
+
+    #[test]
+    fn binary_oracle_rejects_retired_scalar_fee_authority() {
+        let mut manifest = binary_oracle_maker_manifest();
+        manifest
+            .strategy
+            .parameters
+            .insert("fee_bps".to_string(), "0".to_string());
+
+        assert_eq!(
+            manifest
+                .validate(&binary_option_accepted_dataset())
+                .unwrap_err(),
+            ManifestError::UnknownStrategyParameter {
+                registry_key: STRATEGY_BINARY_ORACLE_MAKER.to_string(),
+                parameter: "fee_bps".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn binary_oracle_requires_historical_economics_authority() {
+        let mut manifest = binary_oracle_maker_manifest();
+        manifest.economics = None;
+
+        assert_eq!(
+            manifest
+                .validate(&binary_option_accepted_dataset())
+                .unwrap_err(),
+            ManifestError::MissingField("economics")
+        );
     }
 
     #[test]

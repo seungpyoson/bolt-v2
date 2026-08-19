@@ -691,9 +691,6 @@ fn registration_rejects_rv_source_missing_from_node_transport() {
     let error = register_bolt_v3_strategies_on_node_with_bindings(
         &mut node,
         &loaded,
-        &ResolvedBoltV3Secrets {
-            clients: Default::default(),
-        },
         &[],
         test_registration_controls(writer.clone()),
         writer,
@@ -728,9 +725,6 @@ fn registration_with_iv_runtime_rejects_rv_source_missing_from_node_transport() 
     let error = register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
         &mut node,
         &loaded,
-        &ResolvedBoltV3Secrets {
-            clients: Default::default(),
-        },
         &[],
         test_registration_controls(writer.clone()),
         writer,

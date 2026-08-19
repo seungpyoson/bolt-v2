@@ -662,7 +662,6 @@ mod tests {
             experiment_result_uri: None,
             experiment_result_hash: None,
             config_overlay: Some(crate::run_manifest::StrategyConfigOverlaySource {
-                production_root_config_path: "config/root.toml".to_string(),
                 override_delta: crate::run_manifest::ManifestBacktestConfigOverride {
                     label: "production config + documented OKX/Bybit override".to_string(),
                     strategy_instance_id: "binary_oracle_btc".to_string(),

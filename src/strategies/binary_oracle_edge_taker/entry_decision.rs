@@ -5,6 +5,8 @@ use nautilus_model::{
     identifiers::{ClientOrderId, InstrumentId},
 };
 
+use crate::bolt_v3_order_execution::BoltV3PlannedFillLeg;
+
 use crate::bolt_v3_evidence_novelty::EvidenceCanonicalState;
 use crate::{
     bolt_v3_binary_outcome_edge::{BinaryOutcomeEdgeBlockReason, BinaryOutcomeEdgeResult},
@@ -39,7 +41,6 @@ pub(super) enum EntryBlockReason {
     BookCrossed,
     IntervalOpenMissing,
     WarmupIncomplete,
-    FeesNotReady,
     RecoveryMode,
     MarketCoolingDown,
     SpotSpikeCooldown,
@@ -88,7 +89,6 @@ pub(super) enum EntryPricingBlockReason {
     ThetaScalerUnavailable,
     UncertaintyBandUnavailable,
     FairProbabilityUnavailable,
-    FeeUnavailable(OutcomeSide),
     ExecutableEntryCostUnavailable(OutcomeSide),
     ExecutableEdgeUnavailable(OutcomeSide, BinaryOutcomeEdgeBlockReason),
     /// The sized re-evaluation oscillated: the final re-priced edge does not
@@ -179,9 +179,6 @@ pub(super) fn push_executable_edge_pricing_block(
     reason: Option<BinaryOutcomeEdgeBlockReason>,
 ) {
     match reason {
-        Some(BinaryOutcomeEdgeBlockReason::FeeUnavailable) => {
-            reasons.push(EntryPricingBlockReason::FeeUnavailable(side));
-        }
         Some(
             reason @ (BinaryOutcomeEdgeBlockReason::MissingOrderBook
             | BinaryOutcomeEdgeBlockReason::InsufficientDepth
@@ -226,6 +223,7 @@ pub(super) struct EntrySubmissionDecision {
     pub(super) order_side: Option<OrderSide>,
     pub(super) price: Option<f64>,
     pub(super) quantity_value: Option<f64>,
+    pub(super) planned_fill_legs: Vec<BoltV3PlannedFillLeg>,
     pub(super) client_order_id: Option<ClientOrderId>,
     pub(super) blocked_reason: Option<EvidenceEntrySkipReason>,
 }
@@ -259,16 +257,12 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) lead_agreement_corr: Option<f64>,
     pub(super) fast_venue_age_ms: Option<u64>,
     pub(super) fast_venue_jitter_ms: Option<u64>,
-    pub(super) up_fee_bps: Option<f64>,
-    pub(super) down_fee_bps: Option<f64>,
     pub(super) up_entry_cost: Option<f64>,
     pub(super) down_entry_cost: Option<f64>,
     pub(super) up_entry_limit_price: Option<f64>,
     pub(super) down_entry_limit_price: Option<f64>,
     pub(super) up_gross_cost_cents: Option<f64>,
     pub(super) down_gross_cost_cents: Option<f64>,
-    pub(super) up_fee_cost_cents: Option<f64>,
-    pub(super) down_fee_cost_cents: Option<f64>,
     pub(super) up_slippage_buffer_cents: Option<f64>,
     pub(super) down_slippage_buffer_cents: Option<f64>,
     pub(super) up_total_adjusted_cost_cents: Option<f64>,
@@ -277,11 +271,9 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) down_edge_cents_per_share: Option<f64>,
     pub(super) up_worst_case_ev_bps: Option<f64>,
     pub(super) down_worst_case_ev_bps: Option<f64>,
-    pub(super) sized_fee_bps: Option<f64>,
     pub(super) sized_entry_cost: Option<f64>,
     pub(super) sized_entry_limit_price: Option<f64>,
     pub(super) sized_gross_cost_cents: Option<f64>,
-    pub(super) sized_fee_cost_cents: Option<f64>,
     pub(super) sized_slippage_buffer_cents: Option<f64>,
     pub(super) sized_total_adjusted_cost_cents: Option<f64>,
     pub(super) sized_edge_cents_per_share: Option<f64>,
@@ -300,8 +292,6 @@ pub(super) struct EntryEvaluationLogFields {
     pub(super) reference_current_price_available_without_fast_venue: bool,
     pub(super) lead_quality_policy_applied: bool,
     pub(super) lead_quality_reason: &'static str,
-    pub(super) final_fee_amount_known: bool,
-    pub(super) final_fee_amount_reason: &'static str,
     pub(super) submission_instrument_id: Option<InstrumentId>,
     pub(super) submission_order_side: Option<OrderSide>,
     pub(super) submission_price: Option<f64>,
@@ -363,7 +353,7 @@ pub(super) const fn blocked_strategy_input_canonical_state(
 /// The entry-skip producer's semantic state, from the closed registry.
 ///
 /// The novelty axis is the skip reason itself, which is what the registry's
-/// twenty-state domain enumerates. Exhaustive for the same reason as above.
+/// nineteen-state domain enumerates. Exhaustive for the same reason as above.
 pub(super) const fn entry_skip_canonical_state(
     reason: EvidenceEntrySkipReason,
 ) -> EvidenceCanonicalState {
@@ -410,9 +400,6 @@ pub(super) const fn entry_skip_canonical_state(
         }
         EvidenceEntrySkipReason::EntryPositionContractUnsupported => {
             EvidenceCanonicalState::EntrySkipEntryPositionContractUnsupported
-        }
-        EvidenceEntrySkipReason::HistoricalEntryFeeUnavailable => {
-            EvidenceCanonicalState::EntrySkipHistoricalEntryFeeUnavailable
         }
         EvidenceEntrySkipReason::OnePositionInvariantViolation => {
             EvidenceCanonicalState::EntrySkipOnePositionInvariantViolation
@@ -487,8 +474,6 @@ pub(super) fn entry_skip_fact(
         sized_worst_case_ev_bps: option_evidence_number(fields.sized_worst_case_ev_bps),
         sized_edge_cents_per_share: option_evidence_number(fields.sized_edge_cents_per_share),
         theta_scaled_min_edge_bps: option_evidence_number(fields.theta_scaled_min_edge_bps),
-        up_fee_bps: option_evidence_number(fields.up_fee_bps),
-        down_fee_bps: option_evidence_number(fields.down_fee_bps),
         submission_blocked_reason: fields.submission_blocked_reason.or(Some(reason_category)),
         stale_reference_after_ms: forced_flat_inputs.stale_reference_after_ms,
         last_reference_ts_ms: forced_flat_inputs.last_reference_ts_ms,
@@ -510,7 +495,6 @@ pub(super) fn entry_block_reason_to_evidence(
         EntryBlockReason::BookCrossed => EvidenceEntryBlockReason::BookCrossed,
         EntryBlockReason::IntervalOpenMissing => EvidenceEntryBlockReason::IntervalOpenMissing,
         EntryBlockReason::WarmupIncomplete => EvidenceEntryBlockReason::WarmupIncomplete,
-        EntryBlockReason::FeesNotReady => EvidenceEntryBlockReason::FeesNotReady,
         EntryBlockReason::RecoveryMode => EvidenceEntryBlockReason::RecoveryMode,
         EntryBlockReason::MarketCoolingDown => EvidenceEntryBlockReason::MarketCoolingDown,
         EntryBlockReason::SpotSpikeCooldown => EvidenceEntryBlockReason::SpotSpikeCooldown,
@@ -550,9 +534,6 @@ fn binary_edge_block_reason_to_evidence(
         BinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge => {
             EvidenceBinaryOutcomeEdgeBlockReason::SpreadOrSlippageWipedEdge
         }
-        BinaryOutcomeEdgeBlockReason::FeeUnavailable => {
-            EvidenceBinaryOutcomeEdgeBlockReason::FeeUnavailable
-        }
     }
 }
 
@@ -583,9 +564,6 @@ pub(super) fn entry_pricing_block_reason_to_evidence(
         }
         EntryPricingBlockReason::FairProbabilityUnavailable => {
             EvidenceEntryPricingBlockReason::FairProbabilityUnavailable
-        }
-        EntryPricingBlockReason::FeeUnavailable(side) => {
-            EvidenceEntryPricingBlockReason::FeeUnavailable(outcome_side_to_evidence(*side))
         }
         EntryPricingBlockReason::ExecutableEntryCostUnavailable(side) => {
             EvidenceEntryPricingBlockReason::ExecutableEntryCostUnavailable(
@@ -630,9 +608,6 @@ pub(super) const fn entry_skip_reason_label(reason: EvidenceEntrySkipReason) -> 
         EvidenceEntrySkipReason::PositionContractInvalid => "position_contract_invalid",
         EvidenceEntrySkipReason::EntryPositionContractUnsupported => {
             "entry_position_contract_unsupported"
-        }
-        EvidenceEntrySkipReason::HistoricalEntryFeeUnavailable => {
-            "historical_entry_fee_unavailable"
         }
         EvidenceEntrySkipReason::OnePositionInvariantViolation => {
             "one_position_invariant_violation"

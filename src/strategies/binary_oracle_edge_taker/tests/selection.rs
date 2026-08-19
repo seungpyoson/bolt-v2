@@ -35,13 +35,14 @@ fn switch_resets_only_active_market_state() {
             churn_count: 2,
         })
     );
-    assert!(strategy.exposure.is_recovering());
+    assert!(matches!(
+        strategy.exposure.entry_gate(),
+        ExposureEntryGate::Recovering(_)
+    ));
     let active = &strategy.active;
     assert_eq!(active.market_id.as_deref(), Some("B"));
     assert!(active.interval_open.is_none());
     assert_eq!(active.warmup_count, 0);
-    assert!(!active.outcome_fees.up_ready);
-    assert!(!active.outcome_fees.down_ready);
     assert_eq!(
         strategy.pricing.selected_pricing_spot().cloned(),
         Some(fast_spot("bybit", 3_100.5, 1_200))
@@ -114,7 +115,7 @@ fn exit_fill_arms_cooldown_for_position_market_not_current_selection() {
         &mut strategy,
         open_position,
         exit_client_order_id,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
 
@@ -148,7 +149,7 @@ fn exit_fill_without_known_position_market_does_not_cool_down_active_selection()
         &mut strategy,
         open_position,
         exit_client_order_id,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
 
@@ -162,7 +163,7 @@ fn exit_fill_without_known_position_market_does_not_cool_down_active_selection()
 }
 
 #[test]
-fn authoritative_position_close_cools_the_closed_market_before_delayed_exit_fill() {
+fn position_close_keeps_exit_fenced_until_delayed_fill_authority_converges() {
     let mut strategy = ready_to_trade_strategy();
     let tracked_instrument = selected_entry_instrument(&strategy);
     let exit_client_order_id = ClientOrderId::from("EXIT-DELAYED");
@@ -178,69 +179,61 @@ fn authoritative_position_close_cools_the_closed_market_before_delayed_exit_fill
         &mut strategy,
         open_position,
         exit_client_order_id,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
     close_nt_position(&mut strategy, position_id);
     strategy.on_position_closed(position_closed_event(tracked_instrument, position_id));
 
     assert!(
-        strategy.market_in_cooldown("MKT-1", 1_000),
-        "the NT position-close event must cool the closed market without retaining a shadow exit order"
+        !strategy.market_in_cooldown("MKT-1", 1_000),
+        "a position-close callback alone cannot bypass the pending exit's causal authority fence"
     );
     assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
 
-    strategy.on_order_filled(&order_filled_event(
+    let mut delayed_fill = order_filled_event_with_details(
         exit_client_order_id,
         tracked_instrument,
-        position_id,
-    ));
-
-    assert!(strategy.market_in_cooldown("MKT-1", 1_000));
-    assert!(!strategy.market_in_cooldown("MKT-2", 1_000));
-    assert!(pending_exit_ref(&strategy).is_none());
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn same_market_freeze_to_active_reactivation_warms_fees_again() {
-    let fee_provider = RecordingFeeProvider::cold();
-    let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
-
-    strategy.apply_selection_snapshot(freeze_snapshot_with_start("MKT-1", 0));
-    tokio::task::yield_now().await;
-    strategy.apply_selection_snapshot(active_snapshot("MKT-1"));
-    tokio::task::yield_now().await;
-
-    assert_eq!(
-        fee_provider.warm_calls(),
-        vec![
-            "condition-MKT-1-MKT-1-UP.POLYMARKET".to_string(),
-            "condition-MKT-1-MKT-1-DOWN.POLYMARKET".to_string(),
-            "condition-MKT-1-MKT-1-UP.POLYMARKET".to_string(),
-            "condition-MKT-1-MKT-1-DOWN.POLYMARKET".to_string(),
-        ]
+        Some(position_id),
+        OrderSide::Sell,
     );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn same_market_new_interval_rollover_warms_fees_again() {
-    let fee_provider = RecordingFeeProvider::cold();
-    let mut strategy = test_strategy_with_fee_provider(fee_provider.clone());
-
-    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 1_000));
-    tokio::task::yield_now().await;
-    strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-1", 2_000));
-    tokio::task::yield_now().await;
-
-    assert_eq!(
-        fee_provider.warm_calls(),
-        vec![
-            "condition-MKT-1-MKT-1-UP.POLYMARKET".to_string(),
-            "condition-MKT-1-MKT-1-DOWN.POLYMARKET".to_string(),
-            "condition-MKT-1-MKT-1-UP.POLYMARKET".to_string(),
-            "condition-MKT-1-MKT-1-DOWN.POLYMARKET".to_string(),
-        ]
+    delayed_fill.trade_id = nautilus_model::identifiers::TradeId::from("TRADE-DELAYED-EXIT");
+    delayed_fill.ts_event = UnixNanos::from(1_100_u64);
+    delayed_fill.ts_init = UnixNanos::from(1_100_u64);
+    apply_exit_order_event_to_nt_cache(
+        &mut strategy,
+        nautilus_model::events::OrderEventAny::Filled(delayed_fill.clone()),
     );
+    strategy.on_order_filled(&delayed_fill);
+
+    assert!(strategy.exposure.terminal_exit_snapshot().is_some());
+    assert_eq!(
+        pending_exit_snapshot(&strategy).map(|pending| pending.client_order_id),
+        Some(exit_client_order_id),
+        "the delayed terminal fill must remain correlated until position authority converges"
+    );
+
+    observe_position_authority_report(
+        &strategy,
+        tracked_instrument,
+        nautilus_model::enums::PositionSideSpecified::Flat,
+        Quantity::zero(2),
+        1_200,
+    );
+    DataActor::on_time_event(
+        &mut strategy,
+        &TimeEvent::new(
+            ustr::Ustr::from("delayed-exit-position-authority"),
+            nautilus_core::UUID4::new(),
+            UnixNanos::from(1_200_u64),
+            UnixNanos::from(1_200_u64),
+        ),
+    )
+    .expect("the timer should release the causally proven flat position");
+
+    assert!(strategy.market_in_cooldown("MKT-1", 1_200));
+    assert!(!strategy.market_in_cooldown("MKT-2", 1_200));
+    assert!(pending_exit_snapshot(&strategy).is_none());
 }
 
 #[test]
@@ -251,8 +244,6 @@ fn same_market_active_to_freeze_updates_forced_flat_without_resetting_shell_stat
         let active = &mut strategy.active;
         active.interval_open = Some(3_100.0);
         active.warmup_count = 2;
-        active.outcome_fees.up_ready = true;
-        active.outcome_fees.down_ready = true;
         active.forced_flat = false;
     }
 
@@ -263,24 +254,6 @@ fn same_market_active_to_freeze_updates_forced_flat_without_resetting_shell_stat
     assert!(active.forced_flat);
     assert_eq!(active.interval_open, Some(3_100.0));
     assert_eq!(active.warmup_count, 2);
-    assert!(active.outcome_fees.up_ready);
-    assert!(active.outcome_fees.down_ready);
-    assert_eq!(
-        active
-            .outcome_fees
-            .up_instrument_id
-            .map(|instrument_id| instrument_id.to_string())
-            .as_deref(),
-        Some("condition-MKT-1-MKT-1-UP.POLYMARKET")
-    );
-    assert_eq!(
-        active
-            .outcome_fees
-            .down_instrument_id
-            .map(|instrument_id| instrument_id.to_string())
-            .as_deref(),
-        Some("condition-MKT-1-MKT-1-DOWN.POLYMARKET")
-    );
 }
 
 #[test]
@@ -735,8 +708,6 @@ fn tracked_market_lifecycle_is_retained_after_cooldown_expiry() {
         ),
         instrument_id: tracked_instrument,
         position_id: PositionId::from("P-LIFECYCLE-001"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(10.0, 2),
@@ -746,7 +717,7 @@ fn tracked_market_lifecycle_is_retained_after_cooldown_expiry() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy.record_market_fill("MKT-1", 0);
 

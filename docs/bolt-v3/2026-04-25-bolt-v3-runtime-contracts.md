@@ -1550,7 +1550,7 @@ Live submit safety is enforced before NT submit by `src/bolt_v3_submit_admission
 
 Provider live-submit approvals are loaded during live-node adapter mapping for execution clients that require them. The resulting order-count and per-order-notional limits are carried into shared submit admission. Invalid, missing, mismatched, oversized, or already-consumed provider approval artifacts fail before approval consumption or before NT submit, depending on the provider check that fails.
 
-The submit-admission boundary does not connect clients, subscribe to data, register strategies, select markets, construct orders, cancel orders, or mutate venue state by itself. It is the shared last Bolt-owned check before the strategy reaches NT submit APIs. Kill-switch forced-reduction orders use the same boundary with a separate proof claim and cap so risk-reducing exits remain possible under explicitly modeled halt states.
+The submit-admission boundary does not connect clients, subscribe to data, register strategies, select markets, construct orders, cancel orders, or mutate venue state by itself. It is the shared last Bolt-owned check before the strategy reaches NT submit APIs. Forced-reduction admission and proof types are inert while economics remains `quote_only`: loaded-config validation rejects automatic kill-switch flattening before runtime construction, and no live flatten submit route exists.
 
 Strategy-free data-client readiness probes remain build/startup diagnostics only. They can prove that a configured market-data path emits fresh observations, but they do not authorize order submission and are not a pre-run evidence gate.
 

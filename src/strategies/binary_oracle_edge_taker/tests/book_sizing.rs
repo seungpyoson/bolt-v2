@@ -29,7 +29,7 @@ fn outcome_book_state_applies_incremental_deltas_without_retaining_stale_levels(
 
 #[test]
 fn entry_book_impact_cap_uses_configured_sell_side_book() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let outcome_side = OutcomeSide::Up;
     strategy.config.entry_order.side = "sell".to_string();
     strategy.config.entry_order.position_side = "short".to_string();
@@ -51,7 +51,7 @@ fn entry_book_impact_cap_uses_configured_sell_side_book() {
 
 #[test]
 fn post_only_entry_book_impact_cap_uses_passive_side_book() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let outcome_side = OutcomeSide::Up;
     strategy.config.entry_order.is_post_only = true;
     strategy.config.book_impact_cap_bps = 0;
@@ -101,7 +101,7 @@ fn book_impact_cap_is_derived_from_vwap_slippage_against_best_touch() {
 #[test]
 fn book_impact_cap_config_changes_sizing_decision() {
     let outcome_side = OutcomeSide::Up;
-    let mut loose = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut loose = ready_to_trade_strategy_with_bound_economics();
     loose.config.book_impact_cap_bps = 5_000;
     let loose_instrument_id = loose
         .instrument_id_for_side(outcome_side)
@@ -115,7 +115,7 @@ fn book_impact_cap_config_changes_sizing_decision() {
         ],
     ));
 
-    let mut tight = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut tight = ready_to_trade_strategy_with_bound_economics();
     tight.config.book_impact_cap_bps = 0;
     let tight_instrument_id = tight
         .instrument_id_for_side(outcome_side)
@@ -142,7 +142,7 @@ fn book_impact_cap_config_changes_sizing_decision() {
 
 #[test]
 fn rotated_position_uses_position_book_for_thin_book_forced_flat() {
-    let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
     let position_outcome_side = OutcomeSide::Up;
     let position_instrument = InstrumentId::from("condition-MKT-A-UP.POLYMARKET");
     let mut tracked_book = OutcomeBookState::from_instrument_id(position_instrument);
@@ -162,8 +162,6 @@ fn rotated_position_uses_position_book_for_thin_book_forced_flat() {
         ),
         instrument_id: position_instrument,
         position_id: PositionId::from("P-THIN-001"),
-        outcome_fees: strategy.active.outcome_fees.clone(),
-        historical_entry_fee_bps: Some(0.0),
         entry_order_side: OrderSide::Buy,
         side: PositionSide::Long,
         quantity: Quantity::new(5.0, 2),
@@ -173,13 +171,13 @@ fn rotated_position_uses_position_book_for_thin_book_forced_flat() {
     set_managed_position(
         &mut strategy,
         open_position,
-        ManagedPositionOrigin::StrategyEntry,
+        FixturePositionLineage::CurrentProcess,
     );
     strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
     strategy.active.books.up.liquidity_available = Some(5_000.0);
     strategy.active.books.down.liquidity_available = Some(5_000.0);
 
-    let decision = strategy.exit_submission_decision_at(2_000);
+    let decision = strategy.exit_intent_decision_at(2_000);
 
     assert!(
         decision

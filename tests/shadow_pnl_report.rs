@@ -1,5 +1,7 @@
 use std::process::Command;
 
+use rust_decimal::Decimal;
+
 #[test]
 fn shadow_pnl_report_joins_fixture_evidence_to_settlements() {
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -45,7 +47,7 @@ fn shadow_pnl_report_matches_settlement_by_market_and_instrument() {
             instrument_id: "BTC-DOWN.POLYMARKET",
             selected_side: "down",
             expected_edge_basis_points: "200",
-            fee_rate_basis_points: "50",
+            execution_component_rate_basis_points: "50",
             price: "0.60",
             quantity: "5",
         },
@@ -119,7 +121,7 @@ fn shadow_pnl_report_rejects_unrecognized_winning_side() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -178,7 +180,7 @@ fn shadow_pnl_report_rejects_unrecognized_selected_side() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "sideways",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -235,7 +237,7 @@ fn shadow_pnl_report_matches_unique_settlement_without_settlement_market_id() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -290,7 +292,7 @@ fn shadow_pnl_report_rejects_ambiguous_settlement_without_trade_market_id() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -390,7 +392,7 @@ fn shadow_pnl_report_escapes_csv_asset_fields() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -446,7 +448,7 @@ fn shadow_pnl_report_rejects_trade_with_no_matching_settlement() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -503,7 +505,7 @@ fn shadow_pnl_report_rejects_duplicate_exact_market_id_settlements() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -576,7 +578,7 @@ fn shadow_pnl_report_rejects_settlement_inconsistent_with_winning_side() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.60",
             quantity: "10",
         },
@@ -637,7 +639,7 @@ fn shadow_pnl_report_rejects_duplicate_client_order_id() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -651,7 +653,7 @@ fn shadow_pnl_report_rejects_duplicate_client_order_id() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -714,7 +716,7 @@ fn shadow_pnl_report_rejects_admitted_entry_without_order_intent() {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -757,6 +759,67 @@ fn shadow_pnl_report_rejects_admitted_entry_without_order_intent() {
     );
 }
 
+#[test]
+fn shadow_pnl_report_rejects_admitted_entry_without_bound_economics() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("order-intents.jsonl");
+    let settlements_path = temp.path().join("shadow-settlements.jsonl");
+    let client_order_id = "client-order-no-economics";
+    let mut lines = Vec::new();
+    push_trade_lines(
+        &mut lines,
+        TradeFixture {
+            recorded_at_utc_ns: 1,
+            client_order_id,
+            market_id: "market-btc",
+            instrument_id: "BTC-UP.POLYMARKET",
+            selected_side: "up",
+            expected_edge_basis_points: "150",
+            execution_component_rate_basis_points: "100",
+            price: "0.40",
+            quantity: "10",
+        },
+    );
+    let mut admission: serde_json::Value =
+        serde_json::from_str(&lines[2]).expect("admission fixture should decode");
+    admission["decision"]["economics"] = serde_json::Value::Null;
+    lines[2] = serde_json::to_string(&admission).expect("admission fixture should encode");
+    std::fs::write(&evidence_path, lines.join("\n") + "\n").expect("fixture evidence should write");
+    std::fs::write(
+        &settlements_path,
+        serde_json::to_string(&serde_json::json!({
+            "settlement_date": "2026-06-10",
+            "asset": "BTC",
+            "market_id": "market-btc",
+            "instrument_id": "BTC-UP.POLYMARKET",
+            "winning_side": "up",
+            "settlement_price": "1.00"
+        }))
+        .expect("settlement fixture should serialize")
+            + "\n",
+    )
+    .expect("fixture settlements should write");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_shadow_pnl_report"))
+        .arg("--config")
+        .arg("tests/fixtures/bolt_v3/root.toml")
+        .args([
+            "--evidence-jsonl",
+            evidence_path.to_str().expect("utf-8 path"),
+            "--settlements-jsonl",
+            settlements_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("shadow_pnl_report should run");
+
+    assert!(!output.status.success(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr should be utf-8");
+    assert!(
+        stderr.contains("missing bound economics for admitted entry client-order-no-economics"),
+        "{stderr}"
+    );
+}
+
 fn fixture_evidence_jsonl() -> String {
     let mut lines = Vec::new();
     push_trade_lines(
@@ -768,7 +831,7 @@ fn fixture_evidence_jsonl() -> String {
             instrument_id: "BTC-UP.POLYMARKET",
             selected_side: "up",
             expected_edge_basis_points: "150",
-            fee_rate_basis_points: "100",
+            execution_component_rate_basis_points: "100",
             price: "0.40",
             quantity: "10",
         },
@@ -782,7 +845,7 @@ fn fixture_evidence_jsonl() -> String {
             instrument_id: "BTC-DOWN.POLYMARKET",
             selected_side: "down",
             expected_edge_basis_points: "200",
-            fee_rate_basis_points: "50",
+            execution_component_rate_basis_points: "50",
             price: "0.60",
             quantity: "5",
         },
@@ -824,7 +887,7 @@ struct TradeFixture {
     instrument_id: &'static str,
     selected_side: &'static str,
     expected_edge_basis_points: &'static str,
-    fee_rate_basis_points: &'static str,
+    execution_component_rate_basis_points: &'static str,
     price: &'static str,
     quantity: &'static str,
 }
@@ -848,8 +911,6 @@ fn push_trade_lines_with_snapshot_market_id(
         serde_json::json!(trade.selected_side);
     snapshot_record["snapshot"]["details"]["expected_edge_basis_points"] =
         serde_json::json!(trade.expected_edge_basis_points);
-    snapshot_record["snapshot"]["details"]["fee_rate_basis_points"] =
-        serde_json::json!(trade.fee_rate_basis_points);
     snapshot_record["snapshot"]["submission"]["client_order_id"] =
         serde_json::json!(trade.client_order_id);
     snapshot_record["snapshot"]["submission"]["instrument_id"] =
@@ -885,6 +946,85 @@ fn push_trade_lines_with_snapshot_market_id(
     admission_record["decision"]["client_order_id"] = serde_json::json!(trade.client_order_id);
     admission_record["decision"]["instrument_id"] = serde_json::json!(trade.instrument_id);
     admission_record["decision"]["reservation"] = serde_json::Value::Null;
+    let price = trade
+        .price
+        .parse::<Decimal>()
+        .expect("fixture price must be decimal");
+    let quantity = trade
+        .quantity
+        .parse::<Decimal>()
+        .expect("fixture quantity must be decimal");
+    let fee_bps = trade
+        .execution_component_rate_basis_points
+        .parse::<Decimal>()
+        .expect("fixture fee rate must be decimal");
+    let expected_edge_bps = trade
+        .expected_edge_basis_points
+        .parse::<Decimal>()
+        .expect("fixture edge must be decimal");
+    let reservation_basis = price * quantity;
+    let fee_rate = fee_bps / Decimal::from(10_000);
+    let core_total = Decimal::ZERO - reservation_basis * fee_rate;
+    let core_edge_ratio = expected_edge_bps / Decimal::from(10_000);
+    let core_net_edge = reservation_basis * core_edge_ratio;
+    let economics_at_ns = u64::try_from(trade.recorded_at_utc_ns + 2)
+        .expect("fixture economics timestamp must be positive");
+    let native_fee_effect = serde_json::json!({
+        "amount": core_total.to_string(),
+        "unit": { "kind": "currency", "currency_id": "USDC" },
+        "inventory_application": null,
+    });
+    admission_record["decision"]["economics"] = serde_json::json!({
+        "decision_correlation_id": trade.client_order_id,
+        "core_total": core_total.to_string(),
+        "core_net_edge": core_net_edge.to_string(),
+        "core_edge_ratio": core_edge_ratio.to_string(),
+        "forecast_net_edge": core_net_edge.to_string(),
+        "forecast_complete": true,
+        "missing_forecast_component_ids": [],
+        "valid_until_ns": u64::MAX,
+        "forecast_valid_until_ns": u64::MAX,
+        "source_snapshot_ids": ["shadow-pnl-fixture-economics"],
+        "reservation_basis": reservation_basis.to_string(),
+        "full_reservation_liability": (reservation_basis - core_total).to_string(),
+        "components": [{
+            "component_id": "shadow-pnl-fixture-protocol-fee",
+            "class": "charge",
+            "economic_kind": "protocol_trading",
+            "scope": {
+                "kind": "decision",
+                "decision_correlation_id": trade.client_order_id,
+            },
+            "point_estimate": {
+                "kind": "non_zero",
+                "effect": native_fee_effect.clone(),
+            },
+            "point_valuation": {
+                "native_effect": native_fee_effect,
+                "normalized_amount": core_total.to_string(),
+                "reporting_currency": "USDC",
+                "route_id": null,
+                "source_snapshot_ids": ["shadow-pnl-fixture-economics"],
+                "valued_at_ns": economics_at_ns,
+                "valid_until_ns": u64::MAX,
+            },
+            "debit_risk_bound": null,
+            "debit_risk_bound_valuation": null,
+            "treatment": { "kind": "guaranteed_conditional_on_action" },
+            "calculation_factors": [{
+                "factor_id": "fee_rate",
+                "value": fee_rate.to_string(),
+            }],
+            "formula_id": "price-times-quantity-times-rate",
+            "source": {
+                "source_id": "shadow-pnl-fixture-provider",
+                "snapshot_id": "shadow-pnl-fixture-economics",
+                "source_at_ns": economics_at_ns,
+                "fetched_at_ns": economics_at_ns,
+                "valid_until_ns": u64::MAX,
+            },
+        }],
+    });
     lines.push(
         serde_json::to_string(&admission_record).expect("admission fixture should serialize"),
     );

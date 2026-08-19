@@ -56,8 +56,6 @@ struct EntrySkipV1Wire {
     sized_worst_case_ev_bps: Option<String>,
     sized_edge_cents_per_share: Option<String>,
     theta_scaled_min_edge_bps: Option<String>,
-    up_fee_bps: Option<String>,
-    down_fee_bps: Option<String>,
     submission_blocked_reason: Option<EntrySkipReasonV1>,
     stale_reference_after_ms: Option<u64>,
     last_reference_ts_ms: Option<u64>,
@@ -162,7 +160,6 @@ enum EntrySkipReasonV1 {
     QuantityNotPositive,
     PositionContractInvalid,
     EntryPositionContractUnsupported,
-    HistoricalEntryFeeUnavailable,
     OnePositionInvariantViolation,
     EntryMalformedRejected,
     EntryBalanceRejected,
@@ -206,7 +203,6 @@ pub(super) enum EntryBlockReasonV1 {
     BookCrossed,
     IntervalOpenMissing,
     WarmupIncomplete,
-    FeesNotReady,
     RecoveryMode,
     MarketCoolingDown,
     SpotSpikeCooldown,
@@ -224,7 +220,6 @@ pub(super) enum BinaryOutcomeEdgeBlockReasonV1 {
     UnsupportedOrderShape,
     EdgeBelowThreshold,
     SpreadOrSlippageWipedEdge,
-    FeeUnavailable,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -238,7 +233,6 @@ pub(super) enum EntryPricingBlockReasonV1 {
     ThetaScalerUnavailable,
     UncertaintyBandUnavailable,
     FairProbabilityUnavailable,
-    FeeUnavailable(OutcomeSideV1),
     ExecutableEntryCostUnavailable(OutcomeSideV1),
     ExecutableEdgeUnavailable(OutcomeSideV1, BinaryOutcomeEdgeBlockReasonV1),
     SizedNotionalUnsupported(OutcomeSideV1),
@@ -436,8 +430,6 @@ impl TryFrom<&EntrySkipFact> for EntrySkipV1Wire {
                 &value.theta_scaled_min_edge_bps,
                 "theta_scaled_min_edge_bps",
             )?,
-            up_fee_bps: optional_number(&value.up_fee_bps, "up_fee_bps")?,
-            down_fee_bps: optional_number(&value.down_fee_bps, "down_fee_bps")?,
             submission_blocked_reason: value.submission_blocked_reason.map(Into::into),
             stale_reference_after_ms: value.stale_reference_after_ms,
             last_reference_ts_ms: value.last_reference_ts_ms,
@@ -514,8 +506,6 @@ impl TryFrom<EntrySkipV1Wire> for EntrySkipFact {
                 &value.theta_scaled_min_edge_bps,
                 "theta_scaled_min_edge_bps",
             )?,
-            up_fee_bps: optional_number(&value.up_fee_bps, "up_fee_bps")?,
-            down_fee_bps: optional_number(&value.down_fee_bps, "down_fee_bps")?,
             submission_blocked_reason: value.submission_blocked_reason.map(Into::into),
             stale_reference_after_ms: value.stale_reference_after_ms,
             last_reference_ts_ms: value.last_reference_ts_ms,
@@ -773,7 +763,6 @@ bidirectional_unit_enum!(
         QuantityNotPositive,
         PositionContractInvalid,
         EntryPositionContractUnsupported,
-        HistoricalEntryFeeUnavailable,
         OnePositionInvariantViolation,
         EntryMalformedRejected,
         EntryBalanceRejected,
@@ -815,7 +804,6 @@ bidirectional_unit_enum!(
         UnsupportedOrderShape,
         EdgeBelowThreshold,
         SpreadOrSlippageWipedEdge,
-        FeeUnavailable,
     ]
 );
 bidirectional_unit_enum!(
@@ -901,7 +889,6 @@ impl From<EntryBlockReason> for EntryBlockReasonV1 {
             EntryBlockReason::BookCrossed => Self::BookCrossed,
             EntryBlockReason::IntervalOpenMissing => Self::IntervalOpenMissing,
             EntryBlockReason::WarmupIncomplete => Self::WarmupIncomplete,
-            EntryBlockReason::FeesNotReady => Self::FeesNotReady,
             EntryBlockReason::RecoveryMode => Self::RecoveryMode,
             EntryBlockReason::MarketCoolingDown => Self::MarketCoolingDown,
             EntryBlockReason::SpotSpikeCooldown => Self::SpotSpikeCooldown,
@@ -922,7 +909,6 @@ impl From<EntryBlockReasonV1> for EntryBlockReason {
             EntryBlockReasonV1::BookCrossed => Self::BookCrossed,
             EntryBlockReasonV1::IntervalOpenMissing => Self::IntervalOpenMissing,
             EntryBlockReasonV1::WarmupIncomplete => Self::WarmupIncomplete,
-            EntryBlockReasonV1::FeesNotReady => Self::FeesNotReady,
             EntryBlockReasonV1::RecoveryMode => Self::RecoveryMode,
             EntryBlockReasonV1::MarketCoolingDown => Self::MarketCoolingDown,
             EntryBlockReasonV1::SpotSpikeCooldown => Self::SpotSpikeCooldown,
@@ -945,7 +931,6 @@ impl From<EntryPricingBlockReason> for EntryPricingBlockReasonV1 {
             EntryPricingBlockReason::ThetaScalerUnavailable => Self::ThetaScalerUnavailable,
             EntryPricingBlockReason::UncertaintyBandUnavailable => Self::UncertaintyBandUnavailable,
             EntryPricingBlockReason::FairProbabilityUnavailable => Self::FairProbabilityUnavailable,
-            EntryPricingBlockReason::FeeUnavailable(side) => Self::FeeUnavailable(side.into()),
             EntryPricingBlockReason::ExecutableEntryCostUnavailable(side) => {
                 Self::ExecutableEntryCostUnavailable(side.into())
             }
@@ -976,7 +961,6 @@ impl From<EntryPricingBlockReasonV1> for EntryPricingBlockReason {
             EntryPricingBlockReasonV1::FairProbabilityUnavailable => {
                 Self::FairProbabilityUnavailable
             }
-            EntryPricingBlockReasonV1::FeeUnavailable(side) => Self::FeeUnavailable(side.into()),
             EntryPricingBlockReasonV1::ExecutableEntryCostUnavailable(side) => {
                 Self::ExecutableEntryCostUnavailable(side.into())
             }

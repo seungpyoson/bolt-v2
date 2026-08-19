@@ -1,5 +1,80 @@
 use super::*;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum KillSwitchFlattenResolutionError {
+    MissingEnabledBlock,
+    UnsupportedRouteKind,
+}
+
+impl std::fmt::Display for KillSwitchFlattenResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingEnabledBlock => f.write_str(
+                "risk.kill_switch.flatten_open_positions_on_breach=true requires risk.kill_switch.flatten.enabled=true",
+            ),
+            Self::UnsupportedRouteKind => f.write_str(
+                "risk.kill_switch.flatten_open_positions_on_breach=true requires risk.kill_switch.flatten.route_kind=live_node_command_router",
+            ),
+        }
+    }
+}
+
+enum KillSwitchFlattenBlockResolution {
+    Disabled,
+    Enabled,
+}
+
+fn resolve_kill_switch_flatten_block(
+    block: &KillSwitchConfigBlock,
+) -> Result<KillSwitchFlattenBlockResolution, KillSwitchFlattenResolutionError> {
+    if !block.enabled || !block.flatten_open_positions_on_breach {
+        return Ok(KillSwitchFlattenBlockResolution::Disabled);
+    }
+    let flatten = block
+        .flatten
+        .as_ref()
+        .filter(|flatten| flatten.enabled)
+        .ok_or(KillSwitchFlattenResolutionError::MissingEnabledBlock)?;
+    if flatten.route_kind != KillSwitchFlattenRouteKindConfig::LiveNodeCommandRouter {
+        return Err(KillSwitchFlattenResolutionError::UnsupportedRouteKind);
+    }
+    Ok(KillSwitchFlattenBlockResolution::Enabled)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LoadedKillSwitchFlattenResolutionError {
+    InvalidBlock(KillSwitchFlattenResolutionError),
+    ForcedReductionRouteUnavailable,
+}
+
+impl std::fmt::Display for LoadedKillSwitchFlattenResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidBlock(error) => error.fmt(f),
+            Self::ForcedReductionRouteUnavailable => write!(
+                f,
+                "kill switch flatten cannot route forced reductions because Slice 1 has no live forced-reduction route"
+            ),
+        }
+    }
+}
+
+pub(crate) fn validate_loaded_kill_switch_flatten(
+    loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
+) -> Result<(), LoadedKillSwitchFlattenResolutionError> {
+    let Some(block) = loaded.root.risk.kill_switch.as_ref() else {
+        return Ok(());
+    };
+    match resolve_kill_switch_flatten_block(block)
+        .map_err(LoadedKillSwitchFlattenResolutionError::InvalidBlock)?
+    {
+        KillSwitchFlattenBlockResolution::Disabled => Ok(()),
+        KillSwitchFlattenBlockResolution::Enabled => {
+            Err(LoadedKillSwitchFlattenResolutionError::ForcedReductionRouteUnavailable)
+        }
+    }
+}
+
 pub(super) fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
     let mut errors = validate_kill_switch_store_bootstrap_fields(block);
     if !block.enabled {
@@ -16,21 +91,8 @@ pub(super) fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<S
             block.max_utc_daily_realized_loss
         )),
     }
-    if block.flatten_open_positions_on_breach {
-        match block.flatten.as_ref() {
-            Some(flatten) if flatten.enabled => {
-                if flatten.route_kind != KillSwitchFlattenRouteKindConfig::LiveNodeCommandRouter {
-                    errors.push(
-                        "risk.kill_switch.flatten_open_positions_on_breach=true requires risk.kill_switch.flatten.route_kind=live_node_command_router"
-                            .to_string(),
-                    );
-                }
-            }
-            _ => errors.push(
-                "risk.kill_switch.flatten_open_positions_on_breach=true requires risk.kill_switch.flatten.enabled=true"
-                    .to_string(),
-            ),
-        }
+    if let Err(error) = resolve_kill_switch_flatten_block(block) {
+        errors.push(error.to_string());
     }
     if block.action_retry_interval_ms == 0 {
         errors.push("risk.kill_switch.action_retry_interval_ms must be positive".to_string());
@@ -52,28 +114,6 @@ pub(super) fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<S
     if block.manual_reset_evidence_max_age_ms == 0 {
         errors
             .push("risk.kill_switch.manual_reset_evidence_max_age_ms must be positive".to_string());
-    }
-    if !is_sha256_hex_digest(&block.forced_reduction_policy_sha256) {
-        errors.push(
-            "risk.kill_switch.forced_reduction_policy_sha256 must be a 64-character SHA-256 hex digest"
-                .to_string(),
-        );
-    }
-    if block.forced_reduction_max_live_order_count == 0 {
-        errors.push(
-            "risk.kill_switch.forced_reduction_max_live_order_count must be positive".to_string(),
-        );
-    }
-    match parse_decimal_string(&block.forced_reduction_max_notional_per_order) {
-        Ok(notional) if notional > Decimal::ZERO => {}
-        Ok(_) => errors.push(
-            "risk.kill_switch.forced_reduction_max_notional_per_order must be positive"
-                .to_string(),
-        ),
-        Err(reason) => errors.push(format!(
-            "risk.kill_switch.forced_reduction_max_notional_per_order is not a valid decimal string ({reason}): `{}`",
-            block.forced_reduction_max_notional_per_order
-        )),
     }
     if block.authorized_operator_ids.is_empty() {
         errors.push(
@@ -120,11 +160,7 @@ pub(super) fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<S
         errors.extend(validate_kill_switch_cancel_block(cancel));
     }
     if let Some(flatten) = &block.flatten {
-        errors.extend(validate_kill_switch_flatten_block(
-            flatten,
-            block.forced_reduction_max_live_order_count,
-            &block.forced_reduction_max_notional_per_order,
-        ));
+        errors.extend(validate_kill_switch_flatten_block(flatten));
     }
     errors
 }
@@ -197,11 +233,7 @@ fn parse_kill_switch_cancel_surface(
     }
 }
 
-fn validate_kill_switch_flatten_block(
-    block: &KillSwitchFlattenConfigBlock,
-    global_max_live_order_count: u32,
-    global_max_notional_per_order: &str,
-) -> Vec<String> {
+fn validate_kill_switch_flatten_block(block: &KillSwitchFlattenConfigBlock) -> Vec<String> {
     if !block.enabled {
         return Vec::new();
     }
@@ -210,32 +242,17 @@ fn validate_kill_switch_flatten_block(
     if block.max_live_order_count == 0 {
         errors.push("risk.kill_switch.flatten.max_live_order_count must be positive".to_string());
     }
-    if global_max_live_order_count > 0 && block.max_live_order_count > global_max_live_order_count {
-        errors.push(
-            "risk.kill_switch.flatten.max_live_order_count must be <= risk.kill_switch.forced_reduction_max_live_order_count"
-                .to_string(),
-        );
-    }
-
-    match (
-        parse_decimal_string(&block.max_notional_per_order),
-        parse_decimal_string(global_max_notional_per_order),
-    ) {
-        (Ok(local), Ok(global)) if local > Decimal::ZERO && local <= global => {}
-        (Ok(local), Ok(_)) if local <= Decimal::ZERO => {
+    match parse_decimal_string(&block.max_notional_per_order) {
+        Ok(notional) if notional > Decimal::ZERO => {}
+        Ok(_) => {
             errors.push(
                 "risk.kill_switch.flatten.max_notional_per_order must be positive".to_string(),
             );
         }
-        (Ok(_), Ok(_)) => errors.push(
-            "risk.kill_switch.flatten.max_notional_per_order must be <= risk.kill_switch.forced_reduction_max_notional_per_order"
-                .to_string(),
-        ),
-        (Err(reason), _) => errors.push(format!(
+        Err(reason) => errors.push(format!(
             "risk.kill_switch.flatten.max_notional_per_order is not a valid decimal string ({reason}): `{}`",
             block.max_notional_per_order
         )),
-        (_, Err(_)) => {}
     }
 
     if !block.is_reduce_only {

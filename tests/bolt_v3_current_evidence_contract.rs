@@ -72,9 +72,9 @@ fn current_contract_is_closed_and_deterministic() {
     let contract = parse_contract_registry(REGISTRY).expect("current contract must parse");
     assert_eq!(contract.consumer_count(), 5);
     assert_eq!(contract.producer_count(), 24);
-    assert_eq!(contract.purpose_count(), 23);
-    assert_eq!(contract.identity_count(), 23);
-    assert_eq!(contract.fact_count(), 23);
+    assert_eq!(contract.purpose_count(), 24);
+    assert_eq!(contract.identity_count(), 24);
+    assert_eq!(contract.fact_count(), 24);
     assert_eq!(contract.census_disposition_count(), 20);
     let (disposition, current_producers) = contract
         .census_disposition("submit_reservation_metadata")
@@ -123,7 +123,7 @@ fn inherited_census_dispositions_must_exactly_name_their_descendants() {
     let block = census_disposition_block(REGISTRY, "admission_decision");
     let mutated_block = replace_once(
         &block,
-        "current_producers = [\"submit_admission_admitted_entry\", \"submit_admission_rejected_entry\", \"submit_admission_exit\", \"submit_admission_forced_reduction\"]",
+        "current_producers = [\"submit_admission_admitted_entry\", \"submit_admission_rejected_entry\", \"submit_admission_exit\"]",
         "current_producers = [\"submit_admission_admitted_entry\"]",
     );
     let mutated = replace_once(REGISTRY, &block, &mutated_block);
@@ -160,7 +160,7 @@ fn folded_and_deleted_census_dispositions_have_closed_shapes() {
 }
 
 #[test]
-fn every_purpose_requires_at_least_one_structural_producer() {
+fn every_live_purpose_requires_at_least_one_structural_producer() {
     let mutated = replace_once(
         REGISTRY,
         &producer_block(REGISTRY, "edge_taker_blocked_strategy_input"),
@@ -168,7 +168,7 @@ fn every_purpose_requires_at_least_one_structural_producer() {
     );
     let error = parse_contract_registry(&mutated)
         .expect_err("a purpose without a structural producer must fail");
-    assert!(error.to_string().contains("at least one producer"));
+    assert!(error.to_string().contains("requires a producer"));
 }
 
 #[test]
@@ -217,8 +217,8 @@ fn relevant_dispositions_cannot_relabel_a_fact() {
 fn duplicate_exact_identity_pairs_are_rejected() {
     let mutated = replace_once(
         REGISTRY,
-        "id = \"submit_linked_strategy_input_snapshot_v1\"\npurpose = \"submit_linked_strategy_input_snapshot\"\nkind = \"strategy_input_snapshot\"\nschema_version = 16",
-        "id = \"submit_linked_strategy_input_snapshot_v1\"\npurpose = \"submit_linked_strategy_input_snapshot\"\nkind = \"blocked_strategy_input_observation\"\nschema_version = 1",
+        "id = \"submit_linked_strategy_input_snapshot_v1\"\npurpose = \"submit_linked_strategy_input_snapshot\"\nkind = \"strategy_input_snapshot\"\nschema_version = 18",
+        "id = \"submit_linked_strategy_input_snapshot_v1\"\npurpose = \"submit_linked_strategy_input_snapshot\"\nkind = \"blocked_strategy_input_observation\"\nschema_version = 3",
     );
     let error =
         parse_contract_registry(&mutated).expect_err("duplicate exact identity pair must fail");

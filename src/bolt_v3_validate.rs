@@ -64,9 +64,7 @@ use crate::bolt_v3_current_evidence::{
 };
 use crate::bolt_v3_kill_switch_cancel::BoltV3KillSwitchOutstandingOrderRiskSurface;
 use crate::bolt_v3_loss_halt_actions::LossGovernorTradingStateAction;
-use crate::bolt_v3_numeric::{
-    HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite, is_sha256_hex_digest,
-};
+use crate::bolt_v3_numeric::{HALF_F64, UNIT_F64, ZERO_F64, is_positive_finite};
 use crate::bolt_v3_order_intent::{NtOrderTemplateConfig, check_nt_order_template_config};
 use crate::bolt_v3_providers::{
     ReferencePriceIdentifierKind, reference_price_provider_identifier_is_configured,
@@ -81,6 +79,7 @@ mod error;
 mod gate_providers;
 mod kill_switch;
 mod nt_blocks;
+mod oms_capability;
 mod persistence;
 mod rate_limit;
 mod reference_price;
@@ -95,7 +94,9 @@ use chainlink_data_streams::{
 use clients::{validate_aws_block, validate_clients_block};
 use gate_providers::validate_gate_providers;
 use kill_switch::validate_kill_switch_block;
+pub(crate) use kill_switch::validate_loaded_kill_switch_flatten;
 use nt_blocks::validate_nautilus_block;
+use oms_capability::validate_oms_venue_position_identity_capabilities;
 use persistence::{validate_nt_reconciliation_authority, validate_persistence_block};
 use rate_limit::validate_order_rate_within_venue_egress;
 use reference_price::validate_reference_current_price;
@@ -313,6 +314,9 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
     }
     errors.extend(validate_target_gate_provider_references(root, strategies));
     errors.extend(validate_chainlink_feed_binding_coverage(root, strategies));
+    errors.extend(validate_oms_venue_position_identity_capabilities(
+        root, strategies,
+    ));
     errors
 }
 

@@ -4,8 +4,8 @@ use super::{
     AdmittedEntryAdmissionFact, AppendReceipt, BasketAdmissionGrantedFact,
     BasketAdmissionRejectedFact, BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact,
     CommittedAdmission, CommittedSettlement, DecisionEvidenceRecorder, EntryOrderIntentFact,
-    EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact, ExitSubmissionDecisionFact,
-    ForcedReductionAdmissionFact, LossGovernorHaltFact, NonBlockingRecordOutcome,
+    EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact, ExitIntentDecisionFact,
+    ExitPreparedOrderFact, LossGovernorHaltFact, NonBlockingRecordOutcome,
     ObservationRecordOutcome, OrderLifecycleFact, OrderRejectFact,
     ProviderCollateralAllowanceCaptureFailureFact, RecordFailure, RejectedEntryAdmissionFact,
     RequoteThrottleObservationFact, RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact,
@@ -226,16 +226,6 @@ impl SubmitAdmissionEvidence {
         }
     }
 
-    pub fn record_forced_reduction_admission(
-        &self,
-        fact: ForcedReductionAdmissionFact,
-    ) -> NonBlockingRecordOutcome {
-        match self.recorder() {
-            Ok(recorder) => recorder.record_forced_reduction_admission(fact),
-            Err(error) => NonBlockingRecordOutcome::Failed(error),
-        }
-    }
-
     pub fn record_capital_admission_rebuild(
         &self,
         fact: CapitalAdmissionRebuildFact,
@@ -364,12 +354,22 @@ impl EdgeTakerEvidence {
             .record_submit_linked_strategy_input_snapshot(fact)
     }
 
-    pub fn record_exit_submission_decision(
+    pub fn record_exit_prepared_order(
         &self,
-        fact: ExitSubmissionDecisionFact,
+        fact: ExitPreparedOrderFact,
     ) -> NonBlockingRecordOutcome {
         match self.recorder() {
-            Ok(recorder) => recorder.record_exit_submission_decision(fact),
+            Ok(recorder) => recorder.record_exit_prepared_order(fact),
+            Err(error) => NonBlockingRecordOutcome::Failed(error),
+        }
+    }
+
+    pub fn record_exit_intent_decision(
+        &self,
+        fact: ExitIntentDecisionFact,
+    ) -> NonBlockingRecordOutcome {
+        match self.recorder() {
+            Ok(recorder) => recorder.record_exit_intent_decision(fact),
             Err(error) => NonBlockingRecordOutcome::Failed(error),
         }
     }

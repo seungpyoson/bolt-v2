@@ -17,8 +17,8 @@ use super::codec::{
     encode_admitted_entry_admission, encode_basket_admission_granted,
     encode_basket_admission_rejected, encode_blocked_strategy_input_observation,
     encode_capital_admission_rebuild, encode_entry_order_intent, encode_entry_skip_observation,
-    encode_exit_evaluation, encode_exit_hold_decision, encode_exit_submission_decision,
-    encode_forced_reduction_admission, encode_loss_governor_halt, encode_order_lifecycle,
+    encode_exit_evaluation, encode_exit_hold_decision, encode_exit_intent_decision,
+    encode_exit_prepared_order, encode_loss_governor_halt, encode_order_lifecycle,
     encode_order_reject, encode_provider_collateral_allowance_capture_failure,
     encode_rejected_entry_admission, encode_requote_throttle_observation, encode_reservation_fill,
     encode_risk_reducing_exit_admission, encode_risk_reducing_exit_order_intent, encode_settlement,
@@ -27,8 +27,8 @@ use super::codec::{
 use super::facts::{
     AdmittedEntryAdmissionFact, BasketAdmissionGrantedFact, BasketAdmissionRejectedFact,
     BlockedStrategyInputObservationFact, CapitalAdmissionRebuildFact, EntryOrderIntentFact,
-    EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact, ExitSubmissionDecisionFact,
-    ForcedReductionAdmissionFact, LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact,
+    EntrySkipFact, ExitEvaluationFact, ExitHoldDecisionFact, ExitIntentDecisionFact,
+    ExitPreparedOrderFact, LossGovernorHaltFact, OrderLifecycleFact, OrderRejectFact,
     ProviderCollateralAllowanceCaptureFailureFact, RejectedEntryAdmissionFact,
     RequoteThrottleObservationFact, RiskReducingExitAdmissionFact, RiskReducingExitOrderIntentFact,
     SettlementFact, SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
@@ -375,6 +375,51 @@ pub struct DecisionEvidenceRecorder {
     test_failure: Mutex<Option<(KnownPurpose, usize)>>,
 }
 
+#[cfg(feature = "test-current-evidence-inspection")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[doc(hidden)]
+pub enum DecisionEvidenceIntegrationTestFault {
+    MachineWrites,
+    PurposeOnAttempt {
+        purpose: KnownPurpose,
+        attempt: usize,
+    },
+}
+
+#[cfg(feature = "test-current-evidence-inspection")]
+#[derive(Debug)]
+#[doc(hidden)]
+pub struct DecisionEvidenceIntegrationTestControl;
+
+#[cfg(feature = "test-current-evidence-inspection")]
+impl DecisionEvidenceIntegrationTestControl {
+    pub fn recording(machine: File, observation: File) -> Arc<DecisionEvidenceRecorder> {
+        Arc::new(DecisionEvidenceRecorder::from_files(
+            machine,
+            observation,
+            None,
+            None,
+            PositiveFiniteEvidenceReadCap::new(1_048_576)
+                .expect("integration-test record cap must be positive and finite"),
+            4096,
+        ))
+    }
+
+    pub fn inject(
+        recorder: &DecisionEvidenceRecorder,
+        fault: DecisionEvidenceIntegrationTestFault,
+    ) {
+        match fault {
+            DecisionEvidenceIntegrationTestFault::MachineWrites => {
+                recorder.fail_machine_writes_for_test();
+            }
+            DecisionEvidenceIntegrationTestFault::PurposeOnAttempt { purpose, attempt } => {
+                recorder.fail_purpose_on_attempt_for_test(purpose, attempt);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct DecisionEvidenceStatusView {
     recorder: Weak<DecisionEvidenceRecorder>,
@@ -446,9 +491,9 @@ impl DecisionEvidenceRecorder {
         }
     }
 
-    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    #[cfg(test)]
     #[doc(hidden)]
-    pub fn recording_from_files_for_test(machine: File, observation: File) -> Self {
+    pub(crate) fn recording_from_files_for_test(machine: File, observation: File) -> Self {
         Self::from_files(
             machine,
             observation,
@@ -627,7 +672,7 @@ impl DecisionEvidenceRecorder {
 
     #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     #[doc(hidden)]
-    pub fn fail_machine_writes_for_test(&self) {
+    pub(crate) fn fail_machine_writes_for_test(&self) {
         self.machine
             .lock()
             .expect("machine sink mutex must not be poisoned")
@@ -652,7 +697,7 @@ impl DecisionEvidenceRecorder {
 
     #[cfg(any(test, feature = "test-current-evidence-inspection"))]
     #[doc(hidden)]
-    pub fn fail_purpose_on_attempt_for_test(&self, purpose: KnownPurpose, attempt: usize) {
+    pub(crate) fn fail_purpose_on_attempt_for_test(&self, purpose: KnownPurpose, attempt: usize) {
         *self
             .test_failure
             .lock()
@@ -796,20 +841,6 @@ impl DecisionEvidenceRecorder {
         match encode_risk_reducing_exit_admission(fact) {
             Ok(record) => self.record_nonblocking(
                 KnownProducer::SubmitAdmissionExit,
-                EffectPolicy::RiskReducingContinues,
-                record,
-            ),
-            Err(error) => NonBlockingRecordOutcome::Failed(error),
-        }
-    }
-
-    pub fn record_forced_reduction_admission(
-        &self,
-        fact: ForcedReductionAdmissionFact,
-    ) -> NonBlockingRecordOutcome {
-        match encode_forced_reduction_admission(fact) {
-            Ok(record) => self.record_nonblocking(
-                KnownProducer::SubmitAdmissionForcedReduction,
                 EffectPolicy::RiskReducingContinues,
                 record,
             ),
@@ -977,13 +1008,27 @@ impl DecisionEvidenceRecorder {
         )
     }
 
-    pub fn record_exit_submission_decision(
+    pub fn record_exit_prepared_order(
         &self,
-        fact: ExitSubmissionDecisionFact,
+        fact: ExitPreparedOrderFact,
     ) -> NonBlockingRecordOutcome {
-        match encode_exit_submission_decision(fact) {
+        match encode_exit_prepared_order(fact) {
             Ok(record) => self.record_nonblocking(
-                KnownProducer::EdgeTakerExitSubmitDecision,
+                KnownProducer::EdgeTakerExitPreparedOrder,
+                EffectPolicy::RiskReducingContinues,
+                record,
+            ),
+            Err(error) => NonBlockingRecordOutcome::Failed(error),
+        }
+    }
+
+    pub fn record_exit_intent_decision(
+        &self,
+        fact: ExitIntentDecisionFact,
+    ) -> NonBlockingRecordOutcome {
+        match encode_exit_intent_decision(fact) {
+            Ok(record) => self.record_nonblocking(
+                KnownProducer::EdgeTakerExitIntentDecision,
                 EffectPolicy::RiskReducingContinues,
                 record,
             ),

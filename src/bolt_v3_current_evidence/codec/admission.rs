@@ -1,13 +1,16 @@
 use anyhow::{Context, Result};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
     facts::{
-        AdmissionDecisionOutcome, AdmissionDetails, AdmissionRejectionReason,
-        AdmittedEntryAdmissionFact, CapitalAdmissionRebuildFact, CapitalAdmissionRebuildOutcome,
-        CapitalAdmissionRebuildSource, CapitalAdmissionRejectionReason,
-        ForcedReductionAdmissionFact, LossHaltReason, LossSnapshotSource, LossSnapshotStaleReason,
-        RejectedEntryAdmissionFact, ReservationAttribution, RiskReducingExitAdmissionFact,
+        AdmissionDecisionOutcome, AdmissionDetails, AdmissionEconomicsComponent,
+        AdmissionEconomicsDetails, AdmissionEconomicsPointEstimate, AdmissionEconomicsTreatment,
+        AdmissionRejectionReason, AdmittedEntryAdmissionFact, CapitalAdmissionRebuildFact,
+        CapitalAdmissionRebuildOutcome, CapitalAdmissionRebuildSource,
+        CapitalAdmissionRejectionReason, ForcedReductionAdmissionFact, LossHaltReason,
+        LossSnapshotSource, LossSnapshotStaleReason, RejectedEntryAdmissionFact,
+        ReservationAttribution, RiskReducingExitAdmissionFact,
     },
     generated_contract::{KnownIdentity, KnownPurpose},
     record::{EncodedEvidenceRecord, RecordFailure},
@@ -62,6 +65,10 @@ fn validate_fact(fact: &CapitalAdmissionRebuildFact) -> Result<(), RecordFailure
     if fact.observed_at_ns == 0
         || fact.live_reserved_liability.trim().is_empty()
         || fact.recovered_reservation_count > fact.attempted_reservation_count
+        || fact
+            .unresolved_sink_invoked_reservation_count
+            .checked_add(fact.unresolved_observed_open_reservation_count)
+            .is_none()
     {
         return Err(RecordFailure::Rejected(anyhow::anyhow!(
             "capital admission rebuild contains invalid or inconsistent fields"
@@ -92,6 +99,8 @@ struct CapitalAdmissionRebuildV1 {
     attempted_reservation_count: u64,
     recovered_reservation_count: u64,
     live_reserved_liability: String,
+    unresolved_sink_invoked_reservation_count: u64,
+    unresolved_observed_open_reservation_count: u64,
 }
 
 impl CapitalAdmissionRebuildV1 {
@@ -123,6 +132,22 @@ impl CapitalAdmissionRebuildV1 {
                 },
             )?,
             live_reserved_liability: fact.live_reserved_liability,
+            unresolved_sink_invoked_reservation_count: u64::try_from(
+                fact.unresolved_sink_invoked_reservation_count,
+            )
+            .map_err(|source| {
+                RecordFailure::Rejected(anyhow::anyhow!(
+                    "unresolved_sink_invoked_reservation_count cannot be encoded: {source}"
+                ))
+            })?,
+            unresolved_observed_open_reservation_count: u64::try_from(
+                fact.unresolved_observed_open_reservation_count,
+            )
+            .map_err(|source| {
+                RecordFailure::Rejected(anyhow::anyhow!(
+                    "unresolved_observed_open_reservation_count cannot be encoded: {source}"
+                ))
+            })?,
         })
     }
 
@@ -139,6 +164,14 @@ impl CapitalAdmissionRebuildV1 {
             recovered_reservation_count: usize::try_from(self.recovered_reservation_count)
                 .context("recovered_reservation_count does not fit usize")?,
             live_reserved_liability: self.live_reserved_liability,
+            unresolved_sink_invoked_reservation_count: usize::try_from(
+                self.unresolved_sink_invoked_reservation_count,
+            )
+            .context("unresolved_sink_invoked_reservation_count does not fit usize")?,
+            unresolved_observed_open_reservation_count: usize::try_from(
+                self.unresolved_observed_open_reservation_count,
+            )
+            .context("unresolved_observed_open_reservation_count does not fit usize")?,
         })
     }
 }
@@ -463,6 +496,45 @@ fn validate_admission_details(details: &AdmissionDetails) -> Result<(), RecordFa
             || details.rolling_pnl_present
             || details.current_equity_present
             || details.peak_equity_present);
+    let economics_invalid = details.economics.as_ref().is_some_and(|economics| {
+        let forecast_shape_invalid = if economics.forecast_complete {
+            !economics.missing_forecast_component_ids.is_empty()
+                || economics.forecast_valid_until_ns.is_none()
+        } else {
+            economics.missing_forecast_component_ids.is_empty()
+                || economics.forecast_valid_until_ns.is_some()
+        };
+        economics.core_total.parse::<Decimal>().is_err()
+            || economics.core_net_edge.parse::<Decimal>().is_err()
+            || economics.core_edge_ratio.parse::<Decimal>().is_err()
+            || economics.forecast_net_edge.parse::<Decimal>().is_err()
+            || economics.reservation_basis.parse::<Decimal>().is_err()
+            || economics
+                .full_reservation_liability
+                .parse::<Decimal>()
+                .is_err()
+            || economics.decision_correlation_id.trim().is_empty()
+            || economics.valid_until_ns == 0
+            || economics.forecast_valid_until_ns == Some(0)
+            || forecast_shape_invalid
+            || economics.source_snapshot_ids.is_empty()
+            || economics
+                .source_snapshot_ids
+                .iter()
+                .any(|id| id.trim().is_empty())
+            || economics
+                .missing_forecast_component_ids
+                .iter()
+                .any(|id| id.trim().is_empty())
+            || economics.components.iter().any(|component| {
+                admission_economics_component_is_invalid(
+                    component,
+                    economics
+                        .missing_forecast_component_ids
+                        .contains(&component.component_id),
+                )
+            })
+    });
     if details.strategy_id.trim().is_empty()
         || details.execution_client_id.trim().is_empty()
         || details.client_order_id.trim().is_empty()
@@ -474,6 +546,7 @@ fn validate_admission_details(details: &AdmissionDetails) -> Result<(), RecordFa
             .flatten()
             .any(|timestamp| timestamp == 0)
         || absent_snapshot_has_values
+        || economics_invalid
     {
         return Err(RecordFailure::Rejected(anyhow::anyhow!(
             "admission decision contains an empty, invalid, or contradictory field"
@@ -486,6 +559,147 @@ macro_rules! reservation_fact_type {
     ($field:ident) => {
         Option<ReservationAttribution>
     };
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdmissionEconomicsDetailsV1 {
+    decision_correlation_id: String,
+    core_total: String,
+    core_net_edge: String,
+    core_edge_ratio: String,
+    forecast_net_edge: String,
+    forecast_complete: bool,
+    missing_forecast_component_ids: Vec<String>,
+    valid_until_ns: u64,
+    forecast_valid_until_ns: Option<u64>,
+    source_snapshot_ids: Vec<String>,
+    reservation_basis: String,
+    full_reservation_liability: String,
+    components: Vec<AdmissionEconomicsComponent>,
+}
+
+impl AdmissionEconomicsDetailsV1 {
+    fn from_fact(value: AdmissionEconomicsDetails) -> Self {
+        Self {
+            decision_correlation_id: value.decision_correlation_id,
+            core_total: value.core_total,
+            core_net_edge: value.core_net_edge,
+            core_edge_ratio: value.core_edge_ratio,
+            forecast_net_edge: value.forecast_net_edge,
+            forecast_complete: value.forecast_complete,
+            missing_forecast_component_ids: value.missing_forecast_component_ids,
+            valid_until_ns: value.valid_until_ns,
+            forecast_valid_until_ns: value.forecast_valid_until_ns,
+            source_snapshot_ids: value.source_snapshot_ids,
+            reservation_basis: value.reservation_basis,
+            full_reservation_liability: value.full_reservation_liability,
+            components: value.components,
+        }
+    }
+
+    fn into_fact(self) -> AdmissionEconomicsDetails {
+        AdmissionEconomicsDetails {
+            decision_correlation_id: self.decision_correlation_id,
+            core_total: self.core_total,
+            core_net_edge: self.core_net_edge,
+            core_edge_ratio: self.core_edge_ratio,
+            forecast_net_edge: self.forecast_net_edge,
+            forecast_complete: self.forecast_complete,
+            missing_forecast_component_ids: self.missing_forecast_component_ids,
+            valid_until_ns: self.valid_until_ns,
+            forecast_valid_until_ns: self.forecast_valid_until_ns,
+            source_snapshot_ids: self.source_snapshot_ids,
+            reservation_basis: self.reservation_basis,
+            full_reservation_liability: self.full_reservation_liability,
+            components: self.components,
+        }
+    }
+}
+
+fn admission_economics_component_is_invalid(
+    component: &AdmissionEconomicsComponent,
+    valuation_may_be_missing: bool,
+) -> bool {
+    let native_effect_is_invalid =
+        |effect: &crate::bolt_v3_current_evidence::facts::AdmissionEconomicsNativeEffect| {
+            effect.amount.parse::<Decimal>().is_err()
+            || match (&effect.unit, effect.inventory_application) {
+                (
+                    crate::bolt_v3_current_evidence::facts::AdmissionEconomicsNativeUnit::Currency {
+                        currency_id,
+                    },
+                    None,
+                ) => currency_id.trim().is_empty(),
+                (
+                    crate::bolt_v3_current_evidence::facts::AdmissionEconomicsNativeUnit::Asset {
+                        asset_id,
+                    },
+                    Some(_),
+                ) => asset_id.trim().is_empty(),
+                _ => true,
+            }
+        };
+    let valuation_is_invalid =
+        |valuation: &crate::bolt_v3_current_evidence::facts::AdmissionEconomicsValuation| {
+            native_effect_is_invalid(&valuation.native_effect)
+                || valuation.normalized_amount.parse::<Decimal>().is_err()
+                || valuation.reporting_currency.trim().is_empty()
+                || valuation
+                    .route_id
+                    .as_ref()
+                    .is_some_and(|id| id.trim().is_empty())
+                || valuation
+                    .source_snapshot_ids
+                    .iter()
+                    .any(|id| id.trim().is_empty())
+                || valuation.valued_at_ns == 0
+                || valuation.valid_until_ns == Some(0)
+        };
+    let point_shape_invalid = match (&component.point_estimate, &component.point_valuation) {
+        (AdmissionEconomicsPointEstimate::NonZero { effect }, Some(valuation)) => {
+            native_effect_is_invalid(effect)
+                || valuation_is_invalid(valuation)
+                || valuation.native_effect != *effect
+        }
+        (AdmissionEconomicsPointEstimate::NonZero { effect }, None) => {
+            !valuation_may_be_missing || native_effect_is_invalid(effect)
+        }
+        (AdmissionEconomicsPointEstimate::ProvenZero { factor_id }, None) => {
+            factor_id.trim().is_empty()
+        }
+        _ => true,
+    };
+    let bound_shape_invalid = match (
+        component.treatment,
+        &component.debit_risk_bound,
+        &component.debit_risk_bound_valuation,
+    ) {
+        (AdmissionEconomicsTreatment::RiskBound { .. }, Some(bound), Some(valuation)) => {
+            native_effect_is_invalid(bound)
+                || valuation_is_invalid(valuation)
+                || valuation.native_effect != *bound
+        }
+        (
+            AdmissionEconomicsTreatment::GuaranteedConditionalOnAction
+            | AdmissionEconomicsTreatment::ForecastOnly,
+            None,
+            None,
+        ) => false,
+        _ => true,
+    };
+    component.component_id.trim().is_empty()
+        || component.formula_id.trim().is_empty()
+        || component.source.source_id.trim().is_empty()
+        || component.source.snapshot_id.trim().is_empty()
+        || component.source.valid_until_ns == 0
+        || component.source.source_at_ns > component.source.fetched_at_ns
+        || component.source.fetched_at_ns > component.source.valid_until_ns
+        || component.calculation_factors.iter().any(|factor| {
+            factor.factor_id.trim().is_empty() || factor.value.parse::<Decimal>().is_err()
+        })
+        || point_shape_invalid
+        || bound_shape_invalid
 }
 
 macro_rules! define_admission_wire {
@@ -536,6 +750,8 @@ macro_rules! define_admission_wire {
             stale_reason: Option<$stale>,
             loss_snapshot_observed_at_ns: Option<u64>,
             loss_eval_now_ns: Option<u64>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            economics: Option<AdmissionEconomicsDetailsV1>,
             $(
                 #[serde(default)]
                 $reservation: Option<ReservationAttributionV1>,
@@ -578,6 +794,9 @@ macro_rules! define_admission_wire {
                     stale_reason: details.stale_reason.map($stale::from_fact),
                     loss_snapshot_observed_at_ns: details.loss_snapshot_observed_at_ns,
                     loss_eval_now_ns: details.loss_eval_now_ns,
+                    economics: details
+                        .economics
+                        .map(AdmissionEconomicsDetailsV1::from_fact),
                     $(
                         $reservation: $reservation.map(ReservationAttributionV1::from_fact),
                     )?
@@ -621,6 +840,7 @@ macro_rules! define_admission_wire {
                         stale_reason: self.stale_reason.map($stale::into_fact),
                         loss_snapshot_observed_at_ns: self.loss_snapshot_observed_at_ns,
                         loss_eval_now_ns: self.loss_eval_now_ns,
+                        economics: self.economics.map(AdmissionEconomicsDetailsV1::into_fact),
                     },
                     self.outcome,
                     $(
@@ -810,6 +1030,7 @@ macro_rules! define_rejection_outcome {
             CountCapExhausted,
             KillSwitchForcedReductionProofInvalid,
             KillSwitchForcedReductionCapExceeded,
+            EconomicsSealRejected,
             CapitalAdmission,
         }
 
@@ -833,6 +1054,7 @@ macro_rules! define_rejection_outcome {
                     AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded => {
                         Self::KillSwitchForcedReductionCapExceeded
                     }
+                    AdmissionRejectionReason::EconomicsSealRejected => Self::EconomicsSealRejected,
                     AdmissionRejectionReason::CapitalAdmission => Self::CapitalAdmission,
                 }
             }
@@ -856,6 +1078,7 @@ macro_rules! define_rejection_outcome {
                     Self::KillSwitchForcedReductionCapExceeded => {
                         AdmissionRejectionReason::KillSwitchForcedReductionCapExceeded
                     }
+                    Self::EconomicsSealRejected => AdmissionRejectionReason::EconomicsSealRejected,
                     Self::CapitalAdmission => AdmissionRejectionReason::CapitalAdmission,
                 }
             }

@@ -502,6 +502,7 @@ mod tests {
 
     static FAKE_UPDOWN_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &["test fixture provider attests nothing"],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
@@ -519,12 +520,13 @@ mod tests {
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
+        execution_economics: None,
         build_provider_collateral_allowance_runtime_source: None,
     };
 
     static FAKE_UNSUPPORTED_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &["test fixture provider attests nothing"],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
@@ -542,12 +544,13 @@ mod tests {
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
+        execution_economics: None,
         build_provider_collateral_allowance_runtime_source: None,
     };
 
     static FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
         key: FAKE_UPDOWN_PROVIDER_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &["test fixture provider attests nothing"],
         nt_reconnect_budget: NtReconnectBudgetCapability::NotApplicable,
         validate_client: validate_fake_provider_client,
@@ -565,7 +568,7 @@ mod tests {
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
+        execution_economics: None,
         build_provider_collateral_allowance_runtime_source: None,
     };
 

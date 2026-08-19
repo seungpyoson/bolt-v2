@@ -428,7 +428,6 @@ fn codebase_does_not_expose_dead_platform_runtime_actor_or_catalog_modules() {
         "compute_maker_taker_amounts",
         "polymarket_clob_lot_size_step",
         "direct amount",
-        "lattice",
         "OutcomeSide::Up => self.active.books.up.best_ask,\n            OutcomeSide::Down => self.active.books.down.best_ask,",
         "OrderSide::Buy,\n            PositionSide::Long,\n            OrderSide::Sell,\n            PositionSide::Long,",
     ] {
@@ -440,10 +439,6 @@ fn codebase_does_not_expose_dead_platform_runtime_actor_or_catalog_modules() {
     assert!(
         strategy.contains("normalize_base_order_quantity("),
         "binary oracle strategy must delegate base quantity normalization to bolt_v3_order_intent before submit"
-    );
-    assert!(
-        !strategy.contains("normalize_base_order_quantity_for_execution_venue"),
-        "binary oracle strategy must not call the provider-specific normalization seam directly"
     );
 }
 

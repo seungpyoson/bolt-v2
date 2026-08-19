@@ -1035,7 +1035,6 @@ fn single_order_request(client_order_id: &str, notional: Decimal) -> BoltV3Submi
         order_quantity: dec!(1),
         intent_kind: BoltV3SubmitIntentKind::Entry,
         risk_reducing_exit_proof: None,
-        kill_switch_forced_reduction: None,
         admission_evidence: None,
     }
 }
@@ -1058,7 +1057,6 @@ fn scan_evidence(
             target_notional: dec!(0.9),
             executable_quantity: dec!(1),
             gross_cost: dec!(0.9),
-            fee_cost: Decimal::ZERO,
             slippage_buffer: Decimal::ZERO,
             total_adjusted_cost: dec!(0.9),
             vwap_price: dec!(0.9),
@@ -1073,7 +1071,6 @@ fn scan_evidence(
         state_payouts: BTreeMap::from([("home".to_string(), dec!(2))]),
         guaranteed_payout: total_cost + absolute_edge,
         total_gross_cost: total_cost,
-        total_fee_cost: Decimal::ZERO,
         total_slippage_buffer: Decimal::ZERO,
         total_adjusted_cost: total_cost,
         absolute_edge,

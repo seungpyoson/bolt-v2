@@ -30,22 +30,14 @@ pub struct SettlementPositionKey {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettlementPositionOrigin {
-    Live,
-    RecoveryBootstrap,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalSettlementEligibilityReason {
     MarketExpired,
-    RecoveryUnknownInterval,
 }
 
 impl TerminalSettlementEligibilityReason {
     pub fn label(self) -> &'static str {
         match self {
             Self::MarketExpired => stringify!(market_expired),
-            Self::RecoveryUnknownInterval => stringify!(recovery_unknown_interval),
         }
     }
 }
@@ -60,7 +52,6 @@ pub struct TerminalSettlementEligibility {
 
 pub fn terminal_settlement_eligibility(
     position: &SettlementPositionKey,
-    origin: SettlementPositionOrigin,
     observed_at_ns: u64,
 ) -> Result<TerminalSettlementEligibility> {
     let observed_at_ms = observed_at_ns / NANOS_PER_MILLI_U64;
@@ -69,10 +60,6 @@ pub fn terminal_settlement_eligibility(
         .is_some_and(|interval_end_ms| observed_at_ms >= interval_end_ms)
     {
         TerminalSettlementEligibilityReason::MarketExpired
-    } else if origin == SettlementPositionOrigin::RecoveryBootstrap
-        && position.interval_end_ms.is_none()
-    {
-        TerminalSettlementEligibilityReason::RecoveryUnknownInterval
     } else {
         anyhow::bail!(
             "terminal settlement is ineligible for live-manageable or nonterminal position {}",
@@ -84,23 +71,6 @@ pub fn terminal_settlement_eligibility(
         position_id: position.position_id.clone(),
         observed_at_ns,
         reason,
-    })
-}
-
-pub fn recovered_terminal_settlement_eligibility(
-    position: &SettlementPositionKey,
-    observed_at_ns: u64,
-) -> Result<TerminalSettlementEligibility> {
-    terminal_settlement_eligibility(
-        position,
-        SettlementPositionOrigin::RecoveryBootstrap,
-        observed_at_ns,
-    )
-    .map_err(|_| {
-        anyhow::anyhow!(
-            "recovered terminal settlement is ineligible before market expiry for position {}",
-            position.position_id
-        )
     })
 }
 
@@ -122,7 +92,6 @@ pub struct SettlementBookingErrorTransition {
 
 pub fn record_settlement_booking_error(
     position: &SettlementPositionKey,
-    origin: SettlementPositionOrigin,
     reason: SettlementBookingErrorReason,
     detail: String,
     observed_at_ns: u64,
@@ -131,7 +100,7 @@ pub fn record_settlement_booking_error(
     if existing_booking_error_keys.contains(&position.settlement_key) {
         return Ok(None);
     }
-    let eligibility = terminal_settlement_eligibility(position, origin, observed_at_ns)?;
+    let eligibility = terminal_settlement_eligibility(position, observed_at_ns)?;
     Ok(Some(SettlementBookingErrorTransition {
         key_delta: SettlementTerminalKeyDelta {
             settlement_key: position.settlement_key.clone(),
@@ -389,63 +358,14 @@ pub fn recover_booking_facts(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SettlementRecoveryEntryDecision {
-    Continue,
-    Flat,
-    EnterBlindCacheProbe,
-    EnterBlindMultipleOpenPositions {
-        count: usize,
-    },
-    ApplyPriorBookingError {
-        eligibility: TerminalSettlementEligibility,
-        canonical_evidence_already_durable: bool,
-    },
-    EnterBlindSettlementRecovery {
-        transition: OrderLifecycleTransition,
-        outcome: OrderLifecycleOutcome,
-        detail: String,
-    },
+pub struct SettlementRecoveryFailure {
+    pub transition: OrderLifecycleTransition,
+    pub outcome: OrderLifecycleOutcome,
+    pub detail: String,
 }
 
-pub fn bootstrap_recovery_from_cache(
-    cache_probe_succeeded: bool,
-    open_position: Option<&SettlementPositionKey>,
-    open_position_count: usize,
-    observed_at_ns: u64,
-    booking_error_keys: &BTreeSet<String>,
-    terminal_settlement_keys: &BTreeSet<String>,
-) -> SettlementRecoveryEntryDecision {
-    if !cache_probe_succeeded {
-        return SettlementRecoveryEntryDecision::EnterBlindCacheProbe;
-    }
-    if open_position_count == 0 {
-        return SettlementRecoveryEntryDecision::Flat;
-    }
-    if open_position_count > 1 {
-        return SettlementRecoveryEntryDecision::EnterBlindMultipleOpenPositions {
-            count: open_position_count,
-        };
-    }
-    let Some(position) = open_position else {
-        return enter_blind_settlement_recovery("single cache position projection is missing");
-    };
-    if !booking_error_keys.contains(&position.settlement_key) {
-        return SettlementRecoveryEntryDecision::Continue;
-    }
-    match recovered_terminal_settlement_eligibility(position, observed_at_ns) {
-        Ok(eligibility) => SettlementRecoveryEntryDecision::ApplyPriorBookingError {
-            canonical_evidence_already_durable: terminal_settlement_keys
-                .contains(&position.settlement_key),
-            eligibility,
-        },
-        Err(error) => enter_blind_settlement_recovery(error),
-    }
-}
-
-pub fn enter_blind_settlement_recovery(
-    error: impl std::fmt::Display,
-) -> SettlementRecoveryEntryDecision {
-    SettlementRecoveryEntryDecision::EnterBlindSettlementRecovery {
+pub fn enter_blind_settlement_recovery(error: impl std::fmt::Display) -> SettlementRecoveryFailure {
+    SettlementRecoveryFailure {
         transition: OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked,
         outcome: OrderLifecycleOutcome::BlindRecovery,
         detail: error.to_string(),
@@ -490,7 +410,6 @@ mod tests {
         };
         let transition = record_settlement_booking_error(
             &position,
-            SettlementPositionOrigin::Live,
             SettlementBookingErrorReason::ResolutionFeedMissing,
             "missing".to_string(),
             20 * NANOS_PER_MILLI_U64,
@@ -509,7 +428,6 @@ mod tests {
         assert_eq!(
             record_settlement_booking_error(
                 &position,
-                SettlementPositionOrigin::Live,
                 SettlementBookingErrorReason::ResolutionFeedMissing,
                 "duplicate".to_string(),
                 20 * NANOS_PER_MILLI_U64,
@@ -522,18 +440,12 @@ mod tests {
 
     #[test]
     fn degraded_recovery_inputs_enter_blind_recovery() {
+        let failure = enter_blind_settlement_recovery("durable evidence unreadable");
         assert_eq!(
-            bootstrap_recovery_from_cache(false, None, 0, 0, &BTreeSet::new(), &BTreeSet::new(),),
-            SettlementRecoveryEntryDecision::EnterBlindCacheProbe
+            failure.transition,
+            OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked
         );
-        assert!(matches!(
-            enter_blind_settlement_recovery("durable evidence unreadable"),
-            SettlementRecoveryEntryDecision::EnterBlindSettlementRecovery {
-                transition: OrderLifecycleTransition::SettlementEvidenceRecoveryBlocked,
-                outcome: OrderLifecycleOutcome::BlindRecovery,
-                ..
-            }
-        ));
+        assert_eq!(failure.outcome, OrderLifecycleOutcome::BlindRecovery);
     }
 
     #[test]

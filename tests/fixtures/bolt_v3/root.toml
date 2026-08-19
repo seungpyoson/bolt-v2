@@ -5,6 +5,10 @@ strategy_files = [
   "strategies/binary_oracle.toml",
 ]
 
+[economics.reporting]
+policy_id = "primary-pnl"
+pnl_currency = "USD"
+
 [reference_live_probe]
 chainlink_client_id = "chainlink_reference"
 polyresearch_client_id = "polyresearch_reference"
@@ -122,9 +126,6 @@ action_retry_interval_ms = 250
 action_retry_timeout_ms = 5000
 mandatory_proof_max_age_ms = 1000
 manual_reset_evidence_max_age_ms = 60000
-forced_reduction_policy_sha256 = "65170d6e1b2ed7154668ed976a0dc77576dd676843b5b6e6048377811d90d2ec"
-forced_reduction_max_live_order_count = 6
-forced_reduction_max_notional_per_order = "10.00"
 authorized_operator_ids = ["operator-primary"]
 account_ids = ["POLYMARKET-001"]
 instrument_ids = []
@@ -271,9 +272,51 @@ http_timeout_secs = 60
 max_retries = 3
 retry_delay_initial_ms = 250
 retry_delay_max_ms = 2000
-fee_cache_ttl_secs = 300
 provider_collateral_allowance_poll_interval_ms = 1000
 transport_backend = "sockudo"
+
+[clients.polymarket_main.execution.economics]
+routing_attachment_policy = "forbidden"
+reporting_policy = "primary-pnl"
+quote_refresh_secs = 30
+quote_max_age_secs = 60
+quote_validity_ms = 30000
+resting_order_refresh_margin_ms = 5000
+cancel_retry_timeout_ms = 1000
+cancel_recovery_escalation_attempts = 3
+carry_surfaces = []
+
+[clients.polymarket_main.execution.economics.sources]
+schedule = "clob_market_info"
+
+[clients.polymarket_main.execution.economics.formula]
+fee_round_decimal_places = "5"
+fee_rounding_mode = "midpoint_nearest_even"
+sub_fee_quantum_behavior = "round_to_nearest_even"
+
+[clients.polymarket_main.execution.economics.quote_components.platform]
+component_id = "polymarket-platform-execution"
+formula_id = "polymarket-price-shaped-fee"
+rate_factor_id = "polymarket-live-fee-rate"
+
+[clients.polymarket_main.execution.economics.assets.collateral]
+currency = "pUSD"
+
+[clients.polymarket_main.execution.economics.edge_basis.primary]
+resolver_id = "product-metadata"
+policy_version = 1
+product_metadata_source = "polymarket-market-info"
+
+[clients.polymarket_main.execution.economics.product_surface_policies]
+binary_outcome = "primary"
+
+[clients.polymarket_main.execution.economics.valuation.routes.pusd_usd]
+from_kind = "currency"
+from_unit = "pUSD"
+to_currency = "USD"
+legs = [
+  { authority = "provider_exact_conversion", from_kind = "currency", from_unit = "pUSD", to_unit = "USD", source_id = "fixture-collateral", max_age_ms = 60000 },
+]
 
 [clients.polymarket_main.secrets]
 private_key_ssm_path = "/bolt/polymarket/private-key"

@@ -12,8 +12,9 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_current_evidence::{
-    EntryOrderIntentFact, OutcomeSide as EvidenceOutcomeSide, PositiveFiniteEvidenceReadCap,
-    ShadowPnlEvent, SubmitLinkedStrategyInputSnapshotFact, read_shadow_pnl_events,
+    AdmittedEntryAdmissionFact, EntryOrderIntentFact, OutcomeSide as EvidenceOutcomeSide,
+    PositiveFiniteEvidenceReadCap, ShadowPnlEvent, SubmitLinkedStrategyInputSnapshotFact,
+    read_shadow_pnl_events,
 };
 use crate::bolt_v3_market_families::OutcomeSide;
 use crate::bolt_v3_taker_updown_signal::outcome_side_evidence_label;
@@ -113,6 +114,7 @@ pub struct ShadowSettlementEvidence {
 struct TradeEvidence {
     snapshot: SubmitLinkedStrategyInputSnapshotFact,
     intent: EntryOrderIntentFact,
+    admission: AdmittedEntryAdmissionFact,
 }
 
 pub fn build_shadow_pnl_report(
@@ -141,11 +143,18 @@ pub fn build_shadow_pnl_report(
         let entry_price = parse_decimal(&trade.intent.details.price)?;
         let quantity = parse_decimal(&trade.intent.details.quantity)?;
         let settlement_price = parse_decimal(&settlement.settlement_price)?;
-        let fee_bps = parse_decimal(&trade.snapshot.details.fee_rate_basis_points)?;
-        let claimed_edge = parse_decimal(&trade.snapshot.details.expected_edge_basis_points)?;
+        let economics = trade.admission.details.economics.as_ref().ok_or_else(|| {
+            anyhow!(
+                "missing bound economics for admitted entry {}",
+                trade.intent.details.client_order_id
+            )
+        })?;
+        let economics_core_total = parse_decimal(&economics.core_total)?;
+        let claimed_edge = parse_decimal(&economics.core_edge_ratio)?
+            * Decimal::from(SHADOW_PNL_BASIS_POINTS_DENOMINATOR);
         let notional = entry_price * quantity;
         let gross = (settlement_price - entry_price) * quantity;
-        let fees = notional * fee_bps / Decimal::from(SHADOW_PNL_BASIS_POINTS_DENOMINATOR);
+        let fees = Decimal::ZERO - economics_core_total;
         let realized_edge = if notional.is_zero() {
             Decimal::ZERO
         } else {
@@ -229,7 +238,7 @@ fn read_admitted_entry_chains(
 ) -> Result<Vec<TradeEvidence>> {
     let mut snapshots = HashMap::<String, SubmitLinkedStrategyInputSnapshotFact>::new();
     let mut intents = HashMap::<String, EntryOrderIntentFact>::new();
-    let mut admitted_entries = HashMap::<String, ()>::new();
+    let mut admitted_entries = HashMap::<String, AdmittedEntryAdmissionFact>::new();
 
     for (event_index, event) in read_shadow_pnl_events(path, evidence_max_bytes)?
         .into_iter()
@@ -257,11 +266,11 @@ fn read_admitted_entry_chains(
                 )?;
             }
             ShadowPnlEvent::AdmittedEntryAdmission(admission) => {
-                let client_order_id = admission.details.client_order_id;
+                let client_order_id = admission.details.client_order_id.clone();
                 insert_unique_evidence(
                     &mut admitted_entries,
                     client_order_id,
-                    (),
+                    *admission,
                     "admitted entry admission",
                     event_index + SHADOW_PNL_LINE_NUMBER_BASE,
                 )?;
@@ -274,7 +283,7 @@ fn read_admitted_entry_chains(
     // Iterating intents instead would silently drop an admitted entry whose intent
     // line is missing or corrupted; here a missing intent or snapshot fails loud.
     let mut chains = Vec::new();
-    for client_order_id in admitted_entries.into_keys() {
+    for (client_order_id, admission) in admitted_entries {
         let intent = intents
             .get(&client_order_id)
             .cloned()
@@ -282,7 +291,11 @@ fn read_admitted_entry_chains(
         let snapshot = snapshots.get(&client_order_id).cloned().ok_or_else(|| {
             anyhow!("missing strategy input snapshot for admitted entry {client_order_id}")
         })?;
-        chains.push(TradeEvidence { snapshot, intent });
+        chains.push(TradeEvidence {
+            snapshot,
+            intent,
+            admission,
+        });
     }
     chains.sort_by(|left, right| {
         left.intent

@@ -1,0 +1,12 @@
+{
+  "funding": "0.0001",
+  "openInterest": "125.0",
+  "prevDayPx": "99.0",
+  "dayNtlVlm": "250000.0",
+  "premium": "0.00005",
+  "oraclePx": "100.0",
+  "markPx": "100.1",
+  "midPx": "100.05",
+  "impactPxs": ["99.9", "100.2"],
+  "dayBaseVlm": "2500.0"
+}

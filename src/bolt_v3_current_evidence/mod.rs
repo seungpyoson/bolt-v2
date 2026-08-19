@@ -40,6 +40,9 @@ pub use record::{
     AppendReceipt, CommitPhase, CommittedAdmission, CommittedSettlement, NonBlockingRecordOutcome,
     ObservationRecordOutcome, ObservationStreamStatus, PoisonCause, RecordFailure,
 };
+#[cfg(feature = "test-current-evidence-inspection")]
+#[doc(hidden)]
+pub use record::{DecisionEvidenceIntegrationTestControl, DecisionEvidenceIntegrationTestFault};
 pub use runtime::DecisionEvidenceRuntime;
 #[cfg(feature = "offline-current-evidence")]
 pub use runtime::OfflineDecisionEvidenceRuntime;

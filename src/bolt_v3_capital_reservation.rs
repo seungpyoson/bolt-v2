@@ -101,6 +101,12 @@ struct LiveReservation {
     observed_at_ns: u64,
 }
 
+/// Opaque proof that a reservation already exists in the live ledger.
+///
+/// This can be carried into a rebuild candidate without presenting it as a fresh admission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetainedReservation(LiveReservation);
+
 impl ReservationLedger {
     pub fn unreconciled() -> Self {
         Self {
@@ -240,13 +246,80 @@ impl ReservationLedger {
     }
 
     pub fn rollback_uncommitted(&mut self, pool_id: &str, request_id: &str) -> Option<Decimal> {
-        if !self.reconciliation_complete {
-            return None;
-        }
         let index = self.live_reservations.iter().position(|reservation| {
             reservation.pool_id == pool_id && reservation.request_id == request_id
         })?;
         Some(self.live_reservations.remove(index).liability)
+    }
+
+    pub fn remove_existing(
+        &mut self,
+        pool_id: &str,
+        collateral_group_id: &str,
+        request_id: &str,
+    ) -> ReservationReleaseDecision {
+        match self.live_reservations.iter().position(|reservation| {
+            reservation.pool_id == pool_id && reservation.request_id == request_id
+        }) {
+            None => rejected_release(ReservationRejectionReason::UnknownRelease),
+            Some(index)
+                if self.live_reservations[index].collateral_group_id != collateral_group_id =>
+            {
+                rejected_release(ReservationRejectionReason::CollateralGroupMismatch)
+            }
+            Some(index) => {
+                let reservation = self.live_reservations.remove(index);
+                ReservationReleaseDecision {
+                    accepted: true,
+                    reason: None,
+                    released_liability: Some(reservation.liability),
+                }
+            }
+        }
+    }
+
+    pub fn retained_reservation(
+        &self,
+        pool_id: &str,
+        collateral_group_id: &str,
+        request_id: &str,
+    ) -> Result<RetainedReservation, ReservationRejectionReason> {
+        match self.live_reservations.iter().find(|reservation| {
+            reservation.pool_id == pool_id && reservation.request_id == request_id
+        }) {
+            None => Err(ReservationRejectionReason::UnknownReservation),
+            Some(reservation) if reservation.collateral_group_id != collateral_group_id => {
+                Err(ReservationRejectionReason::CollateralGroupMismatch)
+            }
+            Some(reservation) => Ok(RetainedReservation(reservation.clone())),
+        }
+    }
+
+    pub fn carry_retained(
+        &mut self,
+        pool_id: &str,
+        retained: RetainedReservation,
+    ) -> Result<Decimal, ReservationRejectionReason> {
+        let RetainedReservation(reservation) = retained;
+        match (
+            reservation.pool_id == pool_id,
+            reservation.request_id.trim().is_empty()
+                || reservation.pool_id.trim().is_empty()
+                || reservation.collateral_group_id.trim().is_empty()
+                || reservation.liability <= Decimal::ZERO,
+            self.live_reservations.iter().any(|live| {
+                live.pool_id == reservation.pool_id && live.request_id == reservation.request_id
+            }),
+        ) {
+            (false, _, _) => Err(ReservationRejectionReason::PoolMismatch),
+            (_, true, _) => Err(ReservationRejectionReason::InvalidRequest),
+            (_, _, true) => Err(ReservationRejectionReason::DuplicateReservation),
+            (true, false, false) => {
+                let liability = reservation.liability;
+                self.live_reservations.push(reservation);
+                Ok(liability)
+            }
+        }
     }
 
     pub fn release(
@@ -726,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn rollback_uncommitted_rejects_unreconciled_ledger_without_mutating() {
+    fn rollback_uncommitted_removes_exact_reservation_while_unreconciled() {
         let mut ledger = ReservationLedger {
             live_reservations: vec![LiveReservation {
                 request_id: "request-unreconciled-rollback".to_string(),
@@ -741,10 +814,52 @@ mod tests {
         let rolled_back =
             ledger.rollback_uncommitted("capital-pool-1", "request-unreconciled-rollback");
 
-        assert_eq!(rolled_back, None);
+        assert_eq!(rolled_back, Some(Decimal::new(40, 0)));
+        assert_eq!(
+            ledger.live_reserved_liability("capital-pool-1"),
+            Decimal::ZERO
+        );
+    }
+
+    #[test]
+    fn remove_existing_uses_exact_identity_while_unreconciled() {
+        let mut ledger = ReservationLedger {
+            live_reservations: vec![LiveReservation {
+                request_id: "request-terminal".to_string(),
+                pool_id: "capital-pool-1".to_string(),
+                collateral_group_id: "collateral-group-1".to_string(),
+                liability: Decimal::new(40, 0),
+                observed_at_ns: 1_010,
+            }],
+            reconciliation_complete: false,
+        };
+
+        let mismatch = ledger.remove_existing(
+            "capital-pool-1",
+            "other-collateral-group",
+            "request-terminal",
+        );
+
+        assert!(!mismatch.accepted);
+        assert_eq!(
+            mismatch.reason,
+            Some(super::ReservationRejectionReason::CollateralGroupMismatch)
+        );
+        assert_eq!(mismatch.released_liability, None);
         assert_eq!(
             ledger.live_reserved_liability("capital-pool-1"),
             Decimal::new(40, 0)
+        );
+
+        let removed =
+            ledger.remove_existing("capital-pool-1", "collateral-group-1", "request-terminal");
+
+        assert!(removed.accepted);
+        assert_eq!(removed.reason, None);
+        assert_eq!(removed.released_liability, Some(Decimal::new(40, 0)));
+        assert_eq!(
+            ledger.live_reserved_liability("capital-pool-1"),
+            Decimal::ZERO
         );
     }
 

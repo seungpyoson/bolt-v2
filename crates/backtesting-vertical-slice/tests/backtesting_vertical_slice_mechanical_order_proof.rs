@@ -251,6 +251,7 @@ fn manifest(catalog_path: &str) -> BacktestingRunManifest {
             experiment_result_hash: None,
             config_overlay: None,
         },
+        economics: None,
         strategy_config_hash: "0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),
         venue: ManifestVenueConfig {

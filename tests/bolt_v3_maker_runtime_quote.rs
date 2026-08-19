@@ -3,16 +3,21 @@ use bolt_v2::{
     bolt_v3_config::ReferencePriceProvider,
     bolt_v3_maker_event_fence::{ClientOrderId as MakerClientOrderId, OrderIdentity},
     bolt_v3_maker_mu_estimator::{MuEstimatorConfig, MuHealthConfig, UsableMu},
-    bolt_v3_maker_order_dispatch::{MakerOrderCommandSink, MakerOrderDispatchOutcome},
+    bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
+    bolt_v3_maker_order_dispatch::{
+        MakerOrderCommandAuthority, MakerOrderCommandFailure, MakerOrderCommandFailureKind,
+        MakerOrderCommandSink, MakerOrderDispatchInput, MakerOrderDispatchOutcome,
+        MakerQuoteTransactionContext, dispatch_maker_order_command,
+    },
     bolt_v3_maker_order_plan::{
         MakerLegBinding, MakerMarketActionOrderInput, MakerOrderIntent,
-        maker_order_intent_from_market_action, maker_order_plan_from_market_action,
+        maker_order_plan_from_market_action,
     },
+    bolt_v3_maker_quote_control::{QuoteControlInput, drive_quote_leg},
     bolt_v3_maker_quote_plan::MakerQuotePlanInputs,
     bolt_v3_maker_rate_budget::build_requote_budget_pair,
     bolt_v3_maker_runtime_order::{
-        MakerRuntimeOrderDispatchInput, dispatch_maker_runtime_order_plan,
-        dispatch_maker_runtime_order_plan_with_command_router,
+        MakerRuntimeOrderDispatchInput, dispatch_maker_runtime_order_plan_with_command_router,
     },
     bolt_v3_maker_runtime_quote::{
         MakerRuntimeOrderPlanInput, MakerRuntimeQuoteBlockReason, MakerRuntimeQuoteInput,
@@ -21,8 +26,15 @@ use bolt_v2::{
         maker_reference_current_price_fair_value_decision, plan_maker_runtime_quote,
     },
     bolt_v3_market_families::{FairProbabilityInputs, static_binary_event, updown},
-    bolt_v3_order_intent::NtOrderTemplate,
-    bolt_v3_quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketState},
+    bolt_v3_order_execution::{
+        BoltV3RestingRegistrationCommitParticipant, BoltV3RestingSubmitTransactionOutcome,
+        RestingOrderCancelHandled,
+    },
+    bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate},
+    bolt_v3_quote_lifecycle::{
+        Leg, LegEvent, LifecycleAction, MakerOrderLifecycleScopeIdentity,
+        MakerQuoteLifecycleIdentity, MarketAction, MarketQuote, MarketState,
+    },
     bolt_v3_realized_volatility::{
         RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
         RealizedVolSnapshot,
@@ -92,7 +104,7 @@ fn realized_vol_snapshot(as_of_ms: u64, realized_vol: f64, ready: bool) -> Reali
 
 #[test]
 fn runtime_quote_tick_uses_family_quote_plan_and_produces_order_intents() {
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
 
@@ -147,9 +159,9 @@ fn runtime_quote_tick_uses_family_quote_plan_and_produces_order_intents() {
         other => panic!("expected no submit intent, got {other:?}"),
     }
 
-    assert_eq!(market.market_state(), MarketState::Quoting);
-    assert_eq!(budget.submit_commands_in_window(), 2);
-    assert_eq!(budget.rest_cost_in_window(), 2);
+    assert_eq!(market.market_state(), MarketState::Idle);
+    assert_eq!(budget.submit_commands_in_window(), 0);
+    assert_eq!(budget.rest_cost_in_window(), 0);
 }
 
 #[test]
@@ -203,7 +215,7 @@ fn maker_reference_current_price_selection_feeds_family_runtime_quote_plan() {
     assert_eq!(fair.fair_probability_up, 0.63);
     assert!(!fair.failed_over);
 
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
     let decision = plan_maker_runtime_quote(
@@ -534,7 +546,7 @@ fn maker_reference_current_price_decision_records_taker_fair_value_inputs_and_bl
 
 #[test]
 fn runtime_quote_tick_fails_closed_for_unsupported_family_without_mutation() {
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
 
@@ -562,7 +574,14 @@ fn runtime_quote_tick_fails_closed_for_unsupported_family_without_mutation() {
 
 #[test]
 fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = MarketQuote::new(
+        MakerOrderLifecycleScopeIdentity::new(
+            1_000,
+            InstrumentId::from("YES.RUNTIME"),
+            InstrumentId::from("NO.RUNTIME"),
+        ),
+        false,
+    );
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
     let decision = plan_maker_runtime_quote(
@@ -580,25 +599,56 @@ fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
         .expect("quote tick should produce maker order intents");
 
     let mut sink = RecordingMakerOrderSink::new();
-    let dispatched = dispatch_maker_runtime_order_plan(
+    let quote_set = decision
+        .quote_set
+        .as_ref()
+        .expect("quote tick should produce transaction proposals");
+    let mut route_command =
+        |command: &bolt_v2::bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
+         submit_order_prefix: &str| {
+            let proposal = match command {
+                bolt_v2::bolt_v3_maker_order_compile::MakerCompiledOrderCommand::Submit {
+                    leg: Leg::Yes,
+                    ..
+                } => quote_set.yes.control.proposal,
+                bolt_v2::bolt_v3_maker_order_compile::MakerCompiledOrderCommand::Submit {
+                    leg: Leg::No,
+                    ..
+                } => quote_set.no.control.proposal,
+                other => panic!("fresh quote plan emitted non-submit command: {other:?}"),
+            }
+            .expect("submit command must carry its quote transaction proposal");
+            dispatch_maker_order_command(
+                MakerOrderDispatchInput {
+                    command,
+                    submit_order_prefix,
+                    authority: MakerOrderCommandAuthority::Quote(
+                        MakerQuoteTransactionContext::new(market.clone(), budget.clone(), proposal),
+                    ),
+                },
+                &mut sink,
+            )
+        };
+    let template = maker_limit_post_only_template();
+    let dispatched = dispatch_maker_runtime_order_plan_with_command_router(
         MakerRuntimeOrderDispatchInput {
             order_plan,
-            submit_template: &maker_limit_post_only_template(),
+            submit_template: &template,
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
         },
-        &mut sink,
+        &mut route_command,
     )
     .expect("runtime order plan should dispatch");
 
     assert_eq!(
         dispatched.yes.dispatch,
-        Some(MakerOrderDispatchOutcome::Submitted {
-            leg: Leg::Yes,
-            instrument_id: InstrumentId::from("YES.RUNTIME"),
-            client_order_id: ClientOrderId::from("MAKER-YES-1"),
-            price: Price::new(
+        Some(MakerOrderDispatchOutcome::submitted_for_test(
+            Leg::Yes,
+            InstrumentId::from("YES.RUNTIME"),
+            ClientOrderId::from("MAKER-YES-1"),
+            Price::new(
                 decision
                     .quote_plan
                     .as_ref()
@@ -608,16 +658,16 @@ fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
                     .price,
                 2
             ),
-            quantity: Quantity::new(2.0, 2),
-        })
+            Quantity::new(2.0, 2),
+        ))
     );
     assert_eq!(
         dispatched.no.dispatch,
-        Some(MakerOrderDispatchOutcome::Submitted {
-            leg: Leg::No,
-            instrument_id: InstrumentId::from("NO.RUNTIME"),
-            client_order_id: ClientOrderId::from("MAKER-NO-1"),
-            price: Price::new(
+        Some(MakerOrderDispatchOutcome::submitted_for_test(
+            Leg::No,
+            InstrumentId::from("NO.RUNTIME"),
+            ClientOrderId::from("MAKER-NO-1"),
+            Price::new(
                 decision
                     .quote_plan
                     .as_ref()
@@ -627,8 +677,8 @@ fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
                     .price,
                 2
             ),
-            quantity: Quantity::new(3.0, 2),
-        })
+            Quantity::new(3.0, 2),
+        ))
     );
     assert_eq!(
         sink.submitted_client_order_ids(),
@@ -640,14 +690,71 @@ fn runtime_quote_order_plan_compiles_and_dispatches_both_legs() {
 }
 
 #[test]
-fn runtime_quote_order_plan_reconciles_yes_then_surfaces_no_leg_routing_error() {
+fn maker_command_rejects_leg_instrument_mismatch_before_mutation() {
+    let no_instrument_id = InstrumentId::from("NO.RUNTIME");
+    let commands = [
+        (
+            LifecycleAction::Submit,
+            MakerCompiledOrderCommand::Submit {
+                leg: Leg::Yes,
+                template: Box::new(maker_limit_post_only_template()),
+                inputs: NtOrderBuildInputs {
+                    instrument_id: no_instrument_id,
+                    order_side: OrderSide::Buy,
+                    quantity: Quantity::new(2.0, 2),
+                    price: Some(Price::new(0.40, 2)),
+                    client_order_id: ClientOrderId::from("MAKER-CROSS-LEG-SUBMIT"),
+                },
+                fallback_price: Price::new(0.40, 2),
+            },
+        ),
+        (
+            LifecycleAction::Cancel,
+            MakerCompiledOrderCommand::Cancel {
+                leg: Leg::Yes,
+                instrument_id: no_instrument_id,
+                client_order_id: ClientOrderId::from("MAKER-CROSS-LEG-CANCEL"),
+            },
+        ),
+        (
+            LifecycleAction::Modify,
+            MakerCompiledOrderCommand::Modify {
+                leg: Leg::Yes,
+                instrument_id: no_instrument_id,
+                client_order_id: ClientOrderId::from("MAKER-CROSS-LEG-MODIFY"),
+                price: Price::new(0.41, 2),
+                quantity: Quantity::new(2.0, 2),
+            },
+        ),
+    ];
+
+    for (action, command) in commands {
+        let context = quote_transaction_context_for_action(action);
+        let mut sink = RecordingMakerOrderSink::new();
+        let error = dispatch_maker_order_command(
+            MakerOrderDispatchInput {
+                command: &command,
+                submit_order_prefix: "maker_submit",
+                authority: MakerOrderCommandAuthority::Quote(context),
+            },
+            &mut sink,
+        )
+        .expect_err("a command cannot bind one leg to the other leg's instrument");
+
+        assert_eq!(error.kind(), MakerOrderCommandFailureKind::LifecycleScope);
+        assert_eq!(sink.mutation_counts(), [0; 6]);
+    }
+}
+
+#[test]
+fn runtime_quote_order_plan_reconciles_yes_then_surfaces_no_leg_command_failure() {
     // A two-leg dispatch where the YES leg routes but the NO leg's command router
-    // returns an error. Fix F turns that per-leg routing error into data instead of a
+    // returns an error. Fix F turns that per-leg command failure into data instead of a
     // `?` abort: the dispatcher returns Ok with a partial outcome (YES dispatched, NO
-    // carrying its routing error) so the caller can reconcile the YES identity before
+    // carrying its command failure) so the caller can reconcile the YES identity before
     // failing loud, rather than orphaning it. Differential: under the prior `?`-abort
     // behavior the dispatcher returns Err and the `.expect` below panics.
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
     let decision = plan_maker_runtime_quote(
@@ -677,23 +784,26 @@ fn runtime_quote_order_plan_reconciles_yes_then_surfaces_no_leg_routing_error() 
         &mut |_command, _submit_order_prefix| {
             route_calls += 1;
             if route_calls == 1 {
-                Ok(MakerOrderDispatchOutcome::Submitted {
-                    leg: Leg::Yes,
-                    instrument_id: InstrumentId::from("YES.RUNTIME"),
-                    client_order_id: ClientOrderId::from("MAKER-YES-1"),
-                    price: Price::new(0.40, 2),
-                    quantity: Quantity::new(2.0, 2),
-                })
+                Ok(MakerOrderDispatchOutcome::submitted_for_test(
+                    Leg::Yes,
+                    InstrumentId::from("YES.RUNTIME"),
+                    ClientOrderId::from("MAKER-YES-1"),
+                    Price::new(0.40, 2),
+                    Quantity::new(2.0, 2),
+                ))
             } else {
-                anyhow::bail!("simulated NO-leg routing failure")
+                Err(MakerOrderCommandFailure::for_test(
+                    MakerOrderCommandFailureKind::SubmitPreparation,
+                    "simulated NO-leg routing failure",
+                ))
             }
         },
     )
-    .expect("a per-leg routing error is data, not a dispatcher abort");
+    .expect("a per-leg command failure is data, not a dispatcher abort");
 
     assert_eq!(
         route_calls, 2,
-        "YES routes, then NO is attempted because YES had no routing error"
+        "YES routes, then NO is attempted because YES had no command failure"
     );
     assert!(
         dispatched.yes.dispatch.is_some(),
@@ -704,27 +814,27 @@ fn runtime_quote_order_plan_reconciles_yes_then_surfaces_no_leg_routing_error() 
         "the NO leg did not dispatch"
     );
     assert!(
-        dispatched.no.routing_error.is_some(),
-        "the NO leg captured its routing error as data"
+        dispatched.no.command_failure.is_some(),
+        "the NO leg captured its command failure as data"
     );
     assert_eq!(
-        dispatched.routing_error(),
-        dispatched.no.routing_error.as_deref(),
-        "the combined routing_error surfaces the NO-leg failure for the caller to fail loud on"
+        dispatched.command_failure(),
+        dispatched.no.command_failure.as_ref(),
+        "the combined command failure surfaces the NO-leg failure for the caller to fail loud on"
     );
 }
 
 #[test]
-fn runtime_quote_order_plan_short_circuits_no_leg_when_yes_leg_routing_fails() {
+fn runtime_quote_order_plan_short_circuits_no_leg_when_yes_leg_command_fails() {
     // The mirror of the YES-then-NO reconcile, covering the opposite branch: the YES
     // leg's command router fails on its first (and only) call. Because the YES leg
-    // carries a routing error, the dispatcher short-circuits and synthesizes an empty
+    // carries a command failure, the dispatcher short-circuits and synthesizes an empty
     // NO leg rather than attempting its route, returning Ok with a partial outcome
-    // whose combined routing_error surfaces the YES failure for the caller to fail
+    // whose combined command failure surfaces the YES failure for the caller to fail
     // loud on. Differential: if the short-circuit were dropped (the NO leg routed
     // unconditionally) route_calls would be 2; if the YES error were `?`-aborted the
     // `.expect` below would panic.
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
     let decision = plan_maker_runtime_quote(
@@ -753,37 +863,40 @@ fn runtime_quote_order_plan_short_circuits_no_leg_when_yes_leg_routing_fails() {
         },
         &mut |_command, _submit_order_prefix| {
             route_calls += 1;
-            anyhow::bail!("simulated YES-leg routing failure")
+            Err(MakerOrderCommandFailure::for_test(
+                MakerOrderCommandFailureKind::SubmitPreparation,
+                "simulated YES-leg routing failure",
+            ))
         },
     )
-    .expect("a per-leg routing error is data, not a dispatcher abort");
+    .expect("a per-leg command failure is data, not a dispatcher abort");
 
     assert_eq!(
         route_calls, 1,
         "the YES routing failure short-circuits the NO leg, which is never attempted"
     );
     assert!(
-        dispatched.yes.routing_error.is_some(),
-        "the YES leg captured its routing error as data"
+        dispatched.yes.command_failure.is_some(),
+        "the YES leg captured its command failure as data"
     );
     assert!(
         dispatched.no.dispatch.is_none(),
         "the NO leg is synthesized empty when YES fails"
     );
     assert!(
-        dispatched.no.routing_error.is_none(),
-        "the synthesized NO leg carries no routing error of its own"
+        dispatched.no.command_failure.is_none(),
+        "the synthesized NO leg carries no command failure of its own"
     );
     assert_eq!(
-        dispatched.routing_error(),
-        dispatched.yes.routing_error.as_deref(),
-        "the combined routing_error surfaces the YES-leg failure for the caller to fail loud on"
+        dispatched.command_failure(),
+        dispatched.yes.command_failure.as_ref(),
+        "the combined command failure surfaces the YES-leg failure for the caller to fail loud on"
     );
 }
 
 #[test]
-fn canceled_requote_action_maps_to_prepaid_replacement_submit_without_budget_charge() {
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+fn canceled_callback_cannot_consume_an_uncommitted_requote_proposal() {
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     assert_eq!(
         market.on_leg_event(
             Leg::Yes,
@@ -833,9 +946,7 @@ fn canceled_requote_action_maps_to_prepaid_replacement_submit_without_budget_cha
     let submit_commands_before_cancel_confirm = budget.submit_commands_in_window();
     let rest_cost_before_cancel_confirm = budget.rest_cost_in_window();
 
-    let action = market
-        .on_leg_event(Leg::Yes, LegEvent::Canceled)
-        .expect("cancel confirmation should drive prepaid replacement submit");
+    assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Canceled), None);
     assert_eq!(
         budget.submit_commands_in_window(),
         submit_commands_before_cancel_confirm
@@ -845,54 +956,7 @@ fn canceled_requote_action_maps_to_prepaid_replacement_submit_without_budget_cha
         rest_cost_before_cancel_confirm
     );
 
-    let replacement = maker_order_intent_from_market_action(MakerMarketActionOrderInput {
-        action,
-        targets: decision
-            .quote_plan
-            .as_ref()
-            .expect("quote plan should exist")
-            .targets,
-        yes_quantity: quote_set.yes_quantity,
-        no_quantity: quote_set.no_quantity,
-        yes: MakerLegBinding {
-            instrument_id: InstrumentId::from("YES.RUNTIME"),
-            active_order: None,
-            next_order: Some(order_identity("MAKER-YES-2", 2)),
-        },
-        no: MakerLegBinding {
-            instrument_id: InstrumentId::from("NO.RUNTIME"),
-            active_order: None,
-            next_order: Some(order_identity("MAKER-NO-1", 1)),
-        },
-    });
-
-    match replacement.intent {
-        Some(MakerOrderIntent::Submit {
-            leg,
-            instrument_id,
-            order_identity: submitted_identity,
-            price,
-            quantity,
-            ..
-        }) => {
-            assert_eq!(leg, Leg::Yes);
-            assert_eq!(instrument_id, InstrumentId::from("YES.RUNTIME"));
-            assert_eq!(submitted_identity, order_identity("MAKER-YES-2", 2));
-            assert_eq!(
-                price,
-                decision
-                    .quote_plan
-                    .as_ref()
-                    .expect("quote plan should exist")
-                    .targets
-                    .leg_a
-                    .price
-            );
-            assert_eq!(quantity, quote_set.yes_quantity);
-        }
-        other => panic!("expected prepaid replacement submit intent, got {other:?}"),
-    }
-    assert_eq!(replacement.blocked_by, None);
+    assert_eq!(market.market_state(), MarketState::Idle);
 }
 
 #[test]
@@ -989,32 +1053,47 @@ fn cancel_all_runtime_order_plan_dispatches_both_leg_instruments() {
     });
 
     let mut sink = RecordingMakerOrderSink::new();
-    let dispatched = dispatch_maker_runtime_order_plan(
+    let mut route_command =
+        |command: &bolt_v2::bolt_v3_maker_order_compile::MakerCompiledOrderCommand,
+         submit_order_prefix: &str| {
+            dispatch_maker_order_command(
+                MakerOrderDispatchInput {
+                    command,
+                    submit_order_prefix,
+                    authority: MakerOrderCommandAuthority::ScopeCancelAll,
+                },
+                &mut sink,
+            )
+        };
+    let template = maker_limit_post_only_template();
+    let dispatched = dispatch_maker_runtime_order_plan_with_command_router(
         MakerRuntimeOrderDispatchInput {
             order_plan: &order_plan,
-            submit_template: &maker_limit_post_only_template(),
+            submit_template: &template,
             price_precision: 2,
             quantity_precision: 2,
             submit_order_prefix: "maker_submit",
         },
-        &mut sink,
+        &mut route_command,
     )
     .expect("cancel-all order plan should dispatch");
 
     assert_eq!(
         dispatched.yes.dispatch,
-        Some(MakerOrderDispatchOutcome::CanceledAll {
+        Some(MakerOrderDispatchOutcome::CancelScopeHandled {
             leg: Some(Leg::Yes),
             instrument_id: InstrumentId::from("YES.RUNTIME"),
             order_side: None,
+            dispositions: Vec::new(),
         })
     );
     assert_eq!(
         dispatched.no.dispatch,
-        Some(MakerOrderDispatchOutcome::CanceledAll {
+        Some(MakerOrderDispatchOutcome::CancelScopeHandled {
             leg: Some(Leg::No),
             instrument_id: InstrumentId::from("NO.RUNTIME"),
             order_side: None,
+            dispositions: Vec::new(),
         })
     );
     assert_eq!(
@@ -1114,7 +1193,7 @@ fn gate_cleared_informed_fraction() -> UsableMu {
 }
 
 fn quote_targets() -> bolt_v2::bolt_v3_quoting::QuoteTargets {
-    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new(false);
+    let mut market = bolt_v2::bolt_v3_quote_lifecycle::MarketQuote::new_for_test(false);
     let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
         .expect("well-formed rate config builds a budget");
     plan_maker_runtime_quote(
@@ -1162,15 +1241,12 @@ fn reference_quote_received_at(
     .expect("reference quote fixture should be valid")
 }
 
-fn quote_set_inputs() -> MakerRuntimeQuoteSetInput<'static> {
+fn quote_set_inputs() -> MakerRuntimeQuoteSetInput {
     MakerRuntimeQuoteSetInput {
         yes_quantity: 2.0,
         no_quantity: 3.0,
         yes_resting_price: None,
         no_resting_price: None,
-        open_commitments: &[],
-        max_fee_bps: 0.0,
-        available_collateral: 100.0,
         requote_threshold: 0.001,
         eps: 0.001,
         now_ms: 1_000,
@@ -1199,25 +1275,90 @@ fn order_identity(client_order_id: &str, generation: u64) -> OrderIdentity {
     )
 }
 
+fn quote_transaction_context_for_action(action: LifecycleAction) -> MakerQuoteTransactionContext {
+    let supports_modify = action == LifecycleAction::Modify;
+    let mut market = MarketQuote::new(
+        MakerOrderLifecycleScopeIdentity::new(
+            1_000,
+            InstrumentId::from("YES.RUNTIME"),
+            InstrumentId::from("NO.RUNTIME"),
+        ),
+        supports_modify,
+    );
+    if action != LifecycleAction::Submit {
+        market.on_leg_event(
+            Leg::Yes,
+            LegEvent::QuoteTrigger {
+                requote_needed: true,
+            },
+        );
+        market.on_leg_event(Leg::Yes, LegEvent::Accepted);
+    }
+    let mut budget = build_requote_budget_pair("40/00:01:00", 100, 500)
+        .expect("well-formed rate config builds a budget");
+    let decision = drive_quote_leg(
+        &mut market,
+        &mut budget,
+        QuoteControlInput {
+            leg: Leg::Yes,
+            desired_price: 0.6,
+            resting_price: (action != LifecycleAction::Submit).then_some(0.5),
+            requote_threshold: 0.01,
+            eps: 1e-9,
+            now_ms: 1_000,
+        },
+    );
+    assert_eq!(
+        decision.action,
+        Some(MarketAction::Leg {
+            leg: Leg::Yes,
+            action
+        })
+    );
+    MakerQuoteTransactionContext::new(
+        market,
+        budget,
+        decision
+            .proposal
+            .expect("requested action must be proposed"),
+    )
+}
+
 struct RecordingMakerOrderSink {
+    clock: Rc<RefCell<dyn Clock>>,
     order_factory: RefCell<OrderFactory>,
+    next_generation: u64,
+    order_factory_calls: usize,
+    prepared_submit_calls: usize,
+    cancel_calls: usize,
+    modify_calls: usize,
     submitted: Vec<OrderAny>,
     canceled_all: Vec<(Option<Leg>, InstrumentId, Option<OrderSide>)>,
 }
 
 impl RecordingMakerOrderSink {
     fn new() -> Self {
-        let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+        let test_clock = Rc::new(RefCell::new(TestClock::new()));
+        test_clock
+            .borrow_mut()
+            .set_time(UnixNanos::from(1_000_000_000_u64));
+        let clock: Rc<RefCell<dyn Clock>> = test_clock;
         Self {
             order_factory: RefCell::new(OrderFactory::new(
                 TraderId::new("MAKER-TRADER-001"),
                 StrategyId::new("MAKER-RUNTIME-001"),
                 None,
                 None,
-                clock,
+                clock.clone(),
                 false,
                 true,
             )),
+            clock,
+            next_generation: 1,
+            order_factory_calls: 0,
+            prepared_submit_calls: 0,
+            cancel_calls: 0,
+            modify_calls: 0,
             submitted: Vec::new(),
             canceled_all: Vec::new(),
         }
@@ -1229,24 +1370,93 @@ impl RecordingMakerOrderSink {
             .map(|order| order.client_order_id())
             .collect()
     }
+
+    fn begin_generation(&mut self) -> u64 {
+        let generation = self.next_generation;
+        self.next_generation += 1;
+        generation
+    }
+
+    fn mutation_counts(&self) -> [usize; 6] {
+        [
+            self.order_factory_calls,
+            self.prepared_submit_calls,
+            self.submitted.len(),
+            self.cancel_calls,
+            self.modify_calls,
+            usize::try_from(self.next_generation - 1).expect("test generation fits usize"),
+        ]
+    }
 }
 
 impl MakerOrderCommandSink for RecordingMakerOrderSink {
+    type PreparedSubmit = OrderAny;
+
     fn order_factory(&mut self) -> RefMut<'_, OrderFactory> {
+        self.order_factory_calls += 1;
         self.order_factory.borrow_mut()
     }
 
-    fn submit_maker_order(&mut self, order: OrderAny) -> Result<()> {
+    fn prepare_maker_order(&mut self, order: OrderAny) -> Result<Self::PreparedSubmit> {
+        self.prepared_submit_calls += 1;
+        Ok(order)
+    }
+
+    fn submit_maker_order(
+        &mut self,
+        order: Self::PreparedSubmit,
+        mut participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
+    ) -> BoltV3RestingSubmitTransactionOutcome {
+        let instrument_id = order.instrument_id();
+        let order_side = order.order_side();
+        let price = order
+            .price()
+            .expect("maker runtime quotes must be priced limit orders");
+        let quantity = order.quantity();
+        let client_order_id = order.client_order_id();
+        let generation = self.begin_generation();
+        let actor_now_ns = self.clock.borrow().timestamp_ns().as_u64();
+        participant
+            .arm_at_identity(MakerQuoteLifecycleIdentity::new(
+                client_order_id.as_str(),
+                generation,
+            ))
+            .expect("test submit participant must arm");
+        participant
+            .preflight_sink_invocation(generation, actor_now_ns)
+            .expect("test submit participant must prepare the sink boundary")
+            .commit();
         self.submitted.push(order);
-        Ok(())
+        participant
+            .settle_submitted(generation)
+            .expect("test submit participant must commit");
+        BoltV3RestingSubmitTransactionOutcome::submitted_with_linkage_for_test(
+            instrument_id,
+            order_side,
+            price,
+            quantity,
+            client_order_id,
+        )
     }
 
     fn cancel_maker_order(
         &mut self,
         _leg: Leg,
         _instrument_id: InstrumentId,
-        _client_order_id: ClientOrderId,
-    ) -> Result<()> {
+        client_order_id: ClientOrderId,
+        mut participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
+    ) -> Result<RestingOrderCancelHandled> {
+        self.cancel_calls += 1;
+        let generation = self.begin_generation();
+        let actor_now_ns = self.clock.borrow().timestamp_ns().as_u64();
+        participant.arm_at_identity(MakerQuoteLifecycleIdentity::new(
+            client_order_id.as_str(),
+            generation,
+        ))?;
+        participant
+            .preflight_sink_invocation(generation, actor_now_ns)?
+            .commit();
+        participant.settle_nt_mutation_invoked(generation)?;
         anyhow::bail!("test sink should not receive cancel commands")
     }
 
@@ -1255,9 +1465,9 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
         leg: Option<Leg>,
         instrument_id: InstrumentId,
         order_side: Option<OrderSide>,
-    ) -> Result<()> {
+    ) -> Result<Vec<RestingOrderCancelHandled>> {
         self.canceled_all.push((leg, instrument_id, order_side));
-        Ok(())
+        Ok(Vec::new())
     }
 
     fn modify_maker_order(
@@ -1267,7 +1477,9 @@ impl MakerOrderCommandSink for RecordingMakerOrderSink {
         _client_order_id: ClientOrderId,
         _price: Price,
         _quantity: Quantity,
+        _participant: Box<dyn BoltV3RestingRegistrationCommitParticipant>,
     ) -> Result<()> {
+        self.modify_calls += 1;
         anyhow::bail!("test sink should not receive modify commands")
     }
 }

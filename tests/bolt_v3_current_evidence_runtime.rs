@@ -5,16 +5,16 @@ use bolt_v2::{
     bolt_v3_current_evidence::{
         AdmissionDecisionOutcome, AdmissionDetails, AdmittedEntryAdmissionFact,
         BasketAdmissionDetails, BasketAdmissionGrantedFact, BasketAdmissionIntentKind,
-        BasketAdmittedLeg, CurrentEvidenceStream, DecisionEvidenceRuntime, EvidenceOrderSide,
-        EvidenceRequoteLeg, ForcedReductionAdmissionFact, NonBlockingRecordOutcome,
-        ObservationRecordOutcome, ObservationStreamStatus, OrderLifecycleFact,
-        OrderLifecycleOutcome, OrderLifecycleSource, OrderLifecycleTransition, OutcomeSide,
-        PositiveFiniteEvidenceReadCap, RecordFailure, RecoveredSettlementOutcome,
-        RequoteActionCostClass, RequoteThrottleBlockReason, RequoteThrottleBound,
-        RequoteThrottleObservationFact, ReservationAttribution, ReservationProductKind,
-        RiskReducingExitAdmissionFact, SettlementBookingErrorFact, SettlementBookingErrorReason,
-        SettlementFact, ShadowPnlEvent, SubmitReservationFillFact, SubmitReservationFillSource,
-        TerminalSettlementFact, read_backtest_run_guard_events, read_shadow_pnl_events,
+        BasketAdmittedLeg, CurrentEvidenceStream, CurrentFact, DecisionEvidenceRuntime,
+        EvidenceOrderSide, EvidenceRequoteLeg, NonBlockingRecordOutcome, ObservationRecordOutcome,
+        ObservationStreamStatus, OrderLifecycleFact, OrderLifecycleOutcome, OrderLifecycleSource,
+        OrderLifecycleTransition, OutcomeSide, PositiveFiniteEvidenceReadCap, RecordFailure,
+        RecoveredSettlementOutcome, RequoteActionCostClass, RequoteThrottleBlockReason,
+        RequoteThrottleBound, RequoteThrottleObservationFact, ReservationAttribution,
+        ReservationProductKind, RiskReducingExitAdmissionFact, SettlementBookingErrorFact,
+        SettlementBookingErrorReason, SettlementFact, ShadowPnlEvent, SubmitReservationFillFact,
+        SubmitReservationFillSource, TerminalSettlementFact, read_backtest_run_guard_events,
+        read_current_evidence_facts, read_shadow_pnl_events,
     },
 };
 use tempfile::TempDir;
@@ -207,6 +207,7 @@ fn admission_details(client_order_id: &str) -> AdmissionDetails {
         stale_reason: None,
         loss_snapshot_observed_at_ns: None,
         loss_eval_now_ns: None,
+        economics: None,
     }
 }
 
@@ -561,13 +562,6 @@ fn recovery_projects_every_committed_non_reservation_authorization() {
         }),
         NonBlockingRecordOutcome::Appended(_)
     ));
-    assert!(matches!(
-        recorder.record_forced_reduction_admission(ForcedReductionAdmissionFact {
-            details: admission_details("forced-reduction"),
-            outcome: AdmissionDecisionOutcome::Admitted,
-        }),
-        NonBlockingRecordOutcome::Appended(_)
-    ));
     let _basket = recorder
         .record_basket_admission_granted(BasketAdmissionGrantedFact {
             details: BasketAdmissionDetails {
@@ -607,7 +601,6 @@ fn recovery_projects_every_committed_non_reservation_authorization() {
     for client_order_id in [
         "entry-unreserved",
         "risk-reducing",
-        "forced-reduction",
         "basket-entry",
         "basket-risk-reducing",
     ] {
@@ -616,10 +609,39 @@ fn recovery_projects_every_committed_non_reservation_authorization() {
             "{client_order_id} must remain authorized after restart"
         );
     }
-    assert!(
-        recovery.authorizes_forced_reduction_order("forced-reduction"),
-        "forced-reduction liveness must remain distinguishable"
+}
+
+#[test]
+fn historical_forced_reduction_fact_is_decode_only() {
+    let temp = tempfile::tempdir().expect("tempdir must exist");
+    let loaded = loaded_in(&temp);
+    let fixture = include_str!(
+        "fixtures/bolt_v3/current_evidence/accepted_noncanonical/forced_reduction_admission.jsonl"
     );
+    let fixture = format!(
+        "{}\n",
+        fixture
+            .lines()
+            .next()
+            .expect("historical fixture must contain an admitted fact")
+    );
+    let machine = machine_path(&loaded);
+    fs::write(&machine, &fixture).expect("historical forced-reduction fixture must be installed");
+
+    let facts = read_current_evidence_facts(&machine, finite_cap(fixture.len() as u64))
+        .expect("historical forced-reduction fact must remain decodable");
+    assert!(!facts.is_empty());
+    assert!(
+        facts
+            .iter()
+            .all(|fact| matches!(fact, CurrentFact::ForcedReductionAdmission(_)))
+    );
+
+    let runtime = DecisionEvidenceRuntime::open(&loaded)
+        .expect("historical forced-reduction evidence must not block startup");
+    let recovery = runtime.reservation_recovery();
+    assert!(!recovery.authorizes_order("client-1"));
+    assert!(!recovery.authorizes_non_reservation_order("client-1"));
 }
 
 #[test]
@@ -657,7 +679,7 @@ fn open_refuses_foreign_or_observation_identity_in_machine_stream() {
 
     fs::write(
         machine_path(&loaded),
-        b"{\"kind\":\"blocked_strategy_input_observation\",\"schema_version\":1,\"gate_id\":\"bolt_v3.strategy_input_snapshot\",\"gate_version\":\"current\",\"recorded_at_utc_ns\":1}\n",
+        b"{\"kind\":\"blocked_strategy_input_observation\",\"schema_version\":3,\"gate_id\":\"bolt_v3.strategy_input_snapshot\",\"gate_version\":\"current\",\"recorded_at_utc_ns\":1}\n",
     )
     .expect("observation line must be written");
     let error = DecisionEvidenceRuntime::open(&loaded)

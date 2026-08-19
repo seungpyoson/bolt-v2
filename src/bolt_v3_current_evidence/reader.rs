@@ -13,10 +13,11 @@ use super::{
     facts::{
         AdmittedEntryAdmissionFact, BlockedStrategyInputObservationFact, BookingRecoveryEvent,
         CurrentFact, EntryOrderIntentFact, EntrySkipFact, ExitHoldDecisionFact,
-        ExitSubmissionDecisionFact, ForcedReductionAdmissionFact, LossGovernorHaltFact,
-        RejectedEntryAdmissionFact, RequoteThrottleObservationFact, ReservationRecoveryEvent,
-        RiskReducingExitAdmissionFact, SettlementRecoveryEvent, StartupRecoveryProjections,
-        SubmitLinkedStrategyInputSnapshotFact, SubmitReservationFillFact,
+        ExitIntentDecisionFact, ExitPreparedOrderFact, ForcedReductionAdmissionFact,
+        LossGovernorHaltFact, RejectedEntryAdmissionFact, RequoteThrottleObservationFact,
+        ReservationRecoveryEvent, RiskReducingExitAdmissionFact, SettlementRecoveryEvent,
+        StartupRecoveryProjections, SubmitLinkedStrategyInputSnapshotFact,
+        SubmitReservationFillFact,
     },
     generated_contract::{
         ConsumerDisposition, KnownConsumer, KnownSink, descriptor_for_identity, disposition_for,
@@ -49,7 +50,8 @@ pub enum BacktestRunGuardEvent {
     BasketAdmissionGranted(super::facts::BasketAdmissionGrantedFact),
     SubmitReservationFill(SubmitReservationFillFact),
     EntrySkipObservation(Box<EntrySkipFact>),
-    ExitSubmissionDecision(Box<ExitSubmissionDecisionFact>),
+    ExitIntentDecision(Box<ExitIntentDecisionFact>),
+    ExitPreparedOrder(Box<ExitPreparedOrderFact>),
     ExitHoldDecision(Box<ExitHoldDecisionFact>),
     LossGovernorHalt(LossGovernorHaltFact),
     RequoteThrottleObservation(RequoteThrottleObservationFact),
@@ -219,7 +221,8 @@ fn into_shadow_pnl_event(fact: CurrentFact) -> Result<ShadowPnlEvent> {
         | CurrentFact::CapitalAdmissionRebuild(_)
         | CurrentFact::SubmitReservationFill(_)
         | CurrentFact::EntrySkipObservation(_)
-        | CurrentFact::ExitSubmissionDecision(_)
+        | CurrentFact::ExitIntentDecision(_)
+        | CurrentFact::ExitPreparedOrder(_)
         | CurrentFact::ExitHoldDecision(_)
         | CurrentFact::ExitEvaluation(_)
         | CurrentFact::LossGovernorHalt(_)
@@ -265,8 +268,11 @@ pub(super) fn into_backtest_run_guard_event(fact: CurrentFact) -> Result<Backtes
         CurrentFact::EntrySkipObservation(value) => {
             Ok(BacktestRunGuardEvent::EntrySkipObservation(value))
         }
-        CurrentFact::ExitSubmissionDecision(value) => {
-            Ok(BacktestRunGuardEvent::ExitSubmissionDecision(value))
+        CurrentFact::ExitIntentDecision(value) => {
+            Ok(BacktestRunGuardEvent::ExitIntentDecision(value))
+        }
+        CurrentFact::ExitPreparedOrder(value) => {
+            Ok(BacktestRunGuardEvent::ExitPreparedOrder(value))
         }
         CurrentFact::ExitHoldDecision(value) => Ok(BacktestRunGuardEvent::ExitHoldDecision(value)),
         CurrentFact::LossGovernorHalt(value) => Ok(BacktestRunGuardEvent::LossGovernorHalt(value)),
@@ -385,19 +391,17 @@ pub(super) fn apply_startup_recovery_projections(
     if reservation_relevant {
         let event = match &fact {
             CurrentFact::AdmittedEntryAdmission(value) => {
-                ReservationRecoveryEvent::AdmittedEntry(value.clone())
+                Some(ReservationRecoveryEvent::AdmittedEntry(value.clone()))
             }
             CurrentFact::BasketAdmissionGranted(value) => {
-                ReservationRecoveryEvent::BasketGranted(value.clone())
+                Some(ReservationRecoveryEvent::BasketGranted(value.clone()))
             }
             CurrentFact::RiskReducingExitAdmission(value) => {
-                ReservationRecoveryEvent::RiskReducingExit(value.clone())
+                Some(ReservationRecoveryEvent::RiskReducingExit(value.clone()))
             }
-            CurrentFact::ForcedReductionAdmission(value) => {
-                ReservationRecoveryEvent::ForcedReduction(value.clone())
-            }
+            CurrentFact::ForcedReductionAdmission(_) => None,
             CurrentFact::SubmitReservationFill(value) => {
-                ReservationRecoveryEvent::Fill(value.clone())
+                Some(ReservationRecoveryEvent::Fill(value.clone()))
             }
             _ => {
                 return Err(anyhow!(
@@ -405,7 +409,9 @@ pub(super) fn apply_startup_recovery_projections(
                 ));
             }
         };
-        recovery.reservation.apply(event)?;
+        if let Some(event) = event {
+            recovery.reservation.apply(event)?;
+        }
     }
     if settlement_relevant {
         let event = match &fact {

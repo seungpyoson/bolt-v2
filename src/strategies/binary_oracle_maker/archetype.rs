@@ -386,6 +386,9 @@ pub fn validate_strategy(
         }
     };
     let mut errors = validate_parameter_bounds(context, &parameters);
+    if let Err(error) = ensure_maker_owns_stop(strategy) {
+        errors.push(format!("{context}: {error}"));
+    }
     errors.extend(validate_order_id_tag_delimiter_free(
         context,
         &strategy.order_id_tag,
@@ -765,9 +768,20 @@ fn raw_maker_config_from_config(strategy: &BoltV3StrategyConfig) -> Result<Value
             strategy.strategy_archetype.as_str()
         ));
     }
+    ensure_maker_owns_stop(strategy)?;
     let parameters = deserialize_parameters_block(&strategy.parameters)
         .map_err(|error| format!("invalid [parameters] block: {error}"))?;
     raw_maker_config_from_parts(strategy, &parameters)
+}
+
+fn ensure_maker_owns_stop(strategy: &BoltV3StrategyConfig) -> Result<(), String> {
+    if strategy.manage_stop {
+        return Err(
+            "manage_stop must be false because binary_oracle_maker owns tracked-order draining"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn raw_maker_config_from_parts(
@@ -2198,6 +2212,25 @@ mod tests {
             errors.is_empty(),
             "matching strategy config hash must pass: {errors:?}"
         );
+    }
+
+    #[test]
+    fn maker_validation_rejects_manage_stop_true() {
+        let mut strategy = valid_strategy_config();
+        strategy.manage_stop = true;
+        let root: BoltV3RootConfig =
+            toml::from_str(include_str!("../../../tests/fixtures/bolt_v3/root.toml"))
+                .expect("root fixture parses");
+
+        let errors = validate_strategy(CONTEXT, &root, &strategy, None);
+        assert!(
+            errors.iter().any(|error| error.contains("manage_stop")),
+            "the startup gate must reject competing NT managed-stop authority: {errors:?}"
+        );
+
+        let direct_error = raw_maker_config_from_config(&strategy)
+            .expect_err("direct maker preparation must reject managed stop too");
+        assert!(direct_error.contains("manage_stop"));
     }
 
     fn parameters_with_markets(markets: Vec<MarketBindingParametersBlock>) -> ParametersBlock {

@@ -1,0 +1,12 @@
+schema_version = 1
+adapter_id = "POLYMARKET"
+class = "HttpResponseBody"
+feeder = "EconomicsQuoteAuthority"
+captured_at = "2026-07-17"
+source_method = "GET"
+
+[[captures]]
+kind = "fee_bearing"
+source_url = "https://clob.polymarket.com/clob-markets/0x0e7b7cc2649466ce6dfed9cf49611630fe986b31fba84ec01107e0a50f1534bb"
+fixture = "captured_fee_bearing.json"
+fixture_sha256 = "40dc8e270751c70c66abdf5412af3b77422e4d13ef1b57277ea6df22a5cd8591"

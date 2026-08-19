@@ -98,7 +98,6 @@ struct StrategyInputDetailsWireV1<PurposeNumeric> {
     fast_venue_jitter_ms: Option<u64>,
     fast_venue_incoherent: bool,
     lead_agreement_corr: Option<String>,
-    fee_rate_basis_points: PurposeNumeric,
     selected_side: Option<SelectedSideV1>,
 }
 
@@ -386,9 +385,6 @@ where
             fast_venue_jitter_ms: value.fast_venue_jitter_ms,
             fast_venue_incoherent: value.fast_venue_incoherent,
             lead_agreement_corr: optional_number(value.lead_agreement_corr, "lead_agreement_corr")?,
-            fee_rate_basis_points: value
-                .fee_rate_basis_points
-                .validated("fee_rate_basis_points")?,
             selected_side: value.selected_side.map(Into::into),
         })
     }
@@ -490,9 +486,6 @@ where
             fast_venue_jitter_ms: value.fast_venue_jitter_ms,
             fast_venue_incoherent: value.fast_venue_incoherent,
             lead_agreement_corr: optional_number(value.lead_agreement_corr, "lead_agreement_corr")?,
-            fee_rate_basis_points: value
-                .fee_rate_basis_points
-                .validated("fee_rate_basis_points")?,
             selected_side: value.selected_side.map(Into::into),
         })
     }

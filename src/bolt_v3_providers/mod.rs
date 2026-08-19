@@ -46,11 +46,7 @@ pub use polymarket::KEY as OUTCOME_GROUP_POLYMARKET_VENUE_KEY;
 
 use std::{any::Any, collections::BTreeMap, fmt, path::Path, sync::Arc};
 
-use nautilus_model::{
-    enums::TimeInForce,
-    identifiers::{InstrumentId, Venue},
-    instruments::{Instrument, InstrumentAny},
-};
+use nautilus_model::{enums::TimeInForce, identifiers::Venue};
 use rust_decimal::Decimal;
 use serde::Serialize;
 
@@ -59,12 +55,13 @@ use crate::{
         BoltV3AdapterConfigs, BoltV3AdapterMappingError, BoltV3ClientAdapterConfig,
         BoltV3MarketClockFn,
     },
-    bolt_v3_config::{BoltV3RootConfig, ClientBlock, LoadedBoltV3Config},
+    bolt_v3_config::{BoltV3RootConfig, ClientBlock, ExecutionEconomicsConfig, LoadedBoltV3Config},
     bolt_v3_market_families::MarketIdentityPlan,
     bolt_v3_operator_artifacts::{BoltV3OperatorArtifactError, WrittenOperatorArtifact},
     bolt_v3_operator_health::{BoltV3InputHealthTransitionEmitter, BoltV3MissingInputSource},
     bolt_v3_provider_collateral_allowance::ProviderCollateralAllowanceSnapshotSource,
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
+    economics::VenueEconomicsAdapter,
 };
 
 pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
@@ -274,30 +271,6 @@ impl<'a> ProviderRuntimeApprovals<'a> {
     }
 }
 
-pub trait FeeProvider: Send + Sync {
-    fn fee_bps(&self, instrument_id: InstrumentId) -> Option<Decimal>;
-    fn entry_fee_bps(&self, instrument: &InstrumentAny, _entry_price: Decimal) -> Option<Decimal> {
-        self.fee_bps(instrument.id())
-    }
-    fn max_entry_fee_bps(
-        &self,
-        instrument: &InstrumentAny,
-        entry_price: Decimal,
-    ) -> Option<Decimal> {
-        self.entry_fee_bps(instrument, entry_price)
-    }
-    fn warm(
-        &self,
-        instrument_id: InstrumentId,
-    ) -> futures_util::future::BoxFuture<'_, anyhow::Result<()>>;
-}
-
-type FeeProviderBuilder = fn(
-    &str,
-    &ClientBlock,
-    &ResolvedBoltV3Secrets,
-) -> Result<Arc<dyn FeeProvider>, BoltV3AdapterMappingError>;
-
 type LiveSubmitApprovalLoader =
     for<'a> fn(
         ProviderLiveSubmitApprovalContext<'a>,
@@ -430,8 +403,59 @@ pub(crate) enum NtReconnectBudgetCapability {
     Required(NtReconnectBudgetLoader),
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ProviderExecutionEconomicsBinding {
+    pub load_config: fn(&toml::Value) -> Result<Option<ExecutionEconomicsConfig>, String>,
+    pub validate_config: fn(&ExecutionEconomicsConfig) -> Result<(), String>,
+    pub build_replay_authority: for<'a> fn(
+        ProviderEconomicsReplayAuthorityBuildContext<'a>,
+    ) -> Result<
+        crate::bolt_v3_economics_runtime::AuthoritativeVenueEconomicsInput,
+        String,
+    >,
+    pub build_adapter: for<'a> fn(
+        ProviderEconomicsAdapterBuildContext<'a>,
+    ) -> Result<BuiltProviderEconomicsAdapter, String>,
+}
+
+impl ProviderExecutionEconomicsBinding {
+    pub(crate) fn load_and_validate(
+        self,
+        execution: &toml::Value,
+    ) -> Result<Option<ExecutionEconomicsConfig>, String> {
+        let Some(config) = (self.load_config)(execution)? else {
+            return Ok(None);
+        };
+        (self.validate_config)(&config)?;
+        Ok(Some(config))
+    }
+}
+
+pub(crate) struct ProviderEconomicsReplayAuthorityBuildContext<'a> {
+    pub execution_client_id: &'a str,
+    pub instrument_id: &'a str,
+    pub product_surface_id: &'a str,
+    pub authority: &'a toml::Value,
+}
+
+pub(crate) struct BuiltProviderEconomicsAdapter {
+    pub account_id: String,
+    pub adapter: Arc<dyn VenueEconomicsAdapter>,
+}
+
+pub(crate) struct ProviderEconomicsAdapterBuildContext<'a> {
+    pub execution: &'a toml::Value,
+    pub config: &'a ExecutionEconomicsConfig,
+    pub instrument_id: &'a str,
+    pub product_surface_id: &'a str,
+    pub authority: &'a (dyn Any + Send + Sync),
+}
+
 pub struct ProviderBinding {
     pub key: &'static str,
+    /// Declared exactly when this binding registers an execution client.
+    /// `None` means the provider is data-only in this build.
+    pub(crate) venue_position_identity: Option<bool>,
     pub(crate) nt_reconnect_budget: NtReconnectBudgetCapability,
     pub validate_client: fn(&str, &ClientBlock) -> Vec<String>,
     pub supported_market_families: &'static [&'static str],
@@ -457,7 +481,7 @@ pub struct ProviderBinding {
     pub preflight_live_submit_arming: Option<LiveSubmitArmingPreflight>,
     pub write_live_submit_approval_artifact: Option<LiveSubmitApprovalArtifactWriter>,
     pub write_product_submit_proof_artifact: Option<ProductSubmitProofArtifactWriter>,
-    pub build_fee_provider: Option<FeeProviderBuilder>,
+    pub(crate) execution_economics: Option<ProviderExecutionEconomicsBinding>,
     pub build_provider_collateral_allowance_runtime_source:
         Option<ProviderCollateralAllowanceRuntimeSourceBuilder>,
     /// Conditions that must be closed before enforced capital admission can
@@ -613,6 +637,7 @@ fn validate_reference_live_probe_client(
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
     ProviderBinding {
         key: polymarket::KEY,
+        venue_position_identity: Some(false),
         reconciliation_unmet: &[
             "the pinned Polymarket adapter omits venue orders and positions from the mass status \
 it returns -- those it cannot represent, and holdings it filters as dust -- and still reports \
@@ -668,13 +693,19 @@ still lose positions inside the engine",
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: Some(polymarket::build_fee_provider),
+        execution_economics: Some(ProviderExecutionEconomicsBinding {
+            load_config: polymarket::execution_economics_config,
+            validate_config: polymarket::validate_execution_economics_config,
+            build_replay_authority: polymarket::build_replay_economics_authority,
+            build_adapter: polymarket::build_execution_economics_adapter,
+        }),
         build_provider_collateral_allowance_runtime_source: Some(
             polymarket::build_provider_collateral_allowance_runtime_source,
         ),
     },
     ProviderBinding {
         key: binance::KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -694,11 +725,12 @@ still lose positions inside the engine",
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
+        execution_economics: None,
         build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: hyperliquid::KEY,
+        venue_position_identity: Some(false),
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -720,11 +752,17 @@ still lose positions inside the engine",
             hyperliquid::write_configured_live_submit_approval_artifact,
         ),
         write_product_submit_proof_artifact: Some(hyperliquid::write_product_submit_proof_artifact),
-        build_fee_provider: Some(hyperliquid::build_fee_provider),
+        execution_economics: Some(ProviderExecutionEconomicsBinding {
+            load_config: hyperliquid::execution_economics_config,
+            validate_config: hyperliquid::validate_execution_economics_config,
+            build_replay_authority: hyperliquid::build_replay_economics_authority,
+            build_adapter: hyperliquid::build_execution_economics_adapter,
+        }),
         build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::BITMEX_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -744,11 +782,12 @@ still lose positions inside the engine",
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
+        execution_economics: None,
         build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::BYBIT_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -768,11 +807,12 @@ still lose positions inside the engine",
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
+        execution_economics: None,
         build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::COINBASE_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -792,11 +832,12 @@ still lose positions inside the engine",
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
+        execution_economics: None,
         build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::DERIBIT_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -816,11 +857,12 @@ still lose positions inside the engine",
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
+        execution_economics: None,
         build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::OKX_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -840,11 +882,12 @@ still lose positions inside the engine",
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
+        execution_economics: None,
         build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: market_data::KRAKEN_KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -864,11 +907,12 @@ still lose positions inside the engine",
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
+        execution_economics: None,
         build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: chainlink::KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -888,11 +932,12 @@ still lose positions inside the engine",
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
+        execution_economics: None,
         build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: chainlink_reference::KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -914,11 +959,12 @@ still lose positions inside the engine",
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
+        execution_economics: None,
         build_provider_collateral_allowance_runtime_source: None,
     },
     ProviderBinding {
         key: polyresearch::KEY,
+        venue_position_identity: None,
         reconciliation_unmet: &[
             "no submit-admission reconciliation path is verified for this provider",
         ],
@@ -940,7 +986,7 @@ still lose positions inside the engine",
         preflight_live_submit_arming: None,
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
-        build_fee_provider: None,
+        execution_economics: None,
         build_provider_collateral_allowance_runtime_source: None,
     },
 ];
@@ -1165,87 +1211,44 @@ pub fn validate_client_block(key: &str, client: &ClientBlock) -> Vec<String> {
     }
 }
 
-#[derive(Debug)]
-pub enum FeeProviderResolutionError {
-    UnsupportedProvider {
-        client_key: String,
-        provider_key: String,
-    },
-    ProviderWithoutFeeBinding {
-        client_key: String,
-        provider_key: String,
-    },
-    ProviderBuild {
-        client_key: String,
-        provider_key: String,
-        source: BoltV3AdapterMappingError,
-    },
-}
-
-impl std::fmt::Display for FeeProviderResolutionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnsupportedProvider {
-                client_key,
-                provider_key,
-            } => write!(
-                f,
-                "clients.{client_key}.venue `{provider_key}` has no registered provider binding",
-            ),
-            Self::ProviderWithoutFeeBinding {
-                client_key,
-                provider_key,
-            } => write!(
-                f,
-                "clients.{client_key}.venue `{provider_key}` has no registered fee-provider binding",
-            ),
-            Self::ProviderBuild {
-                client_key,
-                provider_key,
-                source,
-            } => write!(
-                f,
-                "clients.{client_key}.venue `{provider_key}` fee-provider construction failed: {source}",
-            ),
-        }
-    }
-}
-
-impl std::error::Error for FeeProviderResolutionError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::ProviderBuild { source, .. } => Some(source),
-            _ => None,
-        }
-    }
-}
-
-pub fn resolve_fee_provider(
-    execution_client_id: &str,
+/// Load and validate a configured client's provider-owned economics schema at
+/// root-config validation time. This is the same registry authority used by
+/// runtime binding, so selected and unselected clients cannot disagree about
+/// which provider formulas are supported.
+pub(crate) fn validate_client_execution_economics(
+    key: &str,
     client: &ClientBlock,
-    execution_venue: Venue,
-    resolved: &ResolvedBoltV3Secrets,
-) -> Result<Arc<dyn FeeProvider>, FeeProviderResolutionError> {
-    let provider_key = execution_venue.as_str();
-    let binding = binding_for_provider_key(provider_key).ok_or_else(|| {
-        FeeProviderResolutionError::UnsupportedProvider {
-            client_key: execution_client_id.to_string(),
-            provider_key: provider_key.to_string(),
+    reporting: Option<&crate::bolt_v3_config::EconomicsReportingConfig>,
+) -> Vec<String> {
+    let Some(execution) = client.execution.as_ref() else {
+        return Vec::new();
+    };
+    let Some(binding) = binding_for_provider_key(client.venue.as_str()) else {
+        return Vec::new();
+    };
+    let Some(economics_binding) = binding.execution_economics else {
+        return Vec::new();
+    };
+    let config = match economics_binding.load_and_validate(execution) {
+        Ok(Some(config)) => config,
+        Ok(None) => return Vec::new(),
+        Err(message) => {
+            return vec![format!(
+                "clients.{key}.execution.economics is invalid for provider `{}`: {message}",
+                binding.key
+            )];
         }
-    })?;
-    let build_fee_provider = binding.build_fee_provider.ok_or_else(|| {
-        FeeProviderResolutionError::ProviderWithoutFeeBinding {
-            client_key: execution_client_id.to_string(),
-            provider_key: provider_key.to_string(),
-        }
-    })?;
-    build_fee_provider(execution_client_id, client, resolved).map_err(|source| {
-        FeeProviderResolutionError::ProviderBuild {
-            client_key: execution_client_id.to_string(),
-            provider_key: provider_key.to_string(),
-            source,
-        }
-    })
+    };
+    let Some(reporting) = reporting else {
+        return vec![format!(
+            "clients.{key}.execution.economics requires the root [economics.reporting] block"
+        )];
+    };
+    config
+        .validate_common(reporting)
+        .into_iter()
+        .map(|message| format!("clients.{key}.execution.economics: {message}"))
+        .collect()
 }
 
 fn validate_required_secret_blocks(
@@ -1274,30 +1277,9 @@ fn validate_required_secret_blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        bolt_v3_config::LoadedBoltV3Config,
-        bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, resolve_bolt_v3_secrets_with},
-    };
-    use std::{collections::BTreeMap, path::PathBuf};
 
     fn client_from_toml(text: &str) -> ClientBlock {
         toml::from_str(text).expect("test client should parse")
-    }
-
-    fn fixture_loaded_config() -> LoadedBoltV3Config {
-        LoadedBoltV3Config {
-            root_path: PathBuf::from("tests/fixtures/bolt_v3/root.toml"),
-            config_bundle_checksum: "test-config-bundle-checksum".to_string(),
-            root: toml::from_str(include_str!("../../tests/fixtures/bolt_v3/root.toml"))
-                .expect("fixture root should parse"),
-            strategies: Vec::new(),
-        }
-    }
-
-    fn binance_reference_client() -> ClientBlock {
-        client_from_toml(include_str!(
-            "../../tests/fixtures/bolt_v3/binance_reference_client.toml"
-        ))
     }
 
     fn decimal(value: &str) -> Decimal {
@@ -1393,89 +1375,6 @@ mod tests {
         ));
     }
 
-    fn fake_secret_value(path: &str) -> String {
-        match path {
-            "/bolt/polymarket/private-key" => {
-                "0x1111111111111111111111111111111111111111111111111111111111111111".to_string()
-            }
-            "/bolt/polymarket/api-key" => "poly-api-key".to_string(),
-            "/bolt/polymarket/api-secret" => "YWJj".to_string(),
-            "/bolt/polymarket/api-passphrase" => "poly-passphrase".to_string(),
-            _ => panic!("unexpected test SSM path {path}"),
-        }
-    }
-
-    fn resolved_polymarket_secrets() -> ResolvedBoltV3Secrets {
-        let mut loaded = fixture_loaded_config();
-        loaded
-            .root
-            .clients
-            .retain(|client_key, _| client_key == "polymarket_main");
-        resolve_bolt_v3_secrets_with(&loaded, |_region, path| {
-            Ok::<_, String>(fake_secret_value(path))
-        })
-        .expect("fixture polymarket secrets should resolve")
-    }
-
-    fn set_polymarket_execution_field(
-        loaded: &mut LoadedBoltV3Config,
-        field: &'static str,
-        value: toml::Value,
-    ) {
-        let execution = loaded
-            .root
-            .clients
-            .get_mut("polymarket_main")
-            .and_then(|client| client.execution.as_mut())
-            .expect("fixture should include polymarket execution block");
-        let table = execution
-            .as_table_mut()
-            .expect("polymarket execution should be a table");
-        table.insert(field.to_string(), value);
-    }
-
-    fn expect_resolution_error(
-        result: Result<Arc<dyn FeeProvider>, FeeProviderResolutionError>,
-        message: &'static str,
-    ) -> FeeProviderResolutionError {
-        match result {
-            Ok(_) => panic!("{message}"),
-            Err(error) => error,
-        }
-    }
-
-    fn resolve_configured_fee_provider(
-        loaded: &LoadedBoltV3Config,
-        execution_client_id: &str,
-        resolved: &ResolvedBoltV3Secrets,
-    ) -> Result<Arc<dyn FeeProvider>, FeeProviderResolutionError> {
-        let client = loaded
-            .root
-            .clients
-            .get(execution_client_id)
-            .expect("test execution client should be configured");
-        resolve_fee_provider(execution_client_id, client, client.venue, resolved)
-    }
-
-    #[derive(Debug)]
-    struct SentinelSecrets {
-        value: String,
-    }
-
-    impl ProviderResolvedSecrets for SentinelSecrets {
-        fn provider_key(&self) -> &'static str {
-            "SENTINEL"
-        }
-
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-
-        fn redaction_values(&self) -> Vec<&str> {
-            vec![self.value.as_str()]
-        }
-    }
-
     #[test]
     fn credential_log_modules_are_provider_owned() {
         let polymarket = binding_for_provider_key(polymarket::KEY)
@@ -1531,207 +1430,5 @@ mod tests {
             validate_required_secret_blocks("fake_client", "FAKE", &client, &[requirement]);
 
         assert!(errors.is_empty());
-    }
-
-    #[test]
-    fn fee_provider_resolution_uses_provider_binding_registry() {
-        let loaded = fixture_loaded_config();
-        let resolved = resolved_polymarket_secrets();
-
-        let provider = resolve_configured_fee_provider(&loaded, "polymarket_main", &resolved)
-            .expect("polymarket fee provider should resolve through provider binding");
-
-        assert!(
-            binding_for_provider_key(polymarket::KEY)
-                .expect("polymarket binding should exist")
-                .build_fee_provider
-                .is_some(),
-            "polymarket binding should expose a fee-provider capability"
-        );
-        assert!(
-            provider
-                .fee_bps("condition-token.POLYMARKET".into())
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn fee_provider_resolution_rejects_unsupported_provider_kind() {
-        let mut loaded = fixture_loaded_config();
-        loaded.root.clients.insert(
-            "fake_execution".to_string(),
-            client_from_toml(
-                r#"
-                venue = "FAKE"
-                "#,
-            ),
-        );
-        let resolved = ResolvedBoltV3Secrets {
-            clients: BTreeMap::new(),
-        };
-
-        let error = expect_resolution_error(
-            resolve_configured_fee_provider(&loaded, "fake_execution", &resolved),
-            "unsupported provider key must fail at resolver boundary",
-        );
-
-        assert!(matches!(
-            error,
-            FeeProviderResolutionError::UnsupportedProvider { .. }
-        ));
-        assert!(error.to_string().contains("FAKE"));
-    }
-
-    #[test]
-    fn fee_provider_resolution_rejects_provider_without_fee_binding() {
-        let mut loaded = fixture_loaded_config();
-        loaded
-            .root
-            .clients
-            .insert("binance_reference".to_string(), binance_reference_client());
-        let resolved = ResolvedBoltV3Secrets {
-            clients: BTreeMap::new(),
-        };
-
-        let error = expect_resolution_error(
-            resolve_configured_fee_provider(&loaded, "binance_reference", &resolved),
-            "provider without fee binding must fail at resolver boundary",
-        );
-
-        assert!(matches!(
-            error,
-            FeeProviderResolutionError::ProviderWithoutFeeBinding { .. }
-        ));
-        assert!(error.to_string().contains("BINANCE"));
-    }
-
-    #[test]
-    fn fee_provider_resolution_reports_provider_config_parse_failure() {
-        let mut loaded = fixture_loaded_config();
-        set_polymarket_execution_field(
-            &mut loaded,
-            "fee_cache_ttl_secs",
-            toml::Value::String("not-an-integer".to_string()),
-        );
-        let resolved = resolved_polymarket_secrets();
-
-        let error = expect_resolution_error(
-            resolve_configured_fee_provider(&loaded, "polymarket_main", &resolved),
-            "provider config parse failure must surface through resolver",
-        );
-
-        assert!(matches!(
-            error,
-            FeeProviderResolutionError::ProviderBuild {
-                source: BoltV3AdapterMappingError::SchemaParse { .. },
-                ..
-            }
-        ));
-        assert!(error.to_string().contains("failed to deserialize"));
-    }
-
-    #[test]
-    fn fee_provider_resolution_rejects_invalid_secret_binding() {
-        let loaded = fixture_loaded_config();
-        let resolved = ResolvedBoltV3Secrets {
-            clients: BTreeMap::new(),
-        };
-
-        let error = expect_resolution_error(
-            resolve_configured_fee_provider(&loaded, "polymarket_main", &resolved),
-            "missing resolved secret binding must fail at resolver boundary",
-        );
-
-        assert!(matches!(
-            error,
-            FeeProviderResolutionError::ProviderBuild {
-                source: BoltV3AdapterMappingError::MissingResolvedSecrets { .. },
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn fee_provider_resolution_reports_provider_client_construction_failure() {
-        let mut loaded = fixture_loaded_config();
-        set_polymarket_execution_field(
-            &mut loaded,
-            "base_url_http",
-            toml::Value::String("not a url".to_string()),
-        );
-        let resolved = resolved_polymarket_secrets();
-
-        let error = expect_resolution_error(
-            resolve_configured_fee_provider(&loaded, "polymarket_main", &resolved),
-            "provider client construction failure must surface through resolver",
-        );
-
-        assert!(matches!(
-            error,
-            FeeProviderResolutionError::ProviderBuild {
-                source: BoltV3AdapterMappingError::ValidationInvariant { .. },
-                ..
-            }
-        ));
-        assert!(
-            error
-                .to_string()
-                .contains("failed to create Polymarket fee HTTP client")
-        );
-    }
-
-    #[test]
-    fn fee_provider_resolution_error_display_debug_redacts_sentinel_secret() {
-        let loaded = fixture_loaded_config();
-        let sentinel = "sentinel-secret-value-453";
-        let mut clients = BTreeMap::new();
-        clients.insert(
-            "polymarket_main".to_string(),
-            Arc::new(SentinelSecrets {
-                value: sentinel.to_string(),
-            }) as ResolvedBoltV3ClientSecrets,
-        );
-        let resolved = ResolvedBoltV3Secrets { clients };
-
-        let error = expect_resolution_error(
-            resolve_configured_fee_provider(&loaded, "polymarket_main", &resolved),
-            "sentinel secret provider mismatch must fail without leaking secret value",
-        );
-        let display = error.to_string();
-        let debug = format!("{error:?}");
-
-        assert!(!display.contains(sentinel), "{display}");
-        assert!(!debug.contains(sentinel), "{debug}");
-    }
-
-    #[test]
-    fn fee_provider_resolution_redacts_provider_build_secret_errors() {
-        let loaded = fixture_loaded_config();
-        let sentinel = "sentinel-secret-value-453";
-        let mut clients = BTreeMap::new();
-        clients.insert(
-            "polymarket_main".to_string(),
-            Arc::new(polymarket::ResolvedBoltV3PolymarketSecrets {
-                private_key: zeroize::Zeroizing::new(sentinel.to_string()),
-                api_key: zeroize::Zeroizing::new("poly-api-key".to_string()),
-                api_secret: zeroize::Zeroizing::new("YWJj".to_string()),
-                passphrase: zeroize::Zeroizing::new("poly-passphrase".to_string()),
-            }) as ResolvedBoltV3ClientSecrets,
-        );
-        let resolved = ResolvedBoltV3Secrets { clients };
-
-        let error = expect_resolution_error(
-            resolve_configured_fee_provider(&loaded, "polymarket_main", &resolved),
-            "provider build failure must not leak malformed resolved secret values",
-        );
-        let display = error.to_string();
-        let debug = format!("{error:?}");
-
-        assert!(matches!(
-            error,
-            FeeProviderResolutionError::ProviderBuild { .. }
-        ));
-        assert!(!display.contains(sentinel), "{display}");
-        assert!(!debug.contains(sentinel), "{debug}");
     }
 }

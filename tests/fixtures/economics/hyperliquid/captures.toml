@@ -1,0 +1,23 @@
+[[source]]
+fixture = "user_fees_discounted.json"
+endpoint = "userFees"
+schema_reference = "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint"
+provenance = "synthetic values shaped from the documented response; no account or credential data"
+
+[[source]]
+fixture = "perp_context.json"
+endpoint = "metaAndAssetCtxs"
+schema_reference = "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint/perpetuals"
+provenance = "synthetic values shaped from the documented response"
+
+[[source]]
+fixture = "aligned_quote.json"
+endpoint = "alignedQuoteTokenInfo"
+schema_reference = "https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint"
+provenance = "synthetic values shaped from the documented response"
+
+[[source]]
+fixture = "builder_approval.json"
+endpoint = "maxBuilderFee"
+schema_reference = "https://hyperliquid.gitbook.io/hyperliquid-docs/trading/builder-codes"
+provenance = "synthetic approved maximum in tenths of a basis point"

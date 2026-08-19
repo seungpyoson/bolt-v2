@@ -6,6 +6,7 @@ pub use crate::bolt_v3_fair_value_pricing::RvGateResult;
 
 use anyhow::{Context, Result, ensure};
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 
 use super::generated_contract::KnownFact;
 
@@ -268,6 +269,8 @@ pub struct CapitalAdmissionRebuildFact {
     pub attempted_reservation_count: usize,
     pub recovered_reservation_count: usize,
     pub live_reserved_liability: String,
+    pub unresolved_sink_invoked_reservation_count: usize,
+    pub unresolved_observed_open_reservation_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -402,6 +405,7 @@ pub enum AdmissionRejectionReason {
     CountCapExhausted,
     KillSwitchForcedReductionProofInvalid,
     KillSwitchForcedReductionCapExceeded,
+    EconomicsSealRejected,
     CapitalAdmission,
 }
 
@@ -409,6 +413,158 @@ pub enum AdmissionRejectionReason {
 pub enum AdmissionDecisionOutcome {
     Admitted,
     Rejected(AdmissionRejectionReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmissionEconomicsDetails {
+    pub decision_correlation_id: String,
+    pub core_total: String,
+    pub core_net_edge: String,
+    pub core_edge_ratio: String,
+    pub forecast_net_edge: String,
+    pub forecast_complete: bool,
+    pub missing_forecast_component_ids: Vec<String>,
+    pub valid_until_ns: u64,
+    pub forecast_valid_until_ns: Option<u64>,
+    pub source_snapshot_ids: Vec<String>,
+    pub reservation_basis: String,
+    pub full_reservation_liability: String,
+    pub components: Vec<AdmissionEconomicsComponent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionEconomicsClass {
+    Charge,
+    Credit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionEconomicsKind {
+    ProtocolTrading,
+    AttachedRoutingCharge,
+    Funding,
+    BorrowInterest,
+    SuppliedBalanceInterest,
+    MakerRebate,
+    LiquidityReward,
+    HoldingReward,
+    ReferralReward,
+    FeeCredit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
+pub enum AdmissionEconomicsScope {
+    Decision {
+        decision_correlation_id: String,
+    },
+    PositionInterval {
+        position_id: String,
+        starts_at_ns: u64,
+        ends_at_ns: u64,
+    },
+    Action {
+        action_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionEconomicsInventoryApplication {
+    AlreadyAppliedToGrossFill,
+    ApplyOnceToNetPortfolio,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
+pub enum AdmissionEconomicsNativeUnit {
+    Currency { currency_id: String },
+    Asset { asset_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionEconomicsNativeEffect {
+    pub amount: String,
+    pub unit: AdmissionEconomicsNativeUnit,
+    pub inventory_application: Option<AdmissionEconomicsInventoryApplication>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
+pub enum AdmissionEconomicsPointEstimate {
+    NonZero {
+        effect: AdmissionEconomicsNativeEffect,
+    },
+    ProvenZero {
+        factor_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionEconomicsRiskBoundAuthority {
+    VenueMaximum,
+    VenueRateCapWithPriceStress,
+    OperatorRiskLimit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
+pub enum AdmissionEconomicsTreatment {
+    GuaranteedConditionalOnAction,
+    RiskBound {
+        authority: AdmissionEconomicsRiskBoundAuthority,
+    },
+    ForecastOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionEconomicsCalculationFactor {
+    pub factor_id: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionEconomicsSource {
+    pub source_id: String,
+    pub snapshot_id: String,
+    pub source_at_ns: u64,
+    pub fetched_at_ns: u64,
+    pub valid_until_ns: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionEconomicsValuation {
+    pub native_effect: AdmissionEconomicsNativeEffect,
+    pub normalized_amount: String,
+    pub reporting_currency: String,
+    pub route_id: Option<String>,
+    pub source_snapshot_ids: Vec<String>,
+    pub valued_at_ns: u64,
+    pub valid_until_ns: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmissionEconomicsComponent {
+    pub component_id: String,
+    pub class: AdmissionEconomicsClass,
+    pub economic_kind: AdmissionEconomicsKind,
+    pub scope: AdmissionEconomicsScope,
+    pub point_estimate: AdmissionEconomicsPointEstimate,
+    pub point_valuation: Option<AdmissionEconomicsValuation>,
+    pub debit_risk_bound: Option<AdmissionEconomicsNativeEffect>,
+    pub debit_risk_bound_valuation: Option<AdmissionEconomicsValuation>,
+    pub treatment: AdmissionEconomicsTreatment,
+    pub calculation_factors: Vec<AdmissionEconomicsCalculationFactor>,
+    pub formula_id: String,
+    pub source: AdmissionEconomicsSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -436,6 +592,7 @@ pub struct AdmissionDetails {
     pub stale_reason: Option<LossSnapshotStaleReason>,
     pub loss_snapshot_observed_at_ns: Option<u64>,
     pub loss_eval_now_ns: Option<u64>,
+    pub economics: Option<AdmissionEconomicsDetails>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -525,7 +682,6 @@ define_closed_enum! {
         QuantityNotPositive,
         PositionContractInvalid,
         EntryPositionContractUnsupported,
-        HistoricalEntryFeeUnavailable,
         OnePositionInvariantViolation,
         EntryMalformedRejected,
         EntryBalanceRejected,
@@ -560,7 +716,6 @@ pub enum EntryBlockReason {
     BookCrossed,
     IntervalOpenMissing,
     WarmupIncomplete,
-    FeesNotReady,
     RecoveryMode,
     MarketCoolingDown,
     SpotSpikeCooldown,
@@ -577,7 +732,6 @@ pub enum BinaryOutcomeEdgeBlockReason {
     UnsupportedOrderShape,
     EdgeBelowThreshold,
     SpreadOrSlippageWipedEdge,
-    FeeUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -590,7 +744,6 @@ pub enum EntryPricingBlockReason {
     ThetaScalerUnavailable,
     UncertaintyBandUnavailable,
     FairProbabilityUnavailable,
-    FeeUnavailable(OutcomeSide),
     ExecutableEntryCostUnavailable(OutcomeSide),
     ExecutableEdgeUnavailable(OutcomeSide, BinaryOutcomeEdgeBlockReason),
     SizedNotionalUnsupported(OutcomeSide),
@@ -736,8 +889,6 @@ pub struct EntrySkipFact {
     pub sized_worst_case_ev_bps: Option<String>,
     pub sized_edge_cents_per_share: Option<String>,
     pub theta_scaled_min_edge_bps: Option<String>,
-    pub up_fee_bps: Option<String>,
-    pub down_fee_bps: Option<String>,
     pub submission_blocked_reason: Option<EntrySkipReason>,
     pub stale_reference_after_ms: Option<u64>,
     pub last_reference_ts_ms: Option<u64>,
@@ -811,7 +962,6 @@ pub struct StrategyInputDetails<PurposeNumeric> {
     pub fast_venue_jitter_ms: Option<u64>,
     pub fast_venue_incoherent: bool,
     pub lead_agreement_corr: Option<String>,
-    pub fee_rate_basis_points: PurposeNumeric,
     pub selected_side: Option<OutcomeSide>,
 }
 
@@ -881,8 +1031,6 @@ pub struct ExitDecisionDetails {
     pub fair_probability_up: Option<String>,
     pub fair_probability_down: Option<String>,
     pub uncertainty_band_probability: Option<String>,
-    pub up_fee_bps: Option<String>,
-    pub down_fee_bps: Option<String>,
     pub hold_ev_bps: Option<String>,
     pub exit_ev_bps: Option<String>,
     pub realized_vol: Option<String>,
@@ -915,16 +1063,100 @@ pub struct ExitDecisionDetails {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExitSubmissionOutcome {
+pub enum ExitIntentOutcome {
     Exit,
     ExitFailClosed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExitSubmissionDecisionFact {
+pub struct ExitIntentDecisionFact {
     pub details: ExitDecisionDetails,
-    pub outcome: ExitSubmissionOutcome,
-    pub submission: SubmissionLinkage,
+    pub outcome: ExitIntentOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedOrderLinkage {
+    pub instrument_id: String,
+    pub order_side: EvidenceOrderSide,
+    pub price: String,
+    pub quantity: String,
+    pub client_order_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmittedOrderLinkage {
+    pub instrument_id: String,
+    pub order_side: EvidenceOrderSide,
+    pub price: String,
+    pub quantity: String,
+    pub client_order_id: String,
+}
+
+impl From<SubmissionLinkage> for PreparedOrderLinkage {
+    fn from(value: SubmissionLinkage) -> Self {
+        Self {
+            instrument_id: value.instrument_id,
+            order_side: value.order_side,
+            price: value.price,
+            quantity: value.quantity,
+            client_order_id: value.client_order_id,
+        }
+    }
+}
+
+impl From<PreparedOrderLinkage> for SubmissionLinkage {
+    fn from(value: PreparedOrderLinkage) -> Self {
+        Self {
+            instrument_id: value.instrument_id,
+            order_side: value.order_side,
+            price: value.price,
+            quantity: value.quantity,
+            client_order_id: value.client_order_id,
+        }
+    }
+}
+
+impl From<PreparedOrderLinkage> for SubmittedOrderLinkage {
+    fn from(value: PreparedOrderLinkage) -> Self {
+        Self {
+            instrument_id: value.instrument_id,
+            order_side: value.order_side,
+            price: value.price,
+            quantity: value.quantity,
+            client_order_id: value.client_order_id,
+        }
+    }
+}
+
+impl From<SubmittedOrderLinkage> for SubmissionLinkage {
+    fn from(value: SubmittedOrderLinkage) -> Self {
+        Self {
+            instrument_id: value.instrument_id,
+            order_side: value.order_side,
+            price: value.price,
+            quantity: value.quantity,
+            client_order_id: value.client_order_id,
+        }
+    }
+}
+
+impl From<SubmissionLinkage> for SubmittedOrderLinkage {
+    fn from(value: SubmissionLinkage) -> Self {
+        Self {
+            instrument_id: value.instrument_id,
+            order_side: value.order_side,
+            price: value.price,
+            quantity: value.quantity,
+            client_order_id: value.client_order_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExitPreparedOrderFact {
+    pub details: ExitDecisionDetails,
+    pub outcome: ExitIntentOutcome,
+    pub prepared_order: PreparedOrderLinkage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -941,13 +1173,51 @@ pub struct ExitHoldDecisionFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExitEvaluationDecision {
-    Submission {
-        outcome: ExitSubmissionOutcome,
-    },
-    Hold {
+pub enum ExitPreparationStage {
+    OrderTemplate,
+    InstrumentAuthority,
+    PositionAuthority,
+    ExecutableLiquidity,
+    EconomicsSeal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExitAttemptOutcome {
+    Held {
         outcome: ExitHoldOutcome,
-        blocked_reason: Option<ExitBlockedReason>,
+    },
+    Blocked {
+        blocked_reason: ExitBlockedReason,
+    },
+    PreparationRejected {
+        stage: ExitPreparationStage,
+        reason: String,
+    },
+    RouteRejected {
+        prepared_order: PreparedOrderLinkage,
+        reason: String,
+    },
+    IntentEvidenceRejected {
+        prepared_order: PreparedOrderLinkage,
+        reason: String,
+    },
+    AdmissionRejected {
+        prepared_order: PreparedOrderLinkage,
+        reason: String,
+    },
+    PolicySkipped {
+        prepared_order: PreparedOrderLinkage,
+    },
+    PreSinkRejected {
+        prepared_order: PreparedOrderLinkage,
+        reason: String,
+    },
+    SinkInvokedUnknown {
+        submitted_order: SubmittedOrderLinkage,
+        diagnostic: String,
+    },
+    Submitted {
+        submitted_order: SubmittedOrderLinkage,
     },
 }
 
@@ -956,7 +1226,6 @@ pub struct ExitEvaluationFact {
     pub position_id: Option<String>,
     pub market_id: Option<String>,
     pub instrument_id: Option<String>,
-    pub client_order_id: Option<String>,
     pub exit_eval_now_ms: i64,
     pub exit_trigger_source: ExitTriggerSource,
     pub trigger_ts_event_ms: Option<i64>,
@@ -979,11 +1248,9 @@ pub struct ExitEvaluationFact {
     pub fair_probability_up: Option<String>,
     pub fair_probability_down: Option<String>,
     pub uncertainty_band_probability: Option<String>,
-    pub up_fee_bps: Option<String>,
-    pub down_fee_bps: Option<String>,
     pub hold_ev_bps: Option<String>,
     pub exit_ev_bps: Option<String>,
-    pub decision: ExitEvaluationDecision,
+    pub outcome: ExitAttemptOutcome,
     pub forced_flat_reasons: Vec<ForcedFlatReason>,
 }
 
@@ -1049,7 +1316,6 @@ pub enum OrderLifecycleTransition {
     BoundaryReclassification,
     EntryFillMaterialized,
     EntryReconcilePending,
-    PositionTruthRematerialized,
     PositionClosed,
     ResidualRemanaged,
     RestartOpenOrderAdopted,
@@ -1121,7 +1387,6 @@ pub struct ReservationRecoveryFacts {
     reservation_fills: BTreeMap<(String, String), BTreeMap<String, SubmitReservationFillFact>>,
     admitted_unreserved_entry_client_order_ids: BTreeSet<String>,
     admitted_risk_reducing_client_order_ids: BTreeSet<String>,
-    admitted_forced_reduction_client_order_ids: BTreeSet<String>,
 }
 
 impl ReservationRecoveryFacts {
@@ -1131,7 +1396,6 @@ impl ReservationRecoveryFacts {
             && self.reservation_fills.is_empty()
             && self.admitted_unreserved_entry_client_order_ids.is_empty()
             && self.admitted_risk_reducing_client_order_ids.is_empty()
-            && self.admitted_forced_reduction_client_order_ids.is_empty()
     }
 
     #[must_use]
@@ -1164,21 +1428,12 @@ impl ReservationRecoveryFacts {
             || self
                 .admitted_risk_reducing_client_order_ids
                 .contains(client_order_id)
-            || self
-                .admitted_forced_reduction_client_order_ids
-                .contains(client_order_id)
     }
 
     #[must_use]
     pub fn authorizes_order(&self, client_order_id: &str) -> bool {
         self.reservation_attribution.contains_key(client_order_id)
             || self.authorizes_non_reservation_order(client_order_id)
-    }
-
-    #[must_use]
-    pub fn authorizes_forced_reduction_order(&self, client_order_id: &str) -> bool {
-        self.admitted_forced_reduction_client_order_ids
-            .contains(client_order_id)
     }
 
     pub(crate) fn apply(&mut self, fact: ReservationRecoveryEvent) -> Result<()> {
@@ -1218,14 +1473,6 @@ impl ReservationRecoveryFacts {
                     self.insert_non_reservation_authorization(
                         admission.details.client_order_id,
                         RecoveredNonReservationAuthorization::RiskReducing,
-                    )?;
-                }
-            }
-            ReservationRecoveryEvent::ForcedReduction(admission) => {
-                if admission.outcome == AdmissionDecisionOutcome::Admitted {
-                    self.insert_non_reservation_authorization(
-                        admission.details.client_order_id,
-                        RecoveredNonReservationAuthorization::ForcedReduction,
                     )?;
                 }
             }
@@ -1303,9 +1550,6 @@ impl ReservationRecoveryFacts {
                 .contains(&attribution.client_order_id)
                 && !self
                     .admitted_unreserved_entry_client_order_ids
-                    .contains(&attribution.client_order_id)
-                && !self
-                    .admitted_forced_reduction_client_order_ids
                     .contains(&attribution.client_order_id),
             "submit-reservation attribution for client_order_id `{}` conflicts with a non-reservation admission",
             attribution.client_order_id
@@ -1327,9 +1571,6 @@ impl ReservationRecoveryFacts {
                     .contains(&client_order_id)
                 && !self
                     .admitted_risk_reducing_client_order_ids
-                    .contains(&client_order_id)
-                && !self
-                    .admitted_forced_reduction_client_order_ids
                     .contains(&client_order_id),
             "duplicate or conflicting admission authorization for client_order_id `{client_order_id}`"
         );
@@ -1340,10 +1581,6 @@ impl ReservationRecoveryFacts {
             }
             RecoveredNonReservationAuthorization::RiskReducing => {
                 self.admitted_risk_reducing_client_order_ids
-                    .insert(client_order_id);
-            }
-            RecoveredNonReservationAuthorization::ForcedReduction => {
-                self.admitted_forced_reduction_client_order_ids
                     .insert(client_order_id);
             }
         }
@@ -1372,7 +1609,6 @@ fn reservation_fill_stable_identity_eq(
 enum RecoveredNonReservationAuthorization {
     UnreservedEntry,
     RiskReducing,
-    ForcedReduction,
 }
 
 #[derive(Debug, Default)]
@@ -1466,7 +1702,6 @@ pub(crate) enum ReservationRecoveryEvent {
     AdmittedEntry(Box<AdmittedEntryAdmissionFact>),
     BasketGranted(BasketAdmissionGrantedFact),
     RiskReducingExit(Box<RiskReducingExitAdmissionFact>),
-    ForcedReduction(Box<ForcedReductionAdmissionFact>),
     Fill(SubmitReservationFillFact),
 }
 
@@ -1506,7 +1741,8 @@ mod current_fact {
         CapitalAdmissionRebuild(CapitalAdmissionRebuildFact),
         SubmitReservationFill(SubmitReservationFillFact),
         EntrySkipObservation(Box<EntrySkipFact>),
-        ExitSubmissionDecision(Box<ExitSubmissionDecisionFact>),
+        ExitIntentDecision(Box<ExitIntentDecisionFact>),
+        ExitPreparedOrder(Box<ExitPreparedOrderFact>),
         ExitHoldDecision(Box<ExitHoldDecisionFact>),
         ExitEvaluation(Box<ExitEvaluationFact>),
         LossGovernorHalt(LossGovernorHaltFact),
@@ -1538,7 +1774,8 @@ mod current_fact {
                 Self::CapitalAdmissionRebuild(_) => KnownFact::CapitalAdmissionRebuildV1,
                 Self::SubmitReservationFill(_) => KnownFact::SubmitReservationFillV1,
                 Self::EntrySkipObservation(_) => KnownFact::EntrySkipObservationV1,
-                Self::ExitSubmissionDecision(_) => KnownFact::ExitSubmissionDecisionV1,
+                Self::ExitIntentDecision(_) => KnownFact::ExitIntentDecisionV1,
+                Self::ExitPreparedOrder(_) => KnownFact::ExitPreparedOrderV1,
                 Self::ExitHoldDecision(_) => KnownFact::ExitHoldDecisionV1,
                 Self::ExitEvaluation(_) => KnownFact::ExitEvaluationV1,
                 Self::LossGovernorHalt(_) => KnownFact::LossGovernorHaltV1,

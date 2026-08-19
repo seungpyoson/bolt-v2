@@ -10,6 +10,9 @@ use crate::bolt_v3_config::{
 use crate::bolt_v3_current_evidence::{
     BookingRecoveryFacts, SettlementRecoveryFacts, StrategyEvidenceHandles,
 };
+use crate::bolt_v3_economics_runtime::{
+    AuthoritativeEconomicsInputStore, bind_execution_economics,
+};
 use crate::bolt_v3_iv::{
     config::IvProfile,
     query::{IvQueryHandle, IvStrategyQueryHandle},
@@ -17,16 +20,18 @@ use crate::bolt_v3_iv::{
     store::{IvRetentionPolicy, IvStore},
 };
 use crate::bolt_v3_operator_health::BoltV3SettlementHealthTransitionEmitter;
-use crate::bolt_v3_order_execution::BoltV3OrderExecutionPolicy;
-use crate::bolt_v3_providers::{FeeProvider, resolve_fee_provider};
-use crate::bolt_v3_secrets::ResolvedBoltV3Secrets;
+use crate::bolt_v3_order_execution::{BoltV3OrderEconomicsHandle, BoltV3OrderExecutionPolicy};
+use crate::bolt_v3_position_authority_feed::{
+    BoltV3PositionAuthorityCapability, BoltV3PositionAuthorityFeed, BoltV3PositionAuthorityRuntime,
+};
 use crate::bolt_v3_settlement_runtime::BoltV3SettlementRuntimeSinkHandle;
 use crate::bolt_v3_strategy_context::{StrategyBuildContext, StrategyDecisionEvidence};
 use crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState;
-use nautilus_common::{actor::DataActorNative, component::Component};
+use nautilus_common::{actor::DataActorNative, cache::Cache, component::Component};
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
-    identifiers::{ClientId, StrategyId, Venue},
+    enums::OmsType,
+    identifiers::{AccountId, ClientId, StrategyId, Venue},
     types::Currency,
 };
 use nautilus_system::trader::Trader;
@@ -217,6 +222,8 @@ pub struct StrategyRuntimeCapabilities {
 pub struct BoltV3StrategyExecutionControls {
     pub submit_admission: Arc<BoltV3SubmitAdmissionState>,
     pub order_execution_policy: BoltV3OrderExecutionPolicy,
+    pub economics_inputs: AuthoritativeEconomicsInputStore,
+    pub position_authority: Option<BoltV3PositionAuthorityFeed>,
     pub settlement_runtime_sink: Option<BoltV3SettlementRuntimeSinkHandle>,
     pub settlement_recovery: Option<Arc<SettlementRecoveryFacts>>,
     pub booking_recovery: Option<Arc<BookingRecoveryFacts>>,
@@ -259,7 +266,8 @@ pub struct StrategyRegistrationContext<'a> {
     realized_volatility_runtime: Option<Arc<Mutex<RealizedVolSurfaceRuntime>>>,
     client_routes: PreparedStrategyClientRoutes,
     execution_venue: Venue,
-    fee_provider: Arc<dyn FeeProvider>,
+    order_economics: BoltV3OrderEconomicsHandle,
+    position_authority: Option<BoltV3PositionAuthorityCapability>,
     settlement: Option<StrategyRegistrationSettlementResources>,
 }
 
@@ -399,7 +407,6 @@ impl<'a> StrategyRegistrationContext<'a> {
         loaded: &LoadedBoltV3Config,
         strategy: &'a LoadedStrategy,
         contract: StrategyRegistrationContract,
-        resolved: &ResolvedBoltV3Secrets,
         preparation_config: Arc<StrategyPreparationConfig>,
         runtime_resources: &StrategyRegistrationRuntimeResources,
     ) -> Result<Self, BoltV3StrategyRegistrationError> {
@@ -423,6 +430,8 @@ impl<'a> StrategyRegistrationContext<'a> {
         let BoltV3StrategyExecutionControls {
             submit_admission,
             order_execution_policy,
+            economics_inputs,
+            position_authority,
             settlement_runtime_sink,
             settlement_recovery,
             booking_recovery,
@@ -464,13 +473,20 @@ impl<'a> StrategyRegistrationContext<'a> {
             })
             .transpose()
             .map_err(|error| binding_error(strategy, error.message()))?;
-        let fee_provider = resolve_fee_provider(
-            execution_client_id,
-            execution_client,
-            execution_venue,
-            resolved,
-        )
-        .map_err(|error| binding_error(strategy, error.to_string()))?;
+        let execution_economics =
+            bind_execution_economics(loaded, execution_client_id, &economics_inputs)
+                .map_err(|error| binding_error(strategy, error.to_string()))?;
+        let position_authority = position_authority
+            .map(|feed| {
+                bind_position_authority_feed(
+                    feed,
+                    execution_client,
+                    strategy.config.execution_client_id,
+                    strategy.config.oms_type,
+                )
+                .map_err(|error| binding_error(strategy, error.to_string()))
+            })
+            .transpose()?;
 
         Ok(Self {
             strategy,
@@ -484,7 +500,8 @@ impl<'a> StrategyRegistrationContext<'a> {
             realized_volatility_runtime,
             client_routes,
             execution_venue,
-            fee_provider,
+            order_economics: BoltV3OrderEconomicsHandle::new(execution_economics),
+            position_authority,
             settlement,
         })
     }
@@ -566,6 +583,78 @@ pub fn prepare_strategy_client_routes(
     Ok(resolve_strategy_client_routes(loaded, strategy)?.prepared)
 }
 
+/// Builds the one position-authority runtime shared by every loaded strategy.
+pub fn prepare_position_authority_runtime(
+    loaded: &LoadedBoltV3Config,
+    cache: Rc<RefCell<Cache>>,
+) -> anyhow::Result<BoltV3PositionAuthorityRuntime> {
+    let bindings = loaded
+        .strategies
+        .iter()
+        .map(|strategy| {
+            let execution_client_id = strategy.config.execution_client_id;
+            let client = loaded
+                .root
+                .clients
+                .get(execution_client_id.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "position authority execution client is not loaded: execution_client_id={execution_client_id}"
+                    )
+                })?;
+            Ok(execution_account_id_from_client(client).map(|account_id| {
+                (
+                    AccountId::from(account_id),
+                    execution_client_id,
+                    client.venue,
+                )
+            }))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    BoltV3PositionAuthorityRuntime::try_new(bindings, cache)
+}
+
+/// Binds one strategy execution client to the shared position-authority runtime.
+pub fn bind_position_authority_capability(
+    loaded: &LoadedBoltV3Config,
+    runtime: &BoltV3PositionAuthorityRuntime,
+    execution_client_id: ClientId,
+    oms_type: OmsType,
+) -> anyhow::Result<BoltV3PositionAuthorityCapability> {
+    let client = loaded
+        .root
+        .clients
+        .get(execution_client_id.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "position authority execution client is not loaded: execution_client_id={execution_client_id}"
+            )
+        })?;
+    bind_position_authority_feed(runtime.feed(), client, execution_client_id, oms_type)
+}
+
+fn bind_position_authority_feed(
+    feed: BoltV3PositionAuthorityFeed,
+    client: &ClientBlock,
+    execution_client_id: ClientId,
+    oms_type: OmsType,
+) -> anyhow::Result<BoltV3PositionAuthorityCapability> {
+    let account_id = execution_account_id_from_client(client).ok_or_else(|| {
+        anyhow::anyhow!(
+            "position authority requires execution account id for execution_client_id `{execution_client_id}`"
+        )
+    })?;
+    Ok(BoltV3PositionAuthorityCapability::new(
+        feed,
+        execution_client_id,
+        AccountId::from(account_id),
+        oms_type,
+    ))
+}
+
 fn resolve_settlement_capability(
     loaded: &LoadedBoltV3Config,
     strategy: &LoadedStrategy,
@@ -609,14 +698,16 @@ pub fn assemble_strategy_build_context(
 ) -> Result<StrategyBuildContext, BoltV3StrategyRegistrationError> {
     let execution_venue = context.execution_venue;
     let settlement = settlement_resources_for_context(context);
-    let fee_provider = context.fee_provider.clone();
     let mut build_context = StrategyBuildContext::new(
-        fee_provider,
+        context.order_economics.clone(),
         context.decision_evidence.clone(),
         context.submit_admission.clone(),
         context.order_execution_policy,
         execution_venue,
     );
+    if let Some(position_authority) = &context.position_authority {
+        build_context = build_context.with_position_authority(position_authority.clone());
+    }
     if let Some(realized_volatility_runtime) = &context.realized_volatility_runtime {
         build_context =
             build_context.with_realized_volatility_runtime(realized_volatility_runtime.clone());
@@ -956,7 +1047,6 @@ pub fn validate_iv_strategy_references(
 pub fn register_bolt_v3_strategies_on_node_with_bindings(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
-    resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     execution_controls: BoltV3StrategyExecutionControls,
     decision_evidence: impl Into<StrategyEvidenceHandles>,
@@ -974,7 +1064,6 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
     register_bolt_v3_strategies_on_node_with_handle_registry(
         node,
         loaded,
-        resolved,
         bindings,
         execution_controls,
         decision_evidence.into(),
@@ -985,7 +1074,6 @@ pub fn register_bolt_v3_strategies_on_node_with_bindings(
 pub fn register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
-    resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     execution_controls: BoltV3StrategyExecutionControls,
     decision_evidence: impl Into<StrategyEvidenceHandles>,
@@ -1002,7 +1090,6 @@ pub fn register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
     register_bolt_v3_strategies_on_node_with_handle_registry(
         node,
         loaded,
-        resolved,
         bindings,
         execution_controls,
         decision_evidence.into(),
@@ -1013,7 +1100,6 @@ pub fn register_bolt_v3_strategies_on_node_with_iv_runtime_bindings(
 fn register_bolt_v3_strategies_on_node_with_handle_registry(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
-    resolved: &ResolvedBoltV3Secrets,
     bindings: &[StrategyRuntimeBinding],
     execution_controls: BoltV3StrategyExecutionControls,
     decision_evidence: StrategyEvidenceHandles,
@@ -1049,7 +1135,6 @@ fn register_bolt_v3_strategies_on_node_with_handle_registry(
                 loaded,
                 strategy,
                 binding.registration_contract(),
-                resolved,
                 preparation_config.clone(),
                 &runtime_resources,
             )?;

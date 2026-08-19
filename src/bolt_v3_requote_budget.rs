@@ -1,6 +1,9 @@
 //! Shared maker requote-rate throttle.
 
-use std::collections::VecDeque;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::{Arc, Mutex, MutexGuard},
+};
 
 const INITIAL_WINDOW_COST: u64 = u64::MIN;
 
@@ -115,6 +118,17 @@ impl RequoteBudget {
             }
         }
     }
+
+    fn record_reserved(&mut self, now_ms: u64, cost: u64) {
+        let emit_ms = self.last_emit_ms.map_or(now_ms, |last| last.max(now_ms));
+        self.evict(emit_ms);
+        self.emits.push_back((emit_ms, cost));
+        self.window_cost = self
+            .window_cost
+            .checked_add(cost)
+            .expect("reserved budget conversion cannot overflow");
+        self.last_emit_ms = Some(emit_ms);
+    }
 }
 
 /// Structural token cost of one NT submit command against the submit-governor
@@ -127,6 +141,77 @@ const REST_CALL_COST: u64 = 1;
 /// resubmit REST call. The venue lacks an in-place modify, so a reprice is always
 /// two REST calls.
 pub(crate) const CANCEL_RESUBMIT_REST_COST: u64 = REST_CALL_COST + REST_CALL_COST;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LiabilityBalance {
+    now_ms: u64,
+    submit_cost: u64,
+    rest_cost: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutstandingLiability {
+    OneShot(LiabilityBalance),
+    CancelResubmitBothOutstanding { now_ms: u64 },
+    CancelResubmitReplacementOutstanding { now_ms: u64 },
+}
+
+impl OutstandingLiability {
+    const fn balance(self) -> LiabilityBalance {
+        match self {
+            Self::OneShot(balance) => balance,
+            Self::CancelResubmitBothOutstanding { now_ms } => LiabilityBalance {
+                now_ms,
+                submit_cost: SUBMIT_COMMAND_COST,
+                rest_cost: CANCEL_RESUBMIT_REST_COST,
+            },
+            Self::CancelResubmitReplacementOutstanding { now_ms } => LiabilityBalance {
+                now_ms,
+                submit_cost: SUBMIT_COMMAND_COST,
+                rest_cost: REST_CALL_COST,
+            },
+        }
+    }
+
+    const fn submit_cost(self) -> u64 {
+        self.balance().submit_cost
+    }
+
+    const fn rest_cost(self) -> u64 {
+        self.balance().rest_cost
+    }
+
+    const fn now_ms(self) -> u64 {
+        self.balance().now_ms
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequoteBudgetReservationProposal {
+    liability: OutstandingLiability,
+}
+
+impl RequoteBudgetReservationProposal {
+    #[must_use]
+    pub const fn now_ms(self) -> u64 {
+        self.liability.now_ms()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequoteBudgetReservationDenied {
+    Capacity,
+    GenerationOverflow,
+    StaleReservation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequoteBudgetPairState {
+    submit_commands: RequoteBudget,
+    rest_calls: RequoteBudget,
+    next_reservation_generation: u64,
+    outstanding: BTreeMap<u64, OutstandingLiability>,
+}
 
 /// The two-budget maker requote admission gate (§16#3, FR-011).
 ///
@@ -145,10 +230,41 @@ pub(crate) const CANCEL_RESUBMIT_REST_COST: u64 = REST_CALL_COST + REST_CALL_COS
 /// charged, so mid-window exhaustion can never strand a cancelled side with no
 /// budget left to resubmit. Atomicity is enforced by trying both reservations on
 /// throwaway clones and committing only when both succeed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct RequoteBudgetPair {
-    submit_commands: RequoteBudget,
-    rest_calls: RequoteBudget,
+    state: Arc<Mutex<RequoteBudgetPairState>>,
+}
+
+impl std::fmt::Debug for RequoteBudgetPair {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.lock().fmt(formatter)
+    }
+}
+
+impl PartialEq for RequoteBudgetPair {
+    fn eq(&self, other: &Self) -> bool {
+        if Arc::ptr_eq(&self.state, &other.state) {
+            return true;
+        }
+        let left = self.lock().clone();
+        let right = other.lock().clone();
+        left == right
+    }
+}
+
+impl Eq for RequoteBudgetPair {}
+
+#[derive(Debug)]
+pub struct RequoteBudgetReservation {
+    budget: RequoteBudgetPair,
+    generation: u64,
+    phase: RequoteBudgetReservationPhase,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RequoteBudgetReservationPhase {
+    Refundable,
+    SinkInvoked { now_ms: u64 },
 }
 
 impl RequoteBudgetPair {
@@ -161,86 +277,299 @@ impl RequoteBudgetPair {
     /// calling this `pub(crate)` constructor directly.
     pub(crate) fn new(submit_commands: RequoteBudget, rest_calls: RequoteBudget) -> Self {
         Self {
-            submit_commands,
-            rest_calls,
+            state: Arc::new(Mutex::new(RequoteBudgetPairState {
+                submit_commands,
+                rest_calls,
+                next_reservation_generation: 0,
+                outstanding: BTreeMap::new(),
+            })),
         }
     }
 
-    /// Reserve budget for a fresh submit (a leg with no resting order): one submit
-    /// command and one REST call. All-or-nothing across both budgets.
-    pub fn try_reserve_fresh_submit(&mut self, now_ms: u64) -> bool {
-        self.try_reserve(now_ms, SUBMIT_COMMAND_COST, REST_CALL_COST)
+    pub fn propose_fresh_submit(
+        &self,
+        now_ms: u64,
+    ) -> Result<RequoteBudgetReservationProposal, RequoteBudgetReservationDenied> {
+        self.propose(OutstandingLiability::OneShot(LiabilityBalance {
+            now_ms,
+            submit_cost: SUBMIT_COMMAND_COST,
+            rest_cost: REST_CALL_COST,
+        }))
     }
 
-    /// Reserve budget for a cancel+resubmit reprice as ONE acquisition: one submit
-    /// command and two REST calls. All-or-nothing across both budgets, so a
-    /// granted cancel is always paired with a guaranteed resubmit token.
-    pub fn try_reserve_cancel_resubmit(&mut self, now_ms: u64) -> bool {
-        self.try_reserve(now_ms, SUBMIT_COMMAND_COST, CANCEL_RESUBMIT_REST_COST)
+    pub fn propose_cancel_resubmit(
+        &self,
+        now_ms: u64,
+    ) -> Result<RequoteBudgetReservationProposal, RequoteBudgetReservationDenied> {
+        self.propose(OutstandingLiability::CancelResubmitBothOutstanding { now_ms })
     }
 
-    /// Reserve budget for a standalone cancel (no resubmit): zero submit commands
-    /// and one REST call.
-    pub fn try_reserve_cancel(&mut self, now_ms: u64) -> bool {
-        self.try_reserve(now_ms, 0, REST_CALL_COST)
+    pub fn propose_rest(
+        &self,
+        now_ms: u64,
+    ) -> Result<RequoteBudgetReservationProposal, RequoteBudgetReservationDenied> {
+        self.propose(OutstandingLiability::OneShot(LiabilityBalance {
+            now_ms,
+            submit_cost: 0,
+            rest_cost: REST_CALL_COST,
+        }))
+    }
+
+    pub fn reserve(
+        &self,
+        proposal: RequoteBudgetReservationProposal,
+    ) -> Result<RequoteBudgetReservation, RequoteBudgetReservationDenied> {
+        let mut state = self.lock();
+        let balance = proposal.liability.balance();
+        if !Self::has_capacity(
+            &state,
+            balance.now_ms,
+            balance.submit_cost,
+            balance.rest_cost,
+        ) {
+            return Err(RequoteBudgetReservationDenied::Capacity);
+        }
+        let generation = state
+            .next_reservation_generation
+            .checked_add(1)
+            .ok_or(RequoteBudgetReservationDenied::GenerationOverflow)?;
+        state.next_reservation_generation = generation;
+        state.outstanding.insert(generation, proposal.liability);
+        Ok(RequoteBudgetReservation {
+            budget: self.clone(),
+            generation,
+            phase: RequoteBudgetReservationPhase::Refundable,
+        })
     }
 
     /// Granted submit commands currently counted inside the submit-governor window.
     pub fn submit_commands_in_window(&self) -> usize {
-        self.submit_commands.in_window()
+        self.lock().submit_commands.in_window()
     }
 
     /// Total REST-call cost currently counted inside the venue REST window.
     pub fn rest_cost_in_window(&self) -> u64 {
-        self.rest_calls.cost_in_window()
+        self.lock().rest_calls.cost_in_window()
+    }
+
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    pub fn outstanding_submit_cost(&self) -> u64 {
+        self.lock()
+            .outstanding
+            .values()
+            .map(|liability| liability.submit_cost())
+            .sum()
+    }
+
+    #[cfg(any(test, feature = "test-current-evidence-inspection"))]
+    pub fn outstanding_rest_cost(&self) -> u64 {
+        self.lock()
+            .outstanding
+            .values()
+            .map(|liability| liability.rest_cost())
+            .sum()
     }
 
     pub fn submit_command_cap(&self) -> u64 {
-        self.submit_commands.max_cost_per_window()
+        self.lock().submit_commands.max_cost_per_window()
     }
 
     pub fn submit_window_ms(&self) -> u64 {
-        self.submit_commands.window_ms()
+        self.lock().submit_commands.window_ms()
     }
 
     pub fn rest_cap_per_window(&self) -> u64 {
-        self.rest_calls.max_cost_per_window()
+        self.lock().rest_calls.max_cost_per_window()
     }
 
     pub fn rest_window_ms(&self) -> u64 {
-        self.rest_calls.window_ms()
+        self.lock().rest_calls.window_ms()
     }
 
     pub fn min_interval_ms(&self) -> u64 {
-        self.submit_commands
+        let state = self.lock();
+        state
+            .submit_commands
             .min_interval_ms()
-            .max(self.rest_calls.min_interval_ms())
+            .max(state.rest_calls.min_interval_ms())
     }
 
     pub fn last_emit_ms(&self) -> Option<u64> {
-        self.submit_commands
+        let state = self.lock();
+        state
+            .submit_commands
             .last_emit_ms()
-            .max(self.rest_calls.last_emit_ms())
+            .max(state.rest_calls.last_emit_ms())
     }
 
-    /// Atomically reserve `submit_cost` submit commands and `rest_cost` REST calls.
-    /// Both reservations are attempted on throwaway clones; the live budgets are
-    /// replaced only when BOTH succeed, so a failed reservation never leaves a
-    /// partial charge on either budget. A zero submit cost (a standalone cancel)
-    /// leaves the submit budget untouched.
-    fn try_reserve(&mut self, now_ms: u64, submit_cost: u64, rest_cost: u64) -> bool {
-        let mut submit_trial = self.submit_commands.clone();
-        let mut rest_trial = self.rest_calls.clone();
-
-        let submit_ok = submit_cost == 0 || submit_trial.try_acquire(now_ms, submit_cost);
-        let rest_ok = rest_trial.try_acquire(now_ms, rest_cost);
-        if !(submit_ok && rest_ok) {
-            return false;
+    fn propose(
+        &self,
+        liability: OutstandingLiability,
+    ) -> Result<RequoteBudgetReservationProposal, RequoteBudgetReservationDenied> {
+        let state = self.lock();
+        let balance = liability.balance();
+        if !Self::has_capacity(
+            &state,
+            balance.now_ms,
+            balance.submit_cost,
+            balance.rest_cost,
+        ) {
+            return Err(RequoteBudgetReservationDenied::Capacity);
         }
+        Ok(RequoteBudgetReservationProposal { liability })
+    }
 
-        self.submit_commands = submit_trial;
-        self.rest_calls = rest_trial;
-        true
+    fn has_capacity(
+        state: &RequoteBudgetPairState,
+        now_ms: u64,
+        submit_cost: u64,
+        rest_cost: u64,
+    ) -> bool {
+        let outstanding_submit = state
+            .outstanding
+            .values()
+            .try_fold(0_u64, |total, liability| {
+                total.checked_add(liability.submit_cost())
+            });
+        let outstanding_rest = state
+            .outstanding
+            .values()
+            .try_fold(0_u64, |total, liability| {
+                total.checked_add(liability.rest_cost())
+            });
+        let (Some(outstanding_submit), Some(outstanding_rest)) =
+            (outstanding_submit, outstanding_rest)
+        else {
+            return false;
+        };
+        let Some(required_submit) = outstanding_submit.checked_add(submit_cost) else {
+            return false;
+        };
+        let Some(required_rest) = outstanding_rest.checked_add(rest_cost) else {
+            return false;
+        };
+        let mut submit_trial = state.submit_commands.clone();
+        let mut rest_trial = state.rest_calls.clone();
+        let submit_ok = required_submit == 0 || submit_trial.try_acquire(now_ms, required_submit);
+        let rest_ok = rest_trial.try_acquire(now_ms, required_rest);
+        submit_ok && rest_ok
+    }
+
+    fn lock(&self) -> MutexGuard<'_, RequoteBudgetPairState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl RequoteBudgetReservation {
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Cross the route point of no return without acquiring the shared budget lock.
+    ///
+    /// The outstanding ledger entry continues to reserve the complete liability
+    /// until route settlement or a synchronous lifecycle callback accounts for
+    /// this invocation. This makes the aggregate submit commitment an owned-token
+    /// phase change rather than a second lock acquisition.
+    pub(crate) fn prepare_sink_invoked_at(&mut self, now_ms: u64) {
+        if self.phase == RequoteBudgetReservationPhase::Refundable {
+            self.phase = RequoteBudgetReservationPhase::SinkInvoked { now_ms };
+        }
+    }
+
+    pub(crate) fn settle_prepared_sink_invocation(&mut self) {
+        let RequoteBudgetReservationPhase::SinkInvoked { now_ms } = self.phase else {
+            return;
+        };
+        self.phase = RequoteBudgetReservationPhase::Refundable;
+        let mut state = self.budget.lock();
+        let Some(liability) = state.outstanding.remove(&self.generation) else {
+            // Once the sink has consumed the complete liability, the token is an
+            // inert receipt. Re-observing the same sink boundary is idempotent.
+            return;
+        };
+        match liability {
+            OutstandingLiability::CancelResubmitBothOutstanding { .. } => {
+                state.outstanding.insert(
+                    self.generation,
+                    OutstandingLiability::CancelResubmitReplacementOutstanding { now_ms },
+                );
+                state.rest_calls.record_reserved(now_ms, REST_CALL_COST);
+            }
+            OutstandingLiability::OneShot(mut balance) => {
+                balance.now_ms = now_ms;
+                Self::record_balance(&mut state, balance);
+            }
+            OutstandingLiability::CancelResubmitReplacementOutstanding { .. } => {
+                Self::record_balance(
+                    &mut state,
+                    LiabilityBalance {
+                        now_ms,
+                        submit_cost: SUBMIT_COMMAND_COST,
+                        rest_cost: REST_CALL_COST,
+                    },
+                );
+            }
+        }
+    }
+
+    pub fn mark_sink_invoked_at(&mut self, now_ms: u64) {
+        self.prepare_sink_invoked_at(now_ms);
+        self.settle_prepared_sink_invocation();
+    }
+
+    pub fn commit(mut self) -> Result<(), RequoteBudgetReservationDenied> {
+        self.settle_committed()
+    }
+
+    pub fn abort(mut self) -> Result<(), RequoteBudgetReservationDenied> {
+        self.settle_aborted()
+    }
+
+    fn settle_committed(&mut self) -> Result<(), RequoteBudgetReservationDenied> {
+        self.settle_prepared_sink_invocation();
+        let mut state = self.budget.lock();
+        let Some(liability) = state.outstanding.remove(&self.generation) else {
+            return Ok(());
+        };
+        Self::record_balance(&mut state, liability.balance());
+        Ok(())
+    }
+
+    fn settle_aborted(&mut self) -> Result<(), RequoteBudgetReservationDenied> {
+        let sink_was_invoked = self.phase != RequoteBudgetReservationPhase::Refundable;
+        if sink_was_invoked {
+            self.settle_prepared_sink_invocation();
+            self.budget.lock().outstanding.remove(&self.generation);
+            return Ok(());
+        }
+        self.budget
+            .lock()
+            .outstanding
+            .remove(&self.generation)
+            .ok_or(RequoteBudgetReservationDenied::StaleReservation)
+            .map(drop)
+    }
+
+    fn record_balance(state: &mut RequoteBudgetPairState, balance: LiabilityBalance) {
+        if balance.submit_cost > 0 {
+            state
+                .submit_commands
+                .record_reserved(balance.now_ms, balance.submit_cost);
+        }
+        state
+            .rest_calls
+            .record_reserved(balance.now_ms, balance.rest_cost);
+    }
+}
+
+impl Drop for RequoteBudgetReservation {
+    fn drop(&mut self) {
+        self.settle_prepared_sink_invocation();
+        self.budget.lock().outstanding.remove(&self.generation);
     }
 }
 
@@ -249,6 +578,28 @@ mod tests {
     use super::*;
 
     const ONE_MINUTE_MS: u64 = 60_000;
+
+    fn reserve_proposal(
+        pair: &RequoteBudgetPair,
+        proposal: Result<RequoteBudgetReservationProposal, RequoteBudgetReservationDenied>,
+    ) -> bool {
+        proposal
+            .and_then(|proposal| pair.reserve(proposal))
+            .and_then(RequoteBudgetReservation::commit)
+            .is_ok()
+    }
+
+    fn reserve_fresh(pair: &RequoteBudgetPair, now_ms: u64) -> bool {
+        reserve_proposal(pair, pair.propose_fresh_submit(now_ms))
+    }
+
+    fn reserve_cancel_resubmit(pair: &RequoteBudgetPair, now_ms: u64) -> bool {
+        reserve_proposal(pair, pair.propose_cancel_resubmit(now_ms))
+    }
+
+    fn reserve_rest(pair: &RequoteBudgetPair, now_ms: u64) -> bool {
+        reserve_proposal(pair, pair.propose_rest(now_ms))
+    }
 
     #[test]
     fn burst_beyond_window_budget_is_throttled() {
@@ -435,24 +786,24 @@ mod tests {
 
     #[test]
     fn fresh_submit_charges_one_submit_command_and_one_rest_call() {
-        let mut pair = fresh_pair(40, 100);
-        assert!(pair.try_reserve_fresh_submit(1_000));
+        let pair = fresh_pair(40, 100);
+        assert!(reserve_fresh(&pair, 1_000));
         assert_eq!(pair.submit_commands_in_window(), 1);
         assert_eq!(pair.rest_cost_in_window(), 1);
     }
 
     #[test]
     fn cancel_resubmit_charges_one_submit_command_and_two_rest_calls() {
-        let mut pair = fresh_pair(40, 100);
-        assert!(pair.try_reserve_cancel_resubmit(1_000));
+        let pair = fresh_pair(40, 100);
+        assert!(reserve_cancel_resubmit(&pair, 1_000));
         assert_eq!(pair.submit_commands_in_window(), 1);
         assert_eq!(pair.rest_cost_in_window(), 2);
     }
 
     #[test]
     fn standalone_cancel_charges_one_rest_call_and_zero_submit_commands() {
-        let mut pair = fresh_pair(40, 100);
-        assert!(pair.try_reserve_cancel(1_000));
+        let pair = fresh_pair(40, 100);
+        assert!(reserve_rest(&pair, 1_000));
         assert_eq!(pair.submit_commands_in_window(), 0);
         assert_eq!(pair.rest_cost_in_window(), 1);
     }
@@ -462,10 +813,10 @@ mod tests {
         // Submit-governor caps at 2 while REST has ample room; the third fresh
         // submit must fail on the SUBMIT budget, proving the constraints are NOT
         // collapsed into a single "whichever is lower" window.
-        let mut pair = fresh_pair(2, 100);
-        assert!(pair.try_reserve_fresh_submit(1_000));
-        assert!(pair.try_reserve_fresh_submit(1_100));
-        assert!(!pair.try_reserve_fresh_submit(1_200));
+        let pair = fresh_pair(2, 100);
+        assert!(reserve_fresh(&pair, 1_000));
+        assert!(reserve_fresh(&pair, 1_100));
+        assert!(!reserve_fresh(&pair, 1_200));
         assert_eq!(pair.submit_commands_in_window(), 2);
         // REST charged exactly twice (the two granted submits), not three times.
         assert_eq!(pair.rest_cost_in_window(), 2);
@@ -476,9 +827,9 @@ mod tests {
         // REST caps at 3 while the submit-governor has ample room; a cancel+resubmit
         // costs 2 REST, so the first fits but the second (needing 2 more, total 4)
         // must fail on the REST budget.
-        let mut pair = fresh_pair(100, 3);
-        assert!(pair.try_reserve_cancel_resubmit(1_000));
-        assert!(!pair.try_reserve_cancel_resubmit(1_100));
+        let pair = fresh_pair(100, 3);
+        assert!(reserve_cancel_resubmit(&pair, 1_000));
+        assert!(!reserve_cancel_resubmit(&pair, 1_100));
         // Only the first cancel+resubmit landed: 1 submit command, 2 REST calls.
         assert_eq!(pair.submit_commands_in_window(), 1);
         assert_eq!(pair.rest_cost_in_window(), 2);
@@ -489,8 +840,8 @@ mod tests {
         // Anti-stranding atomicity: a cancel+resubmit needs 2 REST but only 1 fits.
         // A non-atomic gate would charge the submit command first, then fail on REST,
         // stranding a submit token. The atomic gate must charge NEITHER budget.
-        let mut pair = fresh_pair(40, 1);
-        assert!(!pair.try_reserve_cancel_resubmit(1_000));
+        let pair = fresh_pair(40, 1);
+        assert!(!reserve_cancel_resubmit(&pair, 1_000));
         assert_eq!(
             pair.submit_commands_in_window(),
             0,
@@ -502,7 +853,7 @@ mod tests {
             "rest budget must be untouched"
         );
         // The gate is not poisoned: a later affordable standalone cancel still works.
-        assert!(pair.try_reserve_cancel(1_100));
+        assert!(reserve_rest(&pair, 1_100));
         assert_eq!(pair.rest_cost_in_window(), 1);
     }
 
@@ -510,11 +861,11 @@ mod tests {
     fn failed_submit_reservation_leaves_the_rest_budget_uncharged() {
         // The mirror case: the submit-governor is exhausted but REST has room. The
         // cancel+resubmit must charge NEITHER budget (no partial 2-REST charge).
-        let mut pair = fresh_pair(1, 100);
-        assert!(pair.try_reserve_fresh_submit(1_000)); // exhausts the 1-command submit budget
+        let pair = fresh_pair(1, 100);
+        assert!(reserve_fresh(&pair, 1_000)); // exhausts the 1-command submit budget
         assert_eq!(pair.submit_commands_in_window(), 1);
         assert_eq!(pair.rest_cost_in_window(), 1);
-        assert!(!pair.try_reserve_cancel_resubmit(1_100));
+        assert!(!reserve_cancel_resubmit(&pair, 1_100));
         // The failed reprice added neither a submit command nor any REST cost.
         assert_eq!(pair.submit_commands_in_window(), 1);
         assert_eq!(pair.rest_cost_in_window(), 1);
@@ -522,11 +873,11 @@ mod tests {
 
     #[test]
     fn budgets_replenish_as_both_windows_slide() {
-        let mut pair = fresh_pair(1, 2);
-        assert!(pair.try_reserve_cancel_resubmit(1_000)); // 1 submit, 2 rest -> both full
-        assert!(!pair.try_reserve_cancel_resubmit(1_100));
+        let pair = fresh_pair(1, 2);
+        assert!(reserve_cancel_resubmit(&pair, 1_000)); // 1 submit, 2 rest -> both full
+        assert!(!reserve_cancel_resubmit(&pair, 1_100));
         // After both one-minute windows slide past, a fresh reprice is admitted again.
-        assert!(pair.try_reserve_cancel_resubmit(1_001 + ONE_MINUTE_MS));
+        assert!(reserve_cancel_resubmit(&pair, 1_001 + ONE_MINUTE_MS));
         assert_eq!(pair.submit_commands_in_window(), 1);
         assert_eq!(pair.rest_cost_in_window(), 2);
     }
@@ -541,9 +892,9 @@ mod tests {
         // min-cap-2 window charging 2 per reprice would reject the second reprice,
         // failing the grant assertion below. The grant/deny tests above max out one
         // budget to force a DENY; only this test pins both-bind-and-both-grant.
-        let mut pair = fresh_pair(2, 100);
-        assert!(pair.try_reserve_cancel_resubmit(1_000));
-        assert!(pair.try_reserve_cancel_resubmit(1_100));
+        let pair = fresh_pair(2, 100);
+        assert!(reserve_cancel_resubmit(&pair, 1_000));
+        assert!(reserve_cancel_resubmit(&pair, 1_100));
         assert_eq!(pair.submit_commands_in_window(), 2);
         assert_eq!(pair.rest_cost_in_window(), 4);
     }
@@ -559,12 +910,12 @@ mod tests {
         // (last_emit_ms still None), so a fresh submit only 100ms later (well inside
         // the 500ms interval) is still admitted. A poisoned-timestamp variant would
         // see 1_100 - 1_000 = 100 < 500 and return false here.
-        let mut pair = RequoteBudgetPair::new(
+        let pair = RequoteBudgetPair::new(
             RequoteBudget::new(40, ONE_MINUTE_MS, 500),
             RequoteBudget::new(1, ONE_MINUTE_MS, 500),
         );
-        assert!(!pair.try_reserve_cancel_resubmit(1_000));
-        assert!(pair.try_reserve_fresh_submit(1_100));
+        assert!(!reserve_cancel_resubmit(&pair, 1_000));
+        assert!(reserve_fresh(&pair, 1_100));
         assert_eq!(pair.submit_commands_in_window(), 1);
         assert_eq!(pair.rest_cost_in_window(), 1);
     }
@@ -579,19 +930,19 @@ mod tests {
         // while the submit-governor floor stays pristine. Both budgets carry a 500ms
         // interval; the cancel at 1_000 leaves submit untouched, so the 1_100 submit
         // is blocked by REST, and once the REST interval clears the submit lands.
-        let mut pair = RequoteBudgetPair::new(
+        let pair = RequoteBudgetPair::new(
             RequoteBudget::new(40, ONE_MINUTE_MS, 500),
             RequoteBudget::new(100, ONE_MINUTE_MS, 500),
         );
-        assert!(pair.try_reserve_cancel(1_000));
+        assert!(reserve_rest(&pair, 1_000));
         assert_eq!(pair.submit_commands_in_window(), 0);
         assert_eq!(pair.rest_cost_in_window(), 1);
         // Blocked on the REST floor (1_100 - 1_000 = 100 < 500); neither budget moves.
-        assert!(!pair.try_reserve_fresh_submit(1_100));
+        assert!(!reserve_fresh(&pair, 1_100));
         assert_eq!(pair.submit_commands_in_window(), 0);
         assert_eq!(pair.rest_cost_in_window(), 1);
         // Once the REST interval clears, the submit lands and charges both budgets.
-        assert!(pair.try_reserve_fresh_submit(1_500));
+        assert!(reserve_fresh(&pair, 1_500));
         assert_eq!(pair.submit_commands_in_window(), 1);
         assert_eq!(pair.rest_cost_in_window(), 2);
     }
@@ -606,21 +957,156 @@ mod tests {
         // longer. Two fresh submits at one tick must both land; a strictly-later tick
         // inside the longer (submit) interval is still throttled, and the atomic gate
         // leaves neither budget advanced when it refuses.
-        let mut pair = RequoteBudgetPair::new(
+        let pair = RequoteBudgetPair::new(
             RequoteBudget::new(40, ONE_MINUTE_MS, 500),
             RequoteBudget::new(100, ONE_MINUTE_MS, 250),
         );
-        assert!(pair.try_reserve_fresh_submit(1_000));
+        assert!(reserve_fresh(&pair, 1_000));
         assert!(
-            pair.try_reserve_fresh_submit(1_000),
+            reserve_fresh(&pair, 1_000),
             "co-incident reservation must pass under asymmetric intervals"
         );
         assert_eq!(pair.submit_commands_in_window(), 2);
         assert_eq!(pair.rest_cost_in_window(), 2);
         // 1_100 is inside BOTH intervals (100 < 250 < 500): refused on the submit floor,
         // and being atomic it leaves both budgets exactly where they were.
-        assert!(!pair.try_reserve_fresh_submit(1_100));
+        assert!(!reserve_fresh(&pair, 1_100));
         assert_eq!(pair.submit_commands_in_window(), 2);
         assert_eq!(pair.rest_cost_in_window(), 2);
+    }
+
+    #[test]
+    fn outstanding_liability_never_ages_out_and_denies_later_commands() {
+        let pair = fresh_pair(1, 1);
+        let proposal = pair
+            .propose_fresh_submit(1_000)
+            .expect("first proposal fits");
+        let reservation = pair.reserve(proposal).expect("first reservation arms");
+
+        assert_eq!(pair.submit_commands_in_window(), 0);
+        assert_eq!(pair.rest_cost_in_window(), 0);
+        assert_eq!(pair.outstanding_submit_cost(), 1);
+        assert_eq!(pair.outstanding_rest_cost(), 1);
+        assert_eq!(
+            pair.propose_fresh_submit(1_001 + ONE_MINUTE_MS),
+            Err(RequoteBudgetReservationDenied::Capacity),
+            "an outstanding reservation remains capacity-bearing after its original window"
+        );
+
+        drop(reservation);
+        assert!(pair.propose_fresh_submit(1_001 + ONE_MINUTE_MS).is_ok());
+    }
+
+    #[test]
+    fn consumption_atomically_converts_liability_to_emitted_cost() {
+        let pair = fresh_pair(1, 1);
+        let proposal = pair.propose_fresh_submit(1_000).expect("proposal fits");
+        let mut reservation = pair.reserve(proposal).expect("reservation arms");
+        reservation.mark_sink_invoked_at(1_000);
+        reservation
+            .commit()
+            .expect("unchanged configuration commits");
+
+        assert_eq!(pair.outstanding_submit_cost(), 0);
+        assert_eq!(pair.outstanding_rest_cost(), 0);
+        assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 1);
+    }
+
+    #[test]
+    fn prepared_sink_invocation_crosses_the_boundary_without_touching_shared_accounting() {
+        let pair = fresh_pair(1, 1);
+        let proposal = pair.propose_fresh_submit(1_000).expect("proposal fits");
+        let mut reservation = pair.reserve(proposal).expect("reservation arms");
+
+        reservation.prepare_sink_invoked_at(1_001);
+
+        assert_eq!(pair.outstanding_submit_cost(), 1);
+        assert_eq!(pair.outstanding_rest_cost(), 1);
+        assert_eq!(pair.submit_commands_in_window(), 0);
+        assert_eq!(pair.rest_cost_in_window(), 0);
+
+        drop(reservation);
+
+        assert_eq!(pair.outstanding_submit_cost(), 0);
+        assert_eq!(pair.outstanding_rest_cost(), 0);
+        assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 1);
+    }
+
+    #[test]
+    fn cancel_resubmit_liability_advances_by_phase() {
+        let pair = fresh_pair(1, 2);
+        let mut reservation = pair
+            .reserve(
+                pair.propose_cancel_resubmit(1_000)
+                    .expect("cancel/resubmit proposal fits"),
+            )
+            .expect("cancel/resubmit reservation arms");
+
+        assert_eq!(pair.outstanding_submit_cost(), 1);
+        assert_eq!(pair.outstanding_rest_cost(), 2);
+        reservation.mark_sink_invoked_at(1_000);
+        assert_eq!(pair.submit_commands_in_window(), 0);
+        assert_eq!(pair.rest_cost_in_window(), 1);
+        assert_eq!(pair.outstanding_submit_cost(), 1);
+        assert_eq!(pair.outstanding_rest_cost(), 1);
+
+        reservation.mark_sink_invoked_at(1_001);
+        reservation
+            .commit()
+            .expect("a fully consumed reservation is an inert receipt");
+        assert_eq!(pair.outstanding_submit_cost(), 0);
+        assert_eq!(pair.outstanding_rest_cost(), 0);
+        assert_eq!(pair.submit_commands_in_window(), 1);
+        assert_eq!(pair.rest_cost_in_window(), 2);
+    }
+
+    #[test]
+    fn delayed_consumption_retimestamps_the_prepaid_charge_without_a_capacity_recheck() {
+        let pair = fresh_pair(2, 2);
+        let mut prepaid = pair
+            .reserve(
+                pair.propose_fresh_submit(1_000)
+                    .expect("prepaid proposal fits"),
+            )
+            .expect("prepaid reservation arms");
+        assert!(reserve_fresh(&pair, 61_001));
+        prepaid.mark_sink_invoked_at(61_001);
+        prepaid
+            .commit()
+            .expect("liability conversion cannot fail on window capacity");
+
+        assert_eq!(pair.outstanding_submit_cost(), 0);
+        assert_eq!(pair.submit_commands_in_window(), 2);
+        assert_eq!(pair.rest_cost_in_window(), 2);
+        assert_eq!(
+            pair.propose_fresh_submit(121_001),
+            Err(RequoteBudgetReservationDenied::Capacity),
+            "both delayed-consumption charges remain inside the inclusive trailing edge"
+        );
+        assert!(pair.propose_fresh_submit(121_002).is_ok());
+    }
+
+    #[test]
+    fn dropping_before_sink_releases_the_exact_reservation_without_a_charge() {
+        let pair = fresh_pair(1, 1);
+        let reservation = pair
+            .reserve(pair.propose_fresh_submit(1_000).expect("proposal fits"))
+            .expect("reservation arms");
+        let generation = reservation.generation();
+        drop(reservation);
+
+        assert_eq!(pair.outstanding_submit_cost(), 0);
+        assert_eq!(pair.outstanding_rest_cost(), 0);
+        assert_eq!(pair.submit_commands_in_window(), 0);
+        assert_eq!(pair.rest_cost_in_window(), 0);
+        let next = pair
+            .reserve(
+                pair.propose_fresh_submit(1_000)
+                    .expect("released capacity is available"),
+            )
+            .expect("next reservation arms");
+        assert!(next.generation() > generation);
     }
 }

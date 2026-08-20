@@ -1,8 +1,8 @@
 use crate::bolt_v3_capital_admission::{
     CapitalAdmissionDecision, CapitalAdmissionGate, CapitalAdmissionGateInputs,
-    CapitalAdmissionPolicy, CapitalAdmissionReason, CapitalAdmissionRequest,
-    CapitalAdmissionReservationEvidence, IntentLiquidity, IntentOrderKind, IntentSide,
-    LiabilityError, ProductAdmissionSnapshot, ProductKind,
+    CapitalAdmissionInvariant, CapitalAdmissionPolicy, CapitalAdmissionReason,
+    CapitalAdmissionRequest, CapitalAdmissionReservationEvidence, IntentLiquidity, IntentOrderKind,
+    IntentSide, LiabilityError, ProductAdmissionSnapshot, ProductKind,
 };
 use crate::bolt_v3_capital_admission_state::{
     NtDerivedCapitalAdmissionState, OrderLifecycleCapitalAdmissionSnapshot,
@@ -1668,6 +1668,22 @@ impl BoltV3SubmitAdmissionState {
             now_ns,
             capital_admission.policy.min_remaining_pool_balance,
         );
+        let gate_decision = match gate_decision {
+            Ok(decision) => decision,
+            Err(invariant) => {
+                Self::invalidate_capital_admission_rebuild(
+                    &mut inner,
+                    &audit_context,
+                    candidate_phase_revision,
+                );
+                return Err(BoltV3SubmitAdmissionError::InvariantViolation {
+                    invariant:
+                        BoltV3SubmitAdmissionInvariant::InvalidCapitalAdmissionRebuildReservationDecision(
+                            invariant,
+                        ),
+                });
+            }
+        };
         let decision = BoltV3SubmitCapitalAdmissionRebuildDecision {
             accepted: gate_decision.accepted,
             reason: gate_decision.reason,
@@ -1825,16 +1841,7 @@ impl BoltV3SubmitAdmissionState {
         failure_revision: u64,
         decision: BoltV3SubmitCapitalAdmissionRebuildDecision,
     ) -> Result<BoltV3SubmitCapitalAdmissionRebuildDecision, BoltV3SubmitAdmissionError> {
-        if let Some(capital_admission) = inner.capital_admission.as_mut() {
-            capital_admission.gate.invalidate_reconciliation();
-            refresh_capital_admission_reservation_snapshot_with_source(
-                capital_admission,
-                context.observed_at_ns,
-                context.source.as_str().to_string(),
-                false,
-            );
-        }
-        inner.capital_admission_state_revision = failure_revision;
+        Self::invalidate_capital_admission_rebuild(inner, context, failure_revision);
         if self.record_capital_admission_rebuild(context, &decision)? {
             return Ok(decision);
         }
@@ -1855,6 +1862,23 @@ impl BoltV3SubmitAdmissionState {
                 .unwrap_or(Decimal::ZERO),
             missing_nt_account_cache_balance: None,
         })
+    }
+
+    fn invalidate_capital_admission_rebuild(
+        inner: &mut BoltV3SubmitAdmissionInner,
+        context: &BoltV3SubmitCapitalAdmissionRebuildAuditContext,
+        failure_revision: u64,
+    ) {
+        if let Some(capital_admission) = inner.capital_admission.as_mut() {
+            capital_admission.gate.invalidate_reconciliation();
+            refresh_capital_admission_reservation_snapshot_with_source(
+                capital_admission,
+                context.observed_at_ns,
+                context.source.as_str().to_string(),
+                false,
+            );
+        }
+        inner.capital_admission_state_revision = failure_revision;
     }
 
     fn record_capital_admission_rebuild(
@@ -4659,6 +4683,7 @@ pub enum BoltV3SubmitAdmissionInvariant {
     ContradictoryAdmissionDecisionContext,
     ExpectedRejectedOutcome,
     InvalidCapitalAdmissionDecisionContext,
+    InvalidCapitalAdmissionRebuildReservationDecision(CapitalAdmissionInvariant),
     KillSwitchForcedReductionReachedNormalAdmission,
     MissingAdmittedCounterUpdate,
     MissingCapitalAdmissionRebuildRejectionReason,

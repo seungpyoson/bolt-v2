@@ -174,7 +174,35 @@ impl CapitalAdmissionGate {
         reservation_evidence: &[CapitalAdmissionReservationEvidence],
         now_ns: u64,
         min_remaining_pool_balance: Option<Decimal>,
-    ) -> CapitalAdmissionRebuildDecision {
+    ) -> Result<CapitalAdmissionRebuildDecision, CapitalAdmissionInvariant> {
+        self.rebuild_open_order_reservations_with(
+            pool,
+            reservation_evidence,
+            now_ns,
+            min_remaining_pool_balance,
+            |ledger, pool, reservation, now_ns, min_remaining_pool_balance| {
+                ledger.reserve(pool, reservation, now_ns, min_remaining_pool_balance)
+            },
+        )
+    }
+
+    fn rebuild_open_order_reservations_with<F>(
+        &mut self,
+        pool: &CapitalPoolSnapshot,
+        reservation_evidence: &[CapitalAdmissionReservationEvidence],
+        now_ns: u64,
+        min_remaining_pool_balance: Option<Decimal>,
+        mut reserve: F,
+    ) -> Result<CapitalAdmissionRebuildDecision, CapitalAdmissionInvariant>
+    where
+        F: FnMut(
+            &mut ReservationLedger,
+            &CapitalPoolSnapshot,
+            &ReservationRequest,
+            u64,
+            Option<Decimal>,
+        ) -> ReservationDecision,
+    {
         // Rebuild off to the side. A rejected candidate invalidates new admission without erasing
         // liabilities already owned by the live ledger.
         let mut rebuilt_ledger = ReservationLedger::reconciled();
@@ -186,17 +214,20 @@ impl CapitalAdmissionGate {
                     Err(ReservationRejectionReason::PoolMismatch)
                 }
                 CapitalAdmissionReservationEvidence::NtOpenOrder(reservation) => {
-                    let decision = rebuilt_ledger.reserve(
+                    let decision = reserve(
+                        &mut rebuilt_ledger,
                         pool,
                         &reservation,
                         now_ns,
                         min_remaining_pool_balance,
                     );
-                    match decision.accepted {
-                        true => Ok(()),
-                        false => Err(decision
-                            .reason
-                            .unwrap_or(ReservationRejectionReason::InvalidRequest)),
+                    match validate_reservation_decision(&decision) {
+                        Ok(ValidatedReservationDecision::Accepted) => Ok(()),
+                        Ok(ValidatedReservationDecision::Rejected(reason)) => Err(reason),
+                        Err(invariant) => {
+                            self.invalidate_reconciliation();
+                            return Err(invariant);
+                        }
                     }
                 }
                 CapitalAdmissionReservationEvidence::RetainedLifecycleReservation(retained) => {
@@ -207,24 +238,24 @@ impl CapitalAdmissionGate {
             };
             if let Err(reason) = candidate {
                 self.invalidate_reconciliation();
-                return CapitalAdmissionRebuildDecision {
+                return Ok(CapitalAdmissionRebuildDecision {
                     accepted: false,
                     reason: Some(reason),
                     attempted_reservation_count: index + 1,
                     rebuilt_reservation_count: index,
                     live_reserved_liability: self.live_reserved_liability(&pool.pool_id),
-                };
+                });
             }
         }
 
         self.reservation_ledger = rebuilt_ledger;
-        CapitalAdmissionRebuildDecision {
+        Ok(CapitalAdmissionRebuildDecision {
             accepted: true,
             reason: None,
             attempted_reservation_count: reservation_evidence.len(),
             rebuilt_reservation_count: reservation_evidence.len(),
             live_reserved_liability: self.live_reserved_liability(&pool.pool_id),
-        }
+        })
     }
 
     pub fn retained_reservation(
@@ -891,6 +922,33 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_propagates_malformed_reservation_decision_as_typed_invariant() {
+        let mut gate = CapitalAdmissionGate::reconciled();
+        let malformed = ReservationDecision {
+            accepted: false,
+            reason: None,
+            requested_liability: Decimal::ONE,
+            available_before: Decimal::new(10, 0),
+            available_after: None,
+        };
+
+        let result = gate.rebuild_open_order_reservations_with(
+            &capital_pool(),
+            &[rebuilt_open_order_reservation("intent-open").into()],
+            1_000,
+            None,
+            |_, _, _, _, _| malformed.clone(),
+        );
+
+        assert_eq!(
+            result,
+            Err(CapitalAdmissionInvariant::MissingReservationRejectionReason)
+        );
+        assert!(!gate.is_reconciled());
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
+    }
+
+    #[test]
     fn prediction_market_binary_liability_formula_is_pinned() {
         let calculator = PredictionMarketBinaryLiabilityCalculator;
 
@@ -1266,12 +1324,14 @@ mod tests {
         foreign_reservation.pool_id = "pool-2".to_string();
         let mut gate = CapitalAdmissionGate::reconciled();
 
-        let rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[foreign_reservation.into()],
-            1_000,
-            None,
-        );
+        let rebuild = gate
+            .rebuild_open_order_reservations(
+                &capital_pool,
+                &[foreign_reservation.into()],
+                1_000,
+                None,
+            )
+            .expect("reservation rebuild decisions should be structurally valid");
 
         assert!(!rebuild.accepted);
         assert_eq!(
@@ -1339,12 +1399,9 @@ mod tests {
         let open_reservation = rebuilt_open_order_reservation("intent-open");
         let mut gate = CapitalAdmissionGate::unreconciled();
 
-        let rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[open_reservation.into()],
-            1_000,
-            None,
-        );
+        let rebuild = gate
+            .rebuild_open_order_reservations(&capital_pool, &[open_reservation.into()], 1_000, None)
+            .expect("reservation rebuild decisions should be structurally valid");
 
         assert!(rebuild.accepted);
         assert_eq!(rebuild.rebuilt_reservation_count, 1);
@@ -1385,7 +1442,9 @@ mod tests {
         let capital_pool = capital_pool();
         let mut gate = CapitalAdmissionGate::unreconciled();
 
-        let rebuild = gate.rebuild_open_order_reservations(&capital_pool, &[], 1_000, None);
+        let rebuild = gate
+            .rebuild_open_order_reservations(&capital_pool, &[], 1_000, None)
+            .expect("reservation rebuild decisions should be structurally valid");
 
         assert!(rebuild.accepted);
         assert_eq!(rebuild.attempted_reservation_count, 0);
@@ -1422,12 +1481,14 @@ mod tests {
         let invalid_reservation = invalid_rebuilt_open_order_reservation("intent-open");
         let mut gate = CapitalAdmissionGate::unreconciled();
 
-        let rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[invalid_reservation.into()],
-            1_000,
-            None,
-        );
+        let rebuild = gate
+            .rebuild_open_order_reservations(
+                &capital_pool,
+                &[invalid_reservation.into()],
+                1_000,
+                None,
+            )
+            .expect("reservation rebuild decisions should be structurally valid");
 
         assert!(!rebuild.accepted);
         assert_eq!(
@@ -1475,12 +1536,14 @@ mod tests {
         let invalid_reservation = invalid_rebuilt_open_order_reservation("intent-invalid");
         let mut gate = CapitalAdmissionGate::unreconciled();
 
-        let rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[open_reservation.into(), invalid_reservation.into()],
-            1_000,
-            None,
-        );
+        let rebuild = gate
+            .rebuild_open_order_reservations(
+                &capital_pool,
+                &[open_reservation.into(), invalid_reservation.into()],
+                1_000,
+                None,
+            )
+            .expect("reservation rebuild decisions should be structurally valid");
 
         assert!(!rebuild.accepted);
         assert_eq!(
@@ -1528,21 +1591,20 @@ mod tests {
         let invalid_reservation = invalid_rebuilt_open_order_reservation("intent-invalid");
         let mut gate = CapitalAdmissionGate::unreconciled();
 
-        let initial_rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[open_reservation.into()],
-            1_000,
-            None,
-        );
+        let initial_rebuild = gate
+            .rebuild_open_order_reservations(&capital_pool, &[open_reservation.into()], 1_000, None)
+            .expect("reservation rebuild decisions should be structurally valid");
         assert!(initial_rebuild.accepted);
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
 
-        let failed_rebuild = gate.rebuild_open_order_reservations(
-            &capital_pool,
-            &[invalid_reservation.into()],
-            1_000,
-            None,
-        );
+        let failed_rebuild = gate
+            .rebuild_open_order_reservations(
+                &capital_pool,
+                &[invalid_reservation.into()],
+                1_000,
+                None,
+            )
+            .expect("reservation rebuild decisions should be structurally valid");
 
         assert!(!failed_rebuild.accepted);
         assert_eq!(
@@ -1576,8 +1638,9 @@ mod tests {
         let initial_pool = single_order_capital_pool();
         let reservation = rebuilt_open_order_reservation("intent-retained");
         let mut gate = CapitalAdmissionGate::unreconciled();
-        let initial =
-            gate.rebuild_open_order_reservations(&initial_pool, &[reservation.into()], 1_000, None);
+        let initial = gate
+            .rebuild_open_order_reservations(&initial_pool, &[reservation.into()], 1_000, None)
+            .expect("reservation rebuild decisions should be structurally valid");
         assert!(initial.accepted);
 
         gate.invalidate_reconciliation();
@@ -1592,8 +1655,9 @@ mod tests {
         let evidence =
             [CapitalAdmissionReservationEvidence::RetainedLifecycleReservation(retained)];
 
-        let rebuilt =
-            gate.rebuild_open_order_reservations(&shrunken_newer_pool, &evidence, 2_000, None);
+        let rebuilt = gate
+            .rebuild_open_order_reservations(&shrunken_newer_pool, &evidence, 2_000, None)
+            .expect("reservation rebuild decisions should be structurally valid");
 
         assert!(rebuilt.accepted);
         assert_eq!(rebuilt.rebuilt_reservation_count, 1);

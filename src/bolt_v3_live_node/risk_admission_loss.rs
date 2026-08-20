@@ -1221,7 +1221,8 @@ mod tests {
         };
         admission.update_capital_admission_nt_components(components.clone());
         let rebuild = admission
-            .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), observed_at_ns);
+            .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), observed_at_ns)
+            .expect("canonical empty NT projection should preserve rebuild invariants");
         assert!(
             rebuild.accepted,
             "canonical empty NT projection should rebuild the reservation ledger"

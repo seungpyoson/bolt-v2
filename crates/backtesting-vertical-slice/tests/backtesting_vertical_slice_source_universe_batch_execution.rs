@@ -379,7 +379,9 @@ fn unverifiable_resume_output_is_rebuilt_by_the_real_local_runner() {
     let outside_target = temp_dir.path().join("outside-catalog-target");
     fs::write(&outside_target, b"outside").expect("write outside target");
     let record_output_dir = prior_report.records[0].output_dir.clone();
-    let planted_symlink = record_output_dir.join(CATALOG_DIR).join("ignored-special-entry");
+    let planted_symlink = record_output_dir
+        .join(CATALOG_DIR)
+        .join("ignored-special-entry");
     std::os::unix::fs::symlink(&outside_target, &planted_symlink)
         .expect("plant an unverifiable catalog descendant");
 
@@ -407,7 +409,10 @@ fn unverifiable_resume_output_is_rebuilt_by_the_real_local_runner() {
     .expect("unverifiable prior output is rebuilt fresh");
 
     assert_eq!(resumed_report.completed_record_count, 1);
-    assert_eq!(resumed_fetcher.calls, 1, "NeedsWork must refetch the object");
+    assert_eq!(
+        resumed_fetcher.calls, 1,
+        "NeedsWork must refetch the object"
+    );
     assert!(
         fs::symlink_metadata(&planted_symlink).is_err(),
         "fresh execution must remove the unverifiable prior entry"

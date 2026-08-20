@@ -263,6 +263,7 @@ pub struct BoltV3SubmitAdmissionState {
 pub struct BoltV3SubmitAdmissionOperatorHealthSnapshot {
     pub kill_switch_state: KillSwitchState,
     pub capital_admission_state: Option<NtDerivedCapitalAdmissionState>,
+    pub rollback_ownership_lost: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -318,6 +319,7 @@ struct BoltV3SubmitAdmissionInner {
     live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
     admitted_order_count: u32,
     admitted_order_count_by_execution_client: BTreeMap<String, u32>,
+    rollback_ownership_latch: Option<BoltV3SubmitAdmissionInvariant>,
     capital_admission_state_revision: u64,
     evidence_free_non_reservation_admissions:
         BTreeMap<String, BoltV3EvidenceFreeNonReservationPhase>,
@@ -652,6 +654,7 @@ impl BoltV3SubmitAdmissionState {
                 live_submit_approval_limits,
                 admitted_order_count: 0,
                 admitted_order_count_by_execution_client: BTreeMap::new(),
+                rollback_ownership_latch: None,
                 capital_admission_state_revision: 0,
                 evidence_free_non_reservation_admissions: BTreeMap::new(),
                 committed_admission_authority: ReservationRecoveryFacts::default(),
@@ -870,6 +873,7 @@ impl BoltV3SubmitAdmissionState {
                 .capital_admission
                 .as_ref()
                 .and_then(|capital_admission| capital_admission.state.clone()),
+            rollback_ownership_lost: inner.rollback_ownership_latch.is_some(),
         })
     }
 
@@ -2941,6 +2945,9 @@ impl BoltV3SubmitAdmissionState {
         request: &BoltV3SubmitAdmissionRequest,
         now_ns: u64,
     ) -> Result<BoltV3SubmitAdmissionEvaluation, BoltV3SubmitAdmissionError> {
+        if let Some(invariant) = inner.rollback_ownership_latch {
+            return Err(BoltV3SubmitAdmissionError::InvariantViolation { invariant });
+        }
         if inner
             .committed_admission_authority
             .authorizes_order(&request.client_order_id)
@@ -4658,6 +4665,7 @@ pub enum BoltV3SubmitAdmissionInvariant {
     MissingCapitalAdmissionRejectionReason,
     MissingLossHaltReasons,
     MissingStaleLossReason,
+    RollbackOwnershipLost,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -5343,9 +5351,7 @@ fn rollback_capital_admission_reservations(
             true
         }
         Err(reason) => {
-            if let Some(capital_admission) = inner.capital_admission.as_mut() {
-                capital_admission.gate.invalidate_reconciliation();
-            }
+            latch_submit_admission_rollback_ownership_failure(inner);
             log::error!(
                 "bolt-v3 capital reservation rollback lost exact ownership; preserving every live reservation: reason={reason:?}"
             );
@@ -5456,9 +5462,7 @@ fn rollback_unsubmitted_permit(
         Some(rollback) => match checked_admission_counter_rollback(inner, rollback) {
             Some(values) => Some(values),
             None => {
-                if let Some(capital_admission) = inner.capital_admission.as_mut() {
-                    capital_admission.gate.invalidate_reconciliation();
-                }
+                latch_submit_admission_rollback_ownership_failure(inner);
                 return;
             }
         },
@@ -5467,9 +5471,7 @@ fn rollback_unsubmitted_permit(
     let prepared_capital = match prepare_capital_admission_reservation_rollback(inner, rollbacks) {
         Ok(prepared) => prepared,
         Err(reason) => {
-            if let Some(capital_admission) = inner.capital_admission.as_mut() {
-                capital_admission.gate.invalidate_reconciliation();
-            }
+            latch_submit_admission_rollback_ownership_failure(inner);
             log::error!(
                 "bolt-v3 submit permit rollback lost exact capital ownership; preserving all remaining permit state: reason={reason:?}"
             );
@@ -5480,6 +5482,20 @@ fn rollback_unsubmitted_permit(
     commit_capital_admission_reservation_rollback(inner, prepared_capital);
     if let (Some(rollback), Some(values)) = (counter_rollback, counter_values) {
         apply_admission_counter_rollback(inner, rollback, values);
+    }
+}
+
+fn latch_submit_admission_rollback_ownership_failure(inner: &mut BoltV3SubmitAdmissionInner) {
+    inner.rollback_ownership_latch = Some(BoltV3SubmitAdmissionInvariant::RollbackOwnershipLost);
+    if advance_capital_admission_state_revision(&mut inner.capital_admission_state_revision)
+        .is_err()
+    {
+        log::error!(
+            "capital admission state revision exhausted while latching lost submit rollback ownership"
+        );
+    }
+    if let Some(capital_admission) = inner.capital_admission.as_mut() {
+        capital_admission.gate.invalidate_reconciliation();
     }
 }
 
@@ -5601,6 +5617,109 @@ impl std::error::Error for BoltV3SubmitAdmissionError {}
 #[cfg(test)]
 mod fail_closed_invariant_tests {
     use super::*;
+    use crate::bolt_v3_capital_admission::PredictionMarketAdmissionSnapshot;
+
+    fn ungated_entry_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
+        BoltV3SubmitAdmissionRequest {
+            strategy_id: "strategy-invariant-test".to_string(),
+            execution_client_id: "execution".to_string(),
+            client_order_id: client_order_id.to_string(),
+            instrument_id: "instrument-invariant-test".to_string(),
+            notional: Decimal::ONE,
+            order_side: OrderSide::Buy,
+            order_quantity: Decimal::ONE,
+            intent_kind: BoltV3SubmitIntentKind::Entry,
+            risk_reducing_exit_proof: None,
+            admission_evidence: None,
+        }
+    }
+
+    fn invariant_test_capital_admission() -> BoltV3SubmitAdmissionState {
+        BoltV3SubmitAdmissionState::new_with_capital_admission(
+            Arc::new(DecisionEvidenceRecorder::recording()),
+            BoltV3SubmitCapitalAdmissionConfig {
+                venue_id: "venue".to_string(),
+                account_id: "account".to_string(),
+                product_kind: ProductKind::PredictionMarketBinary,
+                collateral_currency: "USD".to_string(),
+                capital_pool: CapitalPoolSnapshot {
+                    source: "test".to_string(),
+                    observed_at_ns: 1,
+                    pool_id: "pool".to_string(),
+                    max_pool_liability: Decimal::ONE,
+                    committed_liability: Decimal::ZERO,
+                    max_snapshot_age_ns: 1,
+                },
+                policy: CapitalAdmissionPolicy {
+                    min_remaining_pool_balance: None,
+                    fee_slippage_policy: None,
+                },
+            },
+        )
+    }
+
+    fn invariant_test_nt_components(
+        observed_at_ns: u64,
+    ) -> BoltV3SubmitCapitalAdmissionNtComponents {
+        BoltV3SubmitCapitalAdmissionNtComponents {
+            source: "nt-capital-admission-test".to_string(),
+            observed_at_ns,
+            portfolio: PortfolioCapitalAdmissionSnapshot {
+                source: "nt-portfolio-test".to_string(),
+                observed_at_ns,
+                venue_id: "venue".to_string(),
+                account_id: "account".to_string(),
+                collateral_currency: "USD".to_string(),
+                free_collateral: Decimal::new(100, 0),
+                total_equity: Decimal::new(100, 0),
+            },
+            provider_collateral_allowance: ProviderCollateralAllowanceSnapshot {
+                source: "provider-allowance-test".to_string(),
+                observed_at_ns,
+                venue_id: "venue".to_string(),
+                account_id: "account".to_string(),
+                collateral_currency: "USD".to_string(),
+                collateral_allowance: Decimal::new(100, 0),
+            },
+            order_lifecycle: OrderLifecycleCapitalAdmissionSnapshot {
+                source: "nt-order-lifecycle-test".to_string(),
+                observed_at_ns,
+                open_order_count: 0,
+                all_open_orders_attributed: true,
+            },
+            product_state: ProductAdmissionSnapshot::PredictionMarketBinary(
+                PredictionMarketAdmissionSnapshot {
+                    source: "nt-product-test".to_string(),
+                    observed_at_ns,
+                    yes_instrument_id: "yes.venue".to_string(),
+                    no_instrument_id: "no.venue".to_string(),
+                    yes_position: Decimal::ZERO,
+                    no_position: Decimal::ZERO,
+                    collateral_allowance: Decimal::new(100, 0),
+                    collateral_coupled_group_id: "group".to_string(),
+                },
+            ),
+            loss_snapshot: None,
+        }
+    }
+
+    fn unknown_reservation_rollback() -> BoltV3CapitalAdmissionReservationRollback {
+        BoltV3CapitalAdmissionReservationRollback {
+            client_order_id: "missing-order".to_string(),
+            submit_reservation_id: "missing-reservation".to_string(),
+            pool_id: "pool".to_string(),
+            observed_at_ns: 1,
+        }
+    }
+
+    fn assert_rollback_ownership_lost<T>(result: Result<T, BoltV3SubmitAdmissionError>) {
+        assert_eq!(
+            result.err(),
+            Some(BoltV3SubmitAdmissionError::InvariantViolation {
+                invariant: BoltV3SubmitAdmissionInvariant::RollbackOwnershipLost,
+            })
+        );
+    }
 
     #[test]
     fn missing_capital_rejection_reason_is_a_typed_invariant_error() {
@@ -5941,29 +6060,67 @@ mod fail_closed_invariant_tests {
     }
 
     #[test]
-    fn inconsistent_counter_rollback_preserves_state_and_invalidates_reconciliation() {
-        for (total, client_count) in [(0, Some(1)), (1, Some(0)), (1, None)] {
-            let admission = BoltV3SubmitAdmissionState::new_with_capital_admission(
-                Arc::new(DecisionEvidenceRecorder::recording()),
-                BoltV3SubmitCapitalAdmissionConfig {
-                    venue_id: "venue".to_string(),
-                    account_id: "account".to_string(),
-                    product_kind: ProductKind::PredictionMarketBinary,
-                    collateral_currency: "USD".to_string(),
-                    capital_pool: CapitalPoolSnapshot {
-                        source: "test".to_string(),
-                        observed_at_ns: 1,
-                        pool_id: "pool".to_string(),
-                        max_pool_liability: Decimal::ONE,
-                        committed_liability: Decimal::ZERO,
-                        max_snapshot_age_ns: 1,
-                    },
-                    policy: CapitalAdmissionPolicy {
-                        min_remaining_pool_balance: None,
-                        fee_slippage_policy: None,
-                    },
-                },
-            );
+    fn counter_and_transient_rollback_mismatches_preserve_state_and_latch() {
+        for (case, total, client_count, phases, rollback_ids) in [
+            (
+                "total-underflow",
+                0,
+                Some(1),
+                vec![(
+                    "transient",
+                    BoltV3EvidenceFreeNonReservationPhase::PermitHeld,
+                )],
+                vec!["transient"],
+            ),
+            (
+                "client-underflow",
+                1,
+                Some(0),
+                vec![(
+                    "transient",
+                    BoltV3EvidenceFreeNonReservationPhase::PermitHeld,
+                )],
+                vec!["transient"],
+            ),
+            (
+                "missing-client-count",
+                1,
+                None,
+                vec![(
+                    "transient",
+                    BoltV3EvidenceFreeNonReservationPhase::PermitHeld,
+                )],
+                vec!["transient"],
+            ),
+            (
+                "duplicate-transient",
+                1,
+                Some(1),
+                vec![(
+                    "transient",
+                    BoltV3EvidenceFreeNonReservationPhase::PermitHeld,
+                )],
+                vec!["transient", "transient"],
+            ),
+            (
+                "missing-transient",
+                1,
+                Some(1),
+                Vec::new(),
+                vec!["transient"],
+            ),
+            (
+                "wrong-transient-phase",
+                1,
+                Some(1),
+                vec![(
+                    "transient",
+                    BoltV3EvidenceFreeNonReservationPhase::SinkInvoked,
+                )],
+                vec!["transient"],
+            ),
+        ] {
+            let admission = invariant_test_capital_admission();
             let mut inner = admission
                 .inner
                 .lock()
@@ -5979,11 +6136,14 @@ mod fail_closed_invariant_tests {
                     .admitted_order_count_by_execution_client
                     .insert("execution".to_string(), client_count);
             }
-            inner.evidence_free_non_reservation_admissions.insert(
-                "transient".to_string(),
-                BoltV3EvidenceFreeNonReservationPhase::PermitHeld,
-            );
+            for (client_order_id, phase) in phases {
+                inner
+                    .evidence_free_non_reservation_admissions
+                    .insert(client_order_id.to_string(), phase);
+            }
             let before_client_counts = inner.admitted_order_count_by_execution_client.clone();
+            let before_transient = inner.evidence_free_non_reservation_admissions.clone();
+            let before_revision = inner.capital_admission_state_revision;
 
             rollback_unsubmitted_permit(
                 &mut inner,
@@ -5991,19 +6151,26 @@ mod fail_closed_invariant_tests {
                 Some(&BoltV3SubmitAdmissionCounterRollback {
                     execution_client_id: "execution".to_string(),
                     order_count: 1,
-                    uncommitted_evidence_free_client_order_ids: vec!["transient".to_string()],
+                    uncommitted_evidence_free_client_order_ids: rollback_ids
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
                 }),
             );
 
-            assert_eq!(inner.admitted_order_count, total);
+            assert_eq!(inner.admitted_order_count, total, "case={case}");
             assert_eq!(
-                inner.admitted_order_count_by_execution_client,
-                before_client_counts
+                inner.admitted_order_count_by_execution_client, before_client_counts,
+                "case={case}"
             );
-            assert!(
-                inner
-                    .evidence_free_non_reservation_admissions
-                    .contains_key("transient")
+            assert_eq!(
+                inner.evidence_free_non_reservation_admissions, before_transient,
+                "case={case}"
+            );
+            assert_eq!(
+                inner.capital_admission_state_revision,
+                before_revision + 1,
+                "case={case}"
             );
             assert!(
                 !inner
@@ -6012,9 +6179,254 @@ mod fail_closed_invariant_tests {
                     .expect("capital admission fixture should remain configured")
                     .gate
                     .is_reconciled(),
-                "lost rollback ownership must latch reconciliation-invalid"
+                "case={case}"
+            );
+            drop(inner);
+            assert!(
+                admission
+                    .operator_health_snapshot()
+                    .expect("submit admission health should remain readable")
+                    .rollback_ownership_lost,
+                "case={case}"
+            );
+            assert_rollback_ownership_lost(
+                admission.admit_at(&ungated_entry_request(&format!("later-order-{case}")), 1),
             );
         }
+    }
+
+    #[test]
+    fn rollback_latch_blocks_every_admission_funnel_without_capital() {
+        let recorder = Arc::new(DecisionEvidenceRecorder::recording());
+        let admission = BoltV3SubmitAdmissionState::new(recorder.clone());
+        let mut inner = admission
+            .inner
+            .lock()
+            .expect("submit admission fixture mutex should not be poisoned");
+        inner
+            .admitted_order_count_by_execution_client
+            .insert("execution".to_string(), 1);
+        inner.evidence_free_non_reservation_admissions.insert(
+            "transient".to_string(),
+            BoltV3EvidenceFreeNonReservationPhase::PermitHeld,
+        );
+        rollback_unsubmitted_permit(
+            &mut inner,
+            &[],
+            Some(&BoltV3SubmitAdmissionCounterRollback {
+                execution_client_id: "execution".to_string(),
+                order_count: 1,
+                uncommitted_evidence_free_client_order_ids: vec!["transient".to_string()],
+            }),
+        );
+        assert_eq!(inner.capital_admission_state_revision, 1);
+        drop(inner);
+
+        assert!(
+            admission
+                .operator_health_snapshot()
+                .expect("submit admission health should remain readable")
+                .rollback_ownership_lost
+        );
+        assert_rollback_ownership_lost(
+            admission.admit_at(&ungated_entry_request("later-single"), 1),
+        );
+        assert_rollback_ownership_lost(
+            admission.evaluate_and_record_without_consuming_capacity_at(
+                &ungated_entry_request("later-shadow"),
+                None,
+                1,
+            ),
+        );
+
+        let claim = BoltV3BasketSubmitSlotClaim {
+            client_order_id: "later-basket".to_string(),
+            instrument_id: "instrument-invariant-test".to_string(),
+            notional: Decimal::ONE,
+            order_side: OrderSide::Buy,
+            order_quantity: Decimal::ONE,
+            intent_kind: BoltV3SubmitIntentKind::Entry,
+            risk_reducing_exit_proof: None,
+            admission_evidence: None,
+        };
+        let details = BasketAdmissionDetails {
+            strategy_id: "strategy-invariant-test".to_string(),
+            execution_client_id: "execution".to_string(),
+            basket_id: "basket-invariant-test".to_string(),
+            group_id: "group-invariant-test".to_string(),
+            leg_instrument_ids: vec![claim.instrument_id.clone()],
+            total_notional: Decimal::ONE.to_string(),
+            leg_order_count: 1,
+        };
+        assert_rollback_ownership_lost(admission.reserve_basket_submit_slots_with_evidence(
+            "execution",
+            &[claim],
+            &details,
+            |fact| recorder.record_basket_admission_granted(fact),
+        ));
+    }
+
+    #[test]
+    fn fresh_capital_projection_repairs_ledger_but_not_submit_authority() {
+        let admission = invariant_test_capital_admission();
+        admission.update_capital_admission_nt_components(invariant_test_nt_components(1));
+        let mut inner = admission
+            .inner
+            .lock()
+            .expect("submit admission fixture mutex should not be poisoned");
+        inner
+            .capital_admission
+            .as_mut()
+            .expect("capital admission fixture should be configured")
+            .gate = CapitalAdmissionGate::reconciled();
+        inner
+            .admitted_order_count_by_execution_client
+            .insert("execution".to_string(), 1);
+        inner.evidence_free_non_reservation_admissions.insert(
+            "transient".to_string(),
+            BoltV3EvidenceFreeNonReservationPhase::PermitHeld,
+        );
+        let stale_revision = inner.capital_admission_state_revision;
+        rollback_unsubmitted_permit(
+            &mut inner,
+            &[],
+            Some(&BoltV3SubmitAdmissionCounterRollback {
+                execution_client_id: "execution".to_string(),
+                order_count: 1,
+                uncommitted_evidence_free_client_order_ids: vec!["transient".to_string()],
+            }),
+        );
+        let fresh_revision = inner.capital_admission_state_revision;
+        drop(inner);
+
+        let projection = || BoltV3SubmitCapitalAdmissionOpenOrderSnapshot {
+            observed_at_ns: 2,
+            evidence_source: CapitalAdmissionRebuildSource::NtOpenOrderCache,
+            observed_open_order_count: 0,
+            all_open_orders_attributed: true,
+            reservations: Vec::new(),
+        };
+        let stale = admission
+            .commit_capital_admission_nt_projection(stale_revision, None, None, projection(), 2)
+            .expect("stale projection rejection should remain typed");
+        assert_eq!(
+            stale.reason,
+            Some(ReservationRejectionReason::MissingEvidence)
+        );
+
+        let fresh = admission
+            .commit_capital_admission_nt_projection(
+                fresh_revision,
+                Some(invariant_test_nt_components(2)),
+                Some(2),
+                projection(),
+                2,
+            )
+            .expect("fresh projection should rebuild capital state");
+        assert!(fresh.accepted);
+        assert_eq!(admission.capital_admission_reconciled(), Some(true));
+        assert_rollback_ownership_lost(
+            admission.admit_at(&ungated_entry_request("later-order"), 1),
+        );
+    }
+
+    #[test]
+    fn every_capital_rollback_ownership_failure_site_uses_the_latch() {
+        for permit_rollback in [false, true] {
+            let admission = invariant_test_capital_admission();
+            let mut inner = admission
+                .inner
+                .lock()
+                .expect("submit admission fixture mutex should not be poisoned");
+            inner
+                .capital_admission
+                .as_mut()
+                .expect("capital admission fixture should be configured")
+                .gate = CapitalAdmissionGate::reconciled();
+            let before_revision = inner.capital_admission_state_revision;
+            let rollback = unknown_reservation_rollback();
+
+            if permit_rollback {
+                rollback_unsubmitted_permit(&mut inner, &[rollback], None);
+            } else {
+                assert!(!rollback_capital_admission_reservations(
+                    &mut inner,
+                    &[rollback]
+                ));
+            }
+
+            assert_eq!(inner.capital_admission_state_revision, before_revision + 1);
+            assert!(
+                !inner
+                    .capital_admission
+                    .as_ref()
+                    .expect("capital admission fixture should remain configured")
+                    .gate
+                    .is_reconciled()
+            );
+            drop(inner);
+            assert!(
+                admission
+                    .operator_health_snapshot()
+                    .expect("submit admission health should remain readable")
+                    .rollback_ownership_lost
+            );
+            assert_rollback_ownership_lost(
+                admission.admit_at(&ungated_entry_request("later-order"), 1),
+            );
+        }
+    }
+
+    #[test]
+    fn revision_exhaustion_cannot_weaken_the_rollback_latch() {
+        let admission = invariant_test_capital_admission();
+        let mut inner = admission
+            .inner
+            .lock()
+            .expect("submit admission fixture mutex should not be poisoned");
+        inner
+            .capital_admission
+            .as_mut()
+            .expect("capital admission fixture should be configured")
+            .gate = CapitalAdmissionGate::reconciled();
+        inner.capital_admission_state_revision = u64::MAX;
+        inner
+            .admitted_order_count_by_execution_client
+            .insert("execution".to_string(), 1);
+        inner.evidence_free_non_reservation_admissions.insert(
+            "transient".to_string(),
+            BoltV3EvidenceFreeNonReservationPhase::PermitHeld,
+        );
+
+        rollback_unsubmitted_permit(
+            &mut inner,
+            &[],
+            Some(&BoltV3SubmitAdmissionCounterRollback {
+                execution_client_id: "execution".to_string(),
+                order_count: 1,
+                uncommitted_evidence_free_client_order_ids: vec!["transient".to_string()],
+            }),
+        );
+
+        assert_eq!(inner.capital_admission_state_revision, u64::MAX);
+        assert!(
+            !inner
+                .capital_admission
+                .as_ref()
+                .expect("capital admission fixture should remain configured")
+                .gate
+                .is_reconciled()
+        );
+        drop(inner);
+        assert!(
+            admission
+                .operator_health_snapshot()
+                .expect("submit admission health should remain readable")
+                .rollback_ownership_lost
+        );
+        assert_rollback_ownership_lost(
+            admission.admit_at(&ungated_entry_request("later-order"), 1),
+        );
     }
 }
 

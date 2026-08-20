@@ -41,8 +41,9 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CapitalAdmissionRejectReason, BoltV3CompiledOrderAdmissionEvidence,
     BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
     BoltV3CompiledProductKind, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
-    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
-    BoltV3SubmitCapitalAdmissionNtComponents, BoltV3SubmitCapitalAdmissionOpenOrderReservation,
+    BoltV3SubmitAdmissionInvariant, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
+    BoltV3SubmitCapitalAdmissionConfig, BoltV3SubmitCapitalAdmissionNtComponents,
+    BoltV3SubmitCapitalAdmissionOpenOrderReservation,
     BoltV3SubmitCapitalAdmissionOpenOrderSnapshot, BoltV3SubmitIntentKind,
     BoltV3SubmitReservationPhase, PredictionMarketOutcomeSide,
 };
@@ -2404,6 +2405,7 @@ fn pre_sink_rollback_preserves_attribution_when_the_ledger_identity_is_missing()
         admission.capital_admission_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
+    let captured_projection_revision = admission.capital_admission_state_revision_for_test();
 
     drop(permit);
 
@@ -2417,6 +2419,28 @@ fn pre_sink_rollback_preserves_attribution_when_the_ledger_identity_is_missing()
         "rollback must not erase attribution when the numerical ledger removal fails"
     );
     assert_eq!(admission.capital_admission_reconciled(), Some(false));
+    assert_eq!(
+        admission.capital_admission_state_revision_for_test(),
+        captured_projection_revision + 1,
+        "lost rollback ownership must invalidate previously captured projection work"
+    );
+    assert!(
+        admission
+            .operator_health_snapshot()
+            .expect("submit admission health should remain readable")
+            .rollback_ownership_lost
+    );
+    assert_eq!(
+        admission
+            .admit_at(
+                &capital_admission_submit_request("post-rollback-ledger-mismatch"),
+                1_001,
+            )
+            .expect_err("lost rollback ownership must stop new submit authority"),
+        BoltV3SubmitAdmissionError::InvariantViolation {
+            invariant: BoltV3SubmitAdmissionInvariant::RollbackOwnershipLost,
+        }
+    );
 }
 
 #[test]

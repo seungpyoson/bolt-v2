@@ -219,8 +219,8 @@ use crate::{
         BoltV3MissingInputSource, BoltV3OperatorHealthSurface,
         BoltV3OperatorHealthTransitionEmitter, BoltV3ProviderCollateralAllowanceHealth,
         BoltV3RejectObserverHealth, BoltV3SettlementHealth, BoltV3SettlementHealthTransition,
-        BoltV3SettlementHealthTransitionEmitter, node_scoped_runtime_source_announcements,
-        runtime_source_announcements,
+        BoltV3SettlementHealthTransitionEmitter, BoltV3SubmitAdmissionIntegrityHealth,
+        node_scoped_runtime_source_announcements, runtime_source_announcements,
     },
     bolt_v3_order_reject_observer_feed::{
         BoltV3OrderRejectObserverFeed, OrderRejectObserverFeedSubscription,
@@ -588,8 +588,17 @@ fn live_operator_health_surface(
             }
         },
     );
+    let submit_admission_snapshot = submit_admission.operator_health_snapshot();
+    let submit_admission_integrity = match &submit_admission_snapshot {
+        Ok(snapshot) => BoltV3SubmitAdmissionIntegrityHealth::from_rollback_ownership_lost(
+            snapshot.rollback_ownership_lost,
+        ),
+        Err(_) => BoltV3SubmitAdmissionIntegrityHealth::read_error(
+            OPERATOR_HEALTH_SUBMIT_ADMISSION_READ_ERROR,
+        ),
+    };
     let provider_collateral_allowance = if provider_collateral_allowance_configured {
-        match submit_admission.operator_health_snapshot() {
+        match &submit_admission_snapshot {
             Ok(snapshot) => {
                 BoltV3ProviderCollateralAllowanceHealth::from_configured_kill_switch_and_capital_state(
                     &snapshot.kill_switch_state,
@@ -605,6 +614,7 @@ fn live_operator_health_surface(
     };
     BoltV3OperatorHealthSurface::from_live_parts(
         reject_observer,
+        submit_admission_integrity,
         provider_collateral_allowance,
         input_health.unwrap_or_else(|| {
             // If no live transition emitter has produced a source observation yet,

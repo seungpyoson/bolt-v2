@@ -137,8 +137,10 @@ data models are defined inside the numbered project specs/plans:
 - `write_authority`: producer-owned, read-only-consumer, or unsupported.
 - `commit_state`: staged, committed, orphan, or superseded.
 - `lifecycle_state`: active or inactive; hot index pointer/current snapshot stays active.
-- `audit_epoch_uri`: Optional pointer-swap audit record used for forensics, not
-  normal discovery.
+- `audit_intent_uri`: Optional versioned pre-CAS pointer-mutation intent used
+  for forensics, not normal discovery. Its content-addressed id binds the exact
+  prior/new snapshot, writer, pointer, hash, ETag/object-version, and
+  precondition tuple.
 
 ## ResearchAnalyticsArtifact
 

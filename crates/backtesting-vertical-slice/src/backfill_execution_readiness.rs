@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 use crate::hashing::sha256_hex;
 use crate::{
     artifact_index::ArtifactKind,
-    artifact_index_commit_proof::ArtifactIndexCommitProofReport,
+    artifact_index_commit_proof::{
+        ARTIFACT_INDEX_COMMIT_PROOF_SCHEMA_VERSION, ArtifactIndexCommitProofEvidence,
+    },
     backfill_accepted_tranche::{BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheStatus},
     backfill_execution_plan::{BackfillExecutionPlan, BackfillExecutionPlanStatus},
     run_manifest::ArtifactSubpath,
@@ -180,7 +182,7 @@ pub struct BackfillExecutionReadinessInput<'a> {
     pub artifact_index_commit_required: bool,
     pub required_artifact_index_kind: Option<ArtifactKind>,
     pub artifact_index_commit_proof_report_hash: Option<&'a str>,
-    pub artifact_index_commit_proof_report: Option<&'a ArtifactIndexCommitProofReport>,
+    pub artifact_index_commit_proof_report: Option<&'a ArtifactIndexCommitProofEvidence>,
     pub source_selection_readiness_required: bool,
     pub source_selection_readiness_report_hash: Option<&'a str>,
     pub source_selection_readiness_report: Option<&'a SourceSelectionReadinessReport>,
@@ -309,11 +311,11 @@ pub fn evaluate_backfill_execution_readiness(
         .artifact_index_commit_proof_report_hash
         .map(str::to_string);
     let artifact_index_commit_proof_id =
-        artifact_index_commit_proof_report.map(|report| report.proof_id.clone());
-    let artifact_index_direct_s3_commit_proven =
-        artifact_index_commit_proof_report.map(|report| report.direct_s3_commit_proven);
-    let artifact_index_producer_iam_scope_proven =
-        artifact_index_commit_proof_report.map(|report| report.producer_iam_scope_proven);
+        artifact_index_commit_proof_report.map(|report| report.proof_id().to_string());
+    let artifact_index_direct_s3_commit_proven = artifact_index_commit_proof_report
+        .map(ArtifactIndexCommitProofEvidence::direct_s3_commit_proven);
+    let artifact_index_producer_iam_scope_proven = artifact_index_commit_proof_report
+        .map(ArtifactIndexCommitProofEvidence::producer_iam_scope_proven);
     let source_selection_readiness_required = input.source_selection_readiness_required;
     let source_selection_readiness_report = input.source_selection_readiness_report;
     let source_selection_readiness_hash = input
@@ -434,7 +436,7 @@ pub fn evaluate_backfill_execution_readiness(
                     None => blockers.push(
                         BackfillExecutionReadinessBlocker::ArtifactIndexCommitProofKindRequiredButMissing,
                     ),
-                    Some(required_kind) if proof_report.artifact_kind != required_kind => blockers
+                    Some(required_kind) if proof_report.artifact_kind() != required_kind => blockers
                         .push(
                             BackfillExecutionReadinessBlocker::ArtifactIndexCommitProofKindMismatch,
                         ),
@@ -447,13 +449,13 @@ pub fn evaluate_backfill_execution_readiness(
                 }
                 if !artifact_index_proof_root_matches_plan_output(
                     &plan.output_prefix,
-                    &proof_report.artifact_root,
+                    proof_report.artifact_root(),
                 ) {
                     blockers.push(
                         BackfillExecutionReadinessBlocker::ArtifactIndexCommitProofArtifactRootMismatch,
                     );
                 }
-                if !proof_report.producer_iam_scope_proven {
+                if !proof_report.producer_iam_scope_proven() {
                     blockers.push(
                         BackfillExecutionReadinessBlocker::ArtifactIndexProducerIamScopeUnproven,
                     );
@@ -772,7 +774,7 @@ fn read_execution_plan(
 
 fn read_artifact_index_commit_proof_report(
     path: &Path,
-) -> Result<(ArtifactIndexCommitProofReport, String), BackfillExecutionReadinessError> {
+) -> Result<(ArtifactIndexCommitProofEvidence, String), BackfillExecutionReadinessError> {
     let bytes = fs::read(path).map_err(|error| {
         BackfillExecutionReadinessError::ReadArtifactIndexCommitProofReport {
             path: path.display().to_string(),
@@ -827,18 +829,21 @@ fn read_source_catalog_mapping_readiness_report(
     Ok((report, hash))
 }
 
-fn artifact_index_commit_mechanics_proven(report: &ArtifactIndexCommitProofReport) -> bool {
-    report.direct_s3_commit_proven
-        && report.prior_pointer_etag_observed
-        && report.final_pointer_etag_observed
-        && report.event_create_only_proven
-        && report.snapshot_create_only_proven
-        && report.audit_epoch_create_only_proven
-        && report.latest_pointer_create_only_proven
-        && report.latest_pointer_update_if_match_proven
-        && report.stale_etag_update_rejected
-        && report.latest_pointer_readback_proven
-        && report.snapshot_readback_proven
+fn artifact_index_commit_mechanics_proven(report: &ArtifactIndexCommitProofEvidence) -> bool {
+    report.as_v2().is_some_and(|report| {
+        report.schema_version == ARTIFACT_INDEX_COMMIT_PROOF_SCHEMA_VERSION
+            && report.direct_s3_commit_proven
+            && report.prior_pointer_etag_observed
+            && report.final_pointer_etag_observed
+            && report.event_create_only_proven
+            && report.snapshot_create_only_proven
+            && report.audit_intent_create_only_proven
+            && report.latest_pointer_create_only_proven
+            && report.latest_pointer_update_if_match_proven
+            && report.stale_etag_update_rejected
+            && report.latest_pointer_readback_proven
+            && report.snapshot_readback_proven
+    })
 }
 
 fn artifact_index_proof_root_matches_plan_output(

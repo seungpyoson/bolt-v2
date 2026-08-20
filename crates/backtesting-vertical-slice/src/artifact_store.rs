@@ -11,7 +11,13 @@ use object_store::{ObjectStore, ObjectStoreExt, PutMode, UpdateVersion, path::Pa
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::run_manifest::MarketStructureFixture;
+use crate::{
+    artifact_index_audit::{
+        ArtifactIndexAuditIntentIdentity, ArtifactIndexAuditIntentV1, ArtifactIndexAuditKind,
+        ArtifactIndexAuditPrecondition,
+    },
+    run_manifest::MarketStructureFixture,
+};
 
 const CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION: &str = "catalog-projection-manifest-v1";
 
@@ -487,13 +493,19 @@ impl ResolvedArtifactRoot {
         ])
     }
 
-    fn index_audit_epoch_uri(&self, audit_epoch_id: &str) -> String {
+    fn index_audit_intent_v1_uri(
+        &self,
+        artifact_kind: ArtifactKind,
+        audit_intent_id: &str,
+    ) -> String {
         self.join([
             self.subpaths.artifact_index.as_str(),
             "v1",
             "audit",
-            "epochs",
-            &format!("{audit_epoch_id}.json"),
+            "intents",
+            "v1",
+            &format!("kind={}", artifact_kind.index_label()),
+            &format!("{audit_intent_id}.json"),
         ])
     }
 
@@ -1423,56 +1435,10 @@ pub struct StoredArtifactIndexPointer {
     pub version: UpdateVersion,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ArtifactIndexAuditEpoch {
-    pub audit_epoch_id: String,
-    pub artifact_kind: ArtifactKind,
-    pub prior_snapshot_id: Option<String>,
-    pub new_snapshot_id: String,
-    pub writer_id: String,
-    pub prior_pointer_e_tag: Option<String>,
-    pub new_pointer_e_tag: Option<String>,
-}
-
-impl ArtifactIndexAuditEpoch {
-    fn audit_uri(&self, artifact_root: &ResolvedArtifactRoot) -> Result<String> {
-        self.validate()?;
-        Ok(artifact_root.index_audit_epoch_uri(&self.audit_epoch_id))
-    }
-
-    fn bytes(&self) -> Result<Vec<u8>> {
-        serde_json::to_vec(self).context("serialize artifact index audit epoch")
-    }
-
-    fn validate(&self) -> Result<()> {
-        ensure_path_token(
-            "audit_epoch_id",
-            &self.audit_epoch_id,
-            PathTokenMode::AllowEquals,
-        )?;
-        if let Some(prior_snapshot_id) = &self.prior_snapshot_id {
-            ensure_path_token(
-                "prior_snapshot_id",
-                prior_snapshot_id,
-                PathTokenMode::AllowEquals,
-            )?;
-        }
-        ensure_path_token(
-            "new_snapshot_id",
-            &self.new_snapshot_id,
-            PathTokenMode::AllowEquals,
-        )?;
-        validate_artifact_id(&self.writer_id)?;
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactIndexCommitPlan {
     pub event: ArtifactIndexEvent,
     pub snapshot_ids: Vec<String>,
-    pub audit_epoch_ids: Vec<String>,
     pub writer_id: String,
 }
 
@@ -1483,10 +1449,6 @@ impl ArtifactIndexCommitPlan {
             !self.snapshot_ids.is_empty(),
             "commit plan must include snapshot ids"
         );
-        ensure!(
-            !self.audit_epoch_ids.is_empty(),
-            "commit plan must include audit epoch ids"
-        );
         validate_artifact_id(&self.writer_id)?;
         let mut snapshot_ids = BTreeSet::new();
         for snapshot_id in &self.snapshot_ids {
@@ -1494,14 +1456,6 @@ impl ArtifactIndexCommitPlan {
             ensure!(
                 snapshot_ids.insert(snapshot_id.as_str()),
                 "commit plan snapshot ids must be unique"
-            );
-        }
-        let mut audit_epoch_ids = BTreeSet::new();
-        for audit_epoch_id in &self.audit_epoch_ids {
-            ensure_path_token("audit_epoch_id", audit_epoch_id, PathTokenMode::AllowEquals)?;
-            ensure!(
-                audit_epoch_ids.insert(audit_epoch_id.as_str()),
-                "commit plan audit epoch ids must be unique"
             );
         }
         Ok(())
@@ -1513,8 +1467,8 @@ pub struct ArtifactIndexCommitOutcome {
     pub snapshot_id: String,
     pub pointer_attempts: usize,
     pub prior_snapshot_id: Option<String>,
-    pub audit_epoch_uri: String,
-    pub audit_epoch: ArtifactIndexAuditEpoch,
+    pub audit_intent_uri: String,
+    pub audit_intent: ArtifactIndexAuditIntentV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1645,8 +1599,10 @@ impl<'a> ArtifactIndexWriter<'a> {
 
     /// # Errors
     ///
-    /// Returns an error if the supplied observed latest is stale and the commit
-    /// cannot rebase within the supplied snapshot ids.
+    /// Returns an error before changing the latest pointer if an immutable
+    /// event, snapshot, or audit-intent write fails, or if a stale observation
+    /// cannot rebase within the supplied snapshot ids. The pointer CAS is the
+    /// final operation for each attempt.
     pub async fn commit_event_from_observed_latest(
         &self,
         artifact_root: &ResolvedArtifactRoot,
@@ -1674,6 +1630,29 @@ impl<'a> ArtifactIndexWriter<'a> {
             let prior_pointer_e_tag = observed
                 .as_ref()
                 .and_then(|latest| latest.version.e_tag.clone());
+            let prior_pointer_version = observed
+                .as_ref()
+                .and_then(|latest| latest.version.version.clone());
+            let audit_precondition = match (&prior_pointer_e_tag, &prior_pointer_version) {
+                (None, None) => ArtifactIndexAuditPrecondition::IfNoneMatchAny,
+                _ => ArtifactIndexAuditPrecondition::IfMatch {
+                    etag: prior_pointer_e_tag.clone(),
+                    version: prior_pointer_version.clone(),
+                },
+            };
+            let audit_intent = ArtifactIndexAuditIntentV1::new(ArtifactIndexAuditIntentIdentity {
+                artifact_kind: artifact_index_audit_kind(snapshot.artifact_kind),
+                latest_pointer_uri: artifact_root.latest_pointer(snapshot.artifact_kind),
+                prior_snapshot_id: prior_snapshot_id.clone(),
+                new_snapshot_id: snapshot.snapshot_id.clone(),
+                new_snapshot_uri: pointer.snapshot_uri.clone(),
+                new_snapshot_content_hash: pointer.snapshot_sha256.clone(),
+                writer_id: plan.writer_id.clone(),
+                precondition: audit_precondition,
+            })?;
+            let audit_intent_uri = self
+                .append_audit_intent_v1(artifact_root, &audit_intent)
+                .await?;
             let pointer_result = match &observed {
                 Some(latest) => {
                     self.update_latest_pointer(artifact_root, &pointer, latest.version.clone())
@@ -1682,31 +1661,14 @@ impl<'a> ArtifactIndexWriter<'a> {
                 None => self.create_latest_pointer(artifact_root, &pointer).await,
             };
             match pointer_result {
-                Ok(new_pointer_version) => {
-                    let audit_epoch_id = plan
-                        .audit_epoch_ids
-                        .get(attempt)
-                        .or_else(|| plan.audit_epoch_ids.last())
-                        .context("commit plan must include audit epoch ids")?
-                        .clone();
-                    let audit_epoch = ArtifactIndexAuditEpoch {
-                        audit_epoch_id,
-                        artifact_kind: snapshot.artifact_kind,
-                        prior_snapshot_id,
-                        new_snapshot_id: snapshot.snapshot_id.clone(),
-                        writer_id: plan.writer_id.clone(),
-                        prior_pointer_e_tag,
-                        new_pointer_e_tag: new_pointer_version.e_tag,
-                    };
-                    let audit_epoch_uri =
-                        self.append_audit_epoch(artifact_root, &audit_epoch).await?;
-                    let outcome_prior_snapshot_id = audit_epoch.prior_snapshot_id.clone();
+                Ok(_new_pointer_version) => {
+                    let outcome_prior_snapshot_id = audit_intent.prior_snapshot_id.clone();
                     return Ok(ArtifactIndexCommitOutcome {
                         snapshot_id: snapshot.snapshot_id,
                         pointer_attempts: attempt + 1,
                         prior_snapshot_id: outcome_prior_snapshot_id,
-                        audit_epoch_uri,
-                        audit_epoch,
+                        audit_intent_uri,
+                        audit_intent,
                     });
                 }
                 Err(err) if is_pointer_commit_conflict(&err) => {
@@ -1726,18 +1688,30 @@ impl<'a> ArtifactIndexWriter<'a> {
 
     /// # Errors
     ///
-    /// Returns an error if the audit epoch is invalid, already exists with
+    /// Returns an error if the audit intent is invalid, already exists with
     /// different bytes, or the object store rejects create-only semantics.
-    pub async fn append_audit_epoch(
+    pub async fn append_audit_intent_v1(
         &self,
         artifact_root: &ResolvedArtifactRoot,
-        audit_epoch: &ArtifactIndexAuditEpoch,
+        audit_intent: &ArtifactIndexAuditIntentV1,
     ) -> Result<String> {
-        self.authorize_kind(audit_epoch.artifact_kind)?;
-        let uri = audit_epoch.audit_uri(artifact_root)?;
+        let artifact_kind = artifact_kind_from_audit(audit_intent.artifact_kind);
+        self.authorize_kind(artifact_kind)?;
+        audit_intent.validate()?;
+        ensure!(
+            audit_intent.latest_pointer_uri == artifact_root.latest_pointer(artifact_kind),
+            "audit intent pointer URI does not match the configured artifact root"
+        );
+        ensure!(
+            audit_intent.new_snapshot_uri
+                == artifact_root.index_snapshot_uri(artifact_kind, &audit_intent.new_snapshot_id),
+            "audit intent snapshot URI does not match the configured artifact root"
+        );
+        let uri =
+            artifact_root.index_audit_intent_v1_uri(artifact_kind, &audit_intent.audit_intent_id);
         let path = artifact_root.object_path_for_uri(&uri)?;
         self.create_only
-            .put_create_idempotent(&path, audit_epoch.bytes()?)
+            .put_create_idempotent(&path, audit_intent.bytes()?)
             .await?;
         Ok(uri)
     }
@@ -2049,6 +2023,28 @@ fn build_rebased_snapshot(
 
 fn is_pointer_commit_conflict(err: &anyhow::Error) -> bool {
     is_create_only_conflict(err)
+}
+
+const fn artifact_index_audit_kind(kind: ArtifactKind) -> ArtifactIndexAuditKind {
+    match kind {
+        ArtifactKind::Raw => ArtifactIndexAuditKind::Raw,
+        ArtifactKind::NtCatalog => ArtifactIndexAuditKind::NtCatalog,
+        ArtifactKind::SourceProofs => ArtifactIndexAuditKind::SourceProofs,
+        ArtifactKind::Backtests => ArtifactIndexAuditKind::Backtests,
+        ArtifactKind::ArtifactIndex => ArtifactIndexAuditKind::ArtifactIndex,
+        ArtifactKind::ResearchAnalytics => ArtifactIndexAuditKind::ResearchAnalytics,
+    }
+}
+
+const fn artifact_kind_from_audit(kind: ArtifactIndexAuditKind) -> ArtifactKind {
+    match kind {
+        ArtifactIndexAuditKind::Raw => ArtifactKind::Raw,
+        ArtifactIndexAuditKind::NtCatalog => ArtifactKind::NtCatalog,
+        ArtifactIndexAuditKind::SourceProofs => ArtifactKind::SourceProofs,
+        ArtifactIndexAuditKind::Backtests => ArtifactKind::Backtests,
+        ArtifactIndexAuditKind::ArtifactIndex => ArtifactKind::ArtifactIndex,
+        ArtifactIndexAuditKind::ResearchAnalytics => ArtifactKind::ResearchAnalytics,
+    }
 }
 
 fn is_create_only_conflict(err: &anyhow::Error) -> bool {

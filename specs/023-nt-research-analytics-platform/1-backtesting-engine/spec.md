@@ -348,8 +348,14 @@ not become a warehouse, query engine, or replacement for NT `ParquetDataCatalog`
   only for off-path reconciliation, recovery, and compaction.
 - The current latest pointer, current snapshot, and metadata needed to resolve
   the current snapshot must remain in active/queryable storage.
-- Pointer swaps append audit epoch records for forensics only. Normal discovery
-  still uses the per-kind latest pointer and snapshot.
+- Pointer attempts prewrite a create-only
+  `artifact-index-audit-intent.v1` record under
+  `artifact-index/v1/audit/intents/v1/kind=<artifact_kind>/` before the final pointer CAS. This is a
+  separate versioned wire contract, not a reinterpretation of the retired
+  completed-swap epoch shape. Its id content-addresses the complete pointer CAS
+  tuple, including the prior ETag/object version. Normal discovery still uses
+  only the per-kind latest pointer and snapshot. Current readiness requires the
+  v2 commit proof; historical v1 epoch proofs cannot authorize the new path.
 - Backtest callers may use the returned `BacktestResultContract` immediately as
   an artifact-local handle; cross-run consumers use the committed Artifact Index
   snapshot.

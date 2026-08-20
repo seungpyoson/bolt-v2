@@ -299,14 +299,8 @@ fn latest_pointer_update_plan_uses_create_or_etag_preconditions() {
     .expect("first snapshot");
     let first_pointer =
         ArtifactIndexLatestPointer::from_snapshot(root, &first_snapshot).expect("first pointer");
-    let create_plan = plan_latest_pointer_update(
-        root,
-        "backtesting-engine",
-        None,
-        &first_pointer,
-        "epoch-001",
-    )
-    .expect("create plan");
+    let create_plan = plan_latest_pointer_update(root, "backtesting-engine", None, &first_pointer)
+        .expect("create plan");
     assert_eq!(
         create_plan.precondition,
         ArtifactIndexPointerPrecondition::IfNoneMatchAny
@@ -337,7 +331,6 @@ fn latest_pointer_update_plan_uses_create_or_etag_preconditions() {
         "backtesting-engine",
         Some(&observed_first),
         &second_pointer,
-        "epoch-002",
     )
     .expect("update plan");
 
@@ -348,10 +341,33 @@ fn latest_pointer_update_plan_uses_create_or_etag_preconditions() {
         }
     );
     assert!(update_plan.requires_retry_rebase_after_conditional_failure());
-    assert_eq!(
-        update_plan.audit_epoch_uri,
-        format!("{root}/artifact-index/v1/audit/epochs/epoch-002.json")
+    assert_eq!(update_plan.audit_intent.audit_intent_id.len(), 64);
+    assert!(
+        update_plan
+            .audit_intent
+            .audit_intent_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
     );
+    assert_eq!(
+        update_plan.audit_intent_uri,
+        format!(
+            "{root}/artifact-index/v1/audit/intents/v1/kind=backtests/{}.json",
+            update_plan.audit_intent.audit_intent_id
+        )
+    );
+    let audit_wire = serde_json::to_value(&update_plan.audit_intent).expect("audit intent wire");
+    assert!(audit_wire.get("new_snapshot_content_hash").is_some());
+    assert!(audit_wire.get("precondition").is_some());
+    assert!(audit_wire.get("new_snapshot_sha256").is_none());
+    assert!(audit_wire.get("prior_pointer_e_tag").is_none());
+    let mut mutated = update_plan.audit_intent.clone();
+    mutated.writer_id = "different-writer".to_string();
+    assert!(mutated.validate().is_err());
+    let mut inconsistent = update_plan.audit_intent.clone();
+    inconsistent.prior_snapshot_id = None;
+    let error = inconsistent.validate().unwrap_err();
+    assert!(error.to_string().contains("precondition disagree"));
 }
 
 #[test]

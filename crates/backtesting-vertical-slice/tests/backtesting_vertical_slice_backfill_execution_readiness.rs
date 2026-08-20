@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use backtesting_vertical_slice::{
     artifact_index::ArtifactKind,
     artifact_index_commit_proof::{
-        ARTIFACT_INDEX_COMMIT_PROOF_SCHEMA_VERSION, ArtifactIndexCommitProofReport,
+        ARTIFACT_INDEX_COMMIT_PROOF_SCHEMA_VERSION, ArtifactIndexCommitProofEvidence,
+        ArtifactIndexCommitProofReport,
     },
     backfill_accepted_tranche::{
         BACKFILL_ACCEPTED_TRANCHE_SCHEMA_VERSION, BackfillAcceptedTrancheManifest,
@@ -164,7 +165,8 @@ nt_data_type = "TradeTick"
 fn execution_readiness_blocks_index_backfill_when_producer_iam_scope_is_unproven() {
     let tranche = accepted_tranche();
     let plan = matching_execution_plan(&tranche);
-    let proof_report = artifact_index_commit_proof_report(false);
+    let proof_report =
+        ArtifactIndexCommitProofEvidence::from(artifact_index_commit_proof_report(false));
 
     let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
         readiness_id: "synthetic-readiness",
@@ -214,6 +216,7 @@ fn execution_readiness_blocks_index_backfill_when_artifact_index_root_mismatches
     let plan = matching_execution_plan(&tranche);
     let mut proof_report = artifact_index_commit_proof_report(true);
     proof_report.artifact_root = "s3://different-artifacts".to_string();
+    let proof_report = ArtifactIndexCommitProofEvidence::from(proof_report);
 
     let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
         readiness_id: "synthetic-readiness",
@@ -250,6 +253,7 @@ fn execution_readiness_accepts_artifact_index_proof_sandbox_under_plan_artifact_
     let mut proof_report = artifact_index_commit_proof_report(true);
     proof_report.artifact_root =
         "s3://synthetic-artifacts/artifact-index/proofs/synthetic-artifact-index-proof".to_string();
+    let proof_report = ArtifactIndexCommitProofEvidence::from(proof_report);
 
     let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
         readiness_id: "synthetic-readiness",
@@ -277,6 +281,61 @@ fn execution_readiness_accepts_artifact_index_proof_sandbox_under_plan_artifact_
     assert!(!report.blockers.contains(
         &BackfillExecutionReadinessBlocker::ArtifactIndexCommitProofArtifactRootMismatch
     ));
+}
+
+#[test]
+fn execution_readiness_rejects_historical_audit_epoch_proof() {
+    let tranche = accepted_tranche();
+    let plan = matching_execution_plan(&tranche);
+    let historical_wire = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../specs/023-nt-research-analytics-platform/reference/artifact-index-commit-proof/",
+        "artifact-index-commit-proof-report.backtesting-engine-006-direct-s3.2026-06-08.json"
+    ));
+    let proof_report: ArtifactIndexCommitProofEvidence =
+        serde_json::from_str(historical_wire).expect("historical v1 wire remains readable");
+    assert!(matches!(
+        proof_report,
+        ArtifactIndexCommitProofEvidence::V1(_)
+    ));
+
+    let mut relabeled: serde_json::Value =
+        serde_json::from_str(historical_wire).expect("historical v1 value");
+    relabeled["schema_version"] =
+        serde_json::Value::String(ARTIFACT_INDEX_COMMIT_PROOF_SCHEMA_VERSION.to_string());
+    assert!(
+        serde_json::from_value::<ArtifactIndexCommitProofEvidence>(relabeled).is_err(),
+        "changing only the schema label must not turn v1 epoch evidence into v2 intent evidence"
+    );
+
+    let report = evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
+        readiness_id: "synthetic-readiness",
+        accepted_tranche_manifest_hash: "synthetic-tranche-file-hash",
+        tranche: &tranche,
+        execution_plan_hash: "synthetic-plan-file-hash",
+        plan: &plan,
+        required_table_family: "trades",
+        required_nt_data_type: "TradeTick",
+        required_source_usage_scope: SourceProofUsageScope::CanonicalBackfillInput,
+        supported_data_paths: supported_data_paths(),
+        artifact_index_commit_required: true,
+        required_artifact_index_kind: Some(ArtifactKind::Backtests),
+        artifact_index_commit_proof_report_hash: Some("historical-proof-hash"),
+        artifact_index_commit_proof_report: Some(&proof_report),
+        source_selection_readiness_required: false,
+        source_selection_readiness_report_hash: None,
+        source_selection_readiness_report: None,
+        source_catalog_mapping_readiness_required: false,
+        source_catalog_mapping_readiness_report_hash: None,
+        source_catalog_mapping_readiness_report: None,
+    });
+
+    assert_eq!(report.status, BackfillExecutionReadinessStatus::Blocked);
+    assert!(
+        report
+            .blockers
+            .contains(&BackfillExecutionReadinessBlocker::ArtifactIndexCommitMechanicsUnproven)
+    );
 }
 
 #[test]
@@ -701,7 +760,7 @@ fn artifact_index_commit_proof_report(
         event_uris: vec!["s3://synthetic-artifacts/artifact-index/v1/events/kind=backtests/event.json".to_string()],
         snapshot_uris: vec!["s3://synthetic-artifacts/artifact-index/v1/snapshots/kind=backtests/snapshot.json".to_string()],
         latest_pointer_uri: "s3://synthetic-artifacts/artifact-index/v1/pointers/kind=backtests/latest.json".to_string(),
-        audit_epoch_uris: vec!["s3://synthetic-artifacts/artifact-index/v1/audit/epochs/synthetic.json".to_string()],
+        audit_intent_uris: vec!["s3://synthetic-artifacts/artifact-index/v1/audit/intents/v1/kind=backtests/synthetic.json".to_string()],
         first_pointer_precondition:
             backtesting_vertical_slice::artifact_index::ArtifactIndexPointerPrecondition::IfNoneMatchAny,
         second_pointer_precondition:
@@ -712,7 +771,7 @@ fn artifact_index_commit_proof_report(
         final_pointer_etag_observed: true,
         event_create_only_proven: true,
         snapshot_create_only_proven: true,
-        audit_epoch_create_only_proven: true,
+        audit_intent_create_only_proven: true,
         latest_pointer_create_only_proven: true,
         latest_pointer_update_if_match_proven: true,
         stale_etag_update_rejected: true,

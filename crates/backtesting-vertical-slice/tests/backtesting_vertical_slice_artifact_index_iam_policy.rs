@@ -49,6 +49,39 @@ fn producer_iam_policy_scopes_index_writes_to_one_configured_kind() {
 }
 
 #[test]
+fn producer_iam_policy_uses_canonical_audit_kind_labels_for_every_kind() {
+    let cases = [
+        (ArtifactKind::Raw, "raw", "raw"),
+        (ArtifactKind::NtCatalog, "nt_catalog", "nt-catalog"),
+        (ArtifactKind::SourceProofs, "source_proofs", "source-proofs"),
+        (ArtifactKind::Backtests, "backtests", "backtests"),
+        (
+            ArtifactKind::ArtifactIndex,
+            "artifact_index",
+            "artifact-index",
+        ),
+        (
+            ArtifactKind::ResearchAnalytics,
+            "research_analytics",
+            "research-analytics",
+        ),
+    ];
+
+    for (kind, existing_index_label, canonical_audit_label) in cases {
+        let policy =
+            artifact_index_producer_iam_policy("s3://example-bucket/example-root", kind, &[])
+                .expect("policy");
+        let resources = &policy.statements[0].resources;
+        assert!(resources.iter().any(|resource| resource.ends_with(&format!(
+            "artifact-index/v1/events/kind={existing_index_label}/*"
+        ))));
+        assert!(resources.iter().any(|resource| resource.ends_with(&format!(
+            "artifact-index/v1/audit/intents/v1/kind={canonical_audit_label}/*"
+        ))));
+    }
+}
+
+#[test]
 fn producer_iam_provisioning_plan_binds_policy_ssm_paths_and_denied_probe_kinds() {
     let plan = artifact_index_producer_iam_provisioning_plan(
         ArtifactIndexProducerIamProvisioningPlanSpec {
@@ -77,7 +110,7 @@ fn producer_iam_provisioning_plan_binds_policy_ssm_paths_and_denied_probe_kinds(
         plan.proof_denied_artifact_kinds,
         vec![ArtifactKind::ResearchAnalytics]
     );
-    assert_eq!(plan.expected_denied_write_attempts, 3);
+    assert_eq!(plan.expected_denied_write_attempts, 4);
 
     let resources: Vec<&str> = plan
         .policy
@@ -89,6 +122,17 @@ fn producer_iam_provisioning_plan_binds_policy_ssm_paths_and_denied_probe_kinds(
         resources
             .iter()
             .any(|resource| { resource.ends_with("artifact-index/v1/events/kind=backtests/*") })
+    );
+    assert!(
+        resources
+            .iter()
+            .any(|resource| resource
+                .ends_with("artifact-index/v1/audit/intents/v1/kind=backtests/*"))
+    );
+    assert!(
+        resources
+            .iter()
+            .all(|resource| !resource.contains("artifact-index/v1/audit/epochs/"))
     );
     assert!(
         resources

@@ -9,6 +9,11 @@ use std::{error::Error, fmt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::artifact_index_audit::{
+    ArtifactIndexAuditIntentIdentity, ArtifactIndexAuditIntentV1, ArtifactIndexAuditKind,
+    ArtifactIndexAuditPrecondition,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
@@ -558,7 +563,8 @@ pub struct ArtifactIndexLatestPointerUpdatePlan {
     pub prior_snapshot_id: Option<String>,
     pub precondition: ArtifactIndexPointerPrecondition,
     pub writer_id: String,
-    pub audit_epoch_uri: String,
+    pub audit_intent_uri: String,
+    pub audit_intent: ArtifactIndexAuditIntentV1,
 }
 
 impl ArtifactIndexLatestPointerUpdatePlan {
@@ -618,13 +624,10 @@ pub fn plan_latest_pointer_update(
     writer_id: impl Into<String>,
     observed_prior: Option<&ArtifactIndexObservedPointer>,
     new_pointer: &ArtifactIndexLatestPointer,
-    audit_epoch_id: impl Into<String>,
 ) -> Result<ArtifactIndexLatestPointerUpdatePlan, ArtifactIndexError> {
     validate_artifact_root(artifact_root)?;
     let writer_id = writer_id.into();
     validate_non_empty("writer_id", &writer_id)?;
-    let audit_epoch_id = audit_epoch_id.into();
-    validate_non_empty("audit_epoch_id", &audit_epoch_id)?;
 
     let expected_pointer_uri =
         expected_latest_pointer_uri(artifact_root, new_pointer.artifact_kind);
@@ -655,6 +658,37 @@ pub fn plan_latest_pointer_update(
         None => (None, ArtifactIndexPointerPrecondition::IfNoneMatchAny),
     };
 
+    let audit_precondition = match &precondition {
+        ArtifactIndexPointerPrecondition::IfNoneMatchAny => {
+            ArtifactIndexAuditPrecondition::IfNoneMatchAny
+        }
+        ArtifactIndexPointerPrecondition::IfMatch { etag } => {
+            ArtifactIndexAuditPrecondition::IfMatch {
+                etag: Some(etag.clone()),
+                version: None,
+            }
+        }
+    };
+    let audit_intent = ArtifactIndexAuditIntentV1::new(ArtifactIndexAuditIntentIdentity {
+        artifact_kind: artifact_index_audit_kind(new_pointer.artifact_kind),
+        latest_pointer_uri: new_pointer.latest_pointer_uri.clone(),
+        prior_snapshot_id: prior_snapshot_id.clone(),
+        new_snapshot_id: new_pointer.snapshot_id.clone(),
+        new_snapshot_uri: new_pointer.snapshot_uri.clone(),
+        new_snapshot_content_hash: new_pointer.snapshot_content_hash.clone(),
+        writer_id: writer_id.clone(),
+        precondition: audit_precondition,
+    })
+    .map_err(|error| ArtifactIndexError::InvalidAuditIntent {
+        message: error.to_string(),
+    })?;
+    let audit_intent_uri = format!(
+        "{}/artifact-index/v1/audit/intents/v1/kind={}/{}.json",
+        artifact_root.trim_end_matches('/'),
+        audit_intent.artifact_kind.as_str(),
+        audit_intent.audit_intent_id
+    );
+
     Ok(ArtifactIndexLatestPointerUpdatePlan {
         artifact_kind: new_pointer.artifact_kind,
         latest_pointer_uri: new_pointer.latest_pointer_uri.clone(),
@@ -664,10 +698,8 @@ pub fn plan_latest_pointer_update(
         prior_snapshot_id,
         precondition,
         writer_id,
-        audit_epoch_uri: format!(
-            "{}/artifact-index/v1/audit/epochs/{audit_epoch_id}.json",
-            artifact_root.trim_end_matches('/')
-        ),
+        audit_intent_uri,
+        audit_intent,
     })
 }
 
@@ -729,6 +761,9 @@ pub enum ArtifactIndexError {
         event_uri: String,
     },
     ResearchAnalyticsSubfamilyRequired,
+    InvalidAuditIntent {
+        message: String,
+    },
 }
 
 impl fmt::Display for ArtifactIndexError {
@@ -834,11 +869,25 @@ impl fmt::Display for ArtifactIndexError {
                 f,
                 "research analytics artifact index records require a typed subfamily"
             ),
+            Self::InvalidAuditIntent { message } => {
+                write!(f, "invalid artifact index audit intent: {message}")
+            }
         }
     }
 }
 
 impl Error for ArtifactIndexError {}
+
+pub(crate) const fn artifact_index_audit_kind(kind: ArtifactKind) -> ArtifactIndexAuditKind {
+    match kind {
+        ArtifactKind::Raw => ArtifactIndexAuditKind::Raw,
+        ArtifactKind::NtCatalog => ArtifactIndexAuditKind::NtCatalog,
+        ArtifactKind::SourceProofs => ArtifactIndexAuditKind::SourceProofs,
+        ArtifactKind::Backtests => ArtifactIndexAuditKind::Backtests,
+        ArtifactKind::ArtifactIndex => ArtifactIndexAuditKind::ArtifactIndex,
+        ArtifactKind::ResearchAnalytics => ArtifactIndexAuditKind::ResearchAnalytics,
+    }
+}
 
 fn validate_artifact_root(artifact_root: &str) -> Result<(), ArtifactIndexError> {
     if artifact_root.starts_with("s3://") {

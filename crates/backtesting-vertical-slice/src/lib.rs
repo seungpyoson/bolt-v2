@@ -20,6 +20,7 @@
 //! accepted [`source_proof::SourceProofReport`].
 
 pub mod artifact_index;
+pub mod artifact_index_audit;
 pub mod artifact_index_commit_proof;
 pub mod artifact_index_iam_policy;
 pub mod artifact_store;

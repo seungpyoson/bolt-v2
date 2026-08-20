@@ -1,9 +1,9 @@
 //! Bounded Artifact Index commit proof.
 //!
 //! This proves the selected object-store path can execute the commit sequence
-//! required by the Artifact Index contract: immutable event/snapshot/audit
-//! writes, first latest-pointer creation, ETag-guarded latest-pointer update,
-//! stale ETag rejection, and readback resolution.
+//! required by the Artifact Index contract: immutable event/snapshot writes,
+//! pre-CAS audit intents, first latest-pointer creation, ETag-guarded
+//! latest-pointer update, stale ETag rejection, and readback resolution.
 
 use std::{
     fs,
@@ -23,16 +23,17 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use crate::hashing::sha256_hex;
 use crate::{
     artifact_index::{
-        ArtifactIndexEventObject, ArtifactIndexLatestPointer, ArtifactIndexLatestPointerUpdatePlan,
-        ArtifactIndexLineageRef, ArtifactIndexObservedPointer, ArtifactIndexPointerPrecondition,
-        ArtifactIndexRecord, ArtifactIndexSnapshotManifest, ArtifactKind,
-        ResearchAnalyticsSubfamily, plan_index_event_create, plan_latest_pointer_update,
+        ArtifactIndexEventObject, ArtifactIndexLatestPointer, ArtifactIndexLineageRef,
+        ArtifactIndexObservedPointer, ArtifactIndexPointerPrecondition, ArtifactIndexRecord,
+        ArtifactIndexSnapshotManifest, ArtifactKind, ResearchAnalyticsSubfamily,
+        artifact_index_audit_kind, plan_index_event_create, plan_latest_pointer_update,
         resolve_committed_snapshot,
     },
     run_manifest::{ManifestArtifactStore, artifact_store_storage_options_for_uri},
 };
 
-pub const ARTIFACT_INDEX_COMMIT_PROOF_SCHEMA_VERSION: &str = "artifact-index-commit-proof.v1";
+pub const ARTIFACT_INDEX_COMMIT_PROOF_SCHEMA_VERSION: &str = "artifact-index-commit-proof.v2";
+pub const ARTIFACT_INDEX_COMMIT_PROOF_V1_SCHEMA_VERSION: &str = "artifact-index-commit-proof.v1";
 pub const ARTIFACT_INDEX_COMMIT_PROOF_REPORT_FILE: &str = "artifact-index-commit-proof-report.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -54,6 +55,46 @@ pub struct ArtifactIndexCommitProofSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactIndexCommitProofReport {
+    pub schema_version: String,
+    pub proof_id: String,
+    pub artifact_root: String,
+    pub artifact_protocol: String,
+    pub artifact_kind: ArtifactKind,
+    pub producer_project: String,
+    pub writer_id: String,
+    pub storage_option_keys: Vec<String>,
+    pub event_uris: Vec<String>,
+    pub snapshot_uris: Vec<String>,
+    pub latest_pointer_uri: String,
+    pub audit_intent_uris: Vec<String>,
+    pub first_pointer_precondition: ArtifactIndexPointerPrecondition,
+    pub second_pointer_precondition: ArtifactIndexPointerPrecondition,
+    pub prior_pointer_etag_observed: bool,
+    pub final_pointer_etag_observed: bool,
+    pub event_create_only_proven: bool,
+    pub snapshot_create_only_proven: bool,
+    pub audit_intent_create_only_proven: bool,
+    pub latest_pointer_create_only_proven: bool,
+    pub latest_pointer_update_if_match_proven: bool,
+    pub stale_etag_update_rejected: bool,
+    pub latest_pointer_readback_proven: bool,
+    pub snapshot_readback_proven: bool,
+    pub resolved_snapshot_id: String,
+    pub final_snapshot_id: String,
+    pub final_snapshot_content_hash: String,
+    pub persisted_final_snapshot_json_sha256: String,
+    pub direct_s3_commit_proven: bool,
+    pub producer_iam_scope_proven: bool,
+    pub producer_iam_scope_denied_kinds: Vec<ArtifactKind>,
+    pub producer_iam_scope_denied_write_attempts: usize,
+    pub producer_iam_scope_denied_write_rejections: usize,
+    pub producer_iam_scope_violation_count: usize,
+    pub producer_iam_scope_violation_uris: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactIndexCommitProofReportV1 {
     pub schema_version: String,
     pub proof_id: String,
     pub artifact_root: String,
@@ -92,27 +133,98 @@ pub struct ArtifactIndexCommitProofReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArtifactIndexCommitProofEvidence {
+    V1(ArtifactIndexCommitProofReportV1),
+    V2(ArtifactIndexCommitProofReport),
+}
+
+impl ArtifactIndexCommitProofEvidence {
+    #[must_use]
+    pub fn proof_id(&self) -> &str {
+        match self {
+            Self::V1(report) => &report.proof_id,
+            Self::V2(report) => &report.proof_id,
+        }
+    }
+
+    #[must_use]
+    pub const fn artifact_kind(&self) -> ArtifactKind {
+        match self {
+            Self::V1(report) => report.artifact_kind,
+            Self::V2(report) => report.artifact_kind,
+        }
+    }
+
+    #[must_use]
+    pub fn artifact_root(&self) -> &str {
+        match self {
+            Self::V1(report) => &report.artifact_root,
+            Self::V2(report) => &report.artifact_root,
+        }
+    }
+
+    #[must_use]
+    pub const fn direct_s3_commit_proven(&self) -> bool {
+        match self {
+            Self::V1(report) => report.direct_s3_commit_proven,
+            Self::V2(report) => report.direct_s3_commit_proven,
+        }
+    }
+
+    #[must_use]
+    pub const fn producer_iam_scope_proven(&self) -> bool {
+        match self {
+            Self::V1(report) => report.producer_iam_scope_proven,
+            Self::V2(report) => report.producer_iam_scope_proven,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_v2(&self) -> Option<&ArtifactIndexCommitProofReport> {
+        match self {
+            Self::V1(_) => None,
+            Self::V2(report) => Some(report),
+        }
+    }
+}
+
+impl From<ArtifactIndexCommitProofReport> for ArtifactIndexCommitProofEvidence {
+    fn from(report: ArtifactIndexCommitProofReport) -> Self {
+        Self::V2(report)
+    }
+}
+
+impl<'de> Deserialize<'de> for ArtifactIndexCommitProofEvidence {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let schema_version = value
+            .get("schema_version")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| serde::de::Error::custom("missing string schema_version"))?;
+        match schema_version {
+            ARTIFACT_INDEX_COMMIT_PROOF_V1_SCHEMA_VERSION => serde_json::from_value(value)
+                .map(Self::V1)
+                .map_err(serde::de::Error::custom),
+            ARTIFACT_INDEX_COMMIT_PROOF_SCHEMA_VERSION => serde_json::from_value(value)
+                .map(Self::V2)
+                .map_err(serde::de::Error::custom),
+            other => Err(serde::de::Error::custom(format!(
+                "unsupported Artifact Index commit proof schema {other:?}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactIndexCommitProofArtifact {
     pub report_path: PathBuf,
     pub content_hash: String,
     pub report_bytes: u64,
     pub artifact_root: String,
     pub latest_pointer_uri: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ArtifactIndexAuditEpochObject {
-    schema_version: String,
-    proof_id: String,
-    artifact_kind: ArtifactKind,
-    latest_pointer_uri: String,
-    prior_snapshot_id: Option<String>,
-    new_snapshot_id: String,
-    writer_id: String,
-    precondition: ArtifactIndexPointerPrecondition,
-    prior_etag: Option<String>,
-    new_etag: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +243,7 @@ pub(crate) enum ArtifactIndexIamProbePathKind {
     Event,
     Snapshot,
     LatestPointer,
+    AuditIntent,
 }
 
 impl ArtifactIndexIamProbePathKind {
@@ -138,7 +251,12 @@ impl ArtifactIndexIamProbePathKind {
     /// exactly one URI per kind via an exhaustive match, and the IAM plan's
     /// `expected_denied_write_attempts` derives from this slice's length, so
     /// adding a kind updates both sides or fails to compile.
-    pub(crate) const ALL: [Self; 3] = [Self::Event, Self::Snapshot, Self::LatestPointer];
+    pub(crate) const ALL: [Self; 4] = [
+        Self::Event,
+        Self::Snapshot,
+        Self::LatestPointer,
+        Self::AuditIntent,
+    ];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,13 +385,8 @@ async fn execute_commit_sequence(
         ArtifactIndexLatestPointer::from_snapshot(&spec.artifact_root, &first_snapshot)?;
     let second_pointer =
         ArtifactIndexLatestPointer::from_snapshot(&spec.artifact_root, &second_snapshot)?;
-    let first_plan = plan_latest_pointer_update(
-        &spec.artifact_root,
-        &spec.writer_id,
-        None,
-        &first_pointer,
-        format!("{}-epoch-a", spec.proof_id),
-    )?;
+    let first_plan =
+        plan_latest_pointer_update(&spec.artifact_root, &spec.writer_id, None, &first_pointer)?;
 
     let first_event = ArtifactIndexEventObject::from_record(&first_staged)?;
     let second_event = ArtifactIndexEventObject::from_record(&second_staged)?;
@@ -314,6 +427,17 @@ async fn execute_commit_sequence(
     )
     .await
     .with_context(|| format!("create first snapshot {}", first_snapshot.snapshot_uri))?;
+    put_create_json(
+        object_store.as_ref(),
+        &path_for_uri(
+            &spec.artifact_root,
+            &artifact_root_object_path,
+            &first_plan.audit_intent_uri,
+        )?,
+        &first_plan.audit_intent,
+    )
+    .await
+    .with_context(|| format!("create first audit intent {}", first_plan.audit_intent_uri))?;
     let first_pointer_result = put_create_json(
         object_store.as_ref(),
         &path_for_uri(
@@ -330,8 +454,7 @@ async fn execute_commit_sequence(
             first_pointer.latest_pointer_uri
         )
     })?;
-    let first_pointer_result_etag = first_pointer_result.e_tag.clone();
-    let first_etag = if let Some(etag) = first_pointer_result_etag.clone() {
+    let first_etag = if let Some(etag) = first_pointer_result.e_tag {
         etag
     } else {
         object_store
@@ -345,31 +468,12 @@ async fn execute_commit_sequence(
             .e_tag
             .ok_or_else(|| anyhow!("first pointer create did not return an ETag"))?
     };
-    let first_audit = audit_epoch(
-        spec,
-        &first_plan,
-        None,
-        first_pointer_result_etag.or_else(|| Some(first_etag.clone())),
-    );
-    put_create_json(
-        object_store.as_ref(),
-        &path_for_uri(
-            &spec.artifact_root,
-            &artifact_root_object_path,
-            &first_plan.audit_epoch_uri,
-        )?,
-        &first_audit,
-    )
-    .await
-    .with_context(|| format!("create first audit epoch {}", first_plan.audit_epoch_uri))?;
-
     let observed_first = ArtifactIndexObservedPointer::new(first_pointer, first_etag.clone())?;
     let second_plan = plan_latest_pointer_update(
         &spec.artifact_root,
         &spec.writer_id,
         Some(&observed_first),
         &second_pointer,
-        format!("{}-epoch-b", spec.proof_id),
     )?;
     put_create_json(
         object_store.as_ref(),
@@ -393,6 +497,22 @@ async fn execute_commit_sequence(
     )
     .await
     .with_context(|| format!("create second snapshot {}", second_snapshot.snapshot_uri))?;
+    put_create_json(
+        object_store.as_ref(),
+        &path_for_uri(
+            &spec.artifact_root,
+            &artifact_root_object_path,
+            &second_plan.audit_intent_uri,
+        )?,
+        &second_plan.audit_intent,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "create second audit intent {}",
+            second_plan.audit_intent_uri
+        )
+    })?;
     let pointer_path = path_for_uri(
         &spec.artifact_root,
         &artifact_root_object_path,
@@ -421,24 +541,6 @@ async fn execute_commit_sequence(
             .e_tag
             .ok_or_else(|| anyhow!("second pointer update did not return an ETag"))?
     };
-    let second_audit = audit_epoch(
-        spec,
-        &second_plan,
-        Some(first_etag.clone()),
-        Some(second_etag.clone()),
-    );
-    put_create_json(
-        object_store.as_ref(),
-        &path_for_uri(
-            &spec.artifact_root,
-            &artifact_root_object_path,
-            &second_plan.audit_epoch_uri,
-        )?,
-        &second_audit,
-    )
-    .await
-    .with_context(|| format!("create second audit epoch {}", second_plan.audit_epoch_uri))?;
-
     let stale_update = put_update_json_if_match(
         object_store.as_ref(),
         &pointer_path,
@@ -486,14 +588,14 @@ async fn execute_commit_sequence(
         event_uris: vec![first_event.event_uri, second_event.event_uri],
         snapshot_uris: vec![first_snapshot.snapshot_uri, second_snapshot.snapshot_uri],
         latest_pointer_uri: read_pointer.latest_pointer_uri.clone(),
-        audit_epoch_uris: vec![first_plan.audit_epoch_uri, second_plan.audit_epoch_uri],
+        audit_intent_uris: vec![first_plan.audit_intent_uri, second_plan.audit_intent_uri],
         first_pointer_precondition: first_plan.precondition,
         second_pointer_precondition: second_plan.precondition,
         prior_pointer_etag_observed: true,
         final_pointer_etag_observed: !second_etag.is_empty(),
         event_create_only_proven: true,
         snapshot_create_only_proven: true,
-        audit_epoch_create_only_proven: true,
+        audit_intent_create_only_proven: true,
         latest_pointer_create_only_proven: true,
         latest_pointer_update_if_match_proven: true,
         stale_etag_update_rejected,
@@ -556,6 +658,7 @@ fn denied_probe_uris(
 ) -> Vec<(ArtifactIndexIamProbePathKind, String)> {
     let root = spec.artifact_root.trim_end_matches('/');
     let kind = denied_kind.as_str();
+    let audit_kind = artifact_index_audit_kind(denied_kind).as_str();
     let hash = sha256_hex(format!("{}:{kind}:iam-scope-probe", spec.proof_id).as_bytes());
     ArtifactIndexIamProbePathKind::ALL
         .into_iter()
@@ -572,6 +675,9 @@ fn denied_probe_uris(
                 ArtifactIndexIamProbePathKind::LatestPointer => {
                     format!("{root}/artifact-index/v1/pointers/kind={kind}/latest.json")
                 }
+                ArtifactIndexIamProbePathKind::AuditIntent => format!(
+                    "{root}/artifact-index/v1/audit/intents/v1/kind={audit_kind}/{hash}.json"
+                ),
             };
             (path_kind, uri)
         })
@@ -633,26 +739,6 @@ fn manifest_uri(spec: &ArtifactIndexCommitProofSpec, suffix: &str) -> String {
         spec.proof_id,
         suffix
     )
-}
-
-fn audit_epoch(
-    spec: &ArtifactIndexCommitProofSpec,
-    plan: &ArtifactIndexLatestPointerUpdatePlan,
-    prior_etag: Option<String>,
-    new_etag: Option<String>,
-) -> ArtifactIndexAuditEpochObject {
-    ArtifactIndexAuditEpochObject {
-        schema_version: "artifact-index-audit-epoch.v1".to_string(),
-        proof_id: spec.proof_id.clone(),
-        artifact_kind: plan.artifact_kind,
-        latest_pointer_uri: plan.latest_pointer_uri.clone(),
-        prior_snapshot_id: plan.prior_snapshot_id.clone(),
-        new_snapshot_id: plan.new_snapshot_id.clone(),
-        writer_id: plan.writer_id.clone(),
-        precondition: plan.precondition.clone(),
-        prior_etag,
-        new_etag,
-    }
 }
 
 async fn put_create_json<T>(

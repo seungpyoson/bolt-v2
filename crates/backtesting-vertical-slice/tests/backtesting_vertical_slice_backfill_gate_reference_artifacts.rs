@@ -4,7 +4,9 @@ use crate::backtesting_vertical_slice_test_support::{
 };
 use backtesting_vertical_slice::{
     artifact_index::ArtifactKind,
-    artifact_index_commit_proof::ArtifactIndexCommitProofReport,
+    artifact_index_commit_proof::{
+        ArtifactIndexCommitProofEvidence, ArtifactIndexCommitProofReportV1,
+    },
     backfill_accepted_tranche::{
         BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheStatus,
         evaluate_backfill_accepted_tranche,
@@ -991,12 +993,16 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
     assert_eq!(readiness.status, BackfillExecutionReadinessStatus::Ready);
     assert!(readiness.blockers.is_empty());
 
-    let artifact_index_proof: ArtifactIndexCommitProofReport =
+    let artifact_index_proof: ArtifactIndexCommitProofEvidence =
         serde_json::from_str(ARTIFACT_INDEX_IAM_SCOPE_PROOF_REPORT)
             .expect("Artifact Index IAM-scope proof report parses");
-    let expected_artifact_index_required_readiness: BackfillExecutionReadinessReport =
+    let mut expected_artifact_index_required_readiness: BackfillExecutionReadinessReport =
         serde_json::from_str(ARTIFACT_INDEX_REQUIRED_EXECUTION_READINESS_REPORT)
             .expect("Artifact Index-required execution readiness parses");
+    expected_artifact_index_required_readiness.blockers.insert(
+        0,
+        BackfillExecutionReadinessBlocker::ArtifactIndexCommitMechanicsUnproven,
+    );
     let artifact_index_required_readiness =
         evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
             readiness_id: "binance-bnbusdc-2026-03-01-artifact-index-required-readiness",
@@ -1037,7 +1043,10 @@ fn binance_backfill_gate_reference_artifacts_match_generic_evaluators() {
     );
     assert_eq!(
         artifact_index_required_readiness.blockers,
-        vec![BackfillExecutionReadinessBlocker::ArtifactIndexProducerIamScopeUnproven]
+        vec![
+            BackfillExecutionReadinessBlocker::ArtifactIndexCommitMechanicsUnproven,
+            BackfillExecutionReadinessBlocker::ArtifactIndexProducerIamScopeUnproven,
+        ]
     );
 }
 
@@ -1845,10 +1854,10 @@ fn blocked_canonical_source_catalog_mapping_reference_artifact_matches_generic_e
 fn artifact_index_commit_status_references_committed_proof_reports() {
     let status: serde_json::Value =
         serde_json::from_str(ARTIFACT_INDEX_COMMIT_STATUS).expect("Artifact Index status parses");
-    let direct_s3_proof: ArtifactIndexCommitProofReport =
+    let direct_s3_proof: ArtifactIndexCommitProofReportV1 =
         serde_json::from_str(ARTIFACT_INDEX_DIRECT_S3_PROOF_REPORT)
             .expect("direct S3 proof report parses");
-    let iam_scope_proof: ArtifactIndexCommitProofReport =
+    let iam_scope_proof: ArtifactIndexCommitProofReportV1 =
         serde_json::from_str(ARTIFACT_INDEX_IAM_SCOPE_PROOF_REPORT)
             .expect("IAM-scope proof report parses");
 
@@ -3475,12 +3484,16 @@ fn assert_binance_gate_matches_generic_evaluators(gate_root: &Path, source_proof
     assert_eq!(readiness.status, BackfillExecutionReadinessStatus::Ready);
     assert!(readiness.blockers.is_empty());
 
-    let artifact_index_proof: ArtifactIndexCommitProofReport =
+    let artifact_index_proof: ArtifactIndexCommitProofEvidence =
         serde_json::from_str(ARTIFACT_INDEX_IAM_SCOPE_PROOF_REPORT)
             .expect("Artifact Index IAM-scope proof report parses");
-    let expected_artifact_index_required_readiness: BackfillExecutionReadinessReport =
+    let mut expected_artifact_index_required_readiness: BackfillExecutionReadinessReport =
         serde_json::from_str(&artifact_index_required_execution_readiness_report)
             .expect("Artifact Index-required execution readiness parses");
+    expected_artifact_index_required_readiness.blockers.insert(
+        0,
+        BackfillExecutionReadinessBlocker::ArtifactIndexCommitMechanicsUnproven,
+    );
     let artifact_index_required_readiness =
         evaluate_backfill_execution_readiness(BackfillExecutionReadinessInput {
             readiness_id: &expected_artifact_index_required_readiness.readiness_id,
@@ -3521,7 +3534,10 @@ fn assert_binance_gate_matches_generic_evaluators(gate_root: &Path, source_proof
     );
     assert_eq!(
         artifact_index_required_readiness.blockers,
-        vec![BackfillExecutionReadinessBlocker::ArtifactIndexProducerIamScopeUnproven]
+        vec![
+            BackfillExecutionReadinessBlocker::ArtifactIndexCommitMechanicsUnproven,
+            BackfillExecutionReadinessBlocker::ArtifactIndexProducerIamScopeUnproven,
+        ]
     );
 }
 

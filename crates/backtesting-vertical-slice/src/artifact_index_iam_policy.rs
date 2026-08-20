@@ -4,7 +4,7 @@ use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
 
-use crate::artifact_index::ArtifactKind;
+use crate::artifact_index::{ArtifactKind, artifact_index_audit_kind};
 
 pub const ARTIFACT_INDEX_PRODUCER_IAM_PROVISIONING_PLAN_ROLE: &str =
     "artifact-index-producer-iam-provisioning-plan.v1";
@@ -114,6 +114,7 @@ fn producer_statement(
 ) -> Result<ArtifactIndexProducerIamStatement, ArtifactIndexIamPolicyError> {
     let s3_root = S3ArtifactRoot::parse(artifact_root)?;
     let kind = artifact_kind.as_str();
+    let audit_kind = artifact_index_audit_kind(artifact_kind).as_str();
     Ok(ArtifactIndexProducerIamStatement {
         sid: sid.to_string(),
         effect: "Allow".to_string(),
@@ -124,7 +125,9 @@ fn producer_statement(
             s3_root.resource_arn(&format!(
                 "artifact-index/v1/pointers/kind={kind}/latest.json"
             )),
-            s3_root.resource_arn("artifact-index/v1/audit/epochs/*"),
+            s3_root.resource_arn(&format!(
+                "artifact-index/v1/audit/intents/v1/kind={audit_kind}/*"
+            )),
         ],
     })
 }

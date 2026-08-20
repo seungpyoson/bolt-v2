@@ -97,7 +97,7 @@ Lifecycle policy:
    snapshot hash verification, retry/rebase on conditional-write failure,
    staged/orphan recovery, producer-owned write authority, read-only consumer
    enforcement, event/snapshot format selection, cross-kind lineage traversal,
-   `sha256` content hashes, audit epoch append, per-kind IAM, and active storage
+   `sha256` content hashes, versioned pre-CAS audit intent, per-kind IAM, and active storage
    for the hot index path. If
    unsupported, select an approved commit coordinator or table format before
    relying on the index.

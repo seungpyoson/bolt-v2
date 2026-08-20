@@ -246,16 +246,27 @@ Rules:
   before claiming reliable index commits.
 - Multi-object artifact hashes are computed from a canonical sorted manifest of
   relative path, size, and object content hash.
-- Each pointer swap appends a create-only audit epoch object at
-  `artifact-index/v1/audit/epochs/<RFC3339>.json` with kind, prior snapshot id,
-  new snapshot id, timestamp, writer id, prior ETag, and new ETag. Audit epochs
-  support forensics and reconciliation only; they are not on the normal
-  discovery path and must not be used for cross-kind joins.
-- Producer IAM must restrict pointer, event, and snapshot writes per kind. Only
+- Each pointer attempt first writes a create-only
+  `artifact-index-audit-intent.v1` object at
+  `artifact-index/v1/audit/intents/v1/kind=<artifact_kind>/<id>.json`. The id content-addresses the
+  exact CAS tuple: kind, pointer URI, prior and new snapshot identities, new
+  snapshot URI/hash, writer, conditional ETag/object version, and precondition.
+  This is a distinct versioned contract rather than the old completed-swap
+  epoch shape. The pointer CAS is the final authoritative operation, so an
+  audit-write failure cannot be reported after discovery truth changed. The
+  pointer outcome determines whether an intent committed; conflict attempts
+  remain off-path forensic records.
+  Audit intents are not on the normal discovery path and must not be used for
+  cross-kind joins.
+- Producer IAM must restrict pointer, event, snapshot, and versioned audit-intent writes per kind. Only
   the producer family for kind `K` may write
   `artifact-index/v1/pointers/kind=K/latest.json`,
   `artifact-index/v1/events/kind=K/...`, and
-  `artifact-index/v1/snapshots/kind=K/...`.
+  `artifact-index/v1/snapshots/kind=K/...`; the same producer policy permits
+  producer's `artifact-index/v1/audit/intents/v1/kind=K/...` prefix.
+- Current commit-mechanics evidence uses `artifact-index-commit-proof.v2` and
+  proves intent creation before each pointer CAS. Historical v1 audit-epoch
+  reports remain readable evidence records but cannot satisfy current readiness.
 - Recursive S3 listing is forbidden for normal artifact discovery. Listing is
   allowed only for off-path reconciliation, recovery, and compaction jobs that
   detect staged events, orphan bytes, or index drift.

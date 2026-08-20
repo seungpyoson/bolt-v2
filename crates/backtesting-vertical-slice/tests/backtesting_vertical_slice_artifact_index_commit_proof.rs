@@ -57,10 +57,21 @@ fn artifact_index_commit_proof_executes_pointer_swap_and_stale_etag_rejection() 
     );
     let report: ArtifactIndexCommitProofReport =
         serde_json::from_slice(&report_bytes).expect("report json");
+    assert_eq!(
+        report.schema_version,
+        backtesting_vertical_slice::artifact_index_commit_proof::ARTIFACT_INDEX_COMMIT_PROOF_SCHEMA_VERSION
+    );
     assert_eq!(report.proof_id, spec.proof_id);
     assert_eq!(report.artifact_kind, ArtifactKind::Backtests);
     assert!(report.event_create_only_proven);
     assert!(report.snapshot_create_only_proven);
+    assert!(report.audit_intent_create_only_proven);
+    assert!(
+        report
+            .audit_intent_uris
+            .iter()
+            .all(|uri| uri.contains("/artifact-index/v1/audit/intents/v1/"))
+    );
     assert!(report.latest_pointer_create_only_proven);
     assert!(report.latest_pointer_update_if_match_proven);
     assert!(report.stale_etag_update_rejected);
@@ -70,6 +81,18 @@ fn artifact_index_commit_proof_executes_pointer_swap_and_stale_etag_rejection() 
         report.producer_iam_scope_denied_kinds,
         vec![ArtifactKind::ResearchAnalytics]
     );
-    assert_eq!(report.producer_iam_scope_violation_count, 3);
+    assert_eq!(report.producer_iam_scope_violation_count, 4);
+    assert!(
+        report
+            .producer_iam_scope_violation_uris
+            .iter()
+            .any(|uri| { uri.contains("/artifact-index/v1/events/kind=research_analytics/") })
+    );
+    assert!(report.producer_iam_scope_violation_uris.iter().any(|uri| {
+        uri.contains("/artifact-index/v1/audit/intents/v1/kind=research-analytics/")
+    }));
+    assert!(report.producer_iam_scope_violation_uris.iter().all(|uri| {
+        !uri.contains("/artifact-index/v1/audit/intents/v1/kind=research_analytics/")
+    }));
     assert_eq!(report.resolved_snapshot_id, report.final_snapshot_id);
 }

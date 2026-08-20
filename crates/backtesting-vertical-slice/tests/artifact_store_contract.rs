@@ -1,4 +1,4 @@
-use futures_util::stream::BoxStream;
+use futures_util::{StreamExt, stream::BoxStream};
 use object_store::{
     CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
     ObjectStoreExt, PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult,
@@ -439,6 +439,100 @@ impl ObjectStore for S3PreconditionOnCreateConflictStore {
                     std::io::ErrorKind::AlreadyExists,
                     "object already exists",
                 )),
+            });
+        }
+        self.inner.put_opts(location, payload, opts).await
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &ObjectPath,
+        opts: PutMultipartOptions,
+    ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(
+        &self,
+        location: &ObjectPath,
+        options: GetOptions,
+    ) -> ObjectStoreResult<GetResult> {
+        self.inner.get_opts(location, options).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, ObjectStoreResult<ObjectPath>>,
+    ) -> BoxStream<'static, ObjectStoreResult<ObjectPath>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(
+        &self,
+        prefix: Option<&ObjectPath>,
+    ) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    fn list_with_offset(
+        &self,
+        prefix: Option<&ObjectPath>,
+        offset: &ObjectPath,
+    ) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        self.inner.list_with_offset(prefix, offset)
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<&ObjectPath>,
+    ) -> ObjectStoreResult<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &ObjectPath,
+        to: &ObjectPath,
+        options: CopyOptions,
+    ) -> ObjectStoreResult<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
+}
+
+#[derive(Debug)]
+struct FailAuditObjectStore {
+    inner: InMemory,
+}
+
+impl FailAuditObjectStore {
+    fn new() -> Self {
+        Self {
+            inner: InMemory::new(),
+        }
+    }
+}
+
+impl fmt::Display for FailAuditObjectStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("FailAuditObjectStore")
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for FailAuditObjectStore {
+    async fn put_opts(
+        &self,
+        location: &ObjectPath,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> ObjectStoreResult<PutResult> {
+        if location
+            .as_ref()
+            .contains("artifact-index/v1/audit/intents/v1/")
+        {
+            return Err(object_store::Error::Generic {
+                store: "FailAuditObjectStore",
+                source: Box::new(std::io::Error::other("synthetic audit failure")),
             });
         }
         self.inner.put_opts(location, payload, opts).await
@@ -1906,23 +2000,13 @@ fn research_analytics_event(
     }
 }
 
-fn commit_plan(
-    event: ArtifactIndexEvent,
-    snapshot_ids: &[&str],
-    audit_epoch_id: &str,
-) -> ArtifactIndexCommitPlan {
-    commit_plan_with_writer(
-        event,
-        snapshot_ids,
-        audit_epoch_id,
-        "backtesting-engine-writer",
-    )
+fn commit_plan(event: ArtifactIndexEvent, snapshot_ids: &[&str]) -> ArtifactIndexCommitPlan {
+    commit_plan_with_writer(event, snapshot_ids, "backtesting-engine-writer")
 }
 
 fn commit_plan_with_writer(
     event: ArtifactIndexEvent,
     snapshot_ids: &[&str],
-    audit_epoch_id: &str,
     writer_id: &str,
 ) -> ArtifactIndexCommitPlan {
     ArtifactIndexCommitPlan {
@@ -1931,7 +2015,6 @@ fn commit_plan_with_writer(
             .iter()
             .map(|snapshot_id| (*snapshot_id).to_string())
             .collect(),
-        audit_epoch_ids: vec![audit_epoch_id.to_string()],
         writer_id: writer_id.to_string(),
     }
 }
@@ -1967,6 +2050,12 @@ async fn artifact_index_writes_events_snapshots_and_latest_pointer_conditionally
     .expect("snapshot is valid");
     assert_eq!(snapshot.rows[0].schema_version, event.schema_version);
     assert_eq!(snapshot.rows[0].owner_project, event.owner_project);
+    let event_wire = serde_json::to_value(&event).expect("event wire JSON");
+    let row_wire = serde_json::to_value(&snapshot.rows[0]).expect("snapshot row wire JSON");
+    for wire in [&event_wire, &row_wire] {
+        assert!(wire.get("artifact_subfamily").is_none());
+        assert!(wire.get("domain_state").is_none());
+    }
     assert_eq!(
         snapshot.rows[0].lifecycle_state,
         ArtifactLifecycleState::Active
@@ -2181,12 +2270,7 @@ async fn research_analytics_writer_commits_all_owned_families_to_one_kind_snapsh
     writer
         .commit_event(
             &root,
-            commit_plan_with_writer(
-                dataset,
-                &["snapshot-ra-001"],
-                "2026-06-13T00:00:11Z",
-                "research-analytics-writer",
-            ),
+            commit_plan_with_writer(dataset, &["snapshot-ra-001"], "research-analytics-writer"),
         )
         .await
         .expect("dataset commit succeeds");
@@ -2196,7 +2280,6 @@ async fn research_analytics_writer_commits_all_owned_families_to_one_kind_snapsh
             commit_plan_with_writer(
                 feature_table,
                 &["snapshot-ra-002"],
-                "2026-06-13T00:00:12Z",
                 "research-analytics-writer",
             ),
         )
@@ -2208,7 +2291,6 @@ async fn research_analytics_writer_commits_all_owned_families_to_one_kind_snapsh
             commit_plan_with_writer(
                 experiment_result,
                 &["snapshot-ra-003"],
-                "2026-06-13T00:00:13Z",
                 "research-analytics-writer",
             ),
         )
@@ -2284,12 +2366,7 @@ async fn artifact_index_writer_rejects_consumer_mutation_of_research_analytics_r
     let err = writer
         .commit_event(
             &root,
-            commit_plan_with_writer(
-                event,
-                &["snapshot-ra-consumer"],
-                "2026-06-13T00:00:14Z",
-                "dashboard-writer",
-            ),
+            commit_plan_with_writer(event, &["snapshot-ra-consumer"], "dashboard-writer"),
         )
         .await
         .expect_err("consumer writer must not mutate RA index records");
@@ -2359,11 +2436,8 @@ async fn artifact_index_commit_rebases_after_stale_observed_latest() {
         "event-010",
         "run-010",
     );
-    writer
-        .commit_event(
-            &root,
-            commit_plan(first, &["snapshot-010"], "2026-06-13T00:00:00Z"),
-        )
+    let first_outcome = writer
+        .commit_event(&root, commit_plan(first, &["snapshot-010"]))
         .await
         .expect("initial commit succeeds");
     let stale_observed = writer
@@ -2377,11 +2451,8 @@ async fn artifact_index_commit_rebases_after_stale_observed_latest() {
         "event-011",
         "run-011",
     );
-    writer
-        .commit_event(
-            &root,
-            commit_plan(concurrent, &["snapshot-011"], "2026-06-13T00:00:01Z"),
-        )
+    let concurrent_outcome = writer
+        .commit_event(&root, commit_plan(concurrent, &["snapshot-011"]))
         .await
         .expect("concurrent commit succeeds");
 
@@ -2393,11 +2464,7 @@ async fn artifact_index_commit_rebases_after_stale_observed_latest() {
     let outcome = writer
         .commit_event_from_observed_latest(
             &root,
-            commit_plan(
-                rebased,
-                &["snapshot-012-stale", "snapshot-012-rebased"],
-                "2026-06-13T00:00:02Z",
-            ),
+            commit_plan(rebased, &["snapshot-012-stale", "snapshot-012-rebased"]),
             Some(stale_observed),
         )
         .await
@@ -2406,6 +2473,24 @@ async fn artifact_index_commit_rebases_after_stale_observed_latest() {
     assert_eq!(outcome.snapshot_id, "snapshot-012-rebased");
     assert_eq!(outcome.pointer_attempts, 2);
     assert_eq!(outcome.prior_snapshot_id.as_deref(), Some("snapshot-011"));
+    assert_eq!(outcome.audit_intent.new_snapshot_id, "snapshot-012-rebased");
+    assert_eq!(
+        outcome.audit_intent.prior_snapshot_id.as_deref(),
+        Some("snapshot-011")
+    );
+    assert_ne!(
+        first_outcome.audit_intent.audit_intent_id,
+        concurrent_outcome.audit_intent.audit_intent_id
+    );
+    assert_ne!(
+        concurrent_outcome.audit_intent.audit_intent_id,
+        outcome.audit_intent.audit_intent_id
+    );
+
+    let audit_prefix = ObjectPath::from("prod/artifact-index/v1/audit/intents/v1/kind=backtests");
+    let audit_objects = store.list(Some(&audit_prefix)).collect::<Vec<_>>().await;
+    assert_eq!(audit_objects.len(), 4);
+    assert!(audit_objects.iter().all(Result::is_ok));
 
     let latest = writer
         .read_verified_latest_snapshot(&root, ArtifactKind::Backtests)
@@ -2420,7 +2505,7 @@ async fn artifact_index_commit_rebases_after_stale_observed_latest() {
 }
 
 #[tokio::test]
-async fn artifact_index_commit_appends_audit_epoch() {
+async fn artifact_index_commit_prewrites_versioned_audit_intent() {
     let root = artifact_config().resolve().expect("valid artifact root");
     let store = InMemory::new();
     let writer = ArtifactIndexWriter::new(&store);
@@ -2430,40 +2515,88 @@ async fn artifact_index_commit_appends_audit_epoch() {
         "run-020",
     );
     let outcome = writer
-        .commit_event(
-            &root,
-            commit_plan(event, &["snapshot-020"], "2026-06-13T00:00:03Z"),
-        )
+        .commit_event(&root, commit_plan(event, &["snapshot-020"]))
         .await
         .expect("commit succeeds");
 
+    assert_eq!(outcome.audit_intent.audit_intent_id.len(), 64);
+    assert!(
+        outcome
+            .audit_intent
+            .audit_intent_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    );
     assert_eq!(
-        outcome.audit_epoch_uri,
-        "s3://bolt-ra-artifacts/prod/artifact-index/v1/audit/epochs/2026-06-13T00:00:03Z.json"
+        outcome.audit_intent_uri,
+        format!(
+            "s3://bolt-ra-artifacts/prod/artifact-index/v1/audit/intents/v1/kind=backtests/{}.json",
+            outcome.audit_intent.audit_intent_id
+        )
     );
     let audit_path = root
-        .object_path_for_uri(&outcome.audit_epoch_uri)
-        .expect("audit epoch is under artifact root");
+        .object_path_for_uri(&outcome.audit_intent_uri)
+        .expect("audit intent is under artifact root");
     let audit = store
         .get(&audit_path)
         .await
-        .expect("audit epoch object")
+        .expect("audit intent object")
         .bytes()
         .await
-        .expect("audit epoch bytes");
+        .expect("audit intent bytes");
     let audit: serde_json::Value =
-        serde_json::from_slice(audit.as_ref()).expect("audit epoch json");
+        serde_json::from_slice(audit.as_ref()).expect("audit intent json");
+    assert_eq!(audit["schema_version"], "artifact-index-audit-intent.v1");
     assert_eq!(audit["artifact_kind"], "backtests");
     assert_eq!(audit["new_snapshot_id"], "snapshot-020");
+    assert_eq!(
+        audit["latest_pointer_uri"],
+        "s3://bolt-ra-artifacts/prod/artifact-index/v1/pointers/kind=backtests/latest.json"
+    );
+    assert_eq!(
+        audit["new_snapshot_content_hash"].as_str().map(str::len),
+        Some(64)
+    );
+    assert!(audit.get("precondition").is_some());
+    assert!(audit.get("new_snapshot_sha256").is_none());
+    assert!(audit.get("prior_pointer_e_tag").is_none());
     assert_eq!(audit["writer_id"], "backtesting-engine-writer");
+    writer
+        .append_audit_intent_v1(&root, &outcome.audit_intent)
+        .await
+        .expect("identical content-addressed audit intent is idempotent");
 
-    let mut conflicting_audit = outcome.audit_epoch.clone();
+    let mut conflicting_audit = outcome.audit_intent.clone();
     conflicting_audit.writer_id = "different-writer".to_string();
     let err = writer
-        .append_audit_epoch(&root, &conflicting_audit)
+        .append_audit_intent_v1(&root, &conflicting_audit)
         .await
-        .expect_err("audit epoch create-only write rejects different payload");
-    assert!(err.to_string().contains("different payload"), "{err}");
+        .expect_err("audit intent id must bind the exact CAS tuple");
+    assert!(err.to_string().contains("content-address"), "{err}");
+}
+
+#[tokio::test]
+async fn artifact_index_audit_failure_cannot_advance_latest_pointer() {
+    let root = artifact_config().resolve().expect("valid artifact root");
+    let store = FailAuditObjectStore::new();
+    let writer = ArtifactIndexWriter::new(&store);
+    let event = backtest_event(
+        root.backtest_run_root(MarketStructureFixture::PerpsSpot, "run-audit-failure"),
+        "event-audit-failure",
+        "run-audit-failure",
+    );
+    writer
+        .commit_event(&root, commit_plan(event, &["snapshot-audit-failure"]))
+        .await
+        .expect_err("audit failure must abort before pointer CAS");
+    assert!(
+        writer
+            .read_latest_pointer(&root, ArtifactKind::Backtests)
+            .await
+            .expect("pointer read")
+            .is_none(),
+        "latest pointer must remain absent when audit prewrite fails"
+    );
 }
 
 #[tokio::test]
@@ -2477,10 +2610,7 @@ async fn artifact_index_keeps_uncommitted_events_out_of_normal_discovery() {
         "run-040",
     );
     writer
-        .commit_event(
-            &root,
-            commit_plan(committed, &["snapshot-040"], "2026-06-13T00:00:05Z"),
-        )
+        .commit_event(&root, commit_plan(committed, &["snapshot-040"]))
         .await
         .expect("committed event reaches latest snapshot");
 
@@ -2549,10 +2679,7 @@ async fn artifact_index_normal_discovery_uses_direct_pointer_reads_without_listi
         'b',
     );
     writer
-        .commit_event(
-            &root,
-            commit_plan(parent, &["snapshot-catalog-060"], "2026-06-13T00:00:09Z"),
-        )
+        .commit_event(&root, commit_plan(parent, &["snapshot-catalog-060"]))
         .await
         .expect("parent commits without object-store listing");
 
@@ -2562,10 +2689,7 @@ async fn artifact_index_normal_discovery_uses_direct_pointer_reads_without_listi
         "run-060",
     );
     writer
-        .commit_event(
-            &root,
-            commit_plan(child, &["snapshot-backtest-060"], "2026-06-13T00:00:10Z"),
-        )
+        .commit_event(&root, commit_plan(child, &["snapshot-backtest-060"]))
         .await
         .expect("child commits without object-store listing");
 
@@ -2622,11 +2746,7 @@ async fn artifact_index_parent_lookup_requires_declared_lineage() {
     writer
         .commit_event(
             &root,
-            commit_plan(
-                declared_parent,
-                &["snapshot-catalog-050"],
-                "2026-06-13T00:00:06Z",
-            ),
+            commit_plan(declared_parent, &["snapshot-catalog-050"]),
         )
         .await
         .expect("declared parent commits");
@@ -2637,10 +2757,7 @@ async fn artifact_index_parent_lookup_requires_declared_lineage() {
         "run-050",
     );
     writer
-        .commit_event(
-            &root,
-            commit_plan(child, &["snapshot-backtest-050"], "2026-06-13T00:00:07Z"),
-        )
+        .commit_event(&root, commit_plan(child, &["snapshot-backtest-050"]))
         .await
         .expect("child commit succeeds");
 
@@ -2653,11 +2770,7 @@ async fn artifact_index_parent_lookup_requires_declared_lineage() {
     writer
         .commit_event(
             &root,
-            commit_plan(
-                independent_latest,
-                &["snapshot-catalog-052"],
-                "2026-06-13T00:00:08Z",
-            ),
+            commit_plan(independent_latest, &["snapshot-catalog-052"]),
         )
         .await
         .expect("independent parent commits");
@@ -2711,12 +2824,7 @@ async fn artifact_index_writer_rejects_consumer_mutation_for_unowned_kind() {
     let err = writer
         .commit_event(
             &root,
-            commit_plan_with_writer(
-                event,
-                &["snapshot-030"],
-                "2026-06-13T00:00:04Z",
-                "research-analytics-writer",
-            ),
+            commit_plan_with_writer(event, &["snapshot-030"], "research-analytics-writer"),
         )
         .await
         .expect_err("consumer writer must not mutate upstream backtest records");

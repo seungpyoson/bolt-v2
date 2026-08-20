@@ -3020,8 +3020,8 @@ struct AdmittanceRow {
 /// streams (each its own primary fidelity class, per the v3 tier map: Tier A
 /// quotes/index_prices/mark_prices). Their canonical tables and canonical->NT
 /// projections landed in S3 (`project_canonical_{quotes,index,mark}_to_catalog`
-/// and `read_back_{quotes,index,mark}`). Snapshot-seeded L2 quote archives now
-/// populate `QuoteTick` through the seeded-L2 quote adapter; the older flat
+/// and `read_back_{quotes,index,mark}`). Snapshot-seeded full-depth L2 archives now
+/// derive `QuoteTick` from the canonical full-depth delta stream; the older flat
 /// snapshot-quote, index-price, and mark-price raw normalizers still fail loud
 /// until their source-specific acquisition slices land (tracked by bolt-v2
 /// #836/#437). Auxiliary status/close pairing for the three new classes is
@@ -3043,7 +3043,8 @@ const ADMITTANCE_TABLE: &[AdmittanceRow] = &[
         fidelity: SourceProofFidelityClass::TradeReplay,
         role: AdmittanceRole::Auxiliary,
     },
-    // L2Replay: order-book deltas primary; trades + status/close auxiliary.
+    // L2Replay: order-book deltas primary; source-bound derived BBO, trades,
+    // status, and close streams are auxiliary and cannot replace the deltas.
     AdmittanceRow {
         data_type: NautilusDataType::OrderBookDelta,
         fidelity: SourceProofFidelityClass::L2Replay,
@@ -3051,6 +3052,11 @@ const ADMITTANCE_TABLE: &[AdmittanceRow] = &[
     },
     AdmittanceRow {
         data_type: NautilusDataType::TradeTick,
+        fidelity: SourceProofFidelityClass::L2Replay,
+        role: AdmittanceRole::Auxiliary,
+    },
+    AdmittanceRow {
+        data_type: NautilusDataType::QuoteTick,
         fidelity: SourceProofFidelityClass::L2Replay,
         role: AdmittanceRole::Auxiliary,
     },
@@ -3416,33 +3422,30 @@ fn ensure_data_type_matches_fidelity(
 ///    A class with no primary (e.g. `SignalOnly`, `MetadataOnly`,
 ///    `SnapshotReplay`, `ForwardCapturePending`) is unrunnable as a
 ///    catalog-input class — this replaces the former catch-all `other =>` arm.
-/// 2. At least one input must carry that primary type (must-have-presence).
+/// 2. The first input must carry that primary type. The manifest's first input
+///    is the primary catalog throughout strategy configuration, conversion
+///    lineage, result contracts, and completed-output verification, so an
+///    auxiliary input may never occupy that position.
 /// 3. Every input must be admissible under the class, via the single per-input
 ///    predicate [`ensure_data_type_matches_fidelity`].
 ///
-/// The must-have-presence error preserves the original "first input or `<none>`"
-/// string payload so existing assertions hold. The presence probe parses each
-/// input leniently (an unparseable/unsupported type is simply "not the primary");
-/// the precise [`ManifestError::UnsupportedDataType`] for such an input is then
-/// surfaced by the per-input predicate in step 3.
+/// The primary-position error preserves the original "first input or `<none>`"
+/// string payload. An unsupported first type is parsed before the role check so
+/// it still surfaces the precise [`ManifestError::UnsupportedDataType`].
 fn ensure_catalog_inputs_match_fidelity(
     inputs: &[ManifestCatalogInput],
     fidelity_class: SourceProofFidelityClass,
 ) -> Result<(), ManifestError> {
-    let primary_data_type = fidelity_primary_type(fidelity_class);
-    let has_primary = primary_data_type.is_some_and(|primary| {
-        inputs.iter().any(|input| {
-            parse_data_type_str(&input.data_type)
-                .map(|parsed| parsed == primary)
-                .unwrap_or(false)
-        })
-    });
-    if !has_primary {
+    let Some(first) = inputs.first() else {
         return Err(ManifestError::DataTypeFidelityMismatch {
-            data_type: inputs
-                .first()
-                .map(|input| input.data_type.clone())
-                .unwrap_or_else(|| "<none>".to_string()),
+            data_type: "<none>".to_string(),
+            fidelity_class,
+        });
+    };
+    let first_data_type = parse_data_type_str(&first.data_type)?;
+    if fidelity_primary_type(fidelity_class) != Some(first_data_type) {
+        return Err(ManifestError::DataTypeFidelityMismatch {
+            data_type: first.data_type.clone(),
             fidelity_class,
         });
     }
@@ -6114,6 +6117,51 @@ mod tests {
         assert_eq!(run.data().len(), 2);
         assert_eq!(run.data()[0].data_type(), NautilusDataType::OrderBookDelta);
         assert_eq!(run.data()[1].data_type(), NautilusDataType::TradeTick);
+    }
+
+    #[test]
+    fn l2_replay_admits_derived_quotes_only_beside_primary_deltas() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut quote_input = manifest.catalog_inputs[0].clone();
+        quote_input.data_type = "QuoteTick".to_string();
+        manifest.catalog_inputs.push(quote_input);
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+
+        manifest
+            .validate(&accepted)
+            .expect("L2Replay admits derived QuoteTick only with primary OrderBookDelta");
+
+        manifest.catalog_inputs.remove(0);
+        assert_eq!(
+            manifest.validate(&accepted).unwrap_err(),
+            ManifestError::DataTypeFidelityMismatch {
+                data_type: "QuoteTick".to_string(),
+                fidelity_class: SourceProofFidelityClass::L2Replay,
+            }
+        );
+    }
+
+    #[test]
+    fn l2_replay_rejects_auxiliary_quote_before_primary_deltas() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut quote_input = manifest.catalog_inputs[0].clone();
+        quote_input.data_type = "QuoteTick".to_string();
+        manifest.catalog_inputs.insert(0, quote_input);
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+
+        assert_eq!(
+            manifest.validate(&accepted).unwrap_err(),
+            ManifestError::DataTypeFidelityMismatch {
+                data_type: "QuoteTick".to_string(),
+                fidelity_class: SourceProofFidelityClass::L2Replay,
+            }
+        );
     }
 
     #[test]

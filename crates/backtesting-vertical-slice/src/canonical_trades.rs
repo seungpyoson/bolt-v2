@@ -216,7 +216,7 @@ pub enum SourceAdapterKind {
     TarJsonlSnapshotDeltas,
     ParquetEventStreamDeltas,
     SnapshotQuotes,
-    SeededL2Quotes,
+    SeededLevelSetDeltas,
     IndexPrices,
     MarkPrices,
     FundingRates,
@@ -285,12 +285,11 @@ pub struct ConverterConfig {
     /// run-specs carry no `quotes` key and deserialize unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quotes: Option<super::canonical_market_data::QuoteMappingConfig>,
-    /// Snapshot-seeded L2 quote mapping, present only when the registered
-    /// adapter kind is [`SourceAdapterKind::SeededL2Quotes`]. The adapter reads
-    /// L2 snapshot+delta rows, seeds a book from the first snapshot, then emits
-    /// top-of-book `QuoteTick` rows from absolute level-replace updates.
+    /// Snapshot-seeded absolute-level L2 mapping, present only when the
+    /// registered adapter kind is [`SourceAdapterKind::SeededLevelSetDeltas`].
+    /// The adapter emits canonical full-depth deltas plus derived BBO quotes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seeded_l2_quotes: Option<super::seeded_l2_quotes::SeededL2QuoteMappingConfig>,
+    pub seeded_level_set: Option<super::seeded_level_set_deltas::SeededLevelSetMappingConfig>,
 }
 
 impl ConverterConfig {
@@ -309,11 +308,16 @@ pub struct RawPayloadConfig {
     pub container: RawPayloadContainer,
     /// Maximum accepted-object byte length allowed before local read/hash/decode.
     pub max_object_bytes: u64,
-    /// Maximum decoded text byte length allowed after single-text container
-    /// decoding (CSV/JSONL). Per-member tar bounds use [`Self::max_member_bytes`]
-    /// instead; the Parquet passthrough is bounded only by
-    /// [`Self::max_object_bytes`].
+    /// Maximum cumulative decoded byte length. For single-text containers this
+    /// bounds the decoded payload; for tar JSONL it includes headers, payloads,
+    /// skipped members, padding, and the end marker. Parquet passthrough is
+    /// bounded only by [`Self::max_object_bytes`].
     pub max_decoded_bytes: u64,
+    /// Independent JSONL member/record bounds for adapters that use the shared
+    /// bounded record visitor. Required by those adapters and rejected by
+    /// adapter kinds that do not consume it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jsonl_stream: Option<JsonlStreamConfig>,
     /// Required for [`RawPayloadContainer::SingleCsvZip`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zip_member: Option<String>,
@@ -327,6 +331,15 @@ pub struct RawPayloadConfig {
     /// members whose names end with this suffix are streamed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_suffix: Option<String>,
+}
+
+/// JSONL-specific bounds not already owned by [`RawPayloadConfig`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JsonlStreamConfig {
+    pub max_members: u64,
+    pub max_record_bytes: usize,
+    pub max_records: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -345,7 +358,7 @@ pub enum RawPayloadContainer {
     /// bounded by `max_decoded_bytes`.
     JsonlGzip,
     /// Gzip-compressed POSIX tar of JSONL members; members whose names end with
-    /// `member_suffix` are streamed, each bounded by `max_member_bytes`.
+    /// `member_suffix` are streamed under cumulative and per-member bounds.
     TarGzipJsonl,
     /// Raw Parquet object bytes passed through after the `max_object_bytes` object
     /// cap; read columnar downstream by the dual-emit event-stream adapter.
@@ -454,13 +467,13 @@ pub const SNAPSHOT_QUOTES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefini
     nt_data_type: crate::catalog_projection::NT_DATA_TYPE_QUOTE_TICK,
 };
 
-pub const SEEDED_L2_QUOTES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
-    identity: super::seeded_l2_quotes::SEEDED_L2_QUOTES_TRANSFORM_IDENTITY,
-    version: super::seeded_l2_quotes::SEEDED_L2_QUOTES_TRANSFORM_VERSION,
-    kind: SourceAdapterKind::SeededL2Quotes,
-    table_family: QUOTE_TABLE_FAMILY,
+pub const SEEDED_LEVEL_SET_DELTAS_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
+    identity: super::seeded_level_set_deltas::SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY,
+    version: super::seeded_level_set_deltas::SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION,
+    kind: SourceAdapterKind::SeededLevelSetDeltas,
+    table_family: DELTAS_TABLE_FAMILY,
     normalized_schema_version: NORMALIZED_SCHEMA_VERSION,
-    nt_data_type: crate::catalog_projection::NT_DATA_TYPE_QUOTE_TICK,
+    nt_data_type: crate::catalog_projection::NT_DATA_TYPE_ORDER_BOOK_DELTA,
 };
 
 pub const INDEX_PRICES_ADAPTER: SourceAdapterDefinition = SourceAdapterDefinition {
@@ -510,7 +523,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
     PARQUET_EVENT_STREAM_DELTAS_ADAPTER,
     SNAPSHOT_QUOTES_ADAPTER,
-    SEEDED_L2_QUOTES_ADAPTER,
+    SEEDED_LEVEL_SET_DELTAS_ADAPTER,
     INDEX_PRICES_ADAPTER,
     MARK_PRICES_ADAPTER,
     FUNDING_RATES_ADAPTER,
@@ -526,7 +539,7 @@ pub const REGISTERED_SOURCE_ADAPTERS: &[SourceAdapterDefinition] = &[
     TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
     PARQUET_EVENT_STREAM_DELTAS_ADAPTER,
     SNAPSHOT_QUOTES_ADAPTER,
-    SEEDED_L2_QUOTES_ADAPTER,
+    SEEDED_LEVEL_SET_DELTAS_ADAPTER,
     INDEX_PRICES_ADAPTER,
     MARK_PRICES_ADAPTER,
     FUNDING_RATES_ADAPTER,
@@ -797,15 +810,15 @@ pub fn require_registered_quote_converter_for_table_family(
 }
 
 #[must_use]
-pub fn registered_seeded_l2_quote_converter(
+pub fn registered_seeded_level_set_converter(
     identity: &str,
     version: &str,
 ) -> Option<&'static SourceAdapterDefinition> {
     registered_source_adapter(identity, version)
-        .filter(|adapter| adapter.kind == SourceAdapterKind::SeededL2Quotes)
+        .filter(|adapter| adapter.kind == SourceAdapterKind::SeededLevelSetDeltas)
 }
 
-pub fn require_registered_seeded_l2_quote_converter_for_table_family(
+pub fn require_registered_seeded_level_set_converter_for_table_family(
     identity: &str,
     version: &str,
     table_family: &str,
@@ -813,8 +826,8 @@ pub fn require_registered_seeded_l2_quote_converter_for_table_family(
     let adapter =
         require_registered_source_adapter_for_table_family(identity, version, table_family)?;
     ensure!(
-        adapter.kind == SourceAdapterKind::SeededL2Quotes,
-        "adapter {:?} version {:?} is {:?}, not a seeded L2 quote converter",
+        adapter.kind == SourceAdapterKind::SeededLevelSetDeltas,
+        "adapter {:?} version {:?} is {:?}, not a seeded level-set delta converter",
         adapter.identity,
         adapter.version,
         adapter.kind
@@ -1454,8 +1467,8 @@ pub fn normalize_registered_trade_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize native trades")
         }
-        SourceAdapterKind::SeededL2Quotes => {
-            bail!("seeded L2 quote adapter cannot normalize native trades")
+        SourceAdapterKind::SeededLevelSetDeltas => {
+            bail!("seeded level-set delta adapter cannot normalize native trades")
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize native trades")
@@ -1543,8 +1556,8 @@ pub fn normalize_registered_bar_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize native bars")
         }
-        SourceAdapterKind::SeededL2Quotes => {
-            bail!("seeded L2 quote adapter cannot normalize native bars")
+        SourceAdapterKind::SeededLevelSetDeltas => {
+            bail!("seeded level-set delta adapter cannot normalize native bars")
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize native bars")
@@ -1633,8 +1646,8 @@ pub fn normalize_registered_paged_json_bar_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize paged-JSON bars")
         }
-        SourceAdapterKind::SeededL2Quotes => {
-            bail!("seeded L2 quote adapter cannot normalize paged-JSON bars")
+        SourceAdapterKind::SeededLevelSetDeltas => {
+            bail!("seeded level-set delta adapter cannot normalize paged-JSON bars")
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize paged-JSON bars")
@@ -1725,8 +1738,8 @@ pub fn normalize_registered_jsonl_multi_interval_bar_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize JSONL multi-interval bars")
         }
-        SourceAdapterKind::SeededL2Quotes => {
-            bail!("seeded L2 quote adapter cannot normalize JSONL multi-interval bars")
+        SourceAdapterKind::SeededLevelSetDeltas => {
+            bail!("seeded level-set delta adapter cannot normalize JSONL multi-interval bars")
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize JSONL multi-interval bars")
@@ -1788,11 +1801,7 @@ pub fn normalize_registered_order_book_delta_converter(
             )
         }
         SourceAdapterKind::TarJsonlSnapshotDeltas => {
-            bail!(
-                "tar JSONL snapshot-delta adapter requires the streaming member \
-                 entry point; call normalize_registered_tar_order_book_delta_converter \
-                 with the tar member iterator, not the single-object jsonl_text path"
-            )
+            bail!("tar JSONL snapshot-delta adapter requires its bounded raw-object entry point")
         }
         SourceAdapterKind::ParquetEventStreamDeltas => {
             bail!(
@@ -1816,8 +1825,8 @@ pub fn normalize_registered_order_book_delta_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize order-book deltas")
         }
-        SourceAdapterKind::SeededL2Quotes => {
-            bail!("seeded L2 quote adapter cannot normalize order-book deltas")
+        SourceAdapterKind::SeededLevelSetDeltas => {
+            bail!("seeded level-set delta adapter requires its bounded raw-object entry point")
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize order-book deltas")
@@ -1835,20 +1844,14 @@ pub fn normalize_registered_order_book_delta_converter(
     }
 }
 
-/// Normalize an accepted streaming gzip-tar of JSONL periodic-full-snapshot
-/// members through the registered tar order-book-delta converter selected by the
+/// Normalize an accepted gzip-tar of JSONL periodic-full-snapshot records
+/// through the registered tar order-book-delta converter selected by the
 /// run-spec, fail-closing when the kind/config do not match.
 ///
-/// The container concern (decompress the gzip-tar + walk its members) stays with
-/// the caller exactly as the single-object decode does for the JSONL path: the
-/// caller passes the streaming member iterator from
-/// [`super::tar_reader::gzip_tar_members`]. This mirrors how `CsvGzip` vs
-/// `SingleCsvZip` containers are distinguished at the decode boundary rather than
-/// inside the per-kind dispatcher — the dispatcher stays per-kind and never owns
-/// the container. The kind must be [`SourceAdapterKind::TarJsonlSnapshotDeltas`]
-/// for the accepted object's table family, and the run-spec must carry the
-/// `deltas` mapping that kind requires (the wire shape is shared with the JSONL
-/// path; only the container differs).
+/// The raw archive is consumed only by the shared bounded JSONL record visitor;
+/// no member body or member collection is materialized. The kind must be
+/// [`SourceAdapterKind::TarJsonlSnapshotDeltas`] and the run-spec must carry the
+/// `deltas` mapping that kind requires.
 ///
 /// # Errors
 ///
@@ -1859,7 +1862,7 @@ pub fn normalize_registered_tar_order_book_delta_converter(
     converter_config: &ConverterConfig,
     accepted: &AcceptedDataset,
     identities: &super::canonical_order_book_deltas::DeltaInstrumentIdentities,
-    members: impl Iterator<Item = Result<super::tar_reader::TarMember>>,
+    archive_bytes: &[u8],
     capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<Vec<super::canonical_market_data::CanonicalOrderBookDeltasTable>> {
@@ -1880,7 +1883,10 @@ pub fn normalize_registered_tar_order_book_delta_converter(
                 accepted,
                 identities,
                 mapping,
-                members,
+                archive_bytes,
+                &super::jsonl_record_stream::limits_from_raw_payload(
+                    &converter_config.raw_payload,
+                )?,
                 capture_time_nanos,
                 ingest_run_id,
             )
@@ -1889,14 +1895,14 @@ pub fn normalize_registered_tar_order_book_delta_converter(
             bail!(
                 "JSONL snapshot-delta adapter requires the single-object entry \
                  point; call normalize_registered_order_book_delta_converter with \
-                 the decoded jsonl_text, not the tar member iterator"
+                 the decoded jsonl_text, not the raw tar archive"
             )
         }
         SourceAdapterKind::ParquetEventStreamDeltas => {
             bail!(
                 "Parquet event-stream delta adapter requires the dual-emit parquet \
                  entry point; call normalize_registered_event_stream_delta_converter \
-                 with the parquet bytes, not the tar member iterator"
+                 with the parquet bytes, not the raw tar archive"
             )
         }
         SourceAdapterKind::CsvNativeTrades => {
@@ -1914,8 +1920,8 @@ pub fn normalize_registered_tar_order_book_delta_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize tar order-book deltas")
         }
-        SourceAdapterKind::SeededL2Quotes => {
-            bail!("seeded L2 quote adapter cannot normalize tar order-book deltas")
+        SourceAdapterKind::SeededLevelSetDeltas => {
+            bail!("seeded level-set delta adapter requires its bounded raw-object entry point")
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize tar order-book deltas")
@@ -2012,8 +2018,8 @@ pub fn normalize_registered_event_stream_delta_converter(
         SourceAdapterKind::SnapshotQuotes => {
             bail!("snapshot-quotes adapter cannot normalize event-stream deltas")
         }
-        SourceAdapterKind::SeededL2Quotes => {
-            bail!("seeded L2 quote adapter cannot normalize event-stream deltas")
+        SourceAdapterKind::SeededLevelSetDeltas => {
+            bail!("seeded level-set delta adapter cannot normalize event-stream deltas")
         }
         SourceAdapterKind::IndexPrices => {
             bail!("index-price adapter cannot normalize event-stream deltas")
@@ -2031,81 +2037,32 @@ pub fn normalize_registered_event_stream_delta_converter(
     }
 }
 
-/// Normalize accepted snapshot-seeded L2 JSONL into top-of-book quote tables.
-///
-/// The adapter kind must be [`SourceAdapterKind::SeededL2Quotes`] for the
-/// accepted object's quote table family. The mapping is run-spec-owned and
-/// describes the JSON action/time/level fields; replay starts only after a
-/// source snapshot seeds the book.
+/// Compile an accepted seeded absolute-level L2 archive through its one
+/// registered full-depth converter.
 ///
 /// # Errors
 ///
-/// Returns an error if the converter is not a seeded-L2 quote converter, if the
-/// mapping is absent, if an update precedes the seeding snapshot, or if the
-/// produced canonical quote table fails validation.
-pub fn normalize_registered_seeded_l2_quote_converter(
+/// Returns an error if registration/config does not match or if bounded
+/// source scan, NT replay, or canonical validation fails.
+pub fn normalize_registered_seeded_level_set_converter(
     converter_config: &ConverterConfig,
-    accepted: &AcceptedDataset,
-    identity: &CanonicalInstrumentIdentity,
-    jsonl_text: &str,
-    capture_time_nanos: i64,
-    ingest_run_id: &str,
-) -> Result<Vec<super::canonical_market_data::CanonicalQuotesTable>> {
-    let converter = require_registered_seeded_l2_quote_converter_for_table_family(
+    input: super::seeded_level_set_deltas::SeededLevelSetCompileInput<'_>,
+) -> Result<super::seeded_level_set_deltas::SeededLevelSetWindow> {
+    let converter = require_registered_seeded_level_set_converter_for_table_family(
         &converter_config.identity,
         &converter_config.version,
-        &accepted.table_family,
+        &input.accepted.table_family,
     )?;
-    let mapping = converter_config.seeded_l2_quotes.as_ref().with_context(|| {
+    let mapping = converter_config.seeded_level_set.as_ref().with_context(|| {
         format!(
-            "converter {:?} is a seeded L2 quote adapter but carries no [converter.seeded_l2_quotes] mapping",
+            "converter {:?} is a seeded level-set delta adapter but carries no [converter.seeded_level_set] mapping",
             converter.identity
         )
     })?;
-    super::seeded_l2_quotes::normalize_seeded_l2_jsonl_quotes(
-        accepted,
-        identity,
+    super::seeded_level_set_deltas::normalize_seeded_level_set_window(
+        input,
+        &converter_config.raw_payload,
         mapping,
-        jsonl_text,
-        capture_time_nanos,
-        ingest_run_id,
-    )
-}
-
-/// Normalize accepted tar-bundled snapshot-seeded L2 JSONL into top-of-book
-/// quote tables.
-///
-/// # Errors
-///
-/// Returns an error if the converter is not a seeded-L2 quote converter, if the
-/// mapping is absent, if a tar member is malformed, if an update precedes the
-/// seeding snapshot, or if the produced canonical quote table fails validation.
-pub fn normalize_registered_tar_seeded_l2_quote_converter(
-    converter_config: &ConverterConfig,
-    accepted: &AcceptedDataset,
-    identity: &CanonicalInstrumentIdentity,
-    members: impl IntoIterator<Item = super::tar_reader::TarMember>,
-    capture_time_nanos: i64,
-    ingest_run_id: &str,
-) -> Result<Vec<super::canonical_market_data::CanonicalQuotesTable>> {
-    let converter = require_registered_seeded_l2_quote_converter_for_table_family(
-        &converter_config.identity,
-        &converter_config.version,
-        &accepted.table_family,
-    )?;
-    let mapping = converter_config.seeded_l2_quotes.as_ref().with_context(|| {
-        format!(
-            "converter {:?} is a seeded L2 quote adapter but carries no [converter.seeded_l2_quotes] mapping",
-            converter.identity
-        )
-    })?;
-    super::seeded_l2_quotes::normalize_seeded_l2_tar_jsonl_quotes(
-        accepted,
-        identity,
-        mapping,
-        members,
-        capture_time_nanos,
-        ingest_run_id,
     )
 }
 
@@ -2180,10 +2137,10 @@ pub fn normalize_registered_quote_converter(
         SourceAdapterKind::ParquetEventStreamDeltas => {
             bail!("Parquet event-stream delta adapter cannot normalize top-of-book quotes")
         }
-        SourceAdapterKind::SeededL2Quotes => {
+        SourceAdapterKind::SeededLevelSetDeltas => {
             bail!(
-                "seeded L2 quote adapter requires the seeded-L2 quote entry point; \
-                 call normalize_registered_seeded_l2_quote_converter"
+                "seeded level-set delta adapter requires its bounded raw-object entry point; \
+                 call normalize_registered_seeded_level_set_converter"
             )
         }
         SourceAdapterKind::IndexPrices => {

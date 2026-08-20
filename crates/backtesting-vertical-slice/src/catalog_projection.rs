@@ -1143,13 +1143,7 @@ pub fn canonical_rows_to_order_book_deltas<I: Instrument + ?Sized>(
         .rows
         .iter()
         .map(|row| {
-            let delta = canonical_row_to_order_book_delta(
-                instrument_id,
-                row,
-                price_precision,
-                size_precision,
-            )?;
-            order_book_delta_at_precision(delta, price_precision, size_precision)
+            canonical_row_to_order_book_delta(instrument_id, row, price_precision, size_precision)
         })
         .collect()
 }
@@ -1186,21 +1180,36 @@ pub(crate) fn order_book_delta_at_precision(
     .context("rebuild order-book delta at instrument precision")
 }
 
-fn canonical_row_to_order_book_delta(
+pub(crate) fn canonical_row_to_order_book_delta(
     instrument_id: InstrumentId,
     row: &CanonicalOrderBookDeltaRow,
     price_precision: u8,
     size_precision: u8,
 ) -> Result<OrderBookDelta> {
+    let delta = canonical_row_to_order_book_delta_at_source_precision(instrument_id, row)?;
+    order_book_delta_at_precision(delta, price_precision, size_precision)
+}
+
+/// Convert one canonical row to NT without rescaling source price/size text.
+///
+/// Streaming seeded-book compilation uses this before the complete table is
+/// available to the catalog projection's instrument-precision widening pass.
+/// Action, side, native-sequence, flag, and timestamp mapping therefore retain
+/// one owner while source precision remains lossless in the in-memory NT book.
+pub(crate) fn canonical_row_to_order_book_delta_at_source_precision(
+    instrument_id: InstrumentId,
+    row: &CanonicalOrderBookDeltaRow,
+) -> Result<OrderBookDelta> {
     let label = format!("delta sequence {}", row.sequence);
     let ts_event = ts_event_nanos(row.event_time, &label)?;
     let ts_init = ts_init_nanos(row.availability_time, row.capture_time, &label)?;
+    let source_sequence = native_order_book_sequence(row, &label)?;
     if row.action == DeltaAction::Clear.as_str() {
         // NautilusTrader's `clear` sets F_SNAPSHOT only; carry the canonical
-        // row's full flag bitmask (F_SNAPSHOT required, optionally F_MBP and
-        // F_LAST when the row closes a snapshot expansion), which validate()
-        // has already enforced.
-        let mut clear = OrderBookDelta::clear(instrument_id, row.sequence, ts_event, ts_init);
+        // row's full flag bitmask (F_SNAPSHOT and F_MBP required, plus F_LAST
+        // when the row closes a snapshot expansion), which validate() has
+        // already enforced.
+        let mut clear = OrderBookDelta::clear(instrument_id, source_sequence, ts_event, ts_init);
         clear.flags = row.flags;
         return Ok(clear);
     }
@@ -1215,19 +1224,17 @@ fn canonical_row_to_order_book_delta(
         s if s == DeltaSide::Sell.as_str() => OrderSide::Sell,
         other => anyhow::bail!("unknown delta side {other:?}"),
     };
-    let price_str = rescaled(&row.price, price_precision)?;
-    let price = Price::from_str(&price_str)
-        .map_err(|error| anyhow::anyhow!("invalid rescaled price {price_str:?}: {error}"))?;
-    let size_str = rescaled(&row.size, size_precision)?;
-    let size = Quantity::from_str(&size_str)
-        .map_err(|error| anyhow::anyhow!("invalid rescaled size {size_str:?}: {error}"))?;
+    let price = Price::from_str(&row.price)
+        .map_err(|error| anyhow::anyhow!("invalid source price {:?}: {error}", row.price))?;
+    let size = Quantity::from_str(&row.size)
+        .map_err(|error| anyhow::anyhow!("invalid source size {:?}: {error}", row.size))?;
     let order = BookOrder::new(side, price, size, row.order_id);
     OrderBookDelta::new_checked(
         instrument_id,
         action,
         order,
         row.flags,
-        row.sequence,
+        source_sequence,
         ts_event,
         ts_init,
     )
@@ -1237,6 +1244,18 @@ fn canonical_row_to_order_book_delta(
             row.sequence
         )
     })
+}
+
+pub(crate) fn native_order_book_sequence(
+    row: &CanonicalOrderBookDeltaRow,
+    label: &str,
+) -> Result<u64> {
+    match row.source_sequence.as_deref() {
+        Some(value) => value
+            .parse::<u64>()
+            .with_context(|| format!("{label}: invalid native source sequence {value:?}")),
+        None => Ok(0),
+    }
 }
 
 /// Project a canonical order-book-delta table into a NautilusTrader
@@ -3283,6 +3302,76 @@ mod tests {
         assert!(error.to_string().contains("row 1"), "{error}");
         assert!(
             error.to_string().contains("missing nt_instrument_id"),
+            "{error}"
+        );
+    }
+
+    fn order_book_delta_row(source_sequence: Option<&str>) -> CanonicalOrderBookDeltaRow {
+        CanonicalOrderBookDeltaRow {
+            schema_version: crate::canonical_trades::NORMALIZED_SCHEMA_VERSION.to_string(),
+            ingest_run_id: "ingest-run-test".to_string(),
+            source_binding: "synthetic-archive".to_string(),
+            venue: "BYBIT".to_string(),
+            product_family: "spot".to_string(),
+            product_category: "spot".to_string(),
+            instrument_id: "BNBUSDC".to_string(),
+            canonical_instrument_key: "bybit/spot/BNBUSDC".to_string(),
+            venue_symbol: "BNBUSDC".to_string(),
+            nt_instrument_id: Some("BNBUSDC.BYBIT".to_string()),
+            event_time: 1_700_000_000_000_000_000,
+            capture_time: 1_700_000_000_000_000_500,
+            availability_time: Some(1_700_000_000_000_000_000),
+            source_sequence: source_sequence.map(str::to_string),
+            raw_payload_id: "feedface".to_string(),
+            source_proof_id: "source-proof-synthetic".to_string(),
+            payload_hash: "feedface".to_string(),
+            transform_hash: "0badc0de".to_string(),
+            action: DeltaAction::Add.as_str().to_string(),
+            side: DeltaSide::Buy.as_str().to_string(),
+            price: "617.0".to_string(),
+            size: "10".to_string(),
+            order_id: 0,
+            flags: nautilus_model::enums::RecordFlag::F_MBP as u8
+                | nautilus_model::enums::RecordFlag::F_LAST as u8,
+            sequence: 41,
+        }
+    }
+
+    #[test]
+    fn order_book_projection_uses_zero_when_native_source_sequence_is_unavailable() {
+        let row = order_book_delta_row(None);
+
+        let delta =
+            canonical_row_to_order_book_delta(InstrumentId::from("BNBUSDC.BYBIT"), &row, 1, 4)
+                .expect("convert canonical L2 row");
+
+        assert_eq!(
+            delta.sequence, 0,
+            "NT sequence is venue-native; an unavailable venue sequence must remain zero"
+        );
+    }
+
+    #[test]
+    fn order_book_projection_preserves_numeric_native_source_sequence() {
+        let row = order_book_delta_row(Some("77"));
+
+        let delta =
+            canonical_row_to_order_book_delta(InstrumentId::from("BNBUSDC.BYBIT"), &row, 1, 4)
+                .expect("convert canonical L2 row with a native sequence");
+
+        assert_eq!(delta.sequence, 77);
+    }
+
+    #[test]
+    fn order_book_projection_rejects_non_numeric_native_source_sequence() {
+        let row = order_book_delta_row(Some("native-77"));
+
+        let error =
+            canonical_row_to_order_book_delta(InstrumentId::from("BNBUSDC.BYBIT"), &row, 1, 4)
+                .expect_err("NT sequence cannot carry a non-numeric venue value");
+
+        assert!(
+            error.to_string().contains("invalid native source sequence"),
             "{error}"
         );
     }

@@ -50,21 +50,21 @@ use crate::{
         normalize_registered_jsonl_multi_interval_bar_converter,
         normalize_registered_mark_converter, normalize_registered_order_book_delta_converter,
         normalize_registered_paged_json_bar_converter, normalize_registered_quote_converter,
-        normalize_registered_seeded_l2_quote_converter,
-        normalize_registered_tar_order_book_delta_converter,
-        normalize_registered_tar_seeded_l2_quote_converter, require_registered_source_adapter,
+        normalize_registered_seeded_level_set_converter,
+        normalize_registered_tar_order_book_delta_converter, require_registered_source_adapter,
         require_registered_source_adapter_for_table_family,
     },
     catalog_projection::{
         CatalogInstrumentSpec, CatalogProjection, NT_DATA_TYPE_BAR,
         NT_DATA_TYPE_FUNDING_RATE_UPDATE, NT_DATA_TYPE_INDEX_PRICE_UPDATE,
         NT_DATA_TYPE_MARK_PRICE_UPDATE, NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK,
-        NT_DATA_TYPE_TRADE_TICK, logical_catalog_hash, project_canonical_bars_to_catalog,
-        project_canonical_funding_rates_to_catalog, project_canonical_index_to_catalog,
-        project_canonical_mark_to_catalog, project_canonical_order_book_deltas_to_catalog,
-        project_canonical_quotes_to_catalog, project_canonical_trades_to_catalog, read_back_bars,
-        read_back_funding_rates, read_back_index, read_back_mark, read_back_order_book_deltas,
-        read_back_quotes, read_back_trade_ticks, ts_init_nanos,
+        NT_DATA_TYPE_TRADE_TICK, build_catalog_instrument, logical_catalog_hash,
+        project_canonical_bars_to_catalog, project_canonical_funding_rates_to_catalog,
+        project_canonical_index_to_catalog, project_canonical_mark_to_catalog,
+        project_canonical_order_book_deltas_to_catalog, project_canonical_quotes_to_catalog,
+        project_canonical_trades_to_catalog, read_back_bars, read_back_funding_rates,
+        read_back_index, read_back_mark, read_back_order_book_deltas, read_back_quotes,
+        read_back_trade_ticks, ts_init_nanos,
     },
     conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_TABLES_FILE, ConversionCatalogMetadata,
@@ -91,6 +91,7 @@ use crate::{
         run_backtest, run_nt_backtest_node, run_purpose_label, time_window_excludes_all_data,
         window_bound_nanos,
     },
+    seeded_level_set_deltas::{SeededLevelSetCompileInput, SeededLevelSetWindowBounds},
     source_proof::{
         AcceptedDataset, IngestManifestObjectRecord, SourceBindingRegistry,
         SourceProofFidelityClass, SourceProofReport, read_source_binding_registry_from_path,
@@ -622,6 +623,25 @@ fn validate_converter_config(converter: &ConverterConfig) -> Result<()> {
     let adapter = require_registered_source_adapter(&converter.identity, &converter.version)?;
     validate_raw_payload_config(&converter.raw_payload)?;
     ensure_container_matches_adapter_kind(adapter.kind, converter.raw_payload.container)?;
+    validate_jsonl_stream_config(adapter.kind, &converter.raw_payload)?;
+    Ok(())
+}
+
+fn validate_jsonl_stream_config(
+    kind: SourceAdapterKind,
+    raw_payload: &RawPayloadConfig,
+) -> Result<()> {
+    let uses_bounded_visitor = matches!(
+        kind,
+        SourceAdapterKind::SeededLevelSetDeltas | SourceAdapterKind::TarJsonlSnapshotDeltas
+    );
+    ensure!(
+        raw_payload.jsonl_stream.is_some() == uses_bounded_visitor,
+        "converter.raw_payload.jsonl_stream must be present exactly for bounded JSONL visitor adapters"
+    );
+    if uses_bounded_visitor {
+        crate::jsonl_record_stream::limits_from_raw_payload(raw_payload)?;
+    }
     Ok(())
 }
 
@@ -649,7 +669,7 @@ fn ensure_container_matches_adapter_kind(
                 | RawPayloadContainer::JsonlGzip
                 | RawPayloadContainer::SingleJsonlZip
         ),
-        SourceAdapterKind::SeededL2Quotes => matches!(
+        SourceAdapterKind::SeededLevelSetDeltas => matches!(
             container,
             RawPayloadContainer::JsonlText
                 | RawPayloadContainer::JsonlGzip
@@ -953,14 +973,12 @@ fn read_limited_csv_text<R: Read>(
 
 /// One decoded accepted-object payload, after container decoding.
 ///
-/// The container concern (decompress, walk zip/tar, passthrough) lives here at
+/// The container concern (decompress, walk zip, passthrough) lives here at
 /// the decode boundary; the per-kind dispatchers in `canonical_trades` consume
 /// the matching shape. `Text` carries one bounded UTF-8 string (CSV or JSONL);
-/// `TarMembers` carries the per-member-bounded JSONL members in archive order;
 /// `ParquetBytes` carries the raw object bytes for columnar reads downstream.
 enum DecodedPayload {
     Text(String),
-    TarMembers(Vec<crate::tar_reader::TarMember>),
     ParquetBytes(Vec<u8>),
 }
 
@@ -1024,24 +1042,9 @@ fn decode_object_payload(config: &RawPayloadConfig, object_bytes: &[u8]) -> Resu
                 &format!("zip member {member_name:?}"),
             )?))
         }
-        RawPayloadContainer::TarGzipJsonl => {
-            let member_suffix = config
-                .member_suffix
-                .as_deref()
-                .context("converter.raw_payload.member_suffix is required for tar_gzip_jsonl")?;
-            let max_member_bytes = config
-                .max_member_bytes
-                .context("converter.raw_payload.max_member_bytes is required for tar_gzip_jsonl")?;
-            let mut members = Vec::new();
-            for member in crate::tar_reader::gzip_tar_members(
-                Cursor::new(object_bytes),
-                member_suffix,
-                max_member_bytes,
-            ) {
-                members.push(member.context("stream gzip tar jsonl member")?);
-            }
-            Ok(DecodedPayload::TarMembers(members))
-        }
+        RawPayloadContainer::TarGzipJsonl => anyhow::bail!(
+            "tar_gzip_jsonl is consumed only by its registered bounded raw-object visitor"
+        ),
         RawPayloadContainer::ParquetFile => Ok(DecodedPayload::ParquetBytes(object_bytes.to_vec())),
     }
 }
@@ -2083,9 +2086,66 @@ fn conversion_fingerprint_for(
     })
 }
 
-/// Normalize the decoded payload through the registered adapter dispatch for
-/// `kind`, producing every canonical table the object carries.
+/// Normalize one accepted object through its registered payload boundary.
 fn normalize_tables_for_kind(
+    kind: SourceAdapterKind,
+    spec: &RunSpec,
+    accepted: &AcceptedDataset,
+    object_bytes: &[u8],
+    capture_time_nanos: i64,
+) -> Result<Vec<NormalizedTable>> {
+    match kind {
+        SourceAdapterKind::SeededLevelSetDeltas => {
+            let instrument = build_catalog_instrument(spec.instrument_spec.single()?)?;
+            let window = normalize_registered_seeded_level_set_converter(
+                &spec.converter,
+                SeededLevelSetCompileInput {
+                    accepted,
+                    identity: spec.identity.single()?,
+                    instrument: &instrument,
+                    window: SeededLevelSetWindowBounds {
+                        start_time: spec.manifest.start_time,
+                        end_time: spec.manifest.end_time,
+                    },
+                    raw_bytes: object_bytes,
+                    capture_time: capture_time_nanos,
+                    ingest_run_id: &spec.manifest.run_id,
+                },
+            )?;
+            Ok(std::iter::once(NormalizedTable::Deltas(window.deltas))
+                .chain(window.quotes.into_iter().map(NormalizedTable::Quotes))
+                .collect())
+        }
+        SourceAdapterKind::TarJsonlSnapshotDeltas => {
+            Ok(normalize_registered_tar_order_book_delta_converter(
+                &spec.converter,
+                accepted,
+                &spec.identity.to_delta_identities(),
+                object_bytes,
+                capture_time_nanos,
+                &spec.manifest.run_id,
+            )?
+            .into_iter()
+            .map(NormalizedTable::Deltas)
+            .collect())
+        }
+        materialized_kind => {
+            let payload = decode_object_payload(&spec.converter.raw_payload, object_bytes)?;
+            normalize_materialized_tables_for_kind(
+                materialized_kind,
+                spec,
+                accepted,
+                payload,
+                capture_time_nanos,
+            )
+        }
+    }
+}
+
+/// Normalize adapters whose accepted container contract is a materialized text
+/// or Parquet payload. Seeded full-depth L2 is deliberately excluded: its sole
+/// entrypoint is the bounded raw-object visitor above.
+fn normalize_materialized_tables_for_kind(
     kind: SourceAdapterKind,
     spec: &RunSpec,
     accepted: &AcceptedDataset,
@@ -2158,24 +2218,9 @@ fn normalize_tables_for_kind(
             .map(NormalizedTable::Deltas)
             .collect()
         }
-        SourceAdapterKind::TarJsonlSnapshotDeltas => {
-            let DecodedPayload::TarMembers(members) = payload else {
-                anyhow::bail!(
-                    "tar JSONL snapshot-delta adapter requires the tar payload container"
-                );
-            };
-            normalize_registered_tar_order_book_delta_converter(
-                &spec.converter,
-                accepted,
-                &spec.identity.to_delta_identities(),
-                members.into_iter().map(Ok),
-                capture_time_nanos,
-                run_id,
-            )?
-            .into_iter()
-            .map(NormalizedTable::Deltas)
-            .collect()
-        }
+        SourceAdapterKind::TarJsonlSnapshotDeltas => anyhow::bail!(
+            "tar JSONL snapshot-delta adapter must use the bounded raw-object entrypoint"
+        ),
         SourceAdapterKind::ParquetEventStreamDeltas => {
             let DecodedPayload::ParquetBytes(bytes) = payload else {
                 anyhow::bail!(
@@ -2216,35 +2261,9 @@ fn normalize_tables_for_kind(
             .map(NormalizedTable::Quotes)
             .collect()
         }
-        SourceAdapterKind::SeededL2Quotes => match payload {
-            DecodedPayload::Text(text) => normalize_registered_seeded_l2_quote_converter(
-                &spec.converter,
-                accepted,
-                spec.identity.single()?,
-                &text,
-                capture_time_nanos,
-                run_id,
-            )?
-            .into_iter()
-            .map(NormalizedTable::Quotes)
-            .collect(),
-            DecodedPayload::TarMembers(members) => {
-                normalize_registered_tar_seeded_l2_quote_converter(
-                    &spec.converter,
-                    accepted,
-                    spec.identity.single()?,
-                    members,
-                    capture_time_nanos,
-                    run_id,
-                )?
-                .into_iter()
-                .map(NormalizedTable::Quotes)
-                .collect()
-            }
-            DecodedPayload::ParquetBytes(_) => {
-                anyhow::bail!("seeded L2 quote adapter requires a text or tar payload container")
-            }
-        },
+        SourceAdapterKind::SeededLevelSetDeltas => anyhow::bail!(
+            "seeded level-set delta adapter cannot use the materialized payload boundary"
+        ),
         SourceAdapterKind::IndexPrices => {
             let DecodedPayload::Text(text) = payload else {
                 anyhow::bail!("index-price adapter requires a text payload container");
@@ -2377,14 +2396,14 @@ fn plan_projected_tables(
 fn resolve_instrument_spec<'a>(
     specs: &'a RunSpecInstrumentSpecs,
     planned: &PlannedTable,
-    table_count: usize,
+    instrument_count: usize,
 ) -> Result<&'a CatalogInstrumentSpec> {
     match specs {
         RunSpecInstrumentSpecs::Single(spec) => {
             ensure!(
-                table_count == 1,
+                instrument_count == 1,
                 "run-spec instrument_spec is a single spec but the object produced \
-                 {table_count} tables; key specs by canonical_instrument_key"
+                 {instrument_count} instruments; key specs by canonical_instrument_key"
             );
             Ok(&**spec)
         }
@@ -2453,12 +2472,53 @@ fn assert_planned_read_back(planned: &PlannedTable) -> Result<()> {
 fn bind_catalog_inputs(
     spec_manifest: &BacktestingRunManifest,
     planned: &[PlannedTable],
+    adapter_kind: SourceAdapterKind,
 ) -> Result<(BacktestingRunManifest, Vec<usize>)> {
     let mut manifest = spec_manifest.clone();
     let mut used = vec![false; planned.len()];
     let mut bound_indices = Vec::with_capacity(manifest.catalog_inputs.len());
-    for input in &mut manifest.catalog_inputs {
-        let index = find_planned_table_for_input(input, planned, &used)?;
+    if adapter_kind == SourceAdapterKind::SeededLevelSetDeltas {
+        for delta in planned
+            .iter()
+            .filter(|table| table.table.nt_data_type() == NT_DATA_TYPE_ORDER_BOOK_DELTA)
+        {
+            let declarations = manifest
+                .catalog_inputs
+                .iter()
+                .filter(|input| {
+                    input.nt_instrument_id == delta.nt_instrument_id
+                        && input.data_type == NT_DATA_TYPE_QUOTE_TICK
+                        && input.bar_spec.is_none()
+                })
+                .count();
+            ensure!(
+                declarations == 1,
+                "seeded level-set manifest must declare exactly one conditional QuoteTick input for {}; found {declarations}",
+                delta.nt_instrument_id
+            );
+        }
+    }
+    let declared_inputs = std::mem::take(&mut manifest.catalog_inputs);
+    let mut bound_inputs = Vec::with_capacity(declared_inputs.len());
+    for mut input in declared_inputs {
+        let Some(index) = find_planned_table_for_input(&input, planned, &used)? else {
+            let is_conditional_seeded_quote = adapter_kind
+                == SourceAdapterKind::SeededLevelSetDeltas
+                && input.data_type == NT_DATA_TYPE_QUOTE_TICK
+                && input.bar_spec.is_none()
+                && planned.iter().any(|table| {
+                    table.nt_instrument_id == input.nt_instrument_id
+                        && table.table.nt_data_type() == NT_DATA_TYPE_ORDER_BOOK_DELTA
+                });
+            ensure!(
+                is_conditional_seeded_quote,
+                "manifest catalog input {}/{} (bar_spec {:?}) matches no projected table",
+                input.nt_instrument_id,
+                input.data_type,
+                input.bar_spec
+            );
+            continue;
+        };
         used[index] = true;
         bound_indices.push(index);
         let catalog_path = planned[index]
@@ -2470,7 +2530,9 @@ fn bind_catalog_inputs(
         input.catalog_fs_protocol = CATALOG_FS_PROTOCOL_NONE.to_string();
         input.catalog_fs_storage_options.clear();
         input.catalog_fs_rust_storage_options.clear();
+        bound_inputs.push(input);
     }
+    manifest.catalog_inputs = bound_inputs;
     if let Some(unused) = used.iter().position(|used| !used) {
         anyhow::bail!(
             "projected table {}/{} ({}) is not bound by any manifest catalog input",
@@ -2486,7 +2548,7 @@ fn find_planned_table_for_input(
     input: &ManifestCatalogInput,
     planned: &[PlannedTable],
     used: &[bool],
-) -> Result<usize> {
+) -> Result<Option<usize>> {
     let candidates: Vec<usize> = planned
         .iter()
         .enumerate()
@@ -2503,13 +2565,8 @@ fn find_planned_table_for_input(
         .map(|(index, _)| index)
         .collect();
     match candidates.as_slice() {
-        [index] => Ok(*index),
-        [] => anyhow::bail!(
-            "manifest catalog input {}/{} (bar_spec {:?}) matches no projected table",
-            input.nt_instrument_id,
-            input.data_type,
-            input.bar_spec
-        ),
+        [index] => Ok(Some(*index)),
+        [] => Ok(None),
         _ => anyhow::bail!(
             "manifest catalog input {}/{} is ambiguous over {} projected tables; \
              declare bar_spec to disambiguate",
@@ -2709,14 +2766,30 @@ pub fn run_multi_table_from_run_spec(
         }
     };
 
-    // Decode and normalize on both paths: the completed path re-derives the
-    // canonical tables in memory to re-prove read-back equality and the
-    // engine-iteration expectation without re-projecting verified subroots.
-    let payload = decode_object_payload(&spec.converter.raw_payload, object_bytes)?;
-    let tables =
-        normalize_tables_for_kind(adapter.kind, spec, &accepted, payload, capture_time_nanos)?;
-    let table_count = tables.len();
+    // Normalize on both paths: the completed path re-derives canonical tables
+    // to re-prove read-back equality. Each registered adapter owns exactly one
+    // payload boundary; seeded full-depth L2 receives the bounded raw visitor.
+    let tables = normalize_tables_for_kind(
+        adapter.kind,
+        spec,
+        &accepted,
+        object_bytes,
+        capture_time_nanos,
+    )?;
     let planned = plan_projected_tables(output_dir, tables)?;
+    let instrument_count = planned
+        .iter()
+        .map(|table| table.table.canonical_instrument_key())
+        .collect::<Result<std::collections::BTreeSet<_>>>()?
+        .len();
+    // Manifest shape is configuration authority, so validate and bind it
+    // before creating any output or projection state. Seeded level-set runs
+    // always declare their conditional BBO input even when a one-sided window
+    // produces only the primary full-depth delta table.
+    let (local_manifest, bound_indices) =
+        bind_catalog_inputs(&spec.manifest, &planned, adapter.kind)?;
+    validate_local_run_manifest(&local_manifest, &accepted)?;
+    assert_tables_overlap_window(&local_manifest, &planned)?;
 
     if let Some((manifest_hash, checkpoint_hash, primary_catalog_hash)) = completed {
         return run_multi_from_completed_output(MultiCompletedInputs {
@@ -2725,6 +2798,8 @@ pub fn run_multi_table_from_run_spec(
             accepted_proof,
             verified_sha256,
             planned,
+            local_manifest,
+            bound_indices,
             conversion_manifest_hash: manifest_hash,
             conversion_checkpoint_hash: checkpoint_hash,
             primary_catalog_hash,
@@ -2777,7 +2852,8 @@ pub fn run_multi_table_from_run_spec(
     // Gates 2+3 per table: projection, read-back, equality, canonical artifact.
     let mut catalog_hashes = Vec::with_capacity(planned.len());
     for table in &planned {
-        let instrument_spec = resolve_instrument_spec(&spec.instrument_spec, table, table_count)?;
+        let instrument_spec =
+            resolve_instrument_spec(&spec.instrument_spec, table, instrument_count)?;
         let projection = match &table.table {
             NormalizedTable::Trades(canonical) => {
                 project_canonical_trades_to_catalog(canonical, instrument_spec, &table.subroot)
@@ -2843,11 +2919,6 @@ pub fn run_multi_table_from_run_spec(
         catalog_hashes.push(projection.catalog_hash);
     }
 
-    // Bind every manifest input to its projected table; gate 4 on the bound
-    // manifest; per-table window overlap.
-    let (local_manifest, bound_indices) = bind_catalog_inputs(&spec.manifest, &planned)?;
-    validate_local_run_manifest(&local_manifest, &accepted)?;
-    assert_tables_overlap_window(&local_manifest, &planned)?;
     let primary_index = *bound_indices
         .first()
         .context("manifest must declare at least one catalog input")?;
@@ -3045,6 +3116,8 @@ struct MultiCompletedInputs<'a> {
     accepted_proof: SourceProofReport,
     verified_sha256: String,
     planned: Vec<PlannedTable>,
+    local_manifest: BacktestingRunManifest,
+    bound_indices: Vec<usize>,
     conversion_manifest_hash: String,
     conversion_checkpoint_hash: String,
     primary_catalog_hash: String,
@@ -3068,6 +3141,8 @@ fn run_multi_from_completed_output(
     let spec = inputs.spec;
     let accepted = inputs.accepted;
     let planned = inputs.planned;
+    let local_manifest = inputs.local_manifest;
+    let bound_indices = inputs.bound_indices;
 
     let conversion_checkpoint: ConversionCheckpoint =
         read_json_artifact(&inputs.conversion_checkpoint_path)?;
@@ -3143,10 +3218,6 @@ fn run_multi_from_completed_output(
         );
     }
 
-    // Bind, validate, window-check, then gate 5 once.
-    let (local_manifest, bound_indices) = bind_catalog_inputs(&spec.manifest, &planned)?;
-    validate_local_run_manifest(&local_manifest, accepted)?;
-    assert_tables_overlap_window(&local_manifest, &planned)?;
     let primary_index = *bound_indices
         .first()
         .context("manifest must declare at least one catalog input")?;
@@ -3789,6 +3860,7 @@ mod tests {
             zip_member: None,
             max_member_bytes: None,
             member_suffix: None,
+            jsonl_stream: None,
         };
         spec
     }
@@ -3872,6 +3944,7 @@ mod tests {
             zip_member: None,
             max_member_bytes: None,
             member_suffix: None,
+            jsonl_stream: None,
         }
     }
 
@@ -3882,7 +3955,7 @@ mod tests {
             decode_object_payload(&config, b"{\"a\":1}\n{\"a\":2}\n").expect("jsonl text decodes");
         match payload {
             DecodedPayload::Text(text) => assert_eq!(text, "{\"a\":1}\n{\"a\":2}\n"),
-            DecodedPayload::TarMembers(_) | DecodedPayload::ParquetBytes(_) => {
+            DecodedPayload::ParquetBytes(_) => {
                 panic!("jsonl text container must decode to a text payload")
             }
         }
@@ -3905,7 +3978,7 @@ mod tests {
             decode_object_payload(&config, &gzip("{\"a\":1}\n")).expect("jsonl gzip decodes");
         match payload {
             DecodedPayload::Text(text) => assert_eq!(text, "{\"a\":1}\n"),
-            DecodedPayload::TarMembers(_) | DecodedPayload::ParquetBytes(_) => {
+            DecodedPayload::ParquetBytes(_) => {
                 panic!("jsonl gzip container must decode to a text payload")
             }
         }
@@ -3925,7 +3998,7 @@ mod tests {
             .expect("jsonl zip decodes");
         match payload {
             DecodedPayload::Text(text) => assert_eq!(text, "{\"a\":1}\n"),
-            DecodedPayload::TarMembers(_) | DecodedPayload::ParquetBytes(_) => {
+            DecodedPayload::ParquetBytes(_) => {
                 panic!("jsonl zip container must decode to a text payload")
             }
         }
@@ -3938,7 +4011,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_tar_gzip_jsonl_streams_matching_members_in_order() {
+    fn decode_tar_gzip_jsonl_rejects_the_materialized_decode_path() {
         let mut config = payload_config(RawPayloadContainer::TarGzipJsonl);
         config.member_suffix = Some(".jsonl".to_string());
         config.max_member_bytes = Some(64);
@@ -3947,33 +4020,12 @@ mod tests {
             ("skip.txt", b"not jsonl".as_slice()),
             ("b.jsonl", b"{\"seq\":2}\n".as_slice()),
         ]);
-        let payload = decode_object_payload(&config, &archive).expect("tar gzip decodes");
-        match payload {
-            DecodedPayload::TarMembers(members) => {
-                assert_eq!(members.len(), 2, "only matching members are streamed");
-                assert_eq!(members[0].name, "a.jsonl");
-                assert_eq!(members[0].text, "{\"seq\":1}\n");
-                assert_eq!(members[1].name, "b.jsonl");
-                assert_eq!(members[1].text, "{\"seq\":2}\n");
-            }
-            DecodedPayload::Text(_) | DecodedPayload::ParquetBytes(_) => {
-                panic!("tar gzip container must decode to tar members")
-            }
-        }
-    }
-
-    #[test]
-    fn decode_tar_gzip_jsonl_rejects_member_over_per_member_bound() {
-        let mut config = payload_config(RawPayloadContainer::TarGzipJsonl);
-        config.member_suffix = Some(".jsonl".to_string());
-        config.max_member_bytes = Some(8);
-        let archive = gzip_tar(&[("big.jsonl", b"{\"seq\":111111}\n".as_slice())]);
-        let err = decode_object_payload(&config, &archive)
+        let error = decode_object_payload(&config, &archive)
             .err()
-            .expect("over-bound tar member must be rejected");
+            .expect("tar gzip must not enter the materialized decoder");
         assert!(
-            err.to_string().contains("big.jsonl") || err.to_string().contains("member"),
-            "{err}"
+            error.to_string().contains("bounded raw-object visitor"),
+            "{error}"
         );
     }
 
@@ -3984,7 +4036,7 @@ mod tests {
         let payload = decode_object_payload(&config, &bytes).expect("parquet passthrough");
         match payload {
             DecodedPayload::ParquetBytes(passthrough) => assert_eq!(passthrough, bytes),
-            DecodedPayload::Text(_) | DecodedPayload::TarMembers(_) => {
+            DecodedPayload::Text(_) => {
                 panic!("parquet container must pass object bytes through")
             }
         }
@@ -5038,6 +5090,7 @@ table_families = ["trades", "bars"]
             zip_member: Some("BNBUSDC-trades-2026-03-01.csv".to_string()),
             max_member_bytes: None,
             member_suffix: None,
+            jsonl_stream: None,
         };
         spec.converter.csv.has_headers = false;
         spec.converter.csv.trade_id_column = "trade_id".to_string();

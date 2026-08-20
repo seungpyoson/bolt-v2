@@ -348,6 +348,7 @@ fn parquet_converter(object_len: u64) -> ConverterConfig {
             zip_member: None,
             max_member_bytes: None,
             member_suffix: None,
+            jsonl_stream: None,
         },
         csv: csv_filler_mapping(),
         bars: None,
@@ -355,7 +356,7 @@ fn parquet_converter(object_len: u64) -> ConverterConfig {
         jsonl_bars: None,
         deltas: Some(event_stream_mapping()),
         quotes: None,
-        seeded_l2_quotes: None,
+        seeded_level_set: None,
     }
 }
 

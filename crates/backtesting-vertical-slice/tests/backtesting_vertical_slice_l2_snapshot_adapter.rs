@@ -6,7 +6,7 @@
 //! [`normalize_jsonl_snapshot_deltas`] into a validated
 //! [`CanonicalOrderBookDeltasTable`] and projects into a local
 //! `ParquetDataCatalog` as `OrderBookDelta` data that reads back with per-field
-//! equality (action/side/price/size/flags/sequence/ts) and the snapshot
+//! equality (action/side/price/size/flags/native-sequence/ts) and the snapshot
 //! expansion shape preserved, and that a gzip envelope decodes to the same
 //! normalized table.
 //!
@@ -261,15 +261,14 @@ fn jsonl_snapshot_deltas_round_trip_to_catalog() {
     );
     assert!(!projection.catalog_hash.is_empty());
 
-    let mut loaded =
+    let loaded =
         read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back deltas");
     assert_eq!(loaded.len(), table.rows.len());
-    // Read-back is sorted by NautilusTrader; key by sequence for per-field
-    // equality against the canonical rows.
-    loaded.sort_by_key(|delta| delta.sequence);
+    // This format has no venue-native sequence. NT therefore carries zero;
+    // canonical `row.sequence` remains an audit-only encounter ordinal.
     for (delta, row) in loaded.iter().zip(table.rows.iter()) {
         assert_eq!(delta.instrument_id.to_string(), NT_INSTRUMENT_ID);
-        assert_eq!(delta.sequence, row.sequence);
+        assert_eq!(delta.sequence, 0);
         assert_eq!(delta.flags, row.flags);
         assert_eq!(delta.ts_event.as_u64(), row.event_time as u64);
         if row.action == DeltaAction::Clear.as_str() {
@@ -300,9 +299,7 @@ fn jsonl_snapshot_expansion_shape_survives_round_trip() {
     let table = normalized_table();
     let dir = tempfile::TempDir::new().expect("temp dir");
     project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path()).expect("project");
-    let mut loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
-    loaded.sort_by_key(|delta| delta.sequence);
-
+    let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     let last = RecordFlag::F_LAST as u8;
     // First photo: CLEAR, bid ADD, bid ADD, ask ADD (F_LAST on the ask).
     assert_eq!(loaded[0].action, BookAction::Clear);
@@ -318,10 +315,11 @@ fn jsonl_snapshot_expansion_shape_survives_round_trip() {
     // Second photo begins at row 4 with a fresh CLEAR.
     assert_eq!(loaded[4].action, BookAction::Clear);
     assert_ne!(loaded[7].flags & last, 0, "second photo closes with F_LAST");
-    // Sequences are dense and 0-based; ts_init is non-strict ascending.
+    // The source has no native sequence, so NT carries zero. The catalog
+    // preserves event encounter order through the non-strict ts_init clock.
     let mut prev_ts = u64::MIN;
-    for (index, delta) in loaded.iter().enumerate() {
-        assert_eq!(delta.sequence, index as u64);
+    for delta in &loaded {
+        assert_eq!(delta.sequence, 0);
         assert!(delta.ts_init.as_u64() >= prev_ts);
         prev_ts = delta.ts_init.as_u64();
     }

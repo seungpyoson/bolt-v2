@@ -19,18 +19,19 @@
 //! (`F_SNAPSHOT`) followed by one `ADD` per level (bids then asks, each
 //! `F_SNAPSHOT`); the final row of the photo additionally carries `F_LAST` to
 //! close the book event. An empty photo (no levels on either side) collapses to
-//! a lone `CLEAR` carrying `F_SNAPSHOT | F_LAST`, and runs of consecutive empty
-//! photos collapse onto that single `CLEAR` so the table never carries two
-//! `CLEAR` rows back to back (a shape the contract forbids).
+//! a lone `CLEAR` carrying `F_SNAPSHOT | F_LAST`. This periodic-photo adapter
+//! retains its historical collapse of consecutive empty photos; the shared
+//! canonical contract also supports preserving them as distinct closed source
+//! events when an adapter owns source-event identity.
 //!
 //! This slice implements the periodic-full-snapshot wire shape
 //! ([`DeltaSourceFormat::Snapshot`]) over two container entry points that share
 //! one group-and-expand core: a single decoded JSONL object
-//! ([`normalize_jsonl_snapshot_deltas`]) and a streaming gzip-tar of JSONL
-//! members ([`normalize_tar_jsonl_snapshot_deltas`]). The tar path accumulates
-//! per-instrument groups across every member of the archive (a single pass, the
-//! same multi-instrument split and exclusion fence as the JSONL path) and then
-//! runs the identical per-group expansion.
+//! ([`normalize_jsonl_snapshot_deltas`]) and a bounded streaming gzip-tar of
+//! JSONL records ([`normalize_tar_jsonl_snapshot_deltas`]). The tar path
+//! accumulates per-instrument groups across the archive without retaining member
+//! bodies (one pass, the same split and exclusion fence as the JSONL path) and
+//! then runs the identical per-group expansion.
 //!
 //! It also implements the typed-event-stream wire shape
 //! ([`DeltaSourceFormat::EventStream`], [`normalize_parquet_event_stream_deltas`])
@@ -91,12 +92,12 @@ use super::{
     },
     canonical_trades::{
         CanonicalInstrumentIdentity, CanonicalTradeRow, CanonicalTradesTable, CsvTimestampUnit,
-        DELTAS_TRANSFORM_IDENTITY, EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY,
+        DELTAS_TRANSFORM_IDENTITY, EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY, RawPayloadContainer,
         TAR_DELTAS_TRANSFORM_IDENTITY, TRADE_SOURCE_TYPE_NATIVE, TradeAggressorSide,
         TradesPartition,
     },
+    jsonl_record_stream::{JsonlStreamLimits, visit_jsonl_records},
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
-    tar_reader::TarMember,
 };
 
 /// Run-spec owned JSONL order-book-delta column mapping for the S3 source
@@ -296,8 +297,8 @@ pub enum DeltaPriceSignPolicy {
 /// How empty (no-level) photos are represented.
 ///
 /// This slice supports only [`EmptyBookPolicy::LoneClearLast`]: an empty photo
-/// becomes a single `CLEAR` carrying `F_SNAPSHOT | F_LAST`, and runs of
-/// consecutive empty photos collapse onto that one `CLEAR`.
+/// becomes a single `CLEAR` carrying `F_SNAPSHOT | F_LAST`. This legacy
+/// periodic-photo converter collapses runs of consecutive empty photos.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EmptyBookPolicy {
@@ -415,17 +416,12 @@ pub fn normalize_jsonl_snapshot_deltas(
     )
 }
 
-/// Normalize an accepted streaming gzip-tar of JSONL periodic-full-snapshot
-/// members into one [`CanonicalOrderBookDeltasTable`] per instrument.
+/// Normalize an accepted bounded gzip-tar of JSONL periodic-full-snapshot
+/// records into one [`CanonicalOrderBookDeltasTable`] per instrument.
 ///
-/// `members` is the streaming member iterator produced by
-/// [`super::tar_reader::gzip_tar_members`]; the caller owns the container concern
-/// (decompress + walk tar members) exactly as the JSONL path's caller owns
-/// decoding a single object. Each member's text is parsed into the same
-/// per-instrument accumulator the JSONL path uses, so grouping, the
-/// multi-instrument split, and the exclusion fence span the *whole archive* in a
-/// single pass. After accumulation every group's photos are expanded through the
-/// identical [`expand_photos`] core.
+/// The raw archive is visited through the shared bounded JSONL record stream.
+/// Records feed the same per-instrument accumulator as the single-object JSONL
+/// path without materializing member bodies or a member vector.
 ///
 /// Archive member order is not a per-instrument event-time order guarantee:
 /// distinct members can interleave the same instrument with non-monotonic
@@ -441,25 +437,36 @@ pub fn normalize_jsonl_snapshot_deltas(
 ///
 /// # Errors
 ///
-/// Returns an error if `members` yields a streaming/tar failure, a member line
-/// is malformed JSON, a configured field is missing, a level price/size is
-/// non-positive, the keyed identity is unknown, the archive carries no in-scope
-/// photo, or a produced table fails its contract.
+/// Returns an error if bounded archive visitation fails, a record is malformed
+/// JSON, a configured field is missing, a level price/size is non-positive, the
+/// keyed identity is unknown, the archive carries no in-scope photo, or a
+/// produced table fails its contract.
 pub fn normalize_tar_jsonl_snapshot_deltas(
     accepted: &AcceptedDataset,
     identities: &DeltaInstrumentIdentities,
     mapping: &DeltaMappingConfig,
-    members: impl Iterator<Item = Result<TarMember>>,
+    archive_bytes: &[u8],
+    limits: &JsonlStreamLimits,
     capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<Vec<CanonicalOrderBookDeltasTable>> {
     let fields = validate_snapshot_mapping(mapping, ingest_run_id)?;
     let mut accumulator = PhotoGroups::default();
-    for member in members {
-        let member = member.context("read next tar member")?;
-        parse_jsonl_into_groups(&fields, mapping, &member.text, &mut accumulator)
-            .with_context(|| format!("normalize tar member {:?}", member.name))?;
-    }
+    visit_jsonl_records(
+        RawPayloadContainer::TarGzipJsonl,
+        archive_bytes,
+        limits,
+        |record_index, record| {
+            parse_snapshot_record_into_groups(
+                &fields,
+                mapping,
+                record_index,
+                record,
+                &mut accumulator,
+            )
+        },
+    )
+    .context("stream tar JSONL snapshot records")?;
     expand_groups_into_tables(
         accepted,
         identities,
@@ -1263,6 +1270,7 @@ fn expand_delta_events(
 
     let snapshot_flags = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
     let last_flag = RecordFlag::F_LAST as u8;
+    let mbp_flag = RecordFlag::F_MBP as u8;
 
     let mut rows: Vec<CanonicalOrderBookDeltaRow> = Vec::new();
     let mut previous_event_time = i64::MIN;
@@ -1359,7 +1367,7 @@ fn expand_delta_events(
                         side: delta.side.as_str(),
                         price: &delta.price,
                         size: &delta.size,
-                        flags: last_flag,
+                        flags: mbp_flag | last_flag,
                     },
                 ));
             }
@@ -1372,9 +1380,7 @@ fn expand_delta_events(
         provenance.identity.instrument_id
     );
     for (sequence, row) in rows.iter_mut().enumerate() {
-        let sequence = sequence as u64;
-        row.sequence = sequence;
-        row.source_sequence = Some(sequence.to_string());
+        row.sequence = sequence as u64;
     }
     Ok(rows)
 }
@@ -1674,73 +1680,97 @@ fn parse_jsonl_into_groups(
     jsonl_text: &str,
     accumulator: &mut PhotoGroups,
 ) -> Result<()> {
-    // Borrow the two fields separately so the `or_insert_with` closure pushes to
-    // `order` while `groups.entry` holds its own disjoint mutable borrow.
-    let PhotoGroups { order, groups } = accumulator;
     for (index, line) in jsonl_text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
-        let value: Value = serde_json::from_str(line)
-            .with_context(|| format!("line {index}: malformed snapshot JSON"))?;
-
-        let instrument_key = match &mapping.instrument_key.key_field {
-            Some(key_field) => {
-                let raw = value
-                    .get(key_field)
-                    .and_then(Value::as_str)
-                    .with_context(|| {
-                        format!("line {index}: missing string instrument key field {key_field:?}")
-                    })?;
-                ensure!(!raw.trim().is_empty(), "line {index}: empty instrument key");
-                if let Some(filter) = &mapping.instrument_key.exclusion_filter
-                    && filter.excludes(raw)
-                {
-                    continue;
-                }
-                Some(raw.to_string())
-            }
-            None => None,
-        };
-
-        let event_time_raw = value.get(fields.event_time_field).with_context(|| {
-            format!(
-                "line {index}: missing event time field {:?}",
-                fields.event_time_field
-            )
-        })?;
-        let event_time = parse_event_time(fields.event_time_unit, event_time_raw)
-            .with_context(|| format!("line {index}: invalid event time {event_time_raw}"))?;
-        ensure!(event_time > 0, "line {index}: non-positive event time");
-
-        let bids = parse_levels(
-            index,
-            &value,
-            fields.bids_field,
-            fields.level_price_field,
-            fields.level_size_field,
-            mapping.price_sign_policy,
+        parse_snapshot_record_into_groups(
+            fields,
+            mapping,
+            index as u64,
+            line.as_bytes(),
+            accumulator,
         )?;
-        let asks = parse_levels(
-            index,
-            &value,
-            fields.asks_field,
-            fields.level_price_field,
-            fields.level_size_field,
-            mapping.price_sign_policy,
-        )?;
-
-        let group = groups.entry(instrument_key.clone()).or_insert_with(|| {
-            order.push(instrument_key.clone());
-            Vec::new()
-        });
-        group.push(ParsedPhoto {
-            event_time,
-            availability_time: None,
-            bids,
-            asks,
-        });
     }
+    Ok(())
+}
+
+fn parse_snapshot_record_into_groups(
+    fields: &SnapshotFields<'_>,
+    mapping: &DeltaMappingConfig,
+    record_index: u64,
+    record: &[u8],
+    accumulator: &mut PhotoGroups,
+) -> Result<()> {
+    let index = usize::try_from(record_index).context("snapshot record index exceeds usize")?;
+    let value: Value = serde_json::from_slice(record)
+        .with_context(|| format!("line {record_index}: malformed snapshot JSON"))?;
+
+    let instrument_key = match &mapping.instrument_key.key_field {
+        Some(key_field) => {
+            let raw = value
+                .get(key_field)
+                .and_then(Value::as_str)
+                .with_context(|| {
+                    format!(
+                        "line {record_index}: missing string instrument key field {key_field:?}"
+                    )
+                })?;
+            ensure!(
+                !raw.trim().is_empty(),
+                "line {record_index}: empty instrument key"
+            );
+            if let Some(filter) = &mapping.instrument_key.exclusion_filter
+                && filter.excludes(raw)
+            {
+                return Ok(());
+            }
+            Some(raw.to_string())
+        }
+        None => None,
+    };
+
+    let event_time_raw = value.get(fields.event_time_field).with_context(|| {
+        format!(
+            "line {record_index}: missing event time field {:?}",
+            fields.event_time_field
+        )
+    })?;
+    let event_time = parse_event_time(fields.event_time_unit, event_time_raw)
+        .with_context(|| format!("line {record_index}: invalid event time {event_time_raw}"))?;
+    ensure!(
+        event_time > 0,
+        "line {record_index}: non-positive event time"
+    );
+
+    let bids = parse_levels(
+        index,
+        &value,
+        fields.bids_field,
+        fields.level_price_field,
+        fields.level_size_field,
+        mapping.price_sign_policy,
+    )?;
+    let asks = parse_levels(
+        index,
+        &value,
+        fields.asks_field,
+        fields.level_price_field,
+        fields.level_size_field,
+        mapping.price_sign_policy,
+    )?;
+
+    let PhotoGroups { order, groups } = accumulator;
+    let group = groups.entry(instrument_key.clone()).or_insert_with(|| {
+        order.push(instrument_key.clone());
+        Vec::new()
+    });
+    group.push(ParsedPhoto {
+        event_time,
+        availability_time: None,
+        bids,
+        asks,
+    });
     Ok(())
 }
 
@@ -1947,11 +1977,10 @@ struct RowPayload<'a> {
 /// Build one canonical delta row from the per-table [`RowProvenance`] and the
 /// row's [`RowPayload`].
 ///
-/// `sequence` and `source_sequence` are assigned by [`expand_photos`] after
-/// expansion and collapse. Both are set to the converter-assigned dense
-/// per-instrument ordinal; `source_sequence` is NOT a venue-native sequence
-/// number (periodic-full-snapshot objects carry no per-row wire identity).
-/// This constructor leaves `sequence` at `0` and `source_sequence` at `None`.
+/// The caller's expansion pass assigns `sequence` as the converter's dense
+/// per-instrument audit ordinal. `source_sequence` stays `None` because these
+/// inputs carry no venue-native delta sequence. This constructor leaves both
+/// fields at their pre-expansion values.
 fn make_row(
     provenance: &RowProvenance<'_>,
     payload: &RowPayload<'_>,
@@ -1990,6 +2019,9 @@ fn make_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    use flate2::{Compression, write::GzEncoder};
     // BAR_TRANSFORM_IDENTITY is not used by production code in this module; the
     // four-identity distinctness test below references it, so import it here.
     use crate::canonical_trades::BAR_TRANSFORM_IDENTITY;
@@ -2003,6 +2035,45 @@ mod tests {
 
     const OBJECT_SHA256: &str = "d6af93305f3773d6c00b4f3c13ffaef54a573d62ce5e6a96649b06d82df04598";
     const SOURCE_URL: &str = "https://synthetic.invalid/data";
+    const TEST_TAR_BLOCK: usize = 512;
+
+    fn tar_archive(members: &[(&str, &str)]) -> Vec<u8> {
+        let mut tar = Vec::new();
+        for (name, text) in members {
+            let mut header = [0u8; TEST_TAR_BLOCK];
+            let name_bytes = name.as_bytes();
+            header[..name_bytes.len()].copy_from_slice(name_bytes);
+            let size_field = format!("{:011o}", text.len());
+            header[124..135].copy_from_slice(size_field.as_bytes());
+            header[135] = b' ';
+            header[156] = b'0';
+            header[148..156].copy_from_slice(b"        ");
+            let checksum: u32 = header.iter().map(|byte| u32::from(*byte)).sum();
+            let checksum_field = format!("{checksum:06o}");
+            header[148..154].copy_from_slice(checksum_field.as_bytes());
+            header[154] = 0;
+            header[155] = b' ';
+            tar.extend_from_slice(&header);
+            tar.extend_from_slice(text.as_bytes());
+            let padding = (TEST_TAR_BLOCK - text.len() % TEST_TAR_BLOCK) % TEST_TAR_BLOCK;
+            tar.extend(std::iter::repeat_n(0, padding));
+        }
+        tar.extend(std::iter::repeat_n(0, TEST_TAR_BLOCK * 2));
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&tar).expect("gzip tar write");
+        encoder.finish().expect("gzip tar finish")
+    }
+
+    fn tar_limits() -> JsonlStreamLimits {
+        JsonlStreamLimits {
+            max_decoded_bytes: 1 << 20,
+            max_members: 128,
+            max_member_bytes: 1 << 16,
+            max_record_bytes: 1 << 16,
+            max_records: 1 << 16,
+            member_suffix: Some(".data".to_string()),
+        }
+    }
 
     fn source_binding_registry() -> SourceBindingRegistry {
         SourceBindingRegistry::from_toml_str(
@@ -2419,19 +2490,6 @@ table_families = ["order_book_snapshot_deltas"]
         assert!(err.to_string().contains("no instrument identity"), "{err}");
     }
 
-    /// Wrap a `[(name, jsonl)]` slice as a fallible tar-member iterator.
-    fn members(members: &[(&str, &str)]) -> Vec<Result<TarMember>> {
-        members
-            .iter()
-            .map(|(name, text)| {
-                Ok(TarMember {
-                    name: (*name).to_string(),
-                    text: (*text).to_string(),
-                })
-            })
-            .collect()
-    }
-
     #[test]
     fn tar_path_accumulates_one_instrument_across_members() {
         let accepted = accepted_dataset();
@@ -2439,11 +2497,13 @@ table_families = ["order_book_snapshot_deltas"]
         // span both members into one table with both photos.
         let member_a = "{\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
         let member_b = "{\"time\":1700000060000,\"bids\":[{\"px\":\"0.50\",\"sz\":\"11\"}],\"asks\":[{\"px\":\"0.52\",\"sz\":\"13\"}]}\n";
+        let archive = tar_archive(&[("000.data", member_a), ("001.data", member_b)]);
         let tables = normalize_tar_jsonl_snapshot_deltas(
             &accepted,
             &single_identity(),
             &single_mapping(),
-            members(&[("000.data", member_a), ("001.data", member_b)]).into_iter(),
+            &archive,
+            &tar_limits(),
             42,
             "ingest-run-test",
         )
@@ -2506,11 +2566,13 @@ table_families = ["order_book_snapshot_deltas"]
         // span members and produce one table per instrument.
         let member_a = "{\"coin\":\"AAA\",\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
         let member_b = "{\"coin\":\"BBB\",\"time\":1700000000000,\"bids\":[{\"px\":\"0.30\",\"sz\":\"5\"}],\"asks\":[{\"px\":\"0.33\",\"sz\":\"7\"}]}\n";
+        let archive = tar_archive(&[("000.data", member_a), ("001.data", member_b)]);
         let mut tables = normalize_tar_jsonl_snapshot_deltas(
             &accepted,
             &identities,
             &keyed_mapping(None),
-            members(&[("000.data", member_a), ("001.data", member_b)]).into_iter(),
+            &archive,
+            &tar_limits(),
             42,
             "ingest-run-test",
         )
@@ -2534,11 +2596,13 @@ table_families = ["order_book_snapshot_deltas"]
         // monotonic timeline rather than bailing on a regression.
         let later = "{\"time\":1700000060000,\"bids\":[{\"px\":\"0.50\",\"sz\":\"11\"}],\"asks\":[{\"px\":\"0.52\",\"sz\":\"13\"}]}\n";
         let earlier = "{\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
+        let archive = tar_archive(&[("000.data", later), ("001.data", earlier)]);
         let tables = normalize_tar_jsonl_snapshot_deltas(
             &accepted,
             &single_identity(),
             &single_mapping(),
-            members(&[("000.data", later), ("001.data", earlier)]).into_iter(),
+            &archive,
+            &tar_limits(),
             42,
             "ingest-run-test",
         )
@@ -2551,36 +2615,36 @@ table_families = ["order_book_snapshot_deltas"]
     }
 
     #[test]
-    fn tar_path_propagates_member_stream_error() {
+    fn tar_path_propagates_archive_stream_error() {
         let accepted = accepted_dataset();
-        let failing: Vec<Result<TarMember>> = vec![
-            Ok(TarMember {
-                name: "000.data".to_string(),
-                text: "{\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n".to_string(),
-            }),
-            Err(anyhow::anyhow!("synthetic tar stream failure")),
-        ];
+        let mut failing = tar_archive(&[(
+            "000.data",
+            "{\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n",
+        )]);
+        failing.truncate(failing.len() / 2);
         let err = normalize_tar_jsonl_snapshot_deltas(
             &accepted,
             &single_identity(),
             &single_mapping(),
-            failing.into_iter(),
+            &failing,
+            &tar_limits(),
             42,
             "ingest-run-test",
         )
         .expect_err("a tar stream failure must fail loud");
-        assert!(err.to_string().contains("read next tar member"), "{err}");
+        assert!(err.to_string().contains("stream tar JSONL"), "{err:#}");
     }
 
     #[test]
     fn tar_path_rejects_empty_archive() {
         let accepted = accepted_dataset();
-        let empty: Vec<Result<TarMember>> = Vec::new();
+        let empty = tar_archive(&[]);
         let err = normalize_tar_jsonl_snapshot_deltas(
             &accepted,
             &single_identity(),
             &single_mapping(),
-            empty.into_iter(),
+            &empty,
+            &tar_limits(),
             42,
             "ingest-run-test",
         )
@@ -2885,7 +2949,19 @@ table_families = ["order_book_snapshot_deltas"]
         assert_eq!(standalone.price, "0.48");
         assert_eq!(standalone.size, "5");
         assert_ne!(standalone.flags & RecordFlag::F_LAST as u8, 0);
+        assert_ne!(
+            standalone.flags & RecordFlag::F_MBP as u8,
+            0,
+            "every price-level delta must retain its L2/MBP semantics"
+        );
         assert_eq!(standalone.flags & RecordFlag::F_SNAPSHOT as u8, 0);
+        assert!(
+            delta_table
+                .rows
+                .iter()
+                .all(|row| row.source_sequence.is_none()),
+            "converter row ordinals must not masquerade as native venue sequences"
+        );
         // event_time is the capture clock; availability_time is the exchange time.
         assert_eq!(delta_table.rows[0].event_time, 1_700_000_000_000_000_000);
         assert_eq!(

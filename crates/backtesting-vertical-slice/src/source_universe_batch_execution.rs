@@ -42,7 +42,7 @@ use crate::path_resolution::resolve_existing_path;
 use crate::source_proof::{SourceBindingRegistry, resolve_source_bindings_path};
 use crate::{
     operator::{
-        CATALOG_DIR, RunSpec, ValidatedRunSpecExecution, run_from_validated_run_spec,
+        CATALOG_DIR, RunSpec, ValidatedRunSpecExecution, run_fresh_from_validated_run_spec,
         validate_run_spec_execution_with_registry,
     },
     source_universe_execution_pack::{
@@ -61,6 +61,8 @@ pub trait SourceUniverseObjectFetcher {
 }
 
 pub trait SourceUniverseOperatorRunner {
+    /// Run one admitted `NeedsWork` record in the empty real directory prepared
+    /// by the batch boundary. Existing output is never runner-owned authority.
     fn run(
         &mut self,
         record: &SourceUniverseExecutionPackRecord,
@@ -525,8 +527,11 @@ impl SourceUniverseOperatorRunner for LocalSourceUniverseOperatorRunner {
         controls: &SourceUniverseAdmittedControls,
         output_dir: &Path,
     ) -> Result<SourceUniverseBatchExecutionRunOutput> {
-        let artifacts =
-            run_from_validated_run_spec(&controls.run_spec_execution, object_bytes, output_dir)?;
+        let artifacts = run_fresh_from_validated_run_spec(
+            &controls.run_spec_execution,
+            object_bytes,
+            output_dir,
+        )?;
         let catalog_metadata_bytes =
             fs::read(&artifacts.catalog_metadata_path).with_context(|| {
                 format!(
@@ -875,8 +880,7 @@ fn prepare_batch(
     }
 
     let resume_records = load_resume_records(config.resume_report.as_deref(), &pack)?;
-    fs::create_dir_all(output_dir)
-        .with_context(|| format!("create batch output dir {}", output_dir.display()))?;
+    ensure_batch_output_dir(output_dir)?;
 
     Ok(OwnedBatchPlan {
         pack,
@@ -1574,6 +1578,14 @@ where
     }
 
     let record_output_dir = output_dir.join(&record.operator_run_id);
+    if let Err(error) = recreate_record_output_dir(&record_output_dir).with_context(|| {
+        format!(
+            "prepare fresh output directory for {}",
+            record.operator_run_id
+        )
+    }) {
+        return record_error_slot(record, "prepare_output", error, config);
+    }
     let run_output = match runner
         .run(record, &object_bytes, controls, &record_output_dir)
         .with_context(|| format!("run operator {}", record.operator_run_id))
@@ -1598,6 +1610,68 @@ where
         catalog_hash: run_output.catalog_hash,
         output_dir: record_output_dir,
     })
+}
+
+fn ensure_batch_output_dir(output_dir: &Path) -> Result<()> {
+    match fs::symlink_metadata(output_dir) {
+        Ok(metadata) => {
+            ensure!(
+                metadata.file_type().is_dir(),
+                "batch output dir {} is not a real directory",
+                output_dir.display()
+            );
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(output_dir)
+                .with_context(|| format!("create batch output dir {}", output_dir.display()))?;
+            let metadata = fs::symlink_metadata(output_dir)
+                .with_context(|| format!("inspect batch output dir {}", output_dir.display()))?;
+            ensure!(
+                metadata.file_type().is_dir(),
+                "batch output dir {} is not a real directory",
+                output_dir.display()
+            );
+            Ok(())
+        }
+        Err(error) => {
+            Err(error).with_context(|| format!("inspect batch output dir {}", output_dir.display()))
+        }
+    }
+}
+
+fn recreate_record_output_dir(record_output_dir: &Path) -> Result<()> {
+    match fs::symlink_metadata(record_output_dir) {
+        Ok(metadata) if metadata.file_type().is_dir() => {
+            fs::remove_dir_all(record_output_dir).with_context(|| {
+                format!(
+                    "remove prior record output directory {}",
+                    record_output_dir.display()
+                )
+            })?;
+        }
+        Ok(_) => {
+            fs::remove_file(record_output_dir).with_context(|| {
+                format!(
+                    "remove prior record output entry {}",
+                    record_output_dir.display()
+                )
+            })?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("inspect record output path {}", record_output_dir.display())
+            });
+        }
+    }
+    fs::create_dir(record_output_dir).with_context(|| {
+        format!(
+            "create fresh record output directory {}",
+            record_output_dir.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn record_error_slot(
@@ -2166,6 +2240,36 @@ mod tests {
                 [BatchWorkItem::NeedsWork { .. }]
             ),
             "a non-regular catalog-tree entry must force fresh execution"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plan_reexecutes_carried_record_with_symlinked_catalog_root() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("operator-run-carried");
+        copy_reference_output(&output_dir);
+        let record =
+            carried_record_with_output(output_dir.clone(), committed_reference_catalog_hash());
+        let catalog_root = output_dir.join(CATALOG_DIR);
+        let outside_catalog = temp_dir.path().join("outside-catalog");
+        fs::rename(&catalog_root, &outside_catalog).expect("move catalog outside record output");
+        std::os::unix::fs::symlink(&outside_catalog, &catalog_root)
+            .expect("plant catalog-root symlink");
+
+        let owned_plan = owned_plan_with_carry(&record);
+        let plan = owned_plan.plan();
+
+        assert!(
+            matches!(
+                plan.work_items.as_slice(),
+                [BatchWorkItem::NeedsWork { .. }]
+            ),
+            "a symlinked catalog root must never receive carried authority"
+        );
+        assert!(
+            outside_catalog.is_dir(),
+            "outside catalog must remain intact"
         );
     }
 

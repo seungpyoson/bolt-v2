@@ -1303,9 +1303,9 @@ fn run_from_run_spec_inner(
     )
 }
 
-/// Execute from a pre-fetch certificate without reopening the RunSpec's
-/// source-binding registry path.
-pub fn run_from_validated_run_spec(
+/// Execute fresh work from a pre-fetch certificate without reopening the
+/// RunSpec's source-binding registry path or reusing completed output.
+pub fn run_fresh_from_validated_run_spec(
     validated: &ValidatedRunSpecExecution,
     object_bytes: &[u8],
     output_dir: &Path,
@@ -1315,7 +1315,7 @@ pub fn run_from_validated_run_spec(
         "validated RunSpec output directory does not match execution output directory"
     );
     let verified_sha256 = verify_run_spec_object(validated.run_spec(), object_bytes)?;
-    run_from_validated_run_spec_inner(validated, object_bytes, output_dir, true, verified_sha256)
+    run_from_validated_run_spec_inner(validated, object_bytes, output_dir, false, verified_sha256)
 }
 
 fn verify_run_spec_object(spec: &RunSpec, object_bytes: &[u8]) -> Result<String> {
@@ -4183,7 +4183,7 @@ mod tests {
 
         fs::write(&registry_path, "not valid TOML = [").expect("mutate registry after admission");
 
-        let artifacts = run_from_validated_run_spec(&validated, &gz, &output_dir)
+        let artifacts = run_fresh_from_validated_run_spec(&validated, &gz, &output_dir)
             .expect("admitted execution must not reopen the mutated registry");
         assert_eq!(artifacts.output.read_back_count, 3);
         let fresh_output_dir = temp_dir.path().join("fresh-output");
@@ -4196,6 +4196,31 @@ mod tests {
             "{error:#}"
         );
         assert!(!fresh_output_dir.exists());
+    }
+
+    #[test]
+    fn validated_run_spec_execution_rebuilds_completed_output_when_fresh_work_is_required() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let first = run_from_run_spec(&spec, &gz, dir.path()).expect("initial completed run");
+        let catalog_marker = first.catalog_root.join(".must-not-be-reused");
+        fs::write(&catalog_marker, b"stale").expect("plant prior catalog marker");
+        let validated = validate_run_spec_execution(
+            Arc::new(spec.clone()),
+            dir.path(),
+            &spec.accepted_object.sha256,
+        )
+        .expect("validate admitted execution");
+
+        let rebuilt = run_fresh_from_validated_run_spec(&validated, &gz, dir.path())
+            .expect("validated fresh work rebuilds completed output");
+
+        assert!(
+            !catalog_marker.exists(),
+            "fresh validated execution must not reuse completed output"
+        );
+        assert_eq!(rebuilt.output.read_back_count, 3);
     }
 
     #[test]

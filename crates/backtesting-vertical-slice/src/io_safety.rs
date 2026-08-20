@@ -77,6 +77,13 @@ pub fn open_regular_file(path: &Path, label: impl Display) -> Result<File> {
 /// symlinks or accepting other special filesystem entries.
 pub fn collect_regular_files(root: &Path, label: impl Display) -> Result<Vec<PathBuf>> {
     let label = label.to_string();
+    let root_metadata = fs::symlink_metadata(root)
+        .with_context(|| format!("inspect {label} root {}", root.display()))?;
+    ensure!(
+        root_metadata.file_type().is_dir(),
+        "{label} root {} is not a real directory",
+        root.display()
+    );
     let mut files = Vec::new();
     collect_regular_files_under(root, root, &label, &mut files)?;
     Ok(files)

@@ -120,6 +120,15 @@ impl RecordingDecisionEvidenceWriter {
         );
     }
 
+    pub fn value_exceeding_record_cap(&self) -> String {
+        let cap = usize::try_from(self.read_cap.get())
+            .expect("test evidence cap must fit the host address space");
+        let length = cap
+            .checked_add(1)
+            .expect("finite test evidence cap must have a larger value");
+        "x".repeat(length)
+    }
+
     pub fn facts(&self) -> Vec<CurrentFact> {
         let mut facts = read_current_evidence_facts(&self.machine_path, self.read_cap)
             .expect("machine evidence must decode");

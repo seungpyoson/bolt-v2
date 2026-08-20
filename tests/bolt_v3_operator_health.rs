@@ -20,8 +20,8 @@ use bolt_v2::{
     bolt_v3_operator_health::{
         BoltV3InputHealth, BoltV3OperatorHealthStatus, BoltV3ProviderCollateralAllowanceHealth,
         BoltV3RejectObserverHealth, BoltV3RuntimeFeedAnnouncementStatus, BoltV3SettlementHealth,
-        BoltV3SettlementHealthTransition, node_scoped_runtime_source_announcements,
-        runtime_source_announcements,
+        BoltV3SettlementHealthTransition, BoltV3SubmitAdmissionIntegrityHealth,
+        node_scoped_runtime_source_announcements, runtime_source_announcements,
     },
     bolt_v3_order_reject_observer_feed::BoltV3OrderRejectObserverHealthSnapshot,
     bolt_v3_reference_price_health::{
@@ -52,6 +52,17 @@ fn settlement_health_changes_only_when_a_terminal_transition_is_applied() {
     );
     assert_eq!(health.latest_position_id.as_deref(), Some("position-1"));
     assert_eq!(health.latest_reason.as_deref(), Some("market_expired"));
+}
+
+#[test]
+fn submit_admission_integrity_health_exposes_lost_rollback_ownership() {
+    let nominal = BoltV3SubmitAdmissionIntegrityHealth::from_rollback_ownership_lost(false);
+    assert_eq!(nominal.status, BoltV3OperatorHealthStatus::Nominal);
+    assert!(!nominal.rollback_ownership_lost);
+
+    let halted = BoltV3SubmitAdmissionIntegrityHealth::from_rollback_ownership_lost(true);
+    assert_eq!(halted.status, BoltV3OperatorHealthStatus::Halted);
+    assert!(halted.rollback_ownership_lost);
 }
 
 #[test]

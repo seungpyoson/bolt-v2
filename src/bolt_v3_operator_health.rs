@@ -84,6 +84,51 @@ impl BoltV3DecisionEvidenceObservationHealth {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3SubmitAdmissionIntegrityHealth {
+    pub status: BoltV3OperatorHealthStatus,
+    pub rollback_ownership_lost: bool,
+    pub read_error: Option<String>,
+}
+
+impl BoltV3SubmitAdmissionIntegrityHealth {
+    pub fn not_configured() -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::NotConfigured,
+            rollback_ownership_lost: false,
+            read_error: None,
+        }
+    }
+
+    pub fn unobserved() -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::Unobserved,
+            rollback_ownership_lost: false,
+            read_error: None,
+        }
+    }
+
+    pub fn from_rollback_ownership_lost(rollback_ownership_lost: bool) -> Self {
+        Self {
+            status: if rollback_ownership_lost {
+                BoltV3OperatorHealthStatus::Halted
+            } else {
+                BoltV3OperatorHealthStatus::Nominal
+            },
+            rollback_ownership_lost,
+            read_error: None,
+        }
+    }
+
+    pub fn read_error(error: impl Into<String>) -> Self {
+        Self {
+            status: BoltV3OperatorHealthStatus::Degraded,
+            rollback_ownership_lost: false,
+            read_error: Some(error.into()),
+        }
+    }
+}
+
 impl BoltV3SettlementHealth {
     pub fn not_configured() -> Self {
         Self {
@@ -382,6 +427,7 @@ impl BoltV3InputHealth {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3OperatorHealthSurface {
     pub reject_observer: BoltV3RejectObserverHealth,
+    pub submit_admission_integrity: BoltV3SubmitAdmissionIntegrityHealth,
     pub provider_collateral_allowance: BoltV3ProviderCollateralAllowanceHealth,
     pub input_health: BoltV3InputHealth,
     pub settlement: BoltV3SettlementHealth,
@@ -393,6 +439,7 @@ impl BoltV3OperatorHealthSurface {
     pub fn not_configured() -> Self {
         Self {
             reject_observer: BoltV3RejectObserverHealth::not_configured(),
+            submit_admission_integrity: BoltV3SubmitAdmissionIntegrityHealth::not_configured(),
             provider_collateral_allowance: BoltV3ProviderCollateralAllowanceHealth::not_configured(
             ),
             input_health: BoltV3InputHealth::not_configured(),
@@ -410,6 +457,7 @@ impl BoltV3OperatorHealthSurface {
     ) -> Self {
         Self {
             reject_observer,
+            submit_admission_integrity: BoltV3SubmitAdmissionIntegrityHealth::unobserved(),
             provider_collateral_allowance,
             input_health,
             settlement: BoltV3SettlementHealth::not_configured(),
@@ -421,6 +469,7 @@ impl BoltV3OperatorHealthSurface {
 
     pub fn from_live_parts(
         reject_observer: BoltV3RejectObserverHealth,
+        submit_admission_integrity: BoltV3SubmitAdmissionIntegrityHealth,
         provider_collateral_allowance: BoltV3ProviderCollateralAllowanceHealth,
         input_health: BoltV3InputHealth,
         settlement: BoltV3SettlementHealth,
@@ -429,6 +478,7 @@ impl BoltV3OperatorHealthSurface {
     ) -> Self {
         Self {
             reject_observer,
+            submit_admission_integrity,
             provider_collateral_allowance,
             input_health,
             settlement,

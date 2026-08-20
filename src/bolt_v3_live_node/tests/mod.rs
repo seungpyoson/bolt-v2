@@ -142,6 +142,47 @@ fn live_operator_health_surface_renders_poisoned_submit_admission_as_provider_co
         surface.provider_collateral_allowance.read_error.as_deref(),
         Some(OPERATOR_HEALTH_SUBMIT_ADMISSION_READ_ERROR)
     );
+    assert_eq!(
+        surface.submit_admission_integrity.status,
+        BoltV3OperatorHealthStatus::Degraded
+    );
+    assert_eq!(
+        surface.submit_admission_integrity.read_error.as_deref(),
+        Some(OPERATOR_HEALTH_SUBMIT_ADMISSION_READ_ERROR)
+    );
+}
+
+#[test]
+fn live_operator_health_surface_reads_submit_admission_without_capital() {
+    let writer = Arc::new(DecisionEvidenceRecorder::recording());
+    let submit_admission = BoltV3SubmitAdmissionState::new(writer.clone());
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        submit_admission.poison_inner_for_test();
+    }));
+    assert!(poisoned.is_err());
+
+    let surface = live_operator_health_surface(
+        None,
+        &submit_admission,
+        false,
+        0,
+        None,
+        BoltV3SettlementHealth::nominal(),
+        &DecisionEvidenceStatusView::new(&writer),
+    );
+
+    assert_eq!(
+        surface.submit_admission_integrity.status,
+        BoltV3OperatorHealthStatus::Degraded
+    );
+    assert_eq!(
+        surface.submit_admission_integrity.read_error.as_deref(),
+        Some(OPERATOR_HEALTH_SUBMIT_ADMISSION_READ_ERROR)
+    );
+    assert_eq!(
+        surface.provider_collateral_allowance.status,
+        BoltV3OperatorHealthStatus::NotConfigured
+    );
 }
 
 #[test]

@@ -219,8 +219,8 @@ use crate::{
         BoltV3MissingInputSource, BoltV3OperatorHealthSurface,
         BoltV3OperatorHealthTransitionEmitter, BoltV3ProviderCollateralAllowanceHealth,
         BoltV3RejectObserverHealth, BoltV3SettlementHealth, BoltV3SettlementHealthTransition,
-        BoltV3SettlementHealthTransitionEmitter, node_scoped_runtime_source_announcements,
-        runtime_source_announcements,
+        BoltV3SettlementHealthTransitionEmitter, BoltV3SubmitAdmissionIntegrityHealth,
+        node_scoped_runtime_source_announcements, runtime_source_announcements,
     },
     bolt_v3_order_reject_observer_feed::{
         BoltV3OrderRejectObserverFeed, OrderRejectObserverFeedSubscription,
@@ -247,8 +247,8 @@ use crate::{
         register_bolt_v3_strategies_on_node_with_iv_runtime_bindings,
     },
     bolt_v3_submit_admission::{
-        BoltV3CompiledOrderSide, BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState,
-        BoltV3SubmitCapitalAdmissionConfig,
+        BoltV3CompiledOrderSide, BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionError,
+        BoltV3SubmitAdmissionState, BoltV3SubmitCapitalAdmissionConfig,
         BoltV3SubmitCapitalAdmissionMissingNtAccountCacheBalance,
         BoltV3SubmitCapitalAdmissionOpenOrderEvidence,
         BoltV3SubmitCapitalAdmissionOpenOrderSnapshot, BoltV3SubmitCapitalAdmissionRebuildDecision,
@@ -588,8 +588,17 @@ fn live_operator_health_surface(
             }
         },
     );
+    let submit_admission_snapshot = submit_admission.operator_health_snapshot();
+    let submit_admission_integrity = match &submit_admission_snapshot {
+        Ok(snapshot) => BoltV3SubmitAdmissionIntegrityHealth::from_rollback_ownership_lost(
+            snapshot.rollback_ownership_lost,
+        ),
+        Err(_) => BoltV3SubmitAdmissionIntegrityHealth::read_error(
+            OPERATOR_HEALTH_SUBMIT_ADMISSION_READ_ERROR,
+        ),
+    };
     let provider_collateral_allowance = if provider_collateral_allowance_configured {
-        match submit_admission.operator_health_snapshot() {
+        match &submit_admission_snapshot {
             Ok(snapshot) => {
                 BoltV3ProviderCollateralAllowanceHealth::from_configured_kill_switch_and_capital_state(
                     &snapshot.kill_switch_state,
@@ -605,6 +614,7 @@ fn live_operator_health_surface(
     };
     BoltV3OperatorHealthSurface::from_live_parts(
         reject_observer,
+        submit_admission_integrity,
         provider_collateral_allowance,
         input_health.unwrap_or_else(|| {
             // If no live transition emitter has produced a source observation yet,
@@ -1531,7 +1541,7 @@ impl BoltV3LiveNodeRuntime {
     pub fn rebuild_capital_admission_from_nt_cache(
         &self,
         now_ns: u64,
-    ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
+    ) -> Result<BoltV3SubmitCapitalAdmissionRebuildDecision, BoltV3SubmitAdmissionError> {
         Self::rebuild_capital_admission_from_nt_cache_parts(
             &self.node.kernel().cache(),
             self.capital_admission_runtime_feed.as_ref(),
@@ -1547,7 +1557,7 @@ impl BoltV3LiveNodeRuntime {
         reconciliation_account_ids: &BTreeSet<AccountId>,
         submit_admission: &BoltV3SubmitAdmissionState,
         now_ns: u64,
-    ) -> BoltV3SubmitCapitalAdmissionRebuildDecision {
+    ) -> Result<BoltV3SubmitCapitalAdmissionRebuildDecision, BoltV3SubmitAdmissionError> {
         let (
             account_id,
             binary_instrument_ids,
@@ -1651,7 +1661,8 @@ impl BoltV3LiveNodeRuntime {
                 decision @ (BoltV3SubmitTerminalReservationDecision::StaleCapability
                 | BoltV3SubmitTerminalReservationDecision::RevisionExhausted
                 | BoltV3SubmitTerminalReservationDecision::LedgerMismatch
-                | BoltV3SubmitTerminalReservationDecision::EvidenceRejected) => {
+                | BoltV3SubmitTerminalReservationDecision::EvidenceRejected
+                | BoltV3SubmitTerminalReservationDecision::InvariantViolation(_)) => {
                     log::error!(
                         "bolt-v3 capital admission terminal reservation retirement failed: decision={decision:?}"
                     );
@@ -1682,22 +1693,20 @@ impl BoltV3LiveNodeRuntime {
         }
 
         let mut reservations = Vec::with_capacity(open_order_snapshots.len());
-        let mut live_non_reservation_client_order_ids = BTreeSet::new();
         let mut all_open_orders_attributed = projection_complete;
-        let committed_admission_authority =
-            submit_admission.committed_admission_authority_snapshot();
+        let open_order_admission_authority =
+            submit_admission.open_order_admission_authority_snapshot();
         for order in &open_order_snapshots {
             let Some(evidence) = nt_open_order_evidence_from_order(order, now_ns) else {
                 all_open_orders_attributed = false;
                 break;
             };
             let client_order_id = evidence.client_order_id.clone();
-            if committed_admission_authority.authorizes_non_reservation_order(&client_order_id) {
-                live_non_reservation_client_order_ids.insert(client_order_id);
+            if open_order_admission_authority.authorizes_non_reservation_order(&client_order_id) {
                 continue;
             }
             let Some(metadata) =
-                committed_admission_authority.reservation_attribution(&client_order_id)
+                open_order_admission_authority.reservation_attribution(&client_order_id)
             else {
                 all_open_orders_attributed = false;
                 break;
@@ -1712,7 +1721,6 @@ impl BoltV3LiveNodeRuntime {
         }
         if !all_open_orders_attributed {
             reservations.clear();
-            live_non_reservation_client_order_ids.clear();
         }
 
         let commit_components = canonical_components
@@ -1729,17 +1737,16 @@ impl BoltV3LiveNodeRuntime {
                 observed_open_order_count: open_order_snapshots.len(),
                 all_open_orders_attributed,
                 reservations,
-                live_non_reservation_client_order_ids,
             },
             now_ns,
-        );
+        )?;
         if let Some(missing) = missing_nt_account_cache_balance {
             rebuild = rebuild.with_missing_nt_account_cache_balance(
                 missing.account_id,
                 missing.collateral_currency,
             );
         }
-        rebuild
+        Ok(rebuild)
     }
 }
 
@@ -2016,6 +2023,7 @@ pub enum BoltV3LiveNodeError {
     /// gate: it is a fail-closed reconciliation guard, not the live-canary
     /// arm gate, so it never reintroduces a gate-report/arm sequence.
     StartupCapitalAdmissionRebuild(BoltV3SubmitCapitalAdmissionRebuildDecision),
+    StartupCapitalAdmissionInvariant(BoltV3SubmitAdmissionError),
 }
 
 impl std::fmt::Display for BoltV3LiveNodeError {
@@ -2229,6 +2237,10 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 f,
                 "bolt-v3 startup capital-admission rebuild rejected runtime start: {decision:?}"
             ),
+            BoltV3LiveNodeError::StartupCapitalAdmissionInvariant(error) => write!(
+                f,
+                "bolt-v3 startup capital-admission rebuild violated an internal invariant: {error}"
+            ),
         }
     }
 }
@@ -2275,6 +2287,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::StrategyFreeStopTimeout { .. }
             | BoltV3LiveNodeError::StrategyFreeStopTimeoutOverflow
             | BoltV3LiveNodeError::StartupCapitalAdmissionRebuild(..) => None,
+            BoltV3LiveNodeError::StartupCapitalAdmissionInvariant(error) => Some(error),
             BoltV3LiveNodeError::DisconnectFailed(error)
             | BoltV3LiveNodeError::StrategyFreeReferenceProbeSetup(error)
             | BoltV3LiveNodeError::StrategyFreeStartFailed(error)
@@ -2696,7 +2709,8 @@ pub async fn run_bolt_v3_live_node(
             &reconciliation_account_ids,
             reconciliation_admission.as_ref(),
             observed_at_ns,
-        );
+        )
+        .map_err(BoltV3LiveNodeError::StartupCapitalAdmissionInvariant)?;
         fail_closed_on_unreconciled_startup_rebuild(decision)
     };
 
@@ -3279,13 +3293,24 @@ fn build_live_node_with_clients_and_submit_approval_limits(
                         }
                     };
                     let decision =
-                        BoltV3LiveNodeRuntime::rebuild_capital_admission_from_nt_cache_parts(
+                        match BoltV3LiveNodeRuntime::rebuild_capital_admission_from_nt_cache_parts(
                             &projection_cache,
                             projection_feed.as_ref(),
                             &projection_account_ids,
                             projection_admission.as_ref(),
                             observed_at_ns,
-                        );
+                        ) {
+                            Ok(decision) => decision,
+                            Err(error) => {
+                                log::error!(
+                                    "capital-admission NT projection violated an internal invariant after canonical NT event: {error}"
+                                );
+                                projection_health_emitter(
+                                    OPERATOR_HEALTH_REASON_SUBMIT_ADMISSION_NT_PROJECTION,
+                                );
+                                return;
+                            }
+                        };
                     if !decision.accepted {
                         log::warn!(
                             "capital-admission NT projection remained unreconciled after canonical NT event: {:?}",

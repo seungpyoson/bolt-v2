@@ -73,6 +73,8 @@ use bolt_v2::{
         assemble_strategy_build_context,
     },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
+    strategies::binary_oracle_maker,
+    strategy_bindings::production_runtime_bindings,
 };
 use nautilus_model::identifiers::{ClientId, Venue};
 use nautilus_okx::{common::enums::OKXRegion, config::OKXDataClientConfig};
@@ -476,6 +478,25 @@ fn shared_strategy_assembly_omits_resources_for_undeclared_capabilities() {
 
     let assembled = assemble_strategy_build_context(&context)
         .expect("undeclared optional capabilities should leave shared assembly untouched");
+
+    assert!(assembled.realized_volatility_capability().is_none());
+    assert!(assembled.settlement_capability().is_none());
+}
+
+#[test]
+fn maker_runtime_binding_omits_the_unused_shared_realized_volatility_capability() {
+    let loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("bolt-v3 fixture should load");
+    let resolved = fixture_resolved_secrets();
+    let maker_capabilities = production_runtime_bindings()
+        .iter()
+        .find(|binding| binding.key == binary_oracle_maker::KEY)
+        .expect("production maker runtime binding should exist")
+        .capabilities;
+    let context = assembly_context(&loaded, &resolved, maker_capabilities);
+
+    let assembled = assemble_strategy_build_context(&context)
+        .expect("maker runtime binding should assemble through the shared boundary");
 
     assert!(assembled.realized_volatility_capability().is_none());
     assert!(assembled.settlement_capability().is_none());

@@ -20,7 +20,10 @@
 //! No backtest may consume raw staged data directly. The only path to backtest
 //! input is through an [`AcceptedDataset`] produced here.
 
-use std::path::{Path, PathBuf};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 use chrono::{DateTime, NaiveDate};
 use serde::{Deserialize, Serialize};
@@ -117,7 +120,17 @@ pub fn read_source_binding_registry_from_path(
     path: &std::path::Path,
 ) -> std::io::Result<SourceBindingRegistry> {
     let resolved = resolve_source_bindings_path(path);
-    let text = std::fs::read_to_string(&resolved)?;
+    let mut registry_file =
+        crate::io_safety::open_regular_file(&resolved, "source-binding registry").map_err(
+            |error| {
+                let kind = error
+                    .downcast_ref::<std::io::Error>()
+                    .map_or(std::io::ErrorKind::InvalidInput, std::io::Error::kind);
+                std::io::Error::new(kind, format!("{error:#}"))
+            },
+        )?;
+    let mut text = String::new();
+    registry_file.read_to_string(&mut text)?;
     SourceBindingRegistry::from_toml_str(&text)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }

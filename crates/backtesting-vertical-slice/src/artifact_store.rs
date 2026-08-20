@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeSet,
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Component, Path},
 };
 
 use ahash::AHashMap;
@@ -11,7 +11,7 @@ use object_store::{ObjectStore, ObjectStoreExt, PutMode, UpdateVersion, path::Pa
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::run_manifest::MarketStructureFixture;
+use crate::{io_safety::collect_regular_files, run_manifest::MarketStructureFixture};
 
 const CATALOG_PROJECTION_MANIFEST_SCHEMA_VERSION: &str = "catalog-projection-manifest-v1";
 
@@ -793,8 +793,7 @@ pub async fn persist_catalog_projection_for_source_binding(
         .binding_for(source_binding, expected_market_structure_fixture)?
         .clone();
     let catalog_root_uri = artifact_root.nt_catalog_projection_root(&binding.catalog_projection_id);
-    let mut file_paths = Vec::new();
-    collect_regular_files(local_catalog_root, local_catalog_root, &mut file_paths)?;
+    let file_paths = collect_regular_files(local_catalog_root, "catalog projection")?;
     ensure!(
         !file_paths.is_empty(),
         "local catalog projection root {} contains no files",
@@ -882,29 +881,6 @@ fn catalog_projection_manifest_sha256(objects: &[PersistedCatalogProjectionObjec
         .collect::<Vec<_>>();
     lines.sort();
     sha256_bytes(lines.concat().as_bytes())
-}
-
-fn collect_regular_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in fs::read_dir(dir).with_context(|| format!("read directory {}", dir.display()))? {
-        let entry =
-            entry.with_context(|| format!("read directory entry under {}", dir.display()))?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("read file type for {}", path.display()))?;
-        if file_type.is_dir() {
-            collect_regular_files(root, &path, files)?;
-        } else if file_type.is_file() {
-            files.push(path);
-        } else {
-            let relative = path.strip_prefix(root).unwrap_or(&path);
-            bail!(
-                "catalog projection contains non-regular file {}",
-                relative.display()
-            );
-        }
-    }
-    Ok(())
 }
 
 fn relative_catalog_object_key(path: &Path) -> Result<String> {

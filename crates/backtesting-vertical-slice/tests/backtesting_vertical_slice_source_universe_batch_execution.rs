@@ -17,6 +17,7 @@ use backtesting_vertical_slice::backfill_execution_plan::{
     BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
 };
 use backtesting_vertical_slice::operator::{RunSpec, RunSpecInstrumentIdentities};
+use backtesting_vertical_slice::source_proof::read_source_binding_registry_from_path;
 use backtesting_vertical_slice::source_universe_batch_execution::{
     CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
     SourceUniverseAdmittedControls, SourceUniverseBatchExecutionConfig,
@@ -30,6 +31,50 @@ use backtesting_vertical_slice::source_universe_execution_pack::{
     SourceUniverseExecutionPack, SourceUniverseExecutionPackRecord,
     SourceUniverseExecutionPackStatus,
 };
+
+#[cfg(unix)]
+struct OneShotFifoWriter {
+    opened: std::sync::mpsc::Receiver<()>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+#[cfg(unix)]
+impl OneShotFifoWriter {
+    fn start(path: &Path, bytes: Vec<u8>) -> Self {
+        let path = path.to_path_buf();
+        let (opened_tx, opened) = std::sync::mpsc::sync_channel(1);
+        let thread = std::thread::spawn(move || {
+            let mut writer = fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .expect("open FIFO writer");
+            opened_tx.send(()).expect("report opened FIFO writer");
+            std::io::Write::write_all(&mut writer, &bytes).expect("write FIFO payload");
+        });
+        Self { opened, thread }
+    }
+
+    fn finish(self, path: &Path) {
+        let cleanup_reader = match self.opened.try_recv() {
+            Ok(()) => None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                let cleanup_reader = fs::OpenOptions::new()
+                    .read(true)
+                    .open(path)
+                    .expect("open FIFO cleanup reader");
+                self.opened
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("FIFO writer opens for cleanup");
+                Some(cleanup_reader)
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                panic!("FIFO writer disconnected before opening")
+            }
+        };
+        self.thread.join().expect("FIFO writer exits");
+        drop(cleanup_reader);
+    }
+}
 
 #[test]
 fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
@@ -208,6 +253,176 @@ fn fifo_control_file_rejects_before_fetch_or_output_creation() {
         &pack_path,
         &temp_dir.path().join("batch-output"),
         "pinned accepted_tranche",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn fifo_execution_pack_rejects_before_fetch_or_output_creation() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, _, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, b"accepted object bytes".to_vec())]);
+    let policy = test_control_admission_policy(temp_dir.path());
+    fs::remove_file(&pack_path).expect("remove execution pack");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&pack_path)
+        .status()
+        .expect("create execution-pack FIFO");
+    assert!(status.success(), "mkfifo must create the test FIFO");
+    let fifo_writer = OneShotFifoWriter::start(&pack_path, b"not-json".to_vec());
+    let output_dir = temp_dir.path().join("batch-output");
+    let mut runner = RecordingRunner::default();
+
+    let result = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        None,
+        policy,
+        &mut NeverFetcher,
+        &mut runner,
+    );
+    fifo_writer.finish(&pack_path);
+    let error = result.expect_err("execution-pack FIFO must reject before parsing");
+    let error = format!("{error:#}");
+
+    assert!(error.contains("execution pack"), "{error}");
+    assert!(error.contains("is not a regular file"), "{error}");
+    assert!(!output_dir.exists(), "rejection must create no output");
+    assert!(runner.calls.is_empty(), "rejection must not run");
+}
+
+#[cfg(unix)]
+#[test]
+fn fifo_resume_report_rejects_before_fetch_or_output_creation() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, _, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, b"accepted object bytes".to_vec())]);
+    let resume_report = temp_dir.path().join("prior-report.json");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&resume_report)
+        .status()
+        .expect("create resume-report FIFO");
+    assert!(status.success(), "mkfifo must create the test FIFO");
+    let fifo_writer = OneShotFifoWriter::start(&resume_report, b"not-json".to_vec());
+    let output_dir = temp_dir.path().join("batch-output");
+    let mut runner = RecordingRunner::default();
+
+    let result = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
+            start_sequence: None,
+            record_limit: None,
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: Some(resume_report.clone()),
+        },
+        &mut NeverFetcher,
+        &mut runner,
+    );
+    fifo_writer.finish(&resume_report);
+    let error = result.expect_err("resume-report FIFO must reject before parsing");
+    let error = format!("{error:#}");
+
+    assert!(error.contains("resume report"), "{error}");
+    assert!(error.contains("is not a regular file"), "{error}");
+    assert!(!output_dir.exists(), "rejection must create no output");
+    assert!(runner.calls.is_empty(), "rejection must not run");
+}
+
+#[cfg(unix)]
+#[test]
+fn standalone_registry_loader_rejects_fifo_before_parsing() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let registry_path = temp_dir.path().join("source-bindings.toml");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&registry_path)
+        .status()
+        .expect("create source-bindings FIFO");
+    assert!(status.success(), "mkfifo must create the test FIFO");
+    let fifo_writer = OneShotFifoWriter::start(&registry_path, b"not-toml".to_vec());
+
+    let result = read_source_binding_registry_from_path(&registry_path);
+    fifo_writer.finish(&registry_path);
+    let error = result.expect_err("source-bindings FIFO must reject before parsing");
+    let error = format!("{error:#}");
+
+    assert!(error.contains("source-binding registry"), "{error}");
+    assert!(error.contains("is not a regular file"), "{error}");
+}
+
+#[test]
+fn missing_outer_inputs_retain_path_specific_error_context() {
+    let pack_temp_dir = tempfile::tempdir().expect("pack temp dir");
+    let (pack_path, _, _, _) = write_control_admission_fixture(
+        pack_temp_dir.path(),
+        &[(0, b"accepted object bytes".to_vec())],
+    );
+    let policy = test_control_admission_policy(pack_temp_dir.path());
+    fs::remove_file(&pack_path).expect("remove execution pack");
+    let pack_error = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &pack_temp_dir.path().join("batch-output"),
+        None,
+        policy,
+        &mut NeverFetcher,
+        &mut RecordingRunner::default(),
+    )
+    .expect_err("missing execution pack must reject");
+    let pack_error = format!("{pack_error:#}");
+    assert!(pack_error.contains("open execution pack"), "{pack_error}");
+    assert!(
+        pack_error.contains(pack_path.to_string_lossy().as_ref()),
+        "{pack_error}"
+    );
+
+    let resume_temp_dir = tempfile::tempdir().expect("resume temp dir");
+    let (pack_path, _, _, _) = write_control_admission_fixture(
+        resume_temp_dir.path(),
+        &[(0, b"accepted object bytes".to_vec())],
+    );
+    let resume_report = resume_temp_dir.path().join("missing-resume-report.json");
+    let resume_error = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &resume_temp_dir.path().join("batch-output"),
+        SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(resume_temp_dir.path()),
+            start_sequence: None,
+            record_limit: None,
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: Some(resume_report.clone()),
+        },
+        &mut NeverFetcher,
+        &mut RecordingRunner::default(),
+    )
+    .expect_err("missing resume report must reject");
+    let resume_error = format!("{resume_error:#}");
+    assert!(
+        resume_error.contains("open resume report"),
+        "{resume_error}"
+    );
+    assert!(
+        resume_error.contains(resume_report.to_string_lossy().as_ref()),
+        "{resume_error}"
+    );
+
+    let registry_path = resume_temp_dir.path().join("missing-source-bindings.toml");
+    let registry_error = read_source_binding_registry_from_path(&registry_path)
+        .expect_err("missing standalone registry must reject");
+    let registry_error = format!("{registry_error:#}");
+    assert!(
+        registry_error.contains("open source-binding registry"),
+        "{registry_error}"
+    );
+    assert!(
+        registry_error.contains(registry_path.to_string_lossy().as_ref()),
+        "{registry_error}"
     );
 }
 

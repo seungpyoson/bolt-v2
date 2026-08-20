@@ -34,7 +34,10 @@ use crate::catalog_projection::logical_catalog_hash;
 use crate::conversion_boundary::{
     CATALOG_METADATA_FILE, CATALOG_METADATA_VERSION, ConversionCatalogMetadata,
 };
-use crate::io_safety::{ByteLimit, ensure_within_limit, open_regular_file, read_to_vec_with_limit};
+use crate::io_safety::{
+    ByteLimit, collect_regular_files, ensure_within_limit, open_regular_file,
+    read_to_vec_with_limit,
+};
 use crate::path_resolution::resolve_existing_path;
 use crate::source_proof::{SourceBindingRegistry, resolve_source_bindings_path};
 use crate::{
@@ -764,7 +767,10 @@ fn prepare_batch(
         );
     }
 
-    let pack_bytes = fs::read(execution_pack_path)
+    let mut execution_pack_file = open_regular_file(execution_pack_path, "execution pack")?;
+    let mut pack_bytes = Vec::new();
+    execution_pack_file
+        .read_to_end(&mut pack_bytes)
         .with_context(|| format!("read execution pack {}", execution_pack_path.display()))?;
     let pack: SourceUniverseExecutionPack = serde_json::from_slice(&pack_bytes)
         .with_context(|| format!("parse execution pack {}", execution_pack_path.display()))?;
@@ -1442,11 +1448,15 @@ fn verified_carried_output(
     if !catalog_root.is_dir() {
         return None;
     }
+    collect_regular_files(&catalog_root, "prior catalog").ok()?;
     let actual_catalog_hash = logical_catalog_hash(&catalog_root).ok()?;
     if actual_catalog_hash != prior.catalog_hash {
         return None;
     }
-    let metadata_bytes = fs::read(prior.output_dir.join(CATALOG_METADATA_FILE)).ok()?;
+    let metadata_path = prior.output_dir.join(CATALOG_METADATA_FILE);
+    let mut metadata_file = open_regular_file(&metadata_path, "prior catalog metadata").ok()?;
+    let mut metadata_bytes = Vec::new();
+    metadata_file.read_to_end(&mut metadata_bytes).ok()?;
     let catalog_metadata_sha256 = hex::encode(Sha256::digest(&metadata_bytes));
     if catalog_metadata_sha256 != prior.catalog_metadata_sha256 {
         return None;
@@ -1485,7 +1495,10 @@ fn load_resume_records(
     let Some(resume_report) = resume_report else {
         return Ok(BTreeMap::new());
     };
-    let prior_bytes = fs::read(resume_report)
+    let mut resume_report_file = open_regular_file(resume_report, "resume report")?;
+    let mut prior_bytes = Vec::new();
+    resume_report_file
+        .read_to_end(&mut prior_bytes)
         .with_context(|| format!("read resume report {}", resume_report.display()))?;
     let prior: SourceUniverseBatchExecutionReport = serde_json::from_slice(&prior_bytes)
         .with_context(|| format!("parse resume report {}", resume_report.display()))?;
@@ -1759,6 +1772,50 @@ fn failure_record(
 mod tests {
     use super::*;
     use crate::source_universe_execution_pack::SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION;
+
+    #[cfg(unix)]
+    struct OneShotFifoWriter {
+        opened: std::sync::mpsc::Receiver<()>,
+        thread: std::thread::JoinHandle<()>,
+    }
+
+    #[cfg(unix)]
+    impl OneShotFifoWriter {
+        fn start(path: &Path, bytes: Vec<u8>) -> Self {
+            let path = path.to_path_buf();
+            let (opened_tx, opened) = std::sync::mpsc::sync_channel(1);
+            let thread = std::thread::spawn(move || {
+                let mut writer = fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .expect("open FIFO writer");
+                opened_tx.send(()).expect("report opened FIFO writer");
+                std::io::Write::write_all(&mut writer, &bytes).expect("write FIFO payload");
+            });
+            Self { opened, thread }
+        }
+
+        fn finish(self, path: &Path) {
+            let cleanup_reader = match self.opened.try_recv() {
+                Ok(()) => None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    let cleanup_reader = fs::OpenOptions::new()
+                        .read(true)
+                        .open(path)
+                        .expect("open FIFO cleanup reader");
+                    self.opened
+                        .recv_timeout(Duration::from_secs(1))
+                        .expect("FIFO writer opens for cleanup");
+                    Some(cleanup_reader)
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    panic!("FIFO writer disconnected before opening")
+                }
+            };
+            self.thread.join().expect("FIFO writer exits");
+            drop(cleanup_reader);
+        }
+    }
 
     /// Inner fetcher double for cache-repair unit tests; must never be called.
     struct PanicFetcher;
@@ -2050,6 +2107,65 @@ mod tests {
         assert!(
             !carried_output_still_verifies(&record),
             "changed catalog metadata bytes must force re-execution"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plan_reexecutes_carried_record_with_fifo_catalog_metadata() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("operator-run-carried");
+        copy_reference_output(&output_dir);
+        let record =
+            carried_record_with_output(output_dir.clone(), committed_reference_catalog_hash());
+        let metadata_path = output_dir.join(CATALOG_METADATA_FILE);
+        let metadata_bytes = fs::read(&metadata_path).expect("read copied catalog metadata");
+        fs::remove_file(&metadata_path).expect("remove copied catalog metadata");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&metadata_path)
+            .status()
+            .expect("create catalog-metadata FIFO");
+        assert!(status.success(), "mkfifo must create the test FIFO");
+        let fifo_writer = OneShotFifoWriter::start(&metadata_path, metadata_bytes);
+
+        let owned_plan = owned_plan_with_carry(&record);
+        let plan = owned_plan.plan();
+        fifo_writer.finish(&metadata_path);
+
+        assert!(
+            matches!(
+                plan.work_items.as_slice(),
+                [BatchWorkItem::NeedsWork { .. }]
+            ),
+            "special catalog metadata must force fresh execution even when its bytes match"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plan_reexecutes_carried_record_with_catalog_tree_symlink() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().join("operator-run-carried");
+        copy_reference_output(&output_dir);
+        let record =
+            carried_record_with_output(output_dir.clone(), committed_reference_catalog_hash());
+        let outside = temp_dir.path().join("outside");
+        fs::create_dir(&outside).expect("create symlink target");
+        std::os::unix::fs::symlink(
+            &outside,
+            output_dir.join(CATALOG_DIR).join("linked-catalog"),
+        )
+        .expect("plant catalog-tree symlink");
+
+        let owned_plan = owned_plan_with_carry(&record);
+        let plan = owned_plan.plan();
+
+        assert!(
+            matches!(
+                plan.work_items.as_slice(),
+                [BatchWorkItem::NeedsWork { .. }]
+            ),
+            "a non-regular catalog-tree entry must force fresh execution"
         );
     }
 

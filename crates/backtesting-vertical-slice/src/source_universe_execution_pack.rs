@@ -8,7 +8,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -173,6 +173,211 @@ pub struct SourceUniverseExecutionPack {
     pub artifact_refs: Vec<ReferenceArtifactPin>,
     pub records: Vec<SourceUniverseExecutionPackRecord>,
     pub blocking_reasons: Vec<String>,
+}
+
+/// Validate the self-contained execution-pack contract at every consume boundary.
+pub fn validate_source_universe_execution_pack(pack: &SourceUniverseExecutionPack) -> Result<()> {
+    ensure!(
+        pack.schema_version == SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION,
+        "execution pack schema_version mismatch: expected {}, got {}",
+        SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION,
+        pack.schema_version
+    );
+    for (name, value) in [
+        ("pack_id", pack.pack_id.as_str()),
+        ("work_order_id", pack.work_order_id.as_str()),
+        ("input_id", pack.input_id.as_str()),
+        ("gate_id", pack.gate_id.as_str()),
+        (
+            "conversion_run_plan_id",
+            pack.conversion_run_plan_id.as_str(),
+        ),
+        ("universe_id", pack.universe_id.as_str()),
+        ("venue", pack.venue.as_str()),
+        ("source", pack.source.as_str()),
+        ("family", pack.family.as_str()),
+        ("table_family", pack.table_family.as_str()),
+    ] {
+        ensure!(
+            !value.trim().is_empty(),
+            "execution pack {name} must not be empty"
+        );
+    }
+
+    let record_count =
+        u64::try_from(pack.records.len()).context("execution pack record count exceeds u64")?;
+    ensure!(
+        pack.materialized_record_count == record_count,
+        "execution pack materialized_record_count {} does not match records length {record_count}",
+        pack.materialized_record_count
+    );
+    ensure!(
+        pack.selected_record_count == pack.materialized_record_count,
+        "execution pack selected_record_count {} does not match materialized_record_count {}",
+        pack.selected_record_count,
+        pack.materialized_record_count
+    );
+    let planned_object_count = pack
+        .executable_record_count
+        .checked_add(pack.withheld_record_count)
+        .context("execution pack planned object count overflow")?;
+    ensure!(
+        pack.planned_object_count == planned_object_count,
+        "execution pack planned_object_count {} does not match executable plus withheld count {planned_object_count}",
+        pack.planned_object_count
+    );
+    let skipped_executable_record_count = pack
+        .executable_record_count
+        .checked_sub(pack.materialized_record_count)
+        .context("execution pack materialized records exceed executable records")?;
+    ensure!(
+        pack.skipped_executable_record_count == skipped_executable_record_count,
+        "execution pack skipped_executable_record_count {} does not match executable minus materialized count {skipped_executable_record_count}",
+        pack.skipped_executable_record_count
+    );
+    let materialized_source_bytes = pack.records.iter().try_fold(0_u64, |total, record| {
+        total
+            .checked_add(record.selected_object_bytes)
+            .context("execution pack materialized source byte total overflow")
+    })?;
+    ensure!(
+        pack.materialized_source_bytes == materialized_source_bytes,
+        "execution pack materialized_source_bytes {} does not match record byte total {materialized_source_bytes}",
+        pack.materialized_source_bytes
+    );
+    if pack.skipped_executable_record_count == 0 {
+        ensure!(
+            pack.executable_source_bytes == pack.materialized_source_bytes,
+            "execution pack executable_source_bytes must equal materialized_source_bytes when no executable records were skipped"
+        );
+    } else {
+        ensure!(
+            pack.executable_source_bytes > pack.materialized_source_bytes,
+            "execution pack executable_source_bytes must exceed materialized_source_bytes when executable records were skipped"
+        );
+    }
+
+    let mut sequences = BTreeSet::new();
+    let mut work_item_ids = BTreeSet::new();
+    let mut operator_run_ids = BTreeSet::new();
+    let mut accepted_tranche_ids = BTreeSet::new();
+    for record in &pack.records {
+        for (name, value) in [
+            ("work_item_id", record.work_item_id.as_str()),
+            ("operator_run_id", record.operator_run_id.as_str()),
+            ("source_binding", record.source_binding.as_str()),
+            ("category", record.category.as_str()),
+            ("symbol", record.symbol.as_str()),
+            ("archive_date", record.archive_date.as_str()),
+            ("source_uri", record.source_uri.as_str()),
+            ("source_url", record.source_url.as_str()),
+            ("source_proof_id", record.source_proof_id.as_str()),
+            ("accepted_tranche_id", record.accepted_tranche_id.as_str()),
+            ("output_prefix", record.output_prefix.as_str()),
+        ] {
+            ensure!(
+                !value.trim().is_empty(),
+                "execution pack record {name} must not be empty"
+            );
+        }
+        for (name, path) in [
+            ("run_spec_path", record.run_spec_path.as_path()),
+            (
+                "accepted_tranche_path",
+                record.accepted_tranche_path.as_path(),
+            ),
+            ("execution_plan_path", record.execution_plan_path.as_path()),
+        ] {
+            ensure!(
+                !path.as_os_str().is_empty(),
+                "execution pack record {name} must not be empty"
+            );
+        }
+        ensure!(
+            record.source_proof_version > 0,
+            "execution pack record source_proof_version must be positive"
+        );
+        ensure!(
+            record.selected_object_bytes > 0,
+            "execution pack record selected_object_bytes must be positive"
+        );
+        validate_single_path_component("operator_run_id", &record.operator_run_id)?;
+        ensure!(
+            sequences.insert(record.sequence),
+            "execution pack contains duplicate record sequence {}",
+            record.sequence
+        );
+        ensure!(
+            work_item_ids.insert(record.work_item_id.as_str()),
+            "execution pack contains duplicate work_item_id {}",
+            record.work_item_id
+        );
+        ensure!(
+            operator_run_ids.insert(record.operator_run_id.as_str()),
+            "execution pack contains duplicate operator_run_id {}",
+            record.operator_run_id
+        );
+        ensure!(
+            accepted_tranche_ids.insert(record.accepted_tranche_id.as_str()),
+            "execution pack contains duplicate accepted_tranche_id {}",
+            record.accepted_tranche_id
+        );
+    }
+
+    match pack.status {
+        SourceUniverseExecutionPackStatus::Ready => {
+            ensure!(
+                record_count > 0,
+                "ready execution pack must contain records"
+            );
+            ensure!(
+                pack.withheld_record_count == 0 && pack.skipped_executable_record_count == 0,
+                "ready execution pack must not withhold or skip executable records"
+            );
+            ensure!(
+                pack.blocking_reasons.is_empty(),
+                "ready execution pack must not contain blocking reasons"
+            );
+        }
+        SourceUniverseExecutionPackStatus::PartiallyReady => {
+            ensure!(
+                record_count > 0,
+                "partially ready execution pack must contain records"
+            );
+            ensure!(
+                pack.withheld_record_count > 0 || pack.skipped_executable_record_count > 0,
+                "partially ready execution pack must withhold or skip at least one record"
+            );
+            ensure!(
+                !pack.blocking_reasons.is_empty(),
+                "partially ready execution pack must explain its blocking reasons"
+            );
+        }
+        SourceUniverseExecutionPackStatus::Blocked => {
+            ensure!(
+                record_count == 0,
+                "blocked execution pack must not contain executable records"
+            );
+            ensure!(
+                !pack.blocking_reasons.is_empty(),
+                "blocked execution pack must explain its blocking reasons"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_single_path_component(name: &str, value: &str) -> Result<()> {
+    let mut components = Path::new(value).components();
+    ensure!(
+        !value.as_bytes().contains(&0)
+            && !value.contains('/')
+            && !value.contains('\\')
+            && matches!(components.next(), Some(Component::Normal(_)))
+            && components.next().is_none(),
+        "{name} must be a single normal path component"
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -534,6 +739,7 @@ pub fn write_source_universe_execution_pack(
         records: materialized_records,
         blocking_reasons,
     };
+    validate_source_universe_execution_pack(&pack)?;
 
     let pack_path = output_dir.join(SOURCE_UNIVERSE_EXECUTION_PACK_FILE);
     let rewrite = if spec.overwrite_existing_artifacts {

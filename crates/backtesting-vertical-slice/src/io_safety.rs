@@ -6,7 +6,12 @@
 //! before the excess bytes are ever loaded.
 
 use anyhow::{Context, Result, ensure};
-use std::{fmt::Display, fs, io::Read, path::Path};
+use std::{
+    fmt::Display,
+    fs::{self, File},
+    io::Read,
+    path::Path,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ByteLimit {
@@ -40,25 +45,63 @@ pub fn ensure_within_limit(label: impl Display, size: u64, limit: ByteLimit) -> 
     Ok(())
 }
 
+/// Open a regular file without first blocking on a special-file open.
+///
+/// The path-level check rejects static FIFOs and other special files before
+/// [`File::open`]. The descriptor-level check preserves the invariant after
+/// opening and catches ordinary path replacement races.
+pub fn open_regular_file(path: &Path, label: impl Display) -> Result<File> {
+    let label = label.to_string();
+    let path_metadata =
+        fs::metadata(path).with_context(|| format!("open {label} {}", path.display()))?;
+    ensure!(
+        path_metadata.is_file(),
+        "{label} {} is not a regular file",
+        path.display()
+    );
+    let file = File::open(path).with_context(|| format!("open {label} {}", path.display()))?;
+    let opened_metadata = file
+        .metadata()
+        .with_context(|| format!("inspect opened {label} {}", path.display()))?;
+    ensure!(
+        opened_metadata.is_file(),
+        "opened {label} {} is not a regular file",
+        path.display()
+    );
+    Ok(file)
+}
+
 pub fn read_file_with_limit(path: &Path, limit: ByteLimit) -> Result<Vec<u8>> {
-    let metadata =
-        fs::metadata(path).with_context(|| format!("get metadata for {}", path.display()))?;
+    let file = open_regular_file(path, "bounded input")?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("get metadata for {}", path.display()))?;
     ensure_within_limit(path.display(), metadata.len(), limit)?;
-    fs::read(path).with_context(|| format!("read {}", path.display()))
+    read_to_vec_with_limit(file, limit, format!("read {}", path.display()))
 }
 
 pub fn read_to_vec_with_limit<R: Read>(
-    reader: R,
+    mut reader: R,
     limit: ByteLimit,
     context: impl Display,
 ) -> Result<Vec<u8>> {
-    let mut limited = reader.take(limit.max_bytes().saturating_add(1));
+    let mut limited = reader.by_ref().take(limit.max_bytes());
     let mut bytes = Vec::new();
-    let read = limited
+    limited
         .read_to_end(&mut bytes)
         .with_context(|| context.to_string())?;
-    let read = u64::try_from(read).context("read byte count exceeds u64")?;
-    ensure_within_limit(context, read, limit)?;
+    let mut excess = [0_u8; 1];
+    let excess_bytes = loop {
+        match reader.read(&mut excess) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => break result.with_context(|| context.to_string())?,
+        }
+    };
+    ensure!(
+        excess_bytes == 0,
+        "{context} exceeds configured byte limit {}",
+        limit.max_bytes()
+    );
     Ok(bytes)
 }
 
@@ -74,8 +117,27 @@ pub fn read_to_string_with_limit<R: Read>(
 
 #[cfg(test)]
 mod tests {
-    use super::{ByteLimit, read_file_with_limit, read_to_string_with_limit};
-    use std::io::Cursor;
+    use super::{
+        ByteLimit, open_regular_file, read_file_with_limit, read_to_string_with_limit,
+        read_to_vec_with_limit,
+    };
+    use std::{
+        cell::RefCell,
+        io::{Cursor, Read},
+        rc::Rc,
+    };
+
+    struct RecordingReader {
+        bytes: Cursor<Vec<u8>>,
+        requested_reads: Rc<RefCell<Vec<usize>>>,
+    }
+
+    impl Read for RecordingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.requested_reads.borrow_mut().push(buffer.len());
+            self.bytes.read(buffer)
+        }
+    }
 
     #[test]
     fn read_file_with_limit_rejects_metadata_larger_than_limit() {
@@ -92,6 +154,26 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_file_rejects_fifo_before_opening() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("control.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("create FIFO");
+        assert!(status.success(), "mkfifo must create the test FIFO");
+
+        let err = open_regular_file(&path, "pinned control")
+            .expect_err("a FIFO must be rejected without opening it");
+
+        assert!(
+            format!("{err:#}").contains("is not a regular file"),
+            "{err:#}"
+        );
+    }
+
     #[test]
     fn read_to_string_with_limit_rejects_stream_larger_than_limit() {
         let err = read_to_string_with_limit(
@@ -104,6 +186,32 @@ mod tests {
         assert!(
             format!("{err:#}").contains("exceeds configured byte limit"),
             "{err:#}"
+        );
+    }
+
+    #[test]
+    fn oversized_stream_is_probed_without_retaining_a_limit_plus_one_buffer() {
+        let requested_reads = Rc::new(RefCell::new(Vec::new()));
+        let reader = RecordingReader {
+            bytes: Cursor::new(b"abcdef".to_vec()),
+            requested_reads: Rc::clone(&requested_reads),
+        };
+
+        let err =
+            read_to_vec_with_limit(reader, ByteLimit::new(5).expect("limit"), "bounded fixture")
+                .expect_err("one byte over the limit must reject");
+
+        assert!(
+            format!("{err:#}").contains("exceeds configured byte limit"),
+            "{err:#}"
+        );
+        assert!(
+            requested_reads
+                .borrow()
+                .iter()
+                .all(|requested| *requested <= 5),
+            "the retained read must never request a limit-plus-one buffer: {:?}",
+            requested_reads.borrow()
         );
     }
 }

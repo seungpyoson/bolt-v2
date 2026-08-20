@@ -19,10 +19,10 @@
 //! (`F_SNAPSHOT`) followed by one `ADD` per level (bids then asks, each
 //! `F_SNAPSHOT`); the final row of the photo additionally carries `F_LAST` to
 //! close the book event. An empty photo (no levels on either side) collapses to
-//! a lone `CLEAR` carrying `F_SNAPSHOT | F_LAST`. This periodic-photo adapter
-//! retains its historical collapse of consecutive empty photos; the shared
-//! canonical contract also supports preserving them as distinct closed source
-//! events when an adapter owns source-event identity.
+//! a lone `CLEAR` carrying `F_SNAPSHOT | F_MBP | F_LAST`. This periodic-photo
+//! adapter retains its historical collapse of consecutive empty photos; the
+//! shared canonical contract also supports preserving them as distinct closed
+//! source events when an adapter owns source-event identity.
 //!
 //! This slice implements the periodic-full-snapshot wire shape
 //! ([`DeltaSourceFormat::Snapshot`]) over two container entry points that share
@@ -297,7 +297,7 @@ pub enum DeltaPriceSignPolicy {
 /// How empty (no-level) photos are represented.
 ///
 /// This slice supports only [`EmptyBookPolicy::LoneClearLast`]: an empty photo
-/// becomes a single `CLEAR` carrying `F_SNAPSHOT | F_LAST`. This legacy
+/// becomes a single `CLEAR` carrying `F_SNAPSHOT | F_MBP | F_LAST`. This legacy
 /// periodic-photo converter collapses runs of consecutive empty photos.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -98,8 +98,9 @@ impl DeltaSide {
 ///
 /// The provenance prefix mirrors
 /// [`super::canonical_trades::CanonicalTradeRow`] exactly; the payload fields
-/// (`event_time`, `action`, `side`, `price`, `size`, `order_id`, `flags`,
-/// `sequence`) describe a single NautilusTrader `OrderBookDelta`.
+/// (`event_time`, `action`, `side`, `price`, `size`, `order_id`, and `flags`)
+/// describe a single NautilusTrader `OrderBookDelta`. `sequence` is canonical
+/// audit ordering; NT sequence comes from `source_sequence` when available.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalOrderBookDeltaRow {
     pub schema_version: String,

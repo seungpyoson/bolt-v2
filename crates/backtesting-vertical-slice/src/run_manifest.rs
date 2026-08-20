@@ -2989,10 +2989,10 @@ fn ensure_unsupported_nt_catalog_query_surfaces_absent(
 
 /// Role a data type plays in a fidelity class's admittance set.
 ///
-/// `Primary` means the type satisfies the fidelity class's mandatory-presence
-/// requirement (a run under that class must carry at least one input of the
-/// primary type). `Auxiliary` means the type is admissible alongside a primary
-/// but does not by itself satisfy the fidelity class.
+/// `Primary` means the type satisfies the fidelity class's primary-position
+/// requirement (a run under that class must carry the primary type as its first
+/// input). `Auxiliary` means the type is admissible after that primary but does
+/// not by itself satisfy the fidelity class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdmittanceRole {
     Primary,
@@ -3457,8 +3457,9 @@ fn ensure_catalog_inputs_match_fidelity(
 
 /// Fail-loud fence coupling order-book-delta inputs to an L2 book type.
 ///
-/// bolt's converter emits L2 (MBP) order-book deltas flagged `F_LAST` only, with
-/// no per-order (`F_MBP`) identity — every level change carries `order_id == 0`.
+/// bolt's converter emits L2 (MBP) order-book deltas with no per-order/MBO
+/// identity: `F_MBP` marks the price-level semantics and every canonical level
+/// change carries `order_id == 0`.
 /// Under NT's `BookType::L3_MBO` (or any non-L2 book type) those `order_id == 0`
 /// UPDATE/DELETE rows collapse onto a single phantom order, silently corrupting
 /// the book with nothing failing loud at run time. The `(data_type, fidelity)`

@@ -1124,14 +1124,16 @@ fn ensure_clean_catalog_root(catalog_root: &Path) -> Result<()> {
 ///
 /// `CLEAR` rows become `OrderBookDelta::clear` deltas carrying the row's flags;
 /// `ADD`/`UPDATE`/`DELETE` rows build a price-keyed `BookOrder` (order_id from
-/// the row, `0` for L2/MBP levels) under the matching `BookAction`. Flags,
-/// sequence, and timestamps are carried verbatim from the canonical rows, which
-/// the table's `validate()` has already proven dense and well-formed.
+/// the row, `0` for L2/MBP levels) under the matching `BookAction`. Flags and
+/// timestamps are carried from the canonical rows. NT sequence is parsed from
+/// the venue-native `source_sequence`, or set to `0` when unavailable; the
+/// canonical `sequence` remains only the dense audit row ordinal.
 ///
 /// # Errors
 ///
 /// Returns an error if a price/size cannot be represented at the instrument
-/// precision, a side/action token is unknown, or an event time is negative.
+/// precision, a side/action token is unknown, the native source sequence is not
+/// numeric, or an event time is negative.
 pub fn canonical_rows_to_order_book_deltas<I: Instrument + ?Sized>(
     table: &CanonicalOrderBookDeltasTable,
     instrument: &I,

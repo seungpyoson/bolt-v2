@@ -1,8 +1,11 @@
-use std::fs;
+use std::{fs, process::Command};
 
 use backtesting_vertical_slice::{
     source_proof::{
-        CONTRACT_VERSION, SOURCE_PROOF_SCHEMA_VERSION, SourceBindingRegistry, SourceProofReport,
+        CONTRACT_VERSION, RESEARCH_SOURCE_POLICY_CANDIDATE_SCHEMA_VERSION,
+        ResearchSourcePolicyCandidate, SOURCE_PROOF_SCHEMA_VERSION, SourceBindingRegistry,
+        SourceCandidateClass, SourceEvidenceState, SourceProofReport, StagedResearchSourceStatus,
+        stage_research_source_registration, validate_source_evidence_transition,
     },
     source_proof_admissibility::{
         SOURCE_PROOF_ADMISSIBILITY_REPORT_FILE, SourceProofAdmissibilityIssue,
@@ -572,4 +575,251 @@ path = "{}"
             .expect("parse report");
     assert_eq!(report.report_id, "source-proof-admissibility-spec");
     assert_eq!(report.summary.non_current_contract_records, 1);
+}
+
+fn research_source_candidate_json(candidate_class: &str) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": RESEARCH_SOURCE_POLICY_CANDIDATE_SCHEMA_VERSION,
+        "source_candidate_id": "research-source-a",
+        "registry_binding": "pump-research-source-register",
+        "dataset_product_version": {
+            "dataset_id": "dataset-a",
+            "product_name": "historical-market-data",
+            "version": "2025-01"
+        },
+        "source_candidate_class": candidate_class,
+        "upstream_provenance": {
+            "upstream_sources": ["venue-public-archive"],
+            "transformations": ["lossless-normalization-v1"]
+        },
+        "query_and_fields": {
+            "query_contract": "archive-object-list-v1",
+            "fields": ["event_time", "instrument_id", "price", "quantity"]
+        },
+        "requested_coverage": {
+            "venue_keys": ["venue-a"],
+            "instrument_scope": "enumerated-roster-r",
+            "start_time": "2025-01-01T00:00:00Z",
+            "end_time": "2025-03-01T00:00:00Z",
+            "gap_semantics": "missing-object-is-unknown-coverage"
+        },
+        "rights_packet": {
+            "query": {"status": "permitted", "evidence_ref": "rights://query"},
+            "download": {"status": "permitted", "evidence_ref": "rights://download"},
+            "cache": {"status": "permitted", "evidence_ref": "rights://cache"},
+            "post_termination_retention": {"status": "permitted", "evidence_ref": "rights://retention"},
+            "derived_data": {"status": "permitted", "evidence_ref": "rights://derived"},
+            "collaboration": {"status": "permitted", "evidence_ref": "rights://collaboration"},
+            "publication": {"status": "permitted", "evidence_ref": "rights://publication"},
+            "attribution": {"status": "required", "evidence_ref": "rights://attribution"},
+            "upstream_rights": {"status": "permitted", "evidence_ref": "rights://upstream"}
+        },
+        "fidelity_requirements": [
+            "timestamp_semantics",
+            "sequence_continuity",
+            "snapshot_reset_semantics",
+            "disconnect_semantics",
+            "raw_payload_replay",
+            "completeness_measurement",
+            "correction_tracking",
+            "nautilus_mapping"
+        ],
+        "cost_status": {
+            "kind": "zero_cost_verified",
+            "evidence_ref": "cost://zero"
+        },
+        "reviewer": "source-reviewer",
+        "decision_time": "2024-12-01T00:00:00Z",
+        "expiry_time": "2025-04-01T00:00:00Z",
+        "allowed_claims": ["retrospective_episode_detection"],
+        "forbidden_claims": ["execution_quality"]
+    })
+}
+
+fn research_source_candidate(candidate_class: &str) -> ResearchSourcePolicyCandidate {
+    serde_json::from_value(research_source_candidate_json(candidate_class))
+        .expect("strict research source policy candidate")
+}
+
+#[test]
+fn free_and_paid_sources_face_the_same_rights_fidelity_and_expiry_gates() {
+    let mut errors = Vec::new();
+    for candidate_class in ["official_free", "paid_vendor"] {
+        let mut value = research_source_candidate_json(candidate_class);
+        value["rights_packet"]["download"]["evidence_ref"] = serde_json::json!("");
+        let candidate: ResearchSourcePolicyCandidate =
+            serde_json::from_value(value).expect("strict source candidate");
+        errors.push(
+            stage_research_source_registration(&candidate)
+                .expect_err("missing rights evidence must fail")
+                .to_string(),
+        );
+    }
+    assert_eq!(errors[0], errors[1]);
+}
+
+#[test]
+fn nominally_free_pilots_require_separate_authorization_and_never_spend() {
+    let mut value = research_source_candidate_json("official_free");
+    value["cost_status"] = serde_json::json!({
+        "kind": "nominally_free_pilot",
+        "evidence_ref": "cost://nominally-free",
+        "authorization_ref": null
+    });
+    let candidate: ResearchSourcePolicyCandidate =
+        serde_json::from_value(value).expect("source candidate");
+    assert!(
+        stage_research_source_registration(&candidate)
+            .unwrap_err()
+            .to_string()
+            .contains("authorization")
+    );
+
+    let staged = stage_research_source_registration(&research_source_candidate("official_free"))
+        .expect("zero-cost source policy");
+    assert_eq!(staged.provider_calls(), 0);
+    assert_eq!(staged.incremental_provider_spend_usd(), "0");
+    assert_eq!(
+        staged.status(),
+        StagedResearchSourceStatus::PolicyOnlyPendingGenesis
+    );
+    assert!(!staged.confirmatory_eligible());
+}
+
+#[test]
+fn pre_genesis_policy_wire_cannot_carry_e0_metadata_or_claim_admission() {
+    let mut candidate = research_source_candidate_json("official_free");
+    candidate["retained_artifacts"] = serde_json::json!([{
+        "artifact_uri": "s3://forbidden/e0.bin",
+        "content_hash": "a".repeat(64),
+        "representation": "exact_raw"
+    }]);
+    assert!(serde_json::from_value::<ResearchSourcePolicyCandidate>(candidate).is_err());
+
+    let mut measured_coverage = research_source_candidate_json("official_free");
+    measured_coverage["requested_coverage"]["gap_evidence_refs"] =
+        serde_json::json!(["evidence://prospective-gap"]);
+    assert!(serde_json::from_value::<ResearchSourcePolicyCandidate>(measured_coverage).is_err());
+
+    let mut measured_fidelity = research_source_candidate_json("official_free");
+    measured_fidelity["fidelity_requirements"] = serde_json::json!({
+        "timestamp_evidence_ref": "fidelity://prospective-timestamp"
+    });
+    assert!(serde_json::from_value::<ResearchSourcePolicyCandidate>(measured_fidelity).is_err());
+
+    let staged = stage_research_source_registration(&research_source_candidate("official_free"))
+        .expect("policy staging");
+    assert_eq!(
+        staged.status(),
+        StagedResearchSourceStatus::PolicyOnlyPendingGenesis
+    );
+    assert!(!staged.confirmatory_eligible());
+}
+
+#[test]
+fn source_evidence_lifecycle_is_one_way_and_separate_from_storage_lifecycle() {
+    validate_source_evidence_transition(
+        SourceEvidenceState::Active,
+        SourceEvidenceState::Quarantined,
+    )
+    .expect("quarantine");
+    validate_source_evidence_transition(
+        SourceEvidenceState::Quarantined,
+        SourceEvidenceState::Revoked,
+    )
+    .expect("revoke");
+    assert!(
+        validate_source_evidence_transition(
+            SourceEvidenceState::Quarantined,
+            SourceEvidenceState::Active
+        )
+        .is_err()
+    );
+    assert!(
+        validate_source_evidence_transition(
+            SourceEvidenceState::Expired,
+            SourceEvidenceState::Active
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn staged_registration_rejects_e0_bytes_and_metadata_before_genesis() {
+    let summary = stage_research_source_registration(&research_source_candidate("official_free"))
+        .expect("policy-only staging");
+    assert_eq!(summary.provider_calls(), 0);
+    assert_eq!(summary.incremental_provider_spend_usd(), "0");
+    assert_eq!(summary.source_candidate_id(), "research-source-a");
+    assert_eq!(
+        summary.source_candidate_class(),
+        SourceCandidateClass::OfficialFree
+    );
+}
+
+#[test]
+fn staged_source_hash_canonicalizes_sets_but_preserves_transform_order() {
+    let candidate = research_source_candidate("official_free");
+    let first = stage_research_source_registration(&candidate).expect("source staging");
+    let mut reordered = candidate.clone();
+    reordered.query_and_fields.fields.reverse();
+    reordered.upstream_provenance.upstream_sources.reverse();
+    reordered.allowed_claims.reverse();
+    let second = stage_research_source_registration(&reordered).expect("source staging");
+    assert_eq!(first.semantic_hash(), second.semantic_hash());
+    let mut reordered_transforms = candidate;
+    reordered_transforms.upstream_provenance.transformations =
+        vec!["second".to_string(), "first".to_string()];
+    let second_order =
+        stage_research_source_registration(&reordered_transforms).expect("ordered transformations");
+    reordered_transforms
+        .upstream_provenance
+        .transformations
+        .reverse();
+    let first_order =
+        stage_research_source_registration(&reordered_transforms).expect("ordered transformations");
+    assert_ne!(first_order.semantic_hash(), second_order.semantic_hash());
+}
+
+#[test]
+fn register_source_cli_stages_only_policy_evidence_with_zero_provider_activity() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let entry_path = dir.path().join("research-source.toml");
+    fs::write(
+        &entry_path,
+        toml::to_string(&research_source_candidate("official_free")).expect("source TOML"),
+    )
+    .expect("write source entry");
+    let output = Command::new(env!("CARGO_BIN_EXE_pump_research"))
+        .args([
+            "register-source",
+            "--source-entry",
+            entry_path.to_str().expect("UTF-8 path"),
+        ])
+        .output()
+        .expect("register-source command");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let summary: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("source summary");
+    assert_eq!(summary["source_candidate_id"], "research-source-a");
+    assert_eq!(summary["status"], "policy_only_pending_genesis");
+    assert_eq!(summary["provider_calls"], 0);
+    assert_eq!(summary["incremental_provider_spend_usd"], "0");
+}
+
+#[test]
+fn research_source_schema_and_version_chain_fail_closed() {
+    let mut unknown = research_source_candidate_json("official_free");
+    unknown["provider_api_key"] = serde_json::json!("forbidden");
+    assert!(serde_json::from_value::<ResearchSourcePolicyCandidate>(unknown).is_err());
+
+    let mut bad_version = research_source_candidate_json("official_free");
+    bad_version["schema_version"] = serde_json::json!("pump-research-source-policy-candidate.v2");
+    let bad_version: ResearchSourcePolicyCandidate =
+        serde_json::from_value(bad_version).expect("strict source candidate");
+    assert!(stage_research_source_registration(&bad_version).is_err());
 }

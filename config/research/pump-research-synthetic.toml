@@ -24,11 +24,25 @@ end_time = "2025-04-01T00:00:00Z"
 time_unit_grain = "utc-day"
 outer_roster_rule = "union-of-admitted-vintage-inventories"
 roster_vintage = "2024-12-31T23:59:59Z"
-inventory_source_refs = ["synthetic-inventory-a", "synthetic-inventory-b"]
 reconciliation_rule = "identity-first-source-precedence-v1"
 status_precedence = ["eligible_observed", "known_ineligible", "known_insufficient_coverage", "existence_or_coverage_unknown"]
-completeness = "enumerated_incomplete"
-disclosure_text = "Results cover only the enumerated synthetic roster and measured coverage."
+generalization_scope = "enumerated-roster-within-configured-frame"
+
+[[target_frame.inventory_source_refs]]
+source_ref = "synthetic-inventory-a"
+source_entry_id = "synthetic-source-a"
+source_entry_version = 1
+source_entry_content_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+manifest_hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+coverage_hash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+[[target_frame.inventory_source_refs]]
+source_ref = "synthetic-inventory-b"
+source_entry_id = "synthetic-source-b"
+source_entry_version = 1
+source_entry_content_hash = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+manifest_hash = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+coverage_hash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 
 [roles]
 

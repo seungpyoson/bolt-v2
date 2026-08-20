@@ -20,16 +20,26 @@
 //! No backtest may consume raw staged data directly. The only path to backtest
 //! input is through an [`AcceptedDataset`] produced here.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeSet,
+    fmt,
+    path::{Path, PathBuf},
+};
 
 use chrono::{DateTime, NaiveDate};
 use serde::{Deserialize, Serialize};
+
+use crate::hashing::{is_lowercase_sha256_hex, sha256_hex};
 
 /// Governing backfill table contract version for this slice.
 pub const CONTRACT_VERSION: &str = "backfill-table-contract.v1";
 
 /// Source-proof schema version implemented by this module.
 pub const SOURCE_PROOF_SCHEMA_VERSION: &str = "backfill-source-proof.v1";
+
+pub const RESEARCH_SOURCE_REGISTER_SCHEMA_VERSION: &str = "pump-research-source-register.v1";
+pub const RESEARCH_SOURCE_POLICY_CANDIDATE_SCHEMA_VERSION: &str =
+    "pump-research-source-policy-candidate.v1";
 
 const SOURCE_BINDINGS_REGISTRY: &str = include_str!(
     "../../../specs/023-nt-research-analytics-platform/reference/backfill-source-bindings.v1.toml"
@@ -188,6 +198,1071 @@ pub enum SourceCandidateClass {
     OfficialFree,
     PaidVendor,
     ForwardCapture,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchSourceEntryParent {
+    pub source_entry_id: String,
+    pub source_entry_version: u32,
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DatasetProductVersion {
+    pub dataset_id: String,
+    pub product_name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpstreamProvenance {
+    pub upstream_sources: Vec<String>,
+    pub transformations: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueryAndFields {
+    pub query_contract: String,
+    pub fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchCoverageContract {
+    pub venue_keys: Vec<String>,
+    pub instrument_scope: String,
+    pub start_time: String,
+    pub end_time: String,
+    pub gap_semantics: String,
+    pub delisting_evidence_refs: Vec<String>,
+    pub rebrand_evidence_refs: Vec<String>,
+    pub migration_evidence_refs: Vec<String>,
+    pub gap_evidence_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestedCoveragePolicy {
+    pub venue_keys: Vec<String>,
+    pub instrument_scope: String,
+    pub start_time: String,
+    pub end_time: String,
+    pub gap_semantics: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceRightStatus {
+    Permitted,
+    Required,
+    Prohibited,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceRight {
+    pub status: SourceRightStatus,
+    pub evidence_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchSourceRightsPacket {
+    pub query: SourceRight,
+    pub download: SourceRight,
+    pub cache: SourceRight,
+    pub post_termination_retention: SourceRight,
+    pub derived_data: SourceRight,
+    pub collaboration: SourceRight,
+    pub publication: SourceRight,
+    pub attribution: SourceRight,
+    pub upstream_rights: SourceRight,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchSourceFidelityPacket {
+    pub timestamp_evidence_ref: String,
+    pub sequence_evidence_ref: String,
+    pub snapshot_reset_evidence_ref: String,
+    pub disconnect_evidence_ref: String,
+    pub raw_payload_evidence_ref: String,
+    pub completeness_evidence_ref: String,
+    pub correction_evidence_ref: String,
+    pub nt_mapping_evidence_ref: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchFidelityRequirement {
+    TimestampSemantics,
+    SequenceContinuity,
+    SnapshotResetSemantics,
+    DisconnectSemantics,
+    RawPayloadReplay,
+    CompletenessMeasurement,
+    CorrectionTracking,
+    NautilusMapping,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ResearchSourceCostStatus {
+    ZeroCostVerified {
+        evidence_ref: String,
+    },
+    NominallyFreePilot {
+        evidence_ref: String,
+        authorization_ref: Option<String>,
+    },
+    Quoted {
+        quote_ref: String,
+    },
+    PaidAuthorized {
+        authorization_ref: String,
+    },
+    Unknown {
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetainedSourceRepresentation {
+    ExactRaw,
+    LosslessNormalizedPanel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetainedSourceArtifact {
+    pub artifact_uri: String,
+    pub content_hash: String,
+    pub representation: RetainedSourceRepresentation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchSourceCorrection {
+    pub correction_id: String,
+    pub revision_of: String,
+    pub publication_time: String,
+    pub availability_time: String,
+    pub retrieval_time: String,
+    pub affects_evaluation: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceEvidenceState {
+    Active,
+    Quarantined,
+    Revoked,
+    Expired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchSourceRegisterEntry {
+    pub schema_version: String,
+    pub source_entry_id: String,
+    pub source_entry_version: u32,
+    pub parent_entry: Option<ResearchSourceEntryParent>,
+    pub registry_binding: String,
+    pub input_vintage_cutoff: String,
+    pub dataset_product_version: DatasetProductVersion,
+    pub source_candidate_class: SourceCandidateClass,
+    pub upstream_provenance: UpstreamProvenance,
+    pub query_and_fields: QueryAndFields,
+    pub coverage_contract: ResearchCoverageContract,
+    pub rights_packet: ResearchSourceRightsPacket,
+    pub fidelity_packet: ResearchSourceFidelityPacket,
+    pub cost_status: ResearchSourceCostStatus,
+    pub retained_artifacts: Vec<RetainedSourceArtifact>,
+    pub correction_policy: crate::research_experiment::CorrectionPolicy,
+    pub corrections: Vec<ResearchSourceCorrection>,
+    pub evidence_hashes: Vec<String>,
+    pub reviewer: String,
+    pub decision_time: String,
+    pub expiry_time: String,
+    pub state: SourceEvidenceState,
+    pub allowed_claims: Vec<String>,
+    pub forbidden_claims: Vec<String>,
+}
+
+/// A pre-Genesis policy candidate. This wire type deliberately cannot carry
+/// retained artifacts, measured coverage, corrections, lifecycle state, or
+/// any other E0-derived byte or metadata claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchSourcePolicyCandidate {
+    pub schema_version: String,
+    pub source_candidate_id: String,
+    pub registry_binding: String,
+    pub dataset_product_version: DatasetProductVersion,
+    pub source_candidate_class: SourceCandidateClass,
+    pub upstream_provenance: UpstreamProvenance,
+    pub query_and_fields: QueryAndFields,
+    pub requested_coverage: RequestedCoveragePolicy,
+    pub rights_packet: ResearchSourceRightsPacket,
+    pub fidelity_requirements: Vec<ResearchFidelityRequirement>,
+    pub cost_status: ResearchSourceCostStatus,
+    pub reviewer: String,
+    pub decision_time: String,
+    pub expiry_time: String,
+    pub allowed_claims: Vec<String>,
+    pub forbidden_claims: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceAdmissionUseScope {
+    CanonicalDiscovery,
+    ExploratoryOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ResearchSourceAdmissionDecision {
+    source_entry_id: String,
+    source_entry_version: u32,
+    source_candidate_class: SourceCandidateClass,
+    use_scope: SourceAdmissionUseScope,
+    confirmatory_eligible: bool,
+    provider_calls: u64,
+    incremental_provider_spend_usd: String,
+}
+
+impl ResearchSourceAdmissionDecision {
+    #[must_use]
+    pub const fn use_scope(&self) -> SourceAdmissionUseScope {
+        self.use_scope
+    }
+
+    #[must_use]
+    pub const fn confirmatory_eligible(&self) -> bool {
+        self.confirmatory_eligible
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct VerifiedRegisteredSourceEvidence {
+    entry_semantic_hash: String,
+    source_entry_id: String,
+    source_entry_version: u32,
+    parent_content_hash: Option<String>,
+    verified_use_time: String,
+    retained_artifact_hashes: Vec<String>,
+    verified_evidence_hashes: Vec<String>,
+    state: SourceEvidenceState,
+    current_head: bool,
+    genesis_commitment_hash: String,
+}
+
+impl VerifiedRegisteredSourceEvidence {
+    pub(crate) fn matches_registered_source(
+        &self,
+        source_entry_id: &str,
+        source_entry_version: u32,
+        source_entry_content_hash: &str,
+    ) -> bool {
+        self.source_entry_id == source_entry_id
+            && self.source_entry_version == source_entry_version
+            && self.entry_semantic_hash == source_entry_content_hash
+            && self.state == SourceEvidenceState::Active
+            && self.current_head
+            && is_lowercase_sha256_hex(&self.genesis_commitment_hash)
+    }
+
+    pub(crate) fn verified_use_time(&self) -> &str {
+        &self.verified_use_time
+    }
+
+    pub(crate) fn verifies_evidence_hashes(&self, evidence_hashes: &[String]) -> bool {
+        let mut expected = self.verified_evidence_hashes.clone();
+        expected.sort();
+        let mut actual = evidence_hashes.to_vec();
+        actual.sort();
+        expected == actual
+    }
+
+    #[cfg(test)]
+    pub(crate) fn synthetic(
+        source_entry_id: &str,
+        source_entry_version: u32,
+        source_entry_content_hash: &str,
+        retained_artifact_hashes: Vec<String>,
+        verified_evidence_hashes: Vec<String>,
+        verified_use_time: &str,
+    ) -> Self {
+        Self {
+            entry_semantic_hash: source_entry_content_hash.to_string(),
+            source_entry_id: source_entry_id.to_string(),
+            source_entry_version,
+            parent_content_hash: None,
+            verified_use_time: verified_use_time.to_string(),
+            retained_artifact_hashes,
+            verified_evidence_hashes,
+            state: SourceEvidenceState::Active,
+            current_head: true,
+            genesis_commitment_hash: "a".repeat(64),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StagedResearchSourceStatus {
+    PolicyOnlyPendingGenesis,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StagedResearchSourceRegistration {
+    source_candidate_id: String,
+    source_candidate_class: SourceCandidateClass,
+    semantic_hash: String,
+    status: StagedResearchSourceStatus,
+    confirmatory_eligible: bool,
+    provider_calls: u64,
+    incremental_provider_spend_usd: String,
+}
+
+impl StagedResearchSourceRegistration {
+    #[must_use]
+    pub fn source_candidate_id(&self) -> &str {
+        &self.source_candidate_id
+    }
+
+    #[must_use]
+    pub const fn source_candidate_class(&self) -> SourceCandidateClass {
+        self.source_candidate_class
+    }
+
+    #[must_use]
+    pub fn semantic_hash(&self) -> &str {
+        &self.semantic_hash
+    }
+
+    #[must_use]
+    pub const fn status(&self) -> StagedResearchSourceStatus {
+        self.status
+    }
+
+    #[must_use]
+    pub const fn confirmatory_eligible(&self) -> bool {
+        self.confirmatory_eligible
+    }
+
+    #[must_use]
+    pub const fn provider_calls(&self) -> u64 {
+        self.provider_calls
+    }
+
+    #[must_use]
+    pub fn incremental_provider_spend_usd(&self) -> &str {
+        &self.incremental_provider_spend_usd
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResearchSourceAdmissionError {
+    Io(String),
+    Parse(String),
+    MissingField(&'static str),
+    DuplicateValue(&'static str),
+    InvalidVersionChain,
+    InvalidHash(&'static str),
+    InvalidTime(&'static str),
+    InvalidTimeOrder(&'static str),
+    RightNotPermitted(&'static str),
+    MissingPilotAuthorization,
+    PaidOrUnknownCost,
+    EvidenceNotActive(SourceEvidenceState),
+    EvidenceExpired,
+    ClaimOverlap,
+    E0AccessBeforeGenesis,
+    UnverifiedRegisteredEvidence,
+    RegisteredEvidenceMismatch,
+    InvalidLifecycleTransition {
+        from: SourceEvidenceState,
+        to: SourceEvidenceState,
+    },
+    Serialize(String),
+}
+
+impl fmt::Display for ResearchSourceAdmissionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "research source I/O failed: {error}"),
+            Self::Parse(error) => write!(f, "research source parse failed: {error}"),
+            Self::MissingField(field) => write!(f, "research source field {field} is required"),
+            Self::DuplicateValue(field) => {
+                write!(f, "research source field {field} contains duplicates")
+            }
+            Self::InvalidVersionChain => write!(f, "research source version chain is invalid"),
+            Self::InvalidHash(field) => write!(f, "research source field {field} is not SHA-256"),
+            Self::InvalidTime(field) => write!(f, "research source field {field} is not RFC 3339"),
+            Self::InvalidTimeOrder(field) => {
+                write!(f, "research source field {field} has invalid time ordering")
+            }
+            Self::RightNotPermitted(field) => {
+                write!(f, "research source right {field} is not permitted")
+            }
+            Self::MissingPilotAuthorization => {
+                write!(f, "nominally free pilot requires separate authorization")
+            }
+            Self::PaidOrUnknownCost => {
+                write!(f, "Stage 0 rejects paid, quoted, or unknown source cost")
+            }
+            Self::EvidenceNotActive(state) => {
+                write!(f, "research source evidence is not active: {state:?}")
+            }
+            Self::EvidenceExpired => write!(f, "research source evidence expired"),
+            Self::ClaimOverlap => write!(f, "allowed and forbidden source claims overlap"),
+            Self::E0AccessBeforeGenesis => {
+                write!(
+                    f,
+                    "prospective E0 byte or metadata access requires committed Genesis G"
+                )
+            }
+            Self::UnverifiedRegisteredEvidence => write!(
+                f,
+                "canonical admission requires verified registered evidence after Genesis"
+            ),
+            Self::RegisteredEvidenceMismatch => {
+                write!(
+                    f,
+                    "registered source evidence does not match the candidate bytes"
+                )
+            }
+            Self::InvalidLifecycleTransition { from, to } => {
+                write!(
+                    f,
+                    "invalid research source evidence transition {from:?} -> {to:?}"
+                )
+            }
+            Self::Serialize(error) => write!(f, "research source serialization failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ResearchSourceAdmissionError {}
+
+fn require_research_source_field(
+    field: &'static str,
+    value: &str,
+) -> Result<(), ResearchSourceAdmissionError> {
+    if value.trim().is_empty() {
+        return Err(ResearchSourceAdmissionError::MissingField(field));
+    }
+    Ok(())
+}
+
+fn require_unique_source_values(
+    field: &'static str,
+    values: &[String],
+) -> Result<(), ResearchSourceAdmissionError> {
+    if values.is_empty() {
+        return Err(ResearchSourceAdmissionError::MissingField(field));
+    }
+    let mut unique = BTreeSet::new();
+    for value in values {
+        require_research_source_field(field, value)?;
+        if !unique.insert(value.as_str()) {
+            return Err(ResearchSourceAdmissionError::DuplicateValue(field));
+        }
+    }
+    Ok(())
+}
+
+fn parse_research_source_time(
+    field: &'static str,
+    value: &str,
+) -> Result<DateTime<chrono::FixedOffset>, ResearchSourceAdmissionError> {
+    DateTime::parse_from_rfc3339(value)
+        .map_err(|_| ResearchSourceAdmissionError::InvalidTime(field))
+}
+
+fn validate_research_source_entry(
+    entry: &ResearchSourceRegisterEntry,
+) -> Result<(), ResearchSourceAdmissionError> {
+    for (field, value) in [
+        ("source_entry_id", entry.source_entry_id.as_str()),
+        ("registry_binding", entry.registry_binding.as_str()),
+        ("input_vintage_cutoff", entry.input_vintage_cutoff.as_str()),
+        (
+            "dataset_product_version.dataset_id",
+            entry.dataset_product_version.dataset_id.as_str(),
+        ),
+        (
+            "dataset_product_version.product_name",
+            entry.dataset_product_version.product_name.as_str(),
+        ),
+        (
+            "dataset_product_version.version",
+            entry.dataset_product_version.version.as_str(),
+        ),
+        (
+            "query_and_fields.query_contract",
+            entry.query_and_fields.query_contract.as_str(),
+        ),
+        (
+            "coverage_contract.instrument_scope",
+            entry.coverage_contract.instrument_scope.as_str(),
+        ),
+        (
+            "coverage_contract.gap_semantics",
+            entry.coverage_contract.gap_semantics.as_str(),
+        ),
+        ("reviewer", entry.reviewer.as_str()),
+    ] {
+        require_research_source_field(field, value)?;
+    }
+    if entry.schema_version != RESEARCH_SOURCE_REGISTER_SCHEMA_VERSION
+        || entry.source_entry_version == 0
+    {
+        return Err(ResearchSourceAdmissionError::InvalidVersionChain);
+    }
+    match (&entry.parent_entry, entry.source_entry_version) {
+        (None, 1) => {}
+        (Some(parent), version)
+            if version > 1
+                && parent.source_entry_id == entry.source_entry_id
+                && parent.source_entry_version + 1 == version
+                && is_lowercase_sha256_hex(&parent.content_hash) => {}
+        _ => return Err(ResearchSourceAdmissionError::InvalidVersionChain),
+    }
+    require_unique_source_values(
+        "upstream_provenance.upstream_sources",
+        &entry.upstream_provenance.upstream_sources,
+    )?;
+    require_unique_source_values(
+        "upstream_provenance.transformations",
+        &entry.upstream_provenance.transformations,
+    )?;
+    require_unique_source_values("query_and_fields.fields", &entry.query_and_fields.fields)?;
+    require_unique_source_values(
+        "coverage_contract.venue_keys",
+        &entry.coverage_contract.venue_keys,
+    )?;
+    for (field, values) in [
+        (
+            "coverage_contract.delisting_evidence_refs",
+            &entry.coverage_contract.delisting_evidence_refs,
+        ),
+        (
+            "coverage_contract.rebrand_evidence_refs",
+            &entry.coverage_contract.rebrand_evidence_refs,
+        ),
+        (
+            "coverage_contract.migration_evidence_refs",
+            &entry.coverage_contract.migration_evidence_refs,
+        ),
+        (
+            "coverage_contract.gap_evidence_refs",
+            &entry.coverage_contract.gap_evidence_refs,
+        ),
+    ] {
+        require_unique_source_values(field, values)?;
+    }
+    let coverage_start = parse_research_source_time(
+        "coverage_contract.start_time",
+        &entry.coverage_contract.start_time,
+    )?;
+    let coverage_end = parse_research_source_time(
+        "coverage_contract.end_time",
+        &entry.coverage_contract.end_time,
+    )?;
+    if coverage_start >= coverage_end {
+        return Err(ResearchSourceAdmissionError::InvalidTimeOrder(
+            "coverage_contract",
+        ));
+    }
+    let input_vintage =
+        parse_research_source_time("input_vintage_cutoff", &entry.input_vintage_cutoff)?;
+    if coverage_end > input_vintage {
+        return Err(ResearchSourceAdmissionError::InvalidTimeOrder(
+            "coverage_contract.end_time/input_vintage_cutoff",
+        ));
+    }
+    let mut evidence_horizon = input_vintage;
+    validate_research_source_rights_shape(&entry.rights_packet)?;
+    for (field, value) in [
+        (
+            "fidelity_packet.timestamp_evidence_ref",
+            entry.fidelity_packet.timestamp_evidence_ref.as_str(),
+        ),
+        (
+            "fidelity_packet.sequence_evidence_ref",
+            entry.fidelity_packet.sequence_evidence_ref.as_str(),
+        ),
+        (
+            "fidelity_packet.snapshot_reset_evidence_ref",
+            entry.fidelity_packet.snapshot_reset_evidence_ref.as_str(),
+        ),
+        (
+            "fidelity_packet.disconnect_evidence_ref",
+            entry.fidelity_packet.disconnect_evidence_ref.as_str(),
+        ),
+        (
+            "fidelity_packet.raw_payload_evidence_ref",
+            entry.fidelity_packet.raw_payload_evidence_ref.as_str(),
+        ),
+        (
+            "fidelity_packet.completeness_evidence_ref",
+            entry.fidelity_packet.completeness_evidence_ref.as_str(),
+        ),
+        (
+            "fidelity_packet.correction_evidence_ref",
+            entry.fidelity_packet.correction_evidence_ref.as_str(),
+        ),
+        (
+            "fidelity_packet.nt_mapping_evidence_ref",
+            entry.fidelity_packet.nt_mapping_evidence_ref.as_str(),
+        ),
+    ] {
+        require_research_source_field(field, value)?;
+    }
+    let mut retained_artifact_uris = BTreeSet::new();
+    for artifact in &entry.retained_artifacts {
+        require_research_source_field("retained_artifacts.artifact_uri", &artifact.artifact_uri)?;
+        if !retained_artifact_uris.insert(artifact.artifact_uri.as_str()) {
+            return Err(ResearchSourceAdmissionError::DuplicateValue(
+                "retained_artifacts.artifact_uri",
+            ));
+        }
+        if !artifact.artifact_uri.starts_with("s3://") {
+            return Err(ResearchSourceAdmissionError::MissingField(
+                "retained_artifacts.artifact_uri",
+            ));
+        }
+        if !is_lowercase_sha256_hex(&artifact.content_hash) {
+            return Err(ResearchSourceAdmissionError::InvalidHash(
+                "retained_artifacts.content_hash",
+            ));
+        }
+    }
+    require_unique_source_values("evidence_hashes", &entry.evidence_hashes)?;
+    if entry
+        .evidence_hashes
+        .iter()
+        .any(|hash| !is_lowercase_sha256_hex(hash))
+    {
+        return Err(ResearchSourceAdmissionError::InvalidHash("evidence_hashes"));
+    }
+    require_unique_source_values("allowed_claims", &entry.allowed_claims)?;
+    require_unique_source_values("forbidden_claims", &entry.forbidden_claims)?;
+    if entry
+        .allowed_claims
+        .iter()
+        .any(|claim| entry.forbidden_claims.contains(claim))
+    {
+        return Err(ResearchSourceAdmissionError::ClaimOverlap);
+    }
+    let mut correction_ids = BTreeSet::new();
+    for correction in &entry.corrections {
+        require_research_source_field("corrections.correction_id", &correction.correction_id)?;
+        require_research_source_field("corrections.revision_of", &correction.revision_of)?;
+        if !correction_ids.insert(correction.correction_id.as_str()) {
+            return Err(ResearchSourceAdmissionError::DuplicateValue(
+                "corrections.correction_id",
+            ));
+        }
+        let publication = parse_research_source_time(
+            "corrections.publication_time",
+            &correction.publication_time,
+        )?;
+        let availability = parse_research_source_time(
+            "corrections.availability_time",
+            &correction.availability_time,
+        )?;
+        let retrieval =
+            parse_research_source_time("corrections.retrieval_time", &correction.retrieval_time)?;
+        if publication > availability || availability > retrieval {
+            return Err(ResearchSourceAdmissionError::InvalidTimeOrder(
+                "corrections",
+            ));
+        }
+        evidence_horizon = evidence_horizon.max(retrieval);
+    }
+    let decision = parse_research_source_time("decision_time", &entry.decision_time)?;
+    let expiry = parse_research_source_time("expiry_time", &entry.expiry_time)?;
+    if decision < evidence_horizon {
+        return Err(ResearchSourceAdmissionError::InvalidTimeOrder(
+            "decision_time/evidence_horizon",
+        ));
+    }
+    if decision >= expiry {
+        return Err(ResearchSourceAdmissionError::InvalidTimeOrder(
+            "decision_time/expiry_time",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_research_source_rights_shape(
+    rights: &ResearchSourceRightsPacket,
+) -> Result<(), ResearchSourceAdmissionError> {
+    for right in [
+        &rights.query,
+        &rights.download,
+        &rights.cache,
+        &rights.post_termination_retention,
+        &rights.derived_data,
+        &rights.collaboration,
+        &rights.publication,
+        &rights.upstream_rights,
+    ] {
+        require_research_source_field("rights_packet.evidence_ref", &right.evidence_ref)?;
+    }
+    require_research_source_field(
+        "rights_packet.attribution.evidence_ref",
+        &rights.attribution.evidence_ref,
+    )?;
+    Ok(())
+}
+
+fn validate_research_source_policy_candidate(
+    candidate: &ResearchSourcePolicyCandidate,
+) -> Result<(), ResearchSourceAdmissionError> {
+    for (field, value) in [
+        (
+            "source_candidate_id",
+            candidate.source_candidate_id.as_str(),
+        ),
+        ("registry_binding", candidate.registry_binding.as_str()),
+        (
+            "dataset_product_version.dataset_id",
+            candidate.dataset_product_version.dataset_id.as_str(),
+        ),
+        (
+            "dataset_product_version.product_name",
+            candidate.dataset_product_version.product_name.as_str(),
+        ),
+        (
+            "dataset_product_version.version",
+            candidate.dataset_product_version.version.as_str(),
+        ),
+        (
+            "query_and_fields.query_contract",
+            candidate.query_and_fields.query_contract.as_str(),
+        ),
+        (
+            "requested_coverage.instrument_scope",
+            candidate.requested_coverage.instrument_scope.as_str(),
+        ),
+        (
+            "requested_coverage.gap_semantics",
+            candidate.requested_coverage.gap_semantics.as_str(),
+        ),
+        ("reviewer", candidate.reviewer.as_str()),
+    ] {
+        require_research_source_field(field, value)?;
+    }
+    if candidate.schema_version != RESEARCH_SOURCE_POLICY_CANDIDATE_SCHEMA_VERSION {
+        return Err(ResearchSourceAdmissionError::InvalidVersionChain);
+    }
+    require_unique_source_values(
+        "upstream_provenance.upstream_sources",
+        &candidate.upstream_provenance.upstream_sources,
+    )?;
+    require_unique_source_values(
+        "upstream_provenance.transformations",
+        &candidate.upstream_provenance.transformations,
+    )?;
+    require_unique_source_values(
+        "query_and_fields.fields",
+        &candidate.query_and_fields.fields,
+    )?;
+    require_unique_source_values(
+        "requested_coverage.venue_keys",
+        &candidate.requested_coverage.venue_keys,
+    )?;
+    let coverage_start = parse_research_source_time(
+        "requested_coverage.start_time",
+        &candidate.requested_coverage.start_time,
+    )?;
+    let coverage_end = parse_research_source_time(
+        "requested_coverage.end_time",
+        &candidate.requested_coverage.end_time,
+    )?;
+    if coverage_start >= coverage_end {
+        return Err(ResearchSourceAdmissionError::InvalidTimeOrder(
+            "requested_coverage",
+        ));
+    }
+    validate_research_source_rights_shape(&candidate.rights_packet)?;
+    if candidate.fidelity_requirements.is_empty()
+        || candidate
+            .fidelity_requirements
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .len()
+            != candidate.fidelity_requirements.len()
+    {
+        return Err(ResearchSourceAdmissionError::DuplicateValue(
+            "fidelity_requirements",
+        ));
+    }
+    match &candidate.cost_status {
+        ResearchSourceCostStatus::ZeroCostVerified { evidence_ref } => {
+            require_research_source_field("cost_status.evidence_ref", evidence_ref)?;
+        }
+        ResearchSourceCostStatus::NominallyFreePilot {
+            evidence_ref,
+            authorization_ref,
+        } => {
+            require_research_source_field("cost_status.evidence_ref", evidence_ref)?;
+            if authorization_ref
+                .as_deref()
+                .is_none_or(|authorization| authorization.trim().is_empty())
+            {
+                return Err(ResearchSourceAdmissionError::MissingPilotAuthorization);
+            }
+        }
+        ResearchSourceCostStatus::Quoted { .. }
+        | ResearchSourceCostStatus::PaidAuthorized { .. }
+        | ResearchSourceCostStatus::Unknown { .. } => {
+            return Err(ResearchSourceAdmissionError::PaidOrUnknownCost);
+        }
+    }
+    require_unique_source_values("allowed_claims", &candidate.allowed_claims)?;
+    require_unique_source_values("forbidden_claims", &candidate.forbidden_claims)?;
+    if candidate
+        .allowed_claims
+        .iter()
+        .any(|claim| candidate.forbidden_claims.contains(claim))
+    {
+        return Err(ResearchSourceAdmissionError::ClaimOverlap);
+    }
+    let decision = parse_research_source_time("decision_time", &candidate.decision_time)?;
+    let expiry = parse_research_source_time("expiry_time", &candidate.expiry_time)?;
+    if decision >= expiry {
+        return Err(ResearchSourceAdmissionError::InvalidTimeOrder(
+            "decision_time/expiry_time",
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_research_source_policy_candidate_bytes(
+    candidate: &ResearchSourcePolicyCandidate,
+) -> Result<Vec<u8>, ResearchSourceAdmissionError> {
+    let mut canonical = candidate.clone();
+    canonical.upstream_provenance.upstream_sources.sort();
+    canonical.query_and_fields.fields.sort();
+    canonical.requested_coverage.venue_keys.sort();
+    canonical.fidelity_requirements.sort();
+    canonical.allowed_claims.sort();
+    canonical.forbidden_claims.sort();
+    serde_json::to_vec(&canonical)
+        .map_err(|error| ResearchSourceAdmissionError::Serialize(error.to_string()))
+}
+
+pub fn evaluate_research_source_admission(
+    entry: &ResearchSourceRegisterEntry,
+    evidence: Option<VerifiedRegisteredSourceEvidence>,
+) -> Result<ResearchSourceAdmissionDecision, ResearchSourceAdmissionError> {
+    let evidence = evidence.ok_or(ResearchSourceAdmissionError::UnverifiedRegisteredEvidence)?;
+    validate_research_source_entry(entry)?;
+    let semantic_hash = sha256_hex(&canonical_research_source_bytes(entry)?);
+    let mut retained_hashes = entry
+        .retained_artifacts
+        .iter()
+        .map(|artifact| artifact.content_hash.clone())
+        .collect::<Vec<_>>();
+    retained_hashes.sort();
+    let mut verified_retained_hashes = evidence.retained_artifact_hashes.clone();
+    verified_retained_hashes.sort();
+    let parent_content_hash = entry
+        .parent_entry
+        .as_ref()
+        .map(|parent| parent.content_hash.clone());
+    if evidence.entry_semantic_hash != semantic_hash
+        || evidence.source_entry_id != entry.source_entry_id
+        || evidence.source_entry_version != entry.source_entry_version
+        || evidence.parent_content_hash != parent_content_hash
+        || evidence.state != entry.state
+        || !evidence.current_head
+        || !is_lowercase_sha256_hex(&evidence.genesis_commitment_hash)
+        || verified_retained_hashes != retained_hashes
+        || !evidence.verifies_evidence_hashes(&entry.evidence_hashes)
+    {
+        return Err(ResearchSourceAdmissionError::RegisteredEvidenceMismatch);
+    }
+    if evidence.state != SourceEvidenceState::Active {
+        return Err(ResearchSourceAdmissionError::EvidenceNotActive(
+            evidence.state,
+        ));
+    }
+    let observed = parse_research_source_time(
+        "registered_evidence.verified_use_time",
+        &evidence.verified_use_time,
+    )?;
+    let decision = parse_research_source_time("decision_time", &entry.decision_time)?;
+    let expiry = parse_research_source_time("expiry_time", &entry.expiry_time)?;
+    if observed < decision {
+        return Err(ResearchSourceAdmissionError::InvalidTimeOrder(
+            "registered_evidence.verified_use_time",
+        ));
+    }
+    if observed >= expiry {
+        return Err(ResearchSourceAdmissionError::EvidenceExpired);
+    }
+    let input_vintage =
+        parse_research_source_time("input_vintage_cutoff", &entry.input_vintage_cutoff)?;
+    if input_vintage > observed
+        || entry.corrections.iter().any(|correction| {
+            parse_research_source_time("corrections.retrieval_time", &correction.retrieval_time)
+                .is_ok_and(|retrieval| retrieval > observed)
+        })
+    {
+        return Err(ResearchSourceAdmissionError::InvalidTimeOrder(
+            "registered_evidence.verified_use_time",
+        ));
+    }
+    match &entry.cost_status {
+        ResearchSourceCostStatus::ZeroCostVerified { evidence_ref } => {
+            require_research_source_field("cost_status.evidence_ref", evidence_ref)?;
+        }
+        ResearchSourceCostStatus::NominallyFreePilot {
+            evidence_ref,
+            authorization_ref,
+        } => {
+            require_research_source_field("cost_status.evidence_ref", evidence_ref)?;
+            if authorization_ref
+                .as_deref()
+                .is_none_or(|authorization| authorization.trim().is_empty())
+            {
+                return Err(ResearchSourceAdmissionError::MissingPilotAuthorization);
+            }
+        }
+        ResearchSourceCostStatus::Quoted { .. }
+        | ResearchSourceCostStatus::PaidAuthorized { .. }
+        | ResearchSourceCostStatus::Unknown { .. } => {
+            return Err(ResearchSourceAdmissionError::PaidOrUnknownCost);
+        }
+    }
+    for (field, right) in [
+        ("query", &entry.rights_packet.query),
+        ("download", &entry.rights_packet.download),
+        ("cache", &entry.rights_packet.cache),
+        ("derived_data", &entry.rights_packet.derived_data),
+        ("collaboration", &entry.rights_packet.collaboration),
+        ("publication", &entry.rights_packet.publication),
+        ("upstream_rights", &entry.rights_packet.upstream_rights),
+    ] {
+        if right.status != SourceRightStatus::Permitted {
+            return Err(ResearchSourceAdmissionError::RightNotPermitted(field));
+        }
+    }
+    if !matches!(
+        entry.rights_packet.attribution.status,
+        SourceRightStatus::Permitted | SourceRightStatus::Required
+    ) {
+        return Err(ResearchSourceAdmissionError::RightNotPermitted(
+            "attribution",
+        ));
+    }
+    let use_scope = if entry.rights_packet.post_termination_retention.status
+        == SourceRightStatus::Permitted
+        && !entry.retained_artifacts.is_empty()
+    {
+        SourceAdmissionUseScope::CanonicalDiscovery
+    } else {
+        SourceAdmissionUseScope::ExploratoryOnly
+    };
+    Ok(ResearchSourceAdmissionDecision {
+        source_entry_id: entry.source_entry_id.clone(),
+        source_entry_version: entry.source_entry_version,
+        source_candidate_class: entry.source_candidate_class,
+        use_scope,
+        // Slice 3 is the first code allowed to bind committed custody and
+        // unblinding evidence. Slice 2 cannot confer confirmation authority.
+        confirmatory_eligible: false,
+        provider_calls: 0,
+        incremental_provider_spend_usd: "0".to_string(),
+    })
+}
+
+pub fn validate_source_evidence_transition(
+    from: SourceEvidenceState,
+    to: SourceEvidenceState,
+) -> Result<(), ResearchSourceAdmissionError> {
+    if matches!(
+        (from, to),
+        (
+            SourceEvidenceState::Active,
+            SourceEvidenceState::Quarantined
+                | SourceEvidenceState::Revoked
+                | SourceEvidenceState::Expired
+        ) | (
+            SourceEvidenceState::Quarantined,
+            SourceEvidenceState::Revoked | SourceEvidenceState::Expired
+        )
+    ) {
+        return Ok(());
+    }
+    Err(ResearchSourceAdmissionError::InvalidLifecycleTransition { from, to })
+}
+
+pub fn stage_research_source_registration(
+    candidate: &ResearchSourcePolicyCandidate,
+) -> Result<StagedResearchSourceRegistration, ResearchSourceAdmissionError> {
+    validate_research_source_policy_candidate(candidate)?;
+    let semantic_bytes = canonical_research_source_policy_candidate_bytes(candidate)?;
+    Ok(StagedResearchSourceRegistration {
+        source_candidate_id: candidate.source_candidate_id.clone(),
+        source_candidate_class: candidate.source_candidate_class,
+        semantic_hash: sha256_hex(&semantic_bytes),
+        status: StagedResearchSourceStatus::PolicyOnlyPendingGenesis,
+        confirmatory_eligible: false,
+        provider_calls: 0,
+        incremental_provider_spend_usd: "0".to_string(),
+    })
+}
+
+fn canonical_research_source_bytes(
+    entry: &ResearchSourceRegisterEntry,
+) -> Result<Vec<u8>, ResearchSourceAdmissionError> {
+    let mut canonical = entry.clone();
+    canonical.upstream_provenance.upstream_sources.sort();
+    canonical.query_and_fields.fields.sort();
+    canonical.coverage_contract.venue_keys.sort();
+    canonical.coverage_contract.delisting_evidence_refs.sort();
+    canonical.coverage_contract.rebrand_evidence_refs.sort();
+    canonical.coverage_contract.migration_evidence_refs.sort();
+    canonical.coverage_contract.gap_evidence_refs.sort();
+    canonical.retained_artifacts.sort_by(|left, right| {
+        (&left.artifact_uri, &left.content_hash, left.representation).cmp(&(
+            &right.artifact_uri,
+            &right.content_hash,
+            right.representation,
+        ))
+    });
+    canonical
+        .corrections
+        .sort_by(|left, right| left.correction_id.cmp(&right.correction_id));
+    canonical.evidence_hashes.sort();
+    canonical.allowed_claims.sort();
+    canonical.forbidden_claims.sort();
+    serde_json::to_vec(&canonical)
+        .map_err(|error| ResearchSourceAdmissionError::Serialize(error.to_string()))
+}
+
+pub fn stage_research_source_registration_from_toml_file(
+    path: &Path,
+) -> Result<StagedResearchSourceRegistration, ResearchSourceAdmissionError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| ResearchSourceAdmissionError::Io(error.to_string()))?;
+    let candidate: ResearchSourcePolicyCandidate = toml::from_str(&text)
+        .map_err(|error| ResearchSourceAdmissionError::Parse(error.to_string()))?;
+    stage_research_source_registration(&candidate)
 }
 
 /// Selection outcome for a source-proof candidate.
@@ -3480,5 +4555,239 @@ required_cross_market_component_roles = [{roles}]
         assert!(json.contains("\"fidelity_class\":\"TRADE_REPLAY\""));
         let round_trip: SourceProofReport = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(round_trip, proof);
+    }
+
+    fn research_source_entry_for_admission() -> ResearchSourceRegisterEntry {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": RESEARCH_SOURCE_REGISTER_SCHEMA_VERSION,
+            "source_entry_id": "research-source-a",
+            "source_entry_version": 1,
+            "parent_entry": null,
+            "registry_binding": "pump-research-source-register",
+            "input_vintage_cutoff": "2025-03-01T00:00:00Z",
+            "dataset_product_version": {
+                "dataset_id": "dataset-a",
+                "product_name": "historical-market-data",
+                "version": "2025-01"
+            },
+            "source_candidate_class": "official_free",
+            "upstream_provenance": {
+                "upstream_sources": ["venue-public-archive"],
+                "transformations": ["decode-v1", "lossless-normalization-v1"]
+            },
+            "query_and_fields": {
+                "query_contract": "archive-object-list-v1",
+                "fields": ["event_time", "instrument_id", "price", "quantity"]
+            },
+            "coverage_contract": {
+                "venue_keys": ["venue-a"],
+                "instrument_scope": "enumerated-roster-r",
+                "start_time": "2025-01-01T00:00:00Z",
+                "end_time": "2025-03-01T00:00:00Z",
+                "gap_semantics": "missing-object-is-unknown-coverage",
+                "delisting_evidence_refs": ["evidence://delisting"],
+                "rebrand_evidence_refs": ["evidence://rebrand"],
+                "migration_evidence_refs": ["evidence://migration"],
+                "gap_evidence_refs": ["evidence://gaps"]
+            },
+            "rights_packet": {
+                "query": {"status": "permitted", "evidence_ref": "rights://query"},
+                "download": {"status": "permitted", "evidence_ref": "rights://download"},
+                "cache": {"status": "permitted", "evidence_ref": "rights://cache"},
+                "post_termination_retention": {"status": "permitted", "evidence_ref": "rights://retention"},
+                "derived_data": {"status": "permitted", "evidence_ref": "rights://derived"},
+                "collaboration": {"status": "permitted", "evidence_ref": "rights://collaboration"},
+                "publication": {"status": "permitted", "evidence_ref": "rights://publication"},
+                "attribution": {"status": "required", "evidence_ref": "rights://attribution"},
+                "upstream_rights": {"status": "permitted", "evidence_ref": "rights://upstream"}
+            },
+            "fidelity_packet": {
+                "timestamp_evidence_ref": "fidelity://timestamp",
+                "sequence_evidence_ref": "fidelity://sequence",
+                "snapshot_reset_evidence_ref": "fidelity://snapshot-reset",
+                "disconnect_evidence_ref": "fidelity://disconnect",
+                "raw_payload_evidence_ref": "fidelity://raw-payload",
+                "completeness_evidence_ref": "fidelity://completeness",
+                "correction_evidence_ref": "fidelity://corrections",
+                "nt_mapping_evidence_ref": "fidelity://nt-mapping"
+            },
+            "cost_status": {"kind": "zero_cost_verified", "evidence_ref": "cost://zero"},
+            "retained_artifacts": [{
+                "artifact_uri": "s3://research-bucket/raw/source-a.bin",
+                "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "representation": "exact_raw"
+            }],
+            "correction_policy": "new_experiment_version",
+            "corrections": [],
+            "evidence_hashes": ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+            "reviewer": "source-reviewer",
+            "decision_time": "2025-03-02T00:00:00Z",
+            "expiry_time": "2025-04-01T00:00:00Z",
+            "state": "active",
+            "allowed_claims": ["retrospective_episode_detection"],
+            "forbidden_claims": ["execution_quality"]
+        }))
+        .expect("strict admitted-source entry")
+    }
+
+    fn verified_source_evidence(
+        entry: &ResearchSourceRegisterEntry,
+    ) -> VerifiedRegisteredSourceEvidence {
+        let semantic_hash =
+            sha256_hex(&canonical_research_source_bytes(entry).expect("source bytes"));
+        VerifiedRegisteredSourceEvidence::synthetic(
+            &entry.source_entry_id,
+            entry.source_entry_version,
+            &semantic_hash,
+            entry
+                .retained_artifacts
+                .iter()
+                .map(|artifact| artifact.content_hash.clone())
+                .collect(),
+            entry.evidence_hashes.clone(),
+            "2025-03-03T00:00:00Z",
+        )
+    }
+
+    #[test]
+    fn canonical_source_admission_requires_genesis_bound_registered_evidence() {
+        let entry = research_source_entry_for_admission();
+        assert!(matches!(
+            evaluate_research_source_admission(&entry, None),
+            Err(ResearchSourceAdmissionError::UnverifiedRegisteredEvidence)
+        ));
+        let evidence = verified_source_evidence(&entry);
+        let decision = evaluate_research_source_admission(&entry, Some(evidence))
+            .expect("verified canonical source");
+        assert_eq!(
+            decision.use_scope,
+            SourceAdmissionUseScope::CanonicalDiscovery
+        );
+        assert!(!decision.confirmatory_eligible);
+        assert_eq!(decision.provider_calls, 0);
+        assert_eq!(decision.incremental_provider_spend_usd, "0");
+    }
+
+    #[test]
+    fn non_retainable_source_is_exploratory_and_confirmation_waits_for_custody() {
+        let mut non_retainable = research_source_entry_for_admission();
+        non_retainable
+            .rights_packet
+            .post_termination_retention
+            .status = SourceRightStatus::Prohibited;
+        non_retainable.retained_artifacts.clear();
+        let evidence = verified_source_evidence(&non_retainable);
+        let decision = evaluate_research_source_admission(&non_retainable, Some(evidence))
+            .expect("verified exploratory source");
+        assert_eq!(decision.use_scope, SourceAdmissionUseScope::ExploratoryOnly);
+        assert!(!decision.confirmatory_eligible);
+
+        let mut prohibited_access = research_source_entry_for_admission();
+        prohibited_access.rights_packet.download.status = SourceRightStatus::Prohibited;
+        let evidence = verified_source_evidence(&prohibited_access);
+        assert!(matches!(
+            evaluate_research_source_admission(&prohibited_access, Some(evidence)),
+            Err(ResearchSourceAdmissionError::RightNotPermitted("download"))
+        ));
+
+        let mut corrected = research_source_entry_for_admission();
+        corrected.corrections.push(ResearchSourceCorrection {
+            correction_id: "correction-a".to_string(),
+            revision_of: "research-source-a-v1".to_string(),
+            publication_time: "2025-02-10T00:00:00Z".to_string(),
+            availability_time: "2025-02-10T01:00:00Z".to_string(),
+            retrieval_time: "2025-02-10T02:00:00Z".to_string(),
+            affects_evaluation: true,
+        });
+        let evidence = verified_source_evidence(&corrected);
+        let decision = evaluate_research_source_admission(&corrected, Some(evidence))
+            .expect("registered correction");
+        assert!(!decision.confirmatory_eligible);
+    }
+
+    #[test]
+    fn source_version_and_observation_clocks_fail_closed() {
+        let mut invalid_version = research_source_entry_for_admission();
+        invalid_version.source_entry_version = 2;
+        let evidence = verified_source_evidence(&invalid_version);
+        assert!(matches!(
+            evaluate_research_source_admission(&invalid_version, Some(evidence)),
+            Err(ResearchSourceAdmissionError::InvalidVersionChain)
+        ));
+
+        let entry = research_source_entry_for_admission();
+        let semantic_hash =
+            sha256_hex(&canonical_research_source_bytes(&entry).expect("source bytes"));
+        let stale_evidence = VerifiedRegisteredSourceEvidence::synthetic(
+            &entry.source_entry_id,
+            entry.source_entry_version,
+            &semantic_hash,
+            vec!["a".repeat(64)],
+            vec!["b".repeat(64)],
+            "2025-02-28T23:59:59Z",
+        );
+        assert!(matches!(
+            evaluate_research_source_admission(&entry, Some(stale_evidence)),
+            Err(ResearchSourceAdmissionError::InvalidTimeOrder(
+                "registered_evidence.verified_use_time"
+            ))
+        ));
+    }
+
+    #[test]
+    fn source_artifacts_are_unique_and_permutation_invariant() {
+        let mut entry = research_source_entry_for_admission();
+        entry.retained_artifacts.push(RetainedSourceArtifact {
+            artifact_uri: "s3://research-bucket/raw/source-b.bin".to_string(),
+            content_hash: "c".repeat(64),
+            representation: RetainedSourceRepresentation::LosslessNormalizedPanel,
+        });
+        let first = canonical_research_source_bytes(&entry).expect("canonical source bytes");
+        entry.retained_artifacts.reverse();
+        let second = canonical_research_source_bytes(&entry).expect("canonical source bytes");
+        assert_eq!(first, second);
+
+        let mut duplicate = research_source_entry_for_admission();
+        duplicate.retained_artifacts.push(RetainedSourceArtifact {
+            artifact_uri: duplicate.retained_artifacts[0].artifact_uri.clone(),
+            content_hash: "c".repeat(64),
+            representation: RetainedSourceRepresentation::LosslessNormalizedPanel,
+        });
+        assert!(matches!(
+            validate_research_source_entry(&duplicate),
+            Err(ResearchSourceAdmissionError::DuplicateValue(
+                "retained_artifacts.artifact_uri"
+            ))
+        ));
+    }
+
+    #[test]
+    fn source_admission_review_follows_vintage_and_correction_evidence() {
+        let mut before_vintage = research_source_entry_for_admission();
+        before_vintage.decision_time = "2025-02-28T23:59:59Z".to_string();
+        assert!(matches!(
+            validate_research_source_entry(&before_vintage),
+            Err(ResearchSourceAdmissionError::InvalidTimeOrder(
+                "decision_time/evidence_horizon"
+            ))
+        ));
+
+        let mut before_correction = research_source_entry_for_admission();
+        before_correction
+            .corrections
+            .push(ResearchSourceCorrection {
+                correction_id: "correction-after-review".to_string(),
+                revision_of: "research-source-a-v1".to_string(),
+                publication_time: "2025-03-02T01:00:00Z".to_string(),
+                availability_time: "2025-03-02T02:00:00Z".to_string(),
+                retrieval_time: "2025-03-02T03:00:00Z".to_string(),
+                affects_evaluation: true,
+            });
+        assert!(matches!(
+            validate_research_source_entry(&before_correction),
+            Err(ResearchSourceAdmissionError::InvalidTimeOrder(
+                "decision_time/evidence_horizon"
+            ))
+        ));
     }
 }

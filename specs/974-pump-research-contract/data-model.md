@@ -98,12 +98,24 @@ Defines the population to which discovery results may refer.
 - `market_family_keys`: TOML registry-selected market families.
 - `start_time` / `end_time`: Closed-open event-time bounds.
 - `time_unit_grain`: Unit at which roster coverage is classified.
-- `outer_roster_rule`: Deterministic construction rule.
+- `outer_roster_rule`: Typed deterministic construction rule. Slice 2 supports
+  only union of admitted vintage inventories.
 - `roster_vintage`: Input cutoff for the inventory.
-- `inventory_source_refs`: Candidate/admitted inventory artifacts.
+- `inventory_source_refs`: Ordered bindings to exact source-register version,
+  inventory-manifest hash, and coverage-artifact hash. Order is source
+  precedence and therefore semantic.
 - `reconciliation_rule`: Conflict and precedence algorithm.
-- `completeness`: Proven complete, enumerated incomplete, or unknown.
-- `disclosure_text`: Required bounded-generalization statement.
+- `generalization_scope`: Typed bounded-generalization rule. Slice 2 permits
+  only `enumerated-roster-within-configured-frame`; callers cannot supply
+  free-form full-market claims.
+
+Each inventory manifest carries a typed coverage artifact bound to the exact
+experiment hash, full target-frame hash, source version, roster vintage, roster
+key universe, exact unit counts, registered temporal assertions, and evidence
+hashes. Loading consumes opaque active/current source and coverage
+capabilities. A verified manifest preserves those bindings through roster
+construction. Completeness is derived from independently verified coverage
+evidence; it is not accepted from the manifest or `TargetFrame` alone.
 
 ## RosterUnit
 
@@ -111,27 +123,35 @@ One venue-instrument-time unit in enumerated roster R.
 
 - `roster_unit_id`: Stable hash of frame, venue instrument, and time unit.
 - `frame_id`: Parent frame.
-- `venue_instrument_id`: Venue-native instrument identity.
+- `venue_instrument_identity`: Content-derived venue/instrument/listing-
+  incarnation identity; a reused venue instrument id is a distinct identity.
 - `time_unit`: Exact event-time interval.
 - `status`: Exactly one of `eligible_observed`, `known_ineligible`,
   `known_insufficient_coverage`, or `existence_or_coverage_unknown`.
 - `status_reason`: Typed reason plus evidence references.
 - `coverage_metrics`: Expected, observed, missing, duplicated, and interrupted
   counts/intervals.
-- `assertion_refs`: Append-only facts used to assign status.
+- `assertion_refs`: Current append-only registered facts whose typed subject,
+  predicate, status/reason, and validity interval match the roster unit.
 
 Every enumerated unit must appear exactly once in a released roster manifest.
+The manifest records the starting denominator, all four status counts, and the
+same four explicit attrition counts. Configured source precedence resolves
+conflicts before configured status precedence; neither inventory iteration
+order nor provider-exposed inventory can change the denominator. Every rejected
+candidate that differs in status, reason, or coverage metrics remains recorded
+as a typed conflict alongside the selected observation.
 
 ## IdentityNode and IdentityMapping
 
 Prevents symbol reuse, migration, and rebrand histories from being conflated.
 
-`IdentityNode` fields:
+`IdentityNode` uses a content-derived identifier and exactly one typed native
+key:
 
-- `identity_id`: Stable identity.
-- `identity_kind`: Venue instrument, token contract, or economic asset.
-- `namespace`: Venue, chain, or economic-asset registry.
-- `native_key`: Native instrument id, chain/address pair, or asset id.
+- venue key, venue-native instrument id, and listing incarnation;
+- chain id plus contract address; or
+- economic-asset registry plus asset id.
 
 `IdentityMapping` fields:
 
@@ -142,17 +162,27 @@ Prevents symbol reuse, migration, and rebrand histories from being conflated.
 - `retrieval_time`: When Bolt received the assertion.
 - `status`: Active, superseded, disputed, or retracted.
 - `confidence`: Declared evidence confidence, not a causal probability.
-- `evidence_refs`: Archival or retrieval-time-attested evidence.
+- `evidence`: Typed evidence kinds bound to assertion ids in the exact
+  Genesis-registered temporal history.
 - `splice_rule`: Explicit allow/deny and transformation for continuous series.
 
-Ticker-only joins are invalid.
+Ticker-only joins are invalid. Mapping identity and clocks must match their
+registered assertions. The assertion predicate, validity interval, evidence
+kinds, endpoints, status, confidence, and splice rule are one content
+commitment; an unregistered local assertion array has no authority.
+Two active mappings from one identity to different targets cannot overlap in
+event time. Rebrands and migrations therefore remain explicit, time-bounded
+mapping histories rather than implicit series merges.
 
 ## TemporalAssertion
 
 Append-only fact used for universe, labels, mappings, or authoritative outcomes.
 
 - `assertion_id`: Content-derived identifier.
-- `subject_id` / `predicate` / `value`: Typed fact.
+- `subject_id` / `predicate` / `value`: Typed fact; predicates distinguish
+  symbol, listing status, roster status, and identity-mapping evidence. Mapping
+  evidence values bind the mapping commitment to the exact evidence kind;
+  predicate/value combinations outside this closed type matrix are invalid.
 - `valid_time`: Event-time applicability.
 - `publication_time`: Original or first-known publication time when evidenced.
 - `availability_time`: Earliest evidenced availability to the experiment.
@@ -164,12 +194,23 @@ Append-only fact used for universe, labels, mappings, or authoritative outcomes.
 
 `retrieval_time_attested` facts cannot support contemporaneous-availability or
 predictive claims.
+An active assertion is original. A correction, retraction, or dispute is a new
+assertion that references an earlier assertion with the same subject and
+predicate; the prior bytes are never rewritten.
+Revision retrieval clocks are strictly increasing. A content-valid local array
+does not confer append authority: use requires an opaque Genesis-bound
+registered-history capability matching the exact history hash, head, and
+committed use time. Retracted, disputed, and superseded assertions cannot
+support claims; only a current leaf without a contradictory overlapping current
+fact may be used under its availability class. Multiple identity-evidence leaves
+are additive only when they carry the same mapping commitment.
 
 ## SourceRegisterEntry
 
 The dataset-specific admission decision. Provider brand is insufficient.
 
 - `source_entry_id` / `source_entry_version`: Immutable identity and version.
+- `input_vintage_cutoff`: Latest input vintage the entry may cover.
 - `dataset_product_version`: Exact dataset and version.
 - `upstream_provenance`: Original source and transformations.
 - `query_and_fields`: Exact acquisition/query contract.
@@ -180,7 +221,9 @@ The dataset-specific admission decision. Provider brand is insufficient.
   payload, completeness, correction, and NT mapping evidence.
 - `cost_status`: Zero-cost verified, quoted, paid-authorized, or unknown.
 - `retained_artifact_refs`: Exact raw or lossless normalized inputs.
-- `reviewer` / `decision_time` / `expiry_time`: Admission governance.
+- `reviewer` / `decision_time` / `expiry_time`: Admission governance; the
+  decision follows the input-vintage cutoff and every included correction
+  retrieval time.
 - `state`: Active, quarantined, revoked, or expired.
 - `allowed_claims` / `forbidden_claims`: Non-expandable evidence limits.
 
@@ -193,6 +236,26 @@ quarantined -> revoked | expired
 
 Re-admission creates a new version and a complete new evidence packet; it does
 not reactivate the old entry.
+
+Source-register semantic hashes canonicalize set-like fields before hashing;
+retained-artifact URIs are unique and their total order includes URI, content
+hash, and representation. Ordered transformations remain hash-significant.
+Canonical or confirmatory use
+requires an opaque capability binding committed Genesis, the active current
+source-register version and predecessor, the exact entry hash, retained
+artifact hashes, and the trusted observation clock.
+
+The Slice-2 `register-source` command instead accepts a distinct deny-unknown
+`pump-research-source-policy-candidate.v1` TOML wire. That pre-Genesis wire has
+no retained-artifact, measured-coverage, correction, lifecycle, source-version,
+or observation-time fields. Requested coverage contains policy bounds without
+evidence references, and fidelity is a set of typed requirements rather than
+claimed evidence. Rights and cost references remain policy/legal authorization
+inputs, not E0 market-data evidence. It returns only
+`policy_only_pending_genesis` with zero provider calls, zero spend, and
+`confirmatory_eligible = false`. Supplying full source-register or E0 metadata
+fields fails parsing; later Slice-3 code is
+the only planned constructor of the verified capability.
 
 ## EvidenceArtifact
 
@@ -302,7 +365,7 @@ status. Delivery is impossible until its checkpoint is closed.
 `Episode` fields:
 
 - `episode_id`: Stable semantic identity across repeated executions.
-- `frame_id` / `roster_unit_id` / `venue_instrument_id`: Scope.
+- `frame_id` / `roster_unit_id` / `venue_instrument_identity`: Scope.
 - `event_anchor`: Frozen anchor clock.
 - `feature_cutoff`: Last observation eligible for trigger features.
 - `trigger_completion_time`: Time all trigger conditions become known.

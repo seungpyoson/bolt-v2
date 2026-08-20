@@ -1,7 +1,11 @@
 use std::{fs, process::Command};
 
 use backtesting_vertical_slice::research_experiment::{
-    CallerIdentity, EvidenceState, ExperimentError, load_and_validate_experiment, match_caller_role,
+    AssertionPredicate, AssertionState, AssertionValue, AvailabilityStatus, CallerIdentity,
+    EvidenceConfidence, EvidenceState, ExperimentError, IdentityEvidence, IdentityEvidenceKind,
+    IdentityMapping, IdentityMappingStatus, IdentityNativeKey, IdentityNode, SeriesSpliceRule,
+    TemporalAssertion, TimeInterval, load_and_validate_experiment, match_caller_role,
+    validate_identity_graph,
 };
 
 fn fixture_path() -> std::path::PathBuf {
@@ -119,6 +123,21 @@ fn strict_toml_rejects_unknown_top_level_field() {
         load_and_validate_experiment(&path).unwrap_err(),
         ExperimentError::Parse(_)
     ));
+}
+
+#[test]
+fn definition_rejects_unimplemented_roster_algorithms() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let path = dir.path().join("unsupported-roster.toml");
+    fs::write(
+        &path,
+        production_text().replace(
+            "time_unit_grain = \"utc-day\"",
+            "time_unit_grain = \"future-window\"",
+        ),
+    )
+    .expect("write fixture");
+    assert!(load_and_validate_experiment(&path).is_err());
 }
 
 #[test]
@@ -395,6 +414,24 @@ fn semantic_hash_ignores_set_order_and_recorded_creation_time() {
 }
 
 #[test]
+fn inventory_source_precedence_is_semantic() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let first_path = temp.path().join("first.toml");
+    let second_path = temp.path().join("second.toml");
+    let first: toml::Value = toml::from_str(&production_text()).expect("experiment TOML");
+    let mut second = first.clone();
+    second["target_frame"]["inventory_source_refs"]
+        .as_array_mut()
+        .expect("inventory bindings")
+        .reverse();
+    fs::write(&first_path, toml::to_string(&first).expect("first TOML")).expect("first");
+    fs::write(&second_path, toml::to_string(&second).expect("second TOML")).expect("second");
+    let first = load_and_validate_experiment(&first_path).expect("first experiment");
+    let second = load_and_validate_experiment(&second_path).expect("second experiment");
+    assert_ne!(first.semantic_hash, second.semantic_hash);
+}
+
+#[test]
 fn terminal_evidence_state_rejects_promotion() {
     assert!(
         EvidenceState::Expired
@@ -409,10 +446,15 @@ fn cli_has_no_provider_or_alternate_replay_surface() {
     let help = Command::new(binary).arg("--help").output().expect("help");
     assert!(help.status.success());
     let help = String::from_utf8(help.stdout).expect("UTF-8");
-    assert!(help.contains("validate") && help.contains("register-version"));
+    assert!(
+        help.contains("validate")
+            && help.contains("register-version")
+            && help.contains("register-source")
+    );
     for forbidden in ["provider-login", "quote", "purchase", "query", "replay"] {
         assert!(!help.contains(forbidden), "unexpected command {forbidden}");
     }
+    assert!(!help.contains("observed-at"));
     let rejected = Command::new(binary)
         .arg("provider-query")
         .output()
@@ -433,4 +475,268 @@ fn cli_has_no_provider_or_alternate_replay_surface() {
         serde_json::from_slice(&invalid_definition.stderr).expect("structured validation failure");
     assert_eq!(invalid_definition["status"], "error");
     assert_eq!(invalid_definition["reason_code"], "validation_failed");
+
+    let invalid_source = Command::new(binary)
+        .args([
+            "register-source",
+            "--source-entry",
+            "missing-source-entry.toml",
+        ])
+        .output()
+        .expect("source staging failure");
+    assert!(!invalid_source.status.success());
+    let invalid_source: serde_json::Value =
+        serde_json::from_slice(&invalid_source.stderr).expect("structured source failure");
+    assert_eq!(invalid_source["status"], "error");
+    assert_eq!(invalid_source["reason_code"], "source_admission_failed");
+}
+
+fn venue_identity(instrument_id: &str) -> IdentityNode {
+    IdentityNode::new(IdentityNativeKey::VenueInstrument {
+        venue_key: "venue-a".to_string(),
+        instrument_id: instrument_id.to_string(),
+        listing_incarnation: format!("listing-{instrument_id}"),
+    })
+    .expect("venue identity")
+}
+
+fn economic_identity(asset_id: &str) -> IdentityNode {
+    IdentityNode::new(IdentityNativeKey::EconomicAsset {
+        registry_key: "synthetic-registry".to_string(),
+        asset_id: asset_id.to_string(),
+    })
+    .expect("economic identity")
+}
+
+fn token_identity(address: &str) -> IdentityNode {
+    IdentityNode::new(IdentityNativeKey::TokenContract {
+        chain_id: "chain-a".to_string(),
+        contract_address: address.to_string(),
+    })
+    .expect("token identity")
+}
+
+#[test]
+fn identity_graph_rejects_ticker_only_joins_and_requires_explicit_splicing() {
+    assert!(
+        IdentityNode::new(IdentityNativeKey::TokenContract {
+            chain_id: "chain-a".to_string(),
+            contract_address: "BTC".to_string(),
+        })
+        .is_err()
+    );
+    let venue = venue_identity("instrument-123");
+    let asset = economic_identity("asset-456");
+    let nodes = vec![venue.clone(), asset.clone()];
+    let mut mapping = IdentityMapping {
+        mapping_id: "mapping-a".to_string(),
+        from_identity_id: venue.identity_id,
+        to_identity_id: asset.identity_id,
+        valid_time: TimeInterval {
+            start_time: "2025-01-01T00:00:00Z".to_string(),
+            end_time: "2025-02-01T00:00:00Z".to_string(),
+        },
+        availability_time: "2025-01-01T01:00:00Z".to_string(),
+        retrieval_time: "2025-01-01T02:00:00Z".to_string(),
+        status: IdentityMappingStatus::Active,
+        confidence: EvidenceConfidence::High,
+        evidence: vec![IdentityEvidence {
+            kind: IdentityEvidenceKind::TickerLabel,
+            assertion_id: "assertion-ticker-label".to_string(),
+        }],
+        splice_rule: SeriesSpliceRule::Denied {
+            reason: "No continuous series across identities.".to_string(),
+        },
+    };
+
+    assert!(matches!(
+        validate_identity_graph(&nodes, &[mapping.clone()], &[], None),
+        Err(ExperimentError::Validation {
+            field: "identity.evidence",
+            ..
+        })
+    ));
+    mapping.evidence.push(IdentityEvidence {
+        kind: IdentityEvidenceKind::VenueMetadata,
+        assertion_id: "assertion-venue-instrument-123".to_string(),
+    });
+    assert!(matches!(
+        validate_identity_graph(&nodes, &[mapping], &[], None),
+        Err(ExperimentError::Validation {
+            field: "assertion.registered_evidence",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn symbol_reuse_rebrand_and_delist_relist_remain_temporal_assertions() {
+    let mut assertions = Vec::new();
+    for (subject, predicate, value, start, end) in [
+        (
+            "instrument-old",
+            AssertionPredicate::Symbol,
+            "ABC",
+            "2025-01-01T00:00:00Z",
+            "2025-02-01T00:00:00Z",
+        ),
+        (
+            "instrument-new",
+            AssertionPredicate::Symbol,
+            "ABC",
+            "2025-03-01T00:00:00Z",
+            "2025-04-01T00:00:00Z",
+        ),
+        (
+            "instrument-old",
+            AssertionPredicate::Symbol,
+            "XYZ",
+            "2025-02-01T00:00:00Z",
+            "2025-03-01T00:00:00Z",
+        ),
+        (
+            "instrument-old",
+            AssertionPredicate::ListingStatus,
+            "delisted",
+            "2025-02-01T00:00:00Z",
+            "2025-02-15T00:00:00Z",
+        ),
+        (
+            "instrument-old",
+            AssertionPredicate::ListingStatus,
+            "relisted",
+            "2025-02-15T00:00:00Z",
+            "2025-03-01T00:00:00Z",
+        ),
+    ] {
+        let mut assertion = temporal_assertion(
+            AssertionState::Active,
+            None,
+            AvailabilityStatus::ArchivallyAttested,
+            "2025-04-02T00:00:00Z",
+        );
+        assertion.subject_id = subject.to_string();
+        assertion.predicate = predicate;
+        assertion.value = AssertionValue::Text {
+            value: value.to_string(),
+        };
+        assertion.valid_time = TimeInterval {
+            start_time: start.to_string(),
+            end_time: end.to_string(),
+        };
+        assertion.assertion_id = assertion.derived_id();
+        assertions.push(assertion);
+    }
+    assert!(
+        assertions
+            .iter()
+            .all(|assertion| assertion.assertion_id == assertion.derived_id())
+    );
+    assert_ne!(assertions[0].subject_id, assertions[1].subject_id);
+}
+
+fn temporal_assertion(
+    state: AssertionState,
+    revision_of: Option<&str>,
+    availability_status: AvailabilityStatus,
+    retrieval_time: &str,
+) -> TemporalAssertion {
+    let mut assertion = TemporalAssertion {
+        assertion_id: String::new(),
+        subject_id: "venue-instrument-a".to_string(),
+        predicate: AssertionPredicate::ListingStatus,
+        value: AssertionValue::Text {
+            value: "listed".to_string(),
+        },
+        valid_time: TimeInterval {
+            start_time: "2025-01-01T00:00:00Z".to_string(),
+            end_time: "2025-02-01T00:00:00Z".to_string(),
+        },
+        publication_time: (availability_status == AvailabilityStatus::ArchivallyAttested)
+            .then(|| "2024-12-31T20:00:00Z".to_string()),
+        availability_time: (availability_status == AvailabilityStatus::ArchivallyAttested)
+            .then(|| "2024-12-31T21:00:00Z".to_string()),
+        retrieval_time: retrieval_time.to_string(),
+        availability_status,
+        revision_of: revision_of.map(str::to_string),
+        assertion_state: state,
+        evidence_refs: vec!["archive://listing-status".to_string()],
+    };
+    assertion.assertion_id = assertion.derived_id();
+    assertion
+}
+
+#[test]
+fn temporal_assertions_are_append_only_and_retrieval_attestation_limits_claims() {
+    let original = temporal_assertion(
+        AssertionState::Active,
+        None,
+        AvailabilityStatus::ArchivallyAttested,
+        "2025-01-02T00:00:00Z",
+    );
+    let correction = temporal_assertion(
+        AssertionState::Corrected,
+        Some(&original.assertion_id),
+        AvailabilityStatus::RetrievalTimeAttested,
+        "2025-01-03T00:00:00Z",
+    );
+    assert_eq!(
+        correction.availability_status,
+        AvailabilityStatus::RetrievalTimeAttested
+    );
+    assert_eq!(
+        correction.revision_of.as_deref(),
+        Some(original.assertion_id.as_str())
+    );
+}
+
+#[test]
+fn identity_migrations_cannot_overlap_conflicting_active_mappings() {
+    let token = token_identity("0x1111111111111111111111111111111111111111");
+    let asset_a = economic_identity("asset-a");
+    let asset_b = economic_identity("asset-b");
+    let nodes = vec![token.clone(), asset_a.clone(), asset_b.clone()];
+    let mapping = |mapping_id: &str, to_identity_id: &str, start_time: &str, end_time: &str| {
+        IdentityMapping {
+            mapping_id: mapping_id.to_string(),
+            from_identity_id: token.identity_id.clone(),
+            to_identity_id: to_identity_id.to_string(),
+            valid_time: TimeInterval {
+                start_time: start_time.to_string(),
+                end_time: end_time.to_string(),
+            },
+            availability_time: "2025-01-01T00:00:00Z".to_string(),
+            retrieval_time: "2025-01-02T00:00:00Z".to_string(),
+            status: IdentityMappingStatus::Active,
+            confidence: EvidenceConfidence::High,
+            evidence: vec![IdentityEvidence {
+                kind: IdentityEvidenceKind::ChainRegistry,
+                assertion_id: format!("assertion-{mapping_id}"),
+            }],
+            splice_rule: SeriesSpliceRule::Denied {
+                reason: "Separate economic series.".to_string(),
+            },
+        }
+    };
+    let mappings = vec![
+        mapping(
+            "mapping-a",
+            &asset_a.identity_id,
+            "2025-01-01T00:00:00Z",
+            "2025-02-01T00:00:00Z",
+        ),
+        mapping(
+            "mapping-b",
+            &asset_b.identity_id,
+            "2025-01-15T00:00:00Z",
+            "2025-03-01T00:00:00Z",
+        ),
+    ];
+    assert!(matches!(
+        validate_identity_graph(&nodes, &mappings, &[], None),
+        Err(ExperimentError::Validation {
+            field: "identity.valid_time",
+            ..
+        })
+    ));
 }

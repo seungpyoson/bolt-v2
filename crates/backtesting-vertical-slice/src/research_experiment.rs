@@ -29,6 +29,7 @@ use crate::{
         ResolvedArtifactRoot, S3ArtifactStoreCredentials,
     },
     hashing::{is_lowercase_sha256_hex, sha256_hex},
+    source_proof::VerifiedRegisteredSourceEvidence,
 };
 
 pub const EXPERIMENT_SCHEMA_VERSION: &str = "pump-research-experiment.v1";
@@ -102,7 +103,7 @@ enum ValidationMode {
     Fixture,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExperimentState {
     Draft,
@@ -140,7 +141,7 @@ pub enum HashAlgorithm {
     Sha256,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LineageRef {
     pub artifact_kind: StoreArtifactKind,
@@ -230,6 +231,41 @@ pub enum RosterCompleteness {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TimeUnitGrain {
+    UtcDay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum OuterRosterRule {
+    UnionOfAdmittedVintageInventories,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReconciliationRule {
+    IdentityFirstSourcePrecedenceV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum GeneralizationScope {
+    EnumeratedRosterWithinConfiguredFrame,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InventorySourceBinding {
+    pub source_ref: String,
+    pub source_entry_id: String,
+    pub source_entry_version: u32,
+    pub source_entry_content_hash: String,
+    pub manifest_hash: String,
+    pub coverage_hash: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetFramePolicy {
@@ -238,14 +274,1654 @@ pub struct TargetFramePolicy {
     pub market_family_keys: Vec<String>,
     pub start_time: String,
     pub end_time: String,
-    pub time_unit_grain: String,
-    pub outer_roster_rule: String,
+    pub time_unit_grain: TimeUnitGrain,
+    pub outer_roster_rule: OuterRosterRule,
     pub roster_vintage: String,
-    pub inventory_source_refs: Vec<String>,
-    pub reconciliation_rule: String,
+    pub inventory_source_refs: Vec<InventorySourceBinding>,
+    pub reconciliation_rule: ReconciliationRule,
     pub status_precedence: Vec<RosterStatus>,
+    pub generalization_scope: GeneralizationScope,
+}
+
+pub const ROSTER_MANIFEST_SCHEMA_VERSION: &str = "pump-research-roster-manifest.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimeInterval {
+    pub start_time: String,
+    pub end_time: String,
+}
+
+impl TimeInterval {
+    fn parsed(
+        &self,
+        field: &'static str,
+    ) -> Result<(DateTime<Utc>, DateTime<Utc>), ExperimentError> {
+        let start = parse_time(field, &self.start_time)?;
+        let end = parse_time(field, &self.end_time)?;
+        if start >= end {
+            return Err(invalid(field, "interval end must follow start"));
+        }
+        Ok((start, end))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RosterStatusReason {
+    MeasuredCoverage,
+    PolicyIneligible,
+    InventoryConflict,
+    UnverifiedExistence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoverageMetrics {
+    pub expected_count: u64,
+    pub observed_count: u64,
+    pub missing_count: u64,
+    pub duplicated_count: u64,
+    pub interrupted_intervals: Vec<TimeInterval>,
+}
+
+impl CoverageMetrics {
+    fn validate(
+        &self,
+        status: RosterStatus,
+        reason: RosterStatusReason,
+        time_unit: &TimeInterval,
+    ) -> Result<(), ExperimentError> {
+        if self.observed_count > self.expected_count
+            || self.missing_count != self.expected_count - self.observed_count
+        {
+            return Err(invalid(
+                "roster.coverage_metrics",
+                "observed and missing counts must exactly partition expected count",
+            ));
+        }
+        let (unit_start, unit_end) = time_unit.parsed("roster.time_unit")?;
+        let mut prior_end = None;
+        for interval in &self.interrupted_intervals {
+            let (start, end) = interval.parsed("roster.coverage_metrics.interrupted_intervals")?;
+            if start < unit_start || end > unit_end || prior_end.is_some_and(|prior| start < prior)
+            {
+                return Err(invalid(
+                    "roster.coverage_metrics.interrupted_intervals",
+                    "must be ordered, non-overlapping, and contained in the roster unit",
+                ));
+            }
+            prior_end = Some(end);
+        }
+        let status_consistent = match status {
+            RosterStatus::EligibleObserved => {
+                reason == RosterStatusReason::MeasuredCoverage
+                    && self.observed_count == self.expected_count
+                    && self.missing_count == 0
+                    && self.duplicated_count == 0
+                    && self.interrupted_intervals.is_empty()
+            }
+            RosterStatus::KnownIneligible => {
+                reason == RosterStatusReason::PolicyIneligible && self.observed_count == 0
+            }
+            RosterStatus::KnownInsufficientCoverage => {
+                reason == RosterStatusReason::MeasuredCoverage
+                    && (self.missing_count > 0
+                        || self.duplicated_count > 0
+                        || !self.interrupted_intervals.is_empty())
+            }
+            RosterStatus::ExistenceOrCoverageUnknown => {
+                matches!(
+                    reason,
+                    RosterStatusReason::UnverifiedExistence | RosterStatusReason::InventoryConflict
+                ) && self.missing_count > 0
+            }
+        };
+        if !status_consistent {
+            return Err(invalid(
+                "roster.coverage_metrics",
+                "coverage and reason contradict the declared four-state status",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InventoryObservation {
+    pub observation_id: String,
+    pub source_ref: String,
+    pub frame_id: String,
+    pub venue_key: String,
+    pub market_family_key: String,
+    pub venue_instrument_identity: IdentityNode,
+    pub time_unit: TimeInterval,
+    pub proposed_status: RosterStatus,
+    pub status_reason: RosterStatusReason,
+    pub coverage_metrics: CoverageMetrics,
+    pub assertion_refs: Vec<String>,
+}
+
+pub const INVENTORY_MANIFEST_SCHEMA_VERSION: &str = "pump-research-inventory-manifest.v1";
+pub const INVENTORY_COVERAGE_SCHEMA_VERSION: &str = "pump-research-inventory-coverage.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InventoryCoverageArtifact {
+    pub schema_version: String,
+    pub coverage_id: String,
+    pub frame_id: String,
+    pub source_entry_id: String,
+    pub source_entry_version: u32,
+    pub source_entry_content_hash: String,
+    pub roster_vintage: String,
+    pub expected_unit_count: u64,
+    pub enumerated_unit_count: u64,
     pub completeness: RosterCompleteness,
-    pub disclosure_text: String,
+    pub evidence_hashes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InventoryManifestArtifact {
+    pub schema_version: String,
+    pub source_ref: String,
+    pub frame_id: String,
+    pub roster_vintage: String,
+    pub coverage: InventoryCoverageArtifact,
+    pub observations: Vec<InventoryObservation>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct VerifiedInventoryManifest {
+    experiment_content_hash: String,
+    target_frame_content_hash: String,
+    source_ref: String,
+    completeness: RosterCompleteness,
+    observations: Vec<InventoryObservation>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct VerifiedInventoryCoverageEvidence {
+    experiment_content_hash: String,
+    target_frame_content_hash: String,
+    source_entry_id: String,
+    source_entry_version: u32,
+    source_entry_content_hash: String,
+    coverage_hash: String,
+    expected_unit_count: u64,
+    enumerated_roster_hash: String,
+    completeness: RosterCompleteness,
+    evidence_hashes: Vec<String>,
+    verified_assertion_ids: BTreeSet<String>,
+    temporal_history_hash: String,
+    registered_temporal_head_id: String,
+    current_head: bool,
+    genesis_commitment_hash: String,
+}
+
+impl VerifiedInventoryCoverageEvidence {
+    #[cfg(test)]
+    fn synthetic(
+        experiment_content_hash: &str,
+        frame: &TargetFramePolicy,
+        binding: &InventorySourceBinding,
+        expected_unit_count: u64,
+        trusted_observations: &[InventoryObservation],
+        completeness: RosterCompleteness,
+        evidence_hashes: Vec<String>,
+        temporal_evidence: &VerifiedTemporalAssertionHistoryEvidence,
+    ) -> Self {
+        validate_temporal_assertion_chain(
+            &temporal_evidence.registered_history,
+            Some(temporal_evidence),
+        )
+        .expect("synthetic registered temporal history");
+        let verified_assertion_ids = trusted_observations
+            .iter()
+            .flat_map(|observation| observation.assertion_refs.iter().cloned())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            trusted_observations
+                .iter()
+                .all(|observation| temporal_evidence.verifies_roster_observation(observation))
+        );
+        Self {
+            experiment_content_hash: experiment_content_hash.to_string(),
+            target_frame_content_hash: target_frame_content_hash(frame)
+                .expect("synthetic target frame"),
+            source_entry_id: binding.source_entry_id.clone(),
+            source_entry_version: binding.source_entry_version,
+            source_entry_content_hash: binding.source_entry_content_hash.clone(),
+            coverage_hash: binding.coverage_hash.clone(),
+            expected_unit_count,
+            enumerated_roster_hash: inventory_roster_key_hash(trusted_observations)
+                .expect("synthetic roster keys"),
+            completeness,
+            evidence_hashes,
+            verified_assertion_ids,
+            temporal_history_hash: temporal_evidence.history_hash.clone(),
+            registered_temporal_head_id: temporal_evidence.registered_head_id.clone(),
+            current_head: true,
+            genesis_commitment_hash: "a".repeat(64),
+        }
+    }
+}
+
+impl VerifiedRegisteredSourceEvidence {
+    /// Loads and verifies inventory bytes only after registered source authority.
+    pub fn load_and_verify_inventory_manifest(
+        self,
+        coverage_evidence: VerifiedInventoryCoverageEvidence,
+        experiment_content_hash: &str,
+        frame: &TargetFramePolicy,
+        binding: &InventorySourceBinding,
+        load_manifest: impl FnOnce() -> Result<Vec<u8>, ExperimentError>,
+    ) -> Result<VerifiedInventoryManifest, ExperimentError> {
+        validate_inventory_manifest_authority(
+            experiment_content_hash,
+            frame,
+            binding,
+            &self,
+            &coverage_evidence,
+        )?;
+        let manifest_bytes = load_manifest()?;
+        verify_inventory_manifest(
+            experiment_content_hash,
+            frame,
+            binding,
+            &manifest_bytes,
+            &coverage_evidence,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RosterConflictReason {
+    pub selected_observation_id: String,
+    pub rejected_observation_id: String,
+    pub selected_status: RosterStatus,
+    pub rejected_status: RosterStatus,
+    pub selected_reason: RosterStatusReason,
+    pub rejected_reason: RosterStatusReason,
+    pub selected_coverage_metrics: CoverageMetrics,
+    pub rejected_coverage_metrics: CoverageMetrics,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RosterUnit {
+    pub roster_unit_id: String,
+    pub frame_id: String,
+    pub venue_key: String,
+    pub market_family_key: String,
+    pub venue_instrument_identity: IdentityNode,
+    pub time_unit: TimeInterval,
+    pub status: RosterStatus,
+    pub status_reason: RosterStatusReason,
+    pub coverage_metrics: CoverageMetrics,
+    pub assertion_refs: Vec<String>,
+    pub conflict_reasons: Vec<RosterConflictReason>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RosterStatusCounts {
+    pub eligible_observed: u64,
+    pub known_ineligible: u64,
+    pub known_insufficient_coverage: u64,
+    pub existence_or_coverage_unknown: u64,
+}
+
+impl RosterStatusCounts {
+    fn record(&mut self, status: RosterStatus) {
+        match status {
+            RosterStatus::EligibleObserved => self.eligible_observed += 1,
+            RosterStatus::KnownIneligible => self.known_ineligible += 1,
+            RosterStatus::KnownInsufficientCoverage => {
+                self.known_insufficient_coverage += 1;
+            }
+            RosterStatus::ExistenceOrCoverageUnknown => {
+                self.existence_or_coverage_unknown += 1;
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn total(self) -> u64 {
+        self.eligible_observed
+            + self.known_ineligible
+            + self.known_insufficient_coverage
+            + self.existence_or_coverage_unknown
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RosterManifest {
+    pub schema_version: String,
+    pub frame_id: String,
+    pub units: Vec<RosterUnit>,
+    pub denominator: u64,
+    pub status_counts: RosterStatusCounts,
+    pub attrition: RosterAttrition,
+    pub completeness: RosterCompleteness,
+    pub generalization_scope: GeneralizationScope,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RosterAttrition {
+    pub starting_denominator: u64,
+    pub eligible_observed: u64,
+    pub known_ineligible: u64,
+    pub known_insufficient_coverage: u64,
+    pub existence_or_coverage_unknown: u64,
+}
+
+#[derive(Serialize)]
+struct RosterUnitIdentity<'a> {
+    frame_id: &'a str,
+    venue_key: &'a str,
+    market_family_key: &'a str,
+    venue_instrument_identity_id: &'a str,
+    time_unit: &'a TimeInterval,
+}
+
+fn verify_inventory_manifest(
+    experiment_content_hash: &str,
+    frame: &TargetFramePolicy,
+    binding: &InventorySourceBinding,
+    manifest_bytes: &[u8],
+    coverage_evidence: &VerifiedInventoryCoverageEvidence,
+) -> Result<VerifiedInventoryManifest, ExperimentError> {
+    if sha256_hex(manifest_bytes) != binding.manifest_hash {
+        return Err(invalid(
+            "target_frame.inventory_source_refs.manifest_hash",
+            "does not match the exact inventory manifest bytes",
+        ));
+    }
+    let manifest: InventoryManifestArtifact = serde_json::from_slice(manifest_bytes)
+        .map_err(|error| ExperimentError::Parse(error.to_string()))?;
+    if manifest.schema_version != INVENTORY_MANIFEST_SCHEMA_VERSION
+        || manifest.source_ref != binding.source_ref
+        || manifest.frame_id != frame.frame_id
+        || manifest.roster_vintage != frame.roster_vintage
+        || manifest.coverage.schema_version != INVENTORY_COVERAGE_SCHEMA_VERSION
+        || manifest.coverage.frame_id != frame.frame_id
+        || manifest.coverage.source_entry_id != binding.source_entry_id
+        || manifest.coverage.source_entry_version != binding.source_entry_version
+        || manifest.coverage.source_entry_content_hash != binding.source_entry_content_hash
+        || manifest.coverage.roster_vintage != frame.roster_vintage
+    {
+        return Err(invalid(
+            "inventory_manifest",
+            "manifest identity does not match its hash-bound target-frame binding",
+        ));
+    }
+    for hash_value in [
+        binding.source_entry_content_hash.as_str(),
+        binding.manifest_hash.as_str(),
+        binding.coverage_hash.as_str(),
+    ] {
+        hash("target_frame.inventory_source_refs", hash_value)?;
+    }
+    let coverage_hash = inventory_coverage_hash(&manifest.coverage)?;
+    if manifest.coverage.coverage_id != format!("coverage-{coverage_hash}")
+        || binding.coverage_hash != coverage_hash
+        || manifest.coverage.enumerated_unit_count
+            != u64::try_from(manifest.observations.len()).map_err(|_| {
+                invalid(
+                    "inventory_manifest.observations",
+                    "observation count does not fit u64",
+                )
+            })?
+        || manifest.coverage.expected_unit_count < manifest.coverage.enumerated_unit_count
+        || (manifest.coverage.completeness == RosterCompleteness::ProvenComplete
+            && manifest.coverage.expected_unit_count != manifest.coverage.enumerated_unit_count)
+        || manifest.coverage.expected_unit_count != coverage_evidence.expected_unit_count
+        || manifest.coverage.completeness != coverage_evidence.completeness
+    {
+        return Err(invalid(
+            "inventory_manifest.coverage",
+            "coverage proof, counts, or completeness do not match the manifest",
+        ));
+    }
+    unique(
+        "inventory_manifest.coverage.evidence_hashes",
+        &manifest.coverage.evidence_hashes,
+    )?;
+    if manifest
+        .coverage
+        .evidence_hashes
+        .iter()
+        .any(|value| !is_lowercase_sha256_hex(value))
+    {
+        return Err(invalid(
+            "inventory_manifest.coverage.evidence_hashes",
+            "must contain SHA-256 evidence identities",
+        ));
+    }
+    let mut manifest_evidence_hashes = manifest.coverage.evidence_hashes.clone();
+    manifest_evidence_hashes.sort();
+    let mut verified_evidence_hashes = coverage_evidence.evidence_hashes.clone();
+    verified_evidence_hashes.sort();
+    if manifest_evidence_hashes != verified_evidence_hashes {
+        return Err(invalid(
+            "inventory_manifest.coverage.evidence_hashes",
+            "do not match the verified registered evidence set",
+        ));
+    }
+    let frame_start = parse_time("target_frame.start_time", &frame.start_time)?;
+    let frame_end = parse_time("target_frame.end_time", &frame.end_time)?;
+    let mut observation_ids = BTreeSet::new();
+    let mut roster_keys = BTreeSet::new();
+    for observation in &manifest.observations {
+        validate_observation_identity(observation)?;
+        if observation.source_ref != binding.source_ref
+            || observation.frame_id != frame.frame_id
+            || !frame.venue_keys.contains(&observation.venue_key)
+            || !frame
+                .market_family_keys
+                .contains(&observation.market_family_key)
+            || !observation_ids.insert(observation.observation_id.as_str())
+        {
+            return Err(invalid(
+                "inventory_manifest.observations",
+                "observation identity or scope does not match the bound manifest",
+            ));
+        }
+        let (unit_start, unit_end) = observation.time_unit.parsed("roster.time_unit")?;
+        if unit_start < frame_start
+            || unit_end > frame_end
+            || !roster_keys.insert((
+                observation.venue_key.as_str(),
+                observation.market_family_key.as_str(),
+                observation.venue_instrument_identity.identity_id.as_str(),
+                observation.time_unit.clone(),
+            ))
+        {
+            return Err(invalid(
+                "inventory_manifest.observations",
+                "contains an out-of-frame or duplicate roster key",
+            ));
+        }
+        observation.coverage_metrics.validate(
+            observation.proposed_status,
+            observation.status_reason,
+            &observation.time_unit,
+        )?;
+        unique("roster.assertion_refs", &observation.assertion_refs)?;
+        if observation.assertion_refs.is_empty()
+            || observation.assertion_refs.iter().any(|assertion_id| {
+                !coverage_evidence
+                    .verified_assertion_ids
+                    .contains(assertion_id)
+            })
+        {
+            return Err(invalid(
+                "roster.assertion_refs",
+                "must resolve through the verified coverage evidence",
+            ));
+        }
+    }
+    if inventory_roster_key_hash(&manifest.observations)?
+        != coverage_evidence.enumerated_roster_hash
+    {
+        return Err(invalid(
+            "inventory_manifest.coverage",
+            "enumerated roster does not match the independently verified coverage universe",
+        ));
+    }
+    Ok(VerifiedInventoryManifest {
+        experiment_content_hash: experiment_content_hash.to_string(),
+        target_frame_content_hash: target_frame_content_hash(frame)?,
+        source_ref: manifest.source_ref,
+        completeness: manifest.coverage.completeness,
+        observations: manifest.observations,
+    })
+}
+
+fn validate_inventory_manifest_authority(
+    experiment_content_hash: &str,
+    frame: &TargetFramePolicy,
+    binding: &InventorySourceBinding,
+    source_evidence: &VerifiedRegisteredSourceEvidence,
+    coverage_evidence: &VerifiedInventoryCoverageEvidence,
+) -> Result<(), ExperimentError> {
+    validate_frame(frame)?;
+    hash("experiment_content_hash", experiment_content_hash)?;
+    if !source_evidence.matches_registered_source(
+        &binding.source_entry_id,
+        binding.source_entry_version,
+        &binding.source_entry_content_hash,
+    ) {
+        return Err(invalid(
+            "inventory_manifest.source_entry",
+            "requires active, current, Genesis-bound registered source evidence",
+        ));
+    }
+    let evidence_observed = parse_time(
+        "inventory_manifest.source_evidence.verified_use_time",
+        source_evidence.verified_use_time(),
+    )?;
+    let roster_vintage = parse_time("target_frame.roster_vintage", &frame.roster_vintage)?;
+    if roster_vintage > evidence_observed {
+        return Err(invalid(
+            "inventory_manifest.roster_vintage",
+            "cannot follow registered evidence observation time",
+        ));
+    }
+    let frame_hash = target_frame_content_hash(frame)?;
+    if coverage_evidence.experiment_content_hash != experiment_content_hash
+        || coverage_evidence.target_frame_content_hash != frame_hash
+        || coverage_evidence.source_entry_id != binding.source_entry_id
+        || coverage_evidence.source_entry_version != binding.source_entry_version
+        || coverage_evidence.source_entry_content_hash != binding.source_entry_content_hash
+        || coverage_evidence.coverage_hash != binding.coverage_hash
+        || !coverage_evidence.current_head
+        || !is_lowercase_sha256_hex(&coverage_evidence.genesis_commitment_hash)
+        || coverage_evidence.evidence_hashes.is_empty()
+        || coverage_evidence
+            .evidence_hashes
+            .iter()
+            .any(|value| !is_lowercase_sha256_hex(value))
+        || coverage_evidence.verified_assertion_ids.is_empty()
+        || !is_lowercase_sha256_hex(&coverage_evidence.temporal_history_hash)
+        || coverage_evidence.registered_temporal_head_id.is_empty()
+    {
+        return Err(invalid(
+            "inventory_manifest.coverage_evidence",
+            "must match the current Genesis-bound experiment, frame, source, and coverage",
+        ));
+    }
+    Ok(())
+}
+
+fn target_frame_content_hash(frame: &TargetFramePolicy) -> Result<String, ExperimentError> {
+    serde_json::to_vec(frame)
+        .map(|bytes| sha256_hex(&bytes))
+        .map_err(|error| ExperimentError::Registration(error.to_string()))
+}
+
+fn inventory_roster_key_hash(
+    observations: &[InventoryObservation],
+) -> Result<String, ExperimentError> {
+    let mut keys = observations
+        .iter()
+        .map(|observation| {
+            (
+                observation.venue_key.as_str(),
+                observation.market_family_key.as_str(),
+                observation.venue_instrument_identity.identity_id.as_str(),
+                &observation.time_unit,
+            )
+        })
+        .collect::<Vec<_>>();
+    keys.sort();
+    serde_json::to_vec(&keys)
+        .map(|bytes| sha256_hex(&bytes))
+        .map_err(|error| ExperimentError::Registration(error.to_string()))
+}
+
+fn inventory_coverage_hash(
+    coverage: &InventoryCoverageArtifact,
+) -> Result<String, ExperimentError> {
+    let mut canonical = coverage.clone();
+    canonical.coverage_id.clear();
+    canonical.evidence_hashes.sort();
+    serde_json::to_vec(&canonical)
+        .map(|bytes| sha256_hex(&bytes))
+        .map_err(|error| ExperimentError::Registration(error.to_string()))
+}
+
+/// Reconciles admitted inventory observations into one deterministic roster R.
+///
+/// Configured inventory-source precedence is applied first, followed by status
+/// precedence and stable observation identity. Every resulting unit contributes
+/// exactly once to the released denominator.
+pub fn build_roster_manifest(
+    experiment_content_hash: &str,
+    frame: &TargetFramePolicy,
+    manifests: Vec<VerifiedInventoryManifest>,
+) -> Result<RosterManifest, ExperimentError> {
+    validate_frame(frame)?;
+    hash("experiment_content_hash", experiment_content_hash)?;
+    if manifests.len() != frame.inventory_source_refs.len() {
+        return Err(invalid(
+            "roster.inventory_manifests",
+            "must contain exactly one verified manifest for every configured source",
+        ));
+    }
+    let frame_start = parse_time("target_frame.start_time", &frame.start_time)?;
+    let frame_end = parse_time("target_frame.end_time", &frame.end_time)?;
+    let frame_hash = target_frame_content_hash(frame)?;
+    let source_precedence = frame
+        .inventory_source_refs
+        .iter()
+        .enumerate()
+        .map(|(index, source)| (source.source_ref.as_str(), index))
+        .collect::<BTreeMap<_, _>>();
+    let status_precedence = frame
+        .status_precedence
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, status)| (status, index))
+        .collect::<BTreeMap<_, _>>();
+    type RosterKey = (String, String, IdentityNode, TimeInterval);
+    let mut grouped = BTreeMap::<RosterKey, Vec<InventoryObservation>>::new();
+    let mut observation_ids = BTreeSet::new();
+    let completeness = if manifests
+        .iter()
+        .any(|manifest| manifest.completeness == RosterCompleteness::Unknown)
+    {
+        RosterCompleteness::Unknown
+    } else if manifests
+        .iter()
+        .all(|manifest| manifest.completeness == RosterCompleteness::ProvenComplete)
+    {
+        RosterCompleteness::ProvenComplete
+    } else {
+        RosterCompleteness::EnumeratedIncomplete
+    };
+    let mut supplied_sources = BTreeSet::new();
+    for manifest in manifests {
+        if manifest.experiment_content_hash != experiment_content_hash
+            || manifest.target_frame_content_hash != frame_hash
+            || !supplied_sources.insert(manifest.source_ref.clone())
+            || !source_precedence.contains_key(manifest.source_ref.as_str())
+        {
+            return Err(invalid(
+                "roster.inventory_manifests",
+                "contains a duplicate or unconfigured inventory source",
+            ));
+        }
+        for observation in manifest.observations {
+            validate_observation_identity(&observation)?;
+            for (field, value) in [
+                ("roster.observation_id", observation.observation_id.as_str()),
+                ("roster.source_ref", observation.source_ref.as_str()),
+                (
+                    "roster.venue_instrument_identity.identity_id",
+                    observation.venue_instrument_identity.identity_id.as_str(),
+                ),
+            ] {
+                required(field, value)?;
+            }
+            if !observation_ids.insert(observation.observation_id.clone()) {
+                return Err(invalid("roster.observation_id", "must be unique"));
+            }
+            if observation.source_ref != manifest.source_ref
+                || observation.frame_id != frame.frame_id
+                || !frame.venue_keys.contains(&observation.venue_key)
+                || !frame
+                    .market_family_keys
+                    .contains(&observation.market_family_key)
+                || !source_precedence.contains_key(observation.source_ref.as_str())
+            {
+                return Err(invalid(
+                    "roster.observation",
+                    "observation lies outside the configured target frame",
+                ));
+            }
+            let (unit_start, unit_end) = observation.time_unit.parsed("roster.time_unit")?;
+            if unit_start < frame_start || unit_end > frame_end {
+                return Err(invalid(
+                    "roster.time_unit",
+                    "time unit lies outside the target-frame interval",
+                ));
+            }
+            if matches!(frame.time_unit_grain, TimeUnitGrain::UtcDay)
+                && (unit_end - unit_start != chrono::Duration::days(1)
+                    || unit_start.time() != chrono::NaiveTime::MIN)
+            {
+                return Err(invalid(
+                    "roster.time_unit",
+                    "UTC-day units must be midnight-aligned 24-hour intervals",
+                ));
+            }
+            observation.coverage_metrics.validate(
+                observation.proposed_status,
+                observation.status_reason,
+                &observation.time_unit,
+            )?;
+            unique("roster.assertion_refs", &observation.assertion_refs)?;
+            grouped
+                .entry((
+                    observation.venue_key.clone(),
+                    observation.market_family_key.clone(),
+                    observation.venue_instrument_identity.clone(),
+                    observation.time_unit.clone(),
+                ))
+                .or_default()
+                .push(observation);
+        }
+    }
+    if grouped.is_empty() {
+        return Err(invalid("roster.observations", "must not be empty"));
+    }
+
+    let mut units = Vec::with_capacity(grouped.len());
+    let mut status_counts = RosterStatusCounts::default();
+    for ((venue_key, market_family_key, venue_instrument_identity, time_unit), mut candidates) in
+        grouped
+    {
+        candidates.sort_by(|left, right| {
+            (
+                source_precedence[left.source_ref.as_str()],
+                status_precedence[&left.proposed_status],
+                &left.observation_id,
+            )
+                .cmp(&(
+                    source_precedence[right.source_ref.as_str()],
+                    status_precedence[&right.proposed_status],
+                    &right.observation_id,
+                ))
+        });
+        let selected = candidates
+            .first()
+            .expect("grouped roster candidates are non-empty");
+        let mut assertion_refs = candidates
+            .iter()
+            .flat_map(|candidate| candidate.assertion_refs.iter().cloned())
+            .collect::<Vec<_>>();
+        assertion_refs.sort();
+        assertion_refs.dedup();
+        let conflict_reasons = candidates
+            .iter()
+            .skip(1)
+            .filter(|candidate| {
+                candidate.proposed_status != selected.proposed_status
+                    || candidate.status_reason != selected.status_reason
+                    || candidate.coverage_metrics != selected.coverage_metrics
+            })
+            .map(|candidate| RosterConflictReason {
+                selected_observation_id: selected.observation_id.clone(),
+                rejected_observation_id: candidate.observation_id.clone(),
+                selected_status: selected.proposed_status,
+                rejected_status: candidate.proposed_status,
+                selected_reason: selected.status_reason,
+                rejected_reason: candidate.status_reason,
+                selected_coverage_metrics: selected.coverage_metrics.clone(),
+                rejected_coverage_metrics: candidate.coverage_metrics.clone(),
+            })
+            .collect::<Vec<_>>();
+        let identity = RosterUnitIdentity {
+            frame_id: &frame.frame_id,
+            venue_key: &venue_key,
+            market_family_key: &market_family_key,
+            venue_instrument_identity_id: &venue_instrument_identity.identity_id,
+            time_unit: &time_unit,
+        };
+        let roster_unit_id = sha256_hex(
+            &serde_json::to_vec(&identity)
+                .map_err(|error| ExperimentError::Parse(error.to_string()))?,
+        );
+        status_counts.record(selected.proposed_status);
+        units.push(RosterUnit {
+            roster_unit_id,
+            frame_id: frame.frame_id.clone(),
+            venue_key,
+            market_family_key,
+            venue_instrument_identity,
+            time_unit,
+            status: selected.proposed_status,
+            status_reason: selected.status_reason,
+            coverage_metrics: selected.coverage_metrics.clone(),
+            assertion_refs,
+            conflict_reasons,
+        });
+    }
+    let denominator = u64::try_from(units.len())
+        .map_err(|_| invalid("roster.denominator", "does not fit u64"))?;
+    if status_counts.total() != denominator {
+        return Err(invalid(
+            "roster.status_counts",
+            "four-state accounting does not equal the denominator",
+        ));
+    }
+    Ok(RosterManifest {
+        schema_version: ROSTER_MANIFEST_SCHEMA_VERSION.to_string(),
+        frame_id: frame.frame_id.clone(),
+        units,
+        denominator,
+        status_counts,
+        attrition: RosterAttrition {
+            starting_denominator: denominator,
+            eligible_observed: status_counts.eligible_observed,
+            known_ineligible: status_counts.known_ineligible,
+            known_insufficient_coverage: status_counts.known_insufficient_coverage,
+            existence_or_coverage_unknown: status_counts.existence_or_coverage_unknown,
+        },
+        completeness,
+        generalization_scope: frame.generalization_scope,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityKind {
+    VenueInstrument,
+    TokenContract,
+    EconomicAsset,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum IdentityNativeKey {
+    VenueInstrument {
+        venue_key: String,
+        instrument_id: String,
+        listing_incarnation: String,
+    },
+    TokenContract {
+        chain_id: String,
+        contract_address: String,
+    },
+    EconomicAsset {
+        registry_key: String,
+        asset_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityNode {
+    pub identity_id: String,
+    pub native_key: IdentityNativeKey,
+}
+
+fn validate_observation_identity(
+    observation: &InventoryObservation,
+) -> Result<(), ExperimentError> {
+    let identity = &observation.venue_instrument_identity;
+    validate_identity_native_key(&identity.native_key)?;
+    if identity.identity_id != identity_node_id(&identity.native_key) {
+        return Err(invalid(
+            "roster.venue_instrument_identity.identity_id",
+            "must be derived from the typed native identity",
+        ));
+    }
+    match &identity.native_key {
+        IdentityNativeKey::VenueInstrument { venue_key, .. }
+            if venue_key == &observation.venue_key =>
+        {
+            Ok(())
+        }
+        _ => Err(invalid(
+            "roster.venue_instrument_identity",
+            "must be a venue-instrument incarnation for the observation venue",
+        )),
+    }
+}
+
+impl IdentityNode {
+    pub fn new(native_key: IdentityNativeKey) -> Result<Self, ExperimentError> {
+        validate_identity_native_key(&native_key)?;
+        let identity_id = identity_node_id(&native_key);
+        Ok(Self {
+            identity_id,
+            native_key,
+        })
+    }
+
+    #[must_use]
+    pub const fn identity_kind(&self) -> IdentityKind {
+        match &self.native_key {
+            IdentityNativeKey::VenueInstrument { .. } => IdentityKind::VenueInstrument,
+            IdentityNativeKey::TokenContract { .. } => IdentityKind::TokenContract,
+            IdentityNativeKey::EconomicAsset { .. } => IdentityKind::EconomicAsset,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityMappingStatus {
+    Active,
+    Superseded,
+    Disputed,
+    Retracted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceConfidence {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityEvidenceKind {
+    VenueMetadata,
+    ChainRegistry,
+    IssuerDisclosure,
+    ArchivalSnapshot,
+    TickerLabel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityEvidence {
+    pub kind: IdentityEvidenceKind,
+    pub assertion_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SeriesSpliceRule {
+    Allowed {
+        transformation: String,
+        reason: String,
+    },
+    Denied {
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentityMapping {
+    pub mapping_id: String,
+    pub from_identity_id: String,
+    pub to_identity_id: String,
+    pub valid_time: TimeInterval,
+    pub availability_time: String,
+    pub retrieval_time: String,
+    pub status: IdentityMappingStatus,
+    pub confidence: EvidenceConfidence,
+    pub evidence: Vec<IdentityEvidence>,
+    pub splice_rule: SeriesSpliceRule,
+}
+
+impl IdentityMapping {
+    #[must_use]
+    pub fn evidence_commitment(&self) -> String {
+        #[derive(Serialize)]
+        struct MappingIdentity<'a> {
+            mapping_id: &'a str,
+            from_identity_id: &'a str,
+            to_identity_id: &'a str,
+            valid_time: &'a TimeInterval,
+            availability_time: &'a str,
+            retrieval_time: &'a str,
+            status: IdentityMappingStatus,
+            confidence: EvidenceConfidence,
+            splice_rule: &'a SeriesSpliceRule,
+            evidence_kinds: Vec<IdentityEvidenceKind>,
+        }
+
+        let mut evidence_kinds = self
+            .evidence
+            .iter()
+            .map(|evidence| evidence.kind)
+            .collect::<Vec<_>>();
+        evidence_kinds.sort();
+        let identity = MappingIdentity {
+            mapping_id: &self.mapping_id,
+            from_identity_id: &self.from_identity_id,
+            to_identity_id: &self.to_identity_id,
+            valid_time: &self.valid_time,
+            availability_time: &self.availability_time,
+            retrieval_time: &self.retrieval_time,
+            status: self.status,
+            confidence: self.confidence,
+            splice_rule: &self.splice_rule,
+            evidence_kinds,
+        };
+        format!(
+            "identity-mapping-{}",
+            sha256_hex(
+                &serde_json::to_vec(&identity)
+                    .expect("typed identity mapping serialization is infallible")
+            )
+        )
+    }
+}
+
+pub fn validate_identity_graph(
+    nodes: &[IdentityNode],
+    mappings: &[IdentityMapping],
+    assertions: &[TemporalAssertion],
+    registered_evidence: Option<&VerifiedTemporalAssertionHistoryEvidence>,
+) -> Result<(), ExperimentError> {
+    let mut node_ids = BTreeMap::new();
+    let mut native_ids = BTreeSet::new();
+    for node in nodes {
+        validate_identity_native_key(&node.native_key)?;
+        if node.identity_id != identity_node_id(&node.native_key) {
+            return Err(invalid(
+                "identity.identity_id",
+                "must be derived from the typed native identity",
+            ));
+        }
+        if node_ids.insert(node.identity_id.as_str(), node).is_some()
+            || !native_ids.insert(node.native_key.clone())
+        {
+            return Err(invalid("identity", "identity nodes must be unique"));
+        }
+    }
+    let mut mapping_ids = BTreeSet::new();
+    let mut active_ranges = BTreeMap::<&str, Vec<(&str, DateTime<Utc>, DateTime<Utc>)>>::new();
+    for mapping in mappings {
+        required("identity.mapping_id", &mapping.mapping_id)?;
+        if !mapping_ids.insert(mapping.mapping_id.as_str())
+            || mapping.from_identity_id == mapping.to_identity_id
+        {
+            return Err(invalid(
+                "identity.mapping",
+                "mapping identity must be unique",
+            ));
+        }
+        let Some(from) = node_ids.get(mapping.from_identity_id.as_str()) else {
+            return Err(invalid("identity.from_identity_id", "unknown identity"));
+        };
+        let Some(to) = node_ids.get(mapping.to_identity_id.as_str()) else {
+            return Err(invalid("identity.to_identity_id", "unknown identity"));
+        };
+        if from.identity_kind() == to.identity_kind() {
+            return Err(invalid(
+                "identity.mapping",
+                "mapping must connect distinct identity kinds",
+            ));
+        }
+        let (valid_from, valid_until) = mapping.valid_time.parsed("identity.valid_time")?;
+        let availability = parse_time("identity.availability_time", &mapping.availability_time)?;
+        let retrieval = parse_time("identity.retrieval_time", &mapping.retrieval_time)?;
+        if availability > retrieval {
+            return Err(invalid(
+                "identity.retrieval_time",
+                "must not precede evidenced availability",
+            ));
+        }
+        if mapping.status == IdentityMappingStatus::Active {
+            let ranges = active_ranges
+                .entry(mapping.from_identity_id.as_str())
+                .or_default();
+            if ranges.iter().any(|(existing_target, start, end)| {
+                *existing_target != mapping.to_identity_id.as_str()
+                    && valid_from < *end
+                    && *start < valid_until
+            }) {
+                return Err(invalid(
+                    "identity.valid_time",
+                    "conflicting active identity mappings overlap",
+                ));
+            }
+            ranges.push((mapping.to_identity_id.as_str(), valid_from, valid_until));
+        }
+        if mapping.evidence.is_empty()
+            || mapping
+                .evidence
+                .iter()
+                .all(|evidence| evidence.kind == IdentityEvidenceKind::TickerLabel)
+        {
+            return Err(invalid(
+                "identity.evidence",
+                "ticker-only identity joins are forbidden",
+            ));
+        }
+        let mut assertion_ids = BTreeSet::new();
+        for evidence in &mapping.evidence {
+            required("identity.assertion_id", &evidence.assertion_id)?;
+            if !assertion_ids.insert(evidence.assertion_id.as_str()) {
+                return Err(invalid("identity.evidence", "duplicate assertion identity"));
+            }
+        }
+        match &mapping.splice_rule {
+            SeriesSpliceRule::Allowed {
+                transformation,
+                reason,
+            } => {
+                required("identity.splice_rule.transformation", transformation)?;
+                required("identity.splice_rule.reason", reason)?;
+            }
+            SeriesSpliceRule::Denied { reason } => {
+                required("identity.splice_rule.reason", reason)?;
+            }
+        }
+    }
+    validate_temporal_assertion_chain(assertions, registered_evidence)?;
+    let assertion_by_id = assertions
+        .iter()
+        .map(|assertion| (assertion.assertion_id.as_str(), assertion))
+        .collect::<BTreeMap<_, _>>();
+    for mapping in mappings {
+        for evidence in &mapping.evidence {
+            let assertion = assertion_by_id
+                .get(evidence.assertion_id.as_str())
+                .ok_or_else(|| {
+                    invalid(
+                        "identity.evidence.assertion_id",
+                        "is not in the registered temporal history",
+                    )
+                })?;
+            if assertion.subject_id != mapping.mapping_id
+                || assertion.predicate != AssertionPredicate::IdentityMappingEvidence
+                || assertion.valid_time != mapping.valid_time
+                || assertion.retrieval_time != mapping.retrieval_time
+                || assertion
+                    .availability_time
+                    .as_deref()
+                    .unwrap_or(assertion.retrieval_time.as_str())
+                    != mapping.availability_time
+                || !matches!(
+                    &assertion.value,
+                    AssertionValue::IdentityMappingEvidence {
+                        mapping_commitment,
+                        evidence_kind,
+                    } if mapping_commitment == &mapping.evidence_commitment()
+                        && *evidence_kind == evidence.kind
+                )
+            {
+                return Err(invalid(
+                    "identity.evidence",
+                    "assertion identity and clocks must bind the mapping",
+                ));
+            }
+            validate_temporal_assertion_claim_use(
+                assertions,
+                registered_evidence,
+                &evidence.assertion_id,
+                ClaimUse::RetrospectiveDescriptive,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_identity_native_key(key: &IdentityNativeKey) -> Result<(), ExperimentError> {
+    match key {
+        IdentityNativeKey::VenueInstrument {
+            venue_key,
+            instrument_id,
+            listing_incarnation,
+        } => {
+            required("identity.native_key.venue_key", venue_key)?;
+            required("identity.native_key.instrument_id", instrument_id)?;
+            required(
+                "identity.native_key.listing_incarnation",
+                listing_incarnation,
+            )?;
+        }
+        IdentityNativeKey::TokenContract {
+            chain_id,
+            contract_address,
+        } => {
+            required("identity.native_key.chain_id", chain_id)?;
+            required("identity.native_key.contract_address", contract_address)?;
+            if contract_address.len() < 16
+                || contract_address
+                    .chars()
+                    .all(|character| character.is_ascii_alphabetic())
+            {
+                return Err(invalid(
+                    "identity.native_key.contract_address",
+                    "must be a chain-native contract address, not a ticker label",
+                ));
+            }
+        }
+        IdentityNativeKey::EconomicAsset {
+            registry_key,
+            asset_id,
+        } => {
+            required("identity.native_key.registry_key", registry_key)?;
+            required("identity.native_key.asset_id", asset_id)?;
+        }
+    }
+    Ok(())
+}
+
+fn identity_node_id(key: &IdentityNativeKey) -> String {
+    format!(
+        "identity-{}",
+        sha256_hex(&serde_json::to_vec(key).expect("typed identity serialization is infallible"))
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AssertionValue {
+    IdentityMappingEvidence {
+        mapping_commitment: String,
+        evidence_kind: IdentityEvidenceKind,
+    },
+    Text {
+        value: String,
+    },
+    Integer {
+        value: i64,
+    },
+    Boolean {
+        value: bool,
+    },
+    Timestamp {
+        value: String,
+    },
+    RosterStatus {
+        status: RosterStatus,
+        reason: RosterStatusReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssertionPredicate {
+    IdentityMappingEvidence,
+    ListingStatus,
+    RosterStatus,
+    Symbol,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AvailabilityStatus {
+    ArchivallyAttested,
+    RetrievalTimeAttested,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssertionState {
+    Active,
+    Corrected,
+    Retracted,
+    Disputed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimUse {
+    RetrospectiveDescriptive,
+    ContemporaneousAvailability,
+    Predictive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TemporalAssertion {
+    pub assertion_id: String,
+    pub subject_id: String,
+    pub predicate: AssertionPredicate,
+    pub value: AssertionValue,
+    pub valid_time: TimeInterval,
+    pub publication_time: Option<String>,
+    pub availability_time: Option<String>,
+    pub retrieval_time: String,
+    pub availability_status: AvailabilityStatus,
+    pub revision_of: Option<String>,
+    pub assertion_state: AssertionState,
+    pub evidence_refs: Vec<String>,
+}
+
+impl TemporalAssertion {
+    #[must_use]
+    pub fn derived_id(&self) -> String {
+        #[derive(Serialize)]
+        struct AssertionIdentity<'a> {
+            subject_id: &'a str,
+            predicate: AssertionPredicate,
+            value: &'a AssertionValue,
+            valid_time: &'a TimeInterval,
+            publication_time: &'a Option<String>,
+            availability_time: &'a Option<String>,
+            retrieval_time: &'a str,
+            availability_status: AvailabilityStatus,
+            revision_of: &'a Option<String>,
+            assertion_state: AssertionState,
+            evidence_refs: &'a [String],
+        }
+
+        let mut evidence_refs = self.evidence_refs.clone();
+        evidence_refs.sort();
+        let identity = AssertionIdentity {
+            subject_id: &self.subject_id,
+            predicate: self.predicate,
+            value: &self.value,
+            valid_time: &self.valid_time,
+            publication_time: &self.publication_time,
+            availability_time: &self.availability_time,
+            retrieval_time: &self.retrieval_time,
+            availability_status: self.availability_status,
+            revision_of: &self.revision_of,
+            assertion_state: self.assertion_state,
+            evidence_refs: &evidence_refs,
+        };
+        format!(
+            "assertion-{}",
+            sha256_hex(
+                &serde_json::to_vec(&identity)
+                    .expect("typed temporal assertion serialization is infallible")
+            )
+        )
+    }
+
+    fn validate(&self) -> Result<(), ExperimentError> {
+        for (field, value) in [
+            ("assertion.assertion_id", self.assertion_id.as_str()),
+            ("assertion.subject_id", self.subject_id.as_str()),
+        ] {
+            required(field, value)?;
+        }
+        if self.assertion_id != self.derived_id() {
+            return Err(invalid(
+                "assertion.assertion_id",
+                "must be derived from canonical assertion content",
+            ));
+        }
+        self.valid_time.parsed("assertion.valid_time")?;
+        let retrieval = parse_time("assertion.retrieval_time", &self.retrieval_time)?;
+        unique("assertion.evidence_refs", &self.evidence_refs)?;
+        match self.availability_status {
+            AvailabilityStatus::ArchivallyAttested => {
+                let publication = self.publication_time.as_deref().ok_or_else(|| {
+                    invalid(
+                        "assertion.publication_time",
+                        "archival evidence requires a time",
+                    )
+                })?;
+                let availability = self.availability_time.as_deref().ok_or_else(|| {
+                    invalid(
+                        "assertion.availability_time",
+                        "archival evidence requires a time",
+                    )
+                })?;
+                let publication = parse_time("assertion.publication_time", publication)?;
+                let availability = parse_time("assertion.availability_time", availability)?;
+                if publication > availability || availability > retrieval {
+                    return Err(invalid(
+                        "assertion.availability_time",
+                        "publication, availability, and retrieval clocks are inverted",
+                    ));
+                }
+            }
+            AvailabilityStatus::RetrievalTimeAttested => {
+                if self.publication_time.is_some() || self.availability_time.is_some() {
+                    return Err(invalid(
+                        "assertion.availability_status",
+                        "retrieval-only evidence cannot assert earlier clocks",
+                    ));
+                }
+            }
+        }
+        match &self.value {
+            AssertionValue::IdentityMappingEvidence {
+                mapping_commitment, ..
+            } => {
+                required("assertion.value.mapping_commitment", mapping_commitment)?;
+            }
+            AssertionValue::Text { value } | AssertionValue::Timestamp { value } => {
+                required("assertion.value", value)?;
+                if matches!(self.value, AssertionValue::Timestamp { .. }) {
+                    parse_time("assertion.value", value)?;
+                }
+            }
+            AssertionValue::Integer { .. }
+            | AssertionValue::Boolean { .. }
+            | AssertionValue::RosterStatus { .. } => {}
+        }
+        if !matches!(
+            (self.predicate, &self.value),
+            (
+                AssertionPredicate::IdentityMappingEvidence,
+                AssertionValue::IdentityMappingEvidence { .. }
+            ) | (
+                AssertionPredicate::RosterStatus,
+                AssertionValue::RosterStatus { .. }
+            ) | (
+                AssertionPredicate::ListingStatus | AssertionPredicate::Symbol,
+                AssertionValue::Text { .. }
+            )
+        ) {
+            return Err(invalid(
+                "assertion.value",
+                "must match the typed assertion predicate",
+            ));
+        }
+        if matches!(self.assertion_state, AssertionState::Active) != self.revision_of.is_none() {
+            return Err(invalid(
+                "assertion.revision_of",
+                "active assertions must be original; revisions and retractions must reference prior assertions",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_for_claim_use(&self, claim_use: ClaimUse) -> Result<(), ExperimentError> {
+        self.validate()?;
+        if self.availability_status == AvailabilityStatus::RetrievalTimeAttested
+            && matches!(
+                claim_use,
+                ClaimUse::ContemporaneousAvailability | ClaimUse::Predictive
+            )
+        {
+            return Err(invalid(
+                "assertion.availability_status",
+                "retrieval-time attestation cannot support contemporaneous or predictive claims",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct VerifiedTemporalAssertionHistoryEvidence {
+    history_hash: String,
+    registered_head_id: String,
+    genesis_commitment_hash: String,
+    verified_use_time: String,
+    registered_assertions: BTreeMap<String, TemporalAssertion>,
+    registered_history: Vec<TemporalAssertion>,
+}
+
+impl VerifiedTemporalAssertionHistoryEvidence {
+    #[cfg(test)]
+    fn synthetic(assertions: &[TemporalAssertion]) -> Self {
+        Self {
+            history_hash: temporal_assertion_history_hash(assertions),
+            registered_head_id: assertions
+                .last()
+                .expect("synthetic assertion history is non-empty")
+                .assertion_id
+                .clone(),
+            genesis_commitment_hash: "a".repeat(64),
+            verified_use_time: assertions
+                .last()
+                .expect("synthetic assertion history is non-empty")
+                .retrieval_time
+                .clone(),
+            registered_assertions: assertions
+                .iter()
+                .cloned()
+                .map(|assertion| (assertion.assertion_id.clone(), assertion))
+                .collect(),
+            registered_history: assertions.to_vec(),
+        }
+    }
+
+    #[cfg(test)]
+    fn verifies_roster_observation(&self, observation: &InventoryObservation) -> bool {
+        !observation.assertion_refs.is_empty()
+            && observation.assertion_refs.iter().all(|assertion_id| {
+                self.registered_assertions
+                    .get(assertion_id)
+                    .is_some_and(|assertion| {
+                        assertion.subject_id == observation.venue_instrument_identity.identity_id
+                            && assertion.predicate == AssertionPredicate::RosterStatus
+                            && assertion.valid_time == observation.time_unit
+                            && matches!(
+                                &assertion.value,
+                                AssertionValue::RosterStatus { status, reason }
+                                    if *status == observation.proposed_status
+                                        && *reason == observation.status_reason
+                            )
+                            && !matches!(
+                                assertion.assertion_state,
+                                AssertionState::Retracted | AssertionState::Disputed
+                            )
+                            && !self.registered_assertions.values().any(|candidate| {
+                                candidate.revision_of.as_deref() == Some(assertion_id.as_str())
+                            })
+                    })
+            })
+    }
+}
+
+pub fn validate_temporal_assertion_chain(
+    assertions: &[TemporalAssertion],
+    registered_evidence: Option<&VerifiedTemporalAssertionHistoryEvidence>,
+) -> Result<(), ExperimentError> {
+    let registered_evidence = registered_evidence.ok_or_else(|| {
+        invalid(
+            "assertion.registered_evidence",
+            "requires a Genesis-bound immutable registered history",
+        )
+    })?;
+    if assertions.is_empty()
+        || registered_evidence.history_hash != temporal_assertion_history_hash(assertions)
+        || registered_evidence.registered_head_id
+            != assertions
+                .last()
+                .expect("non-empty assertion history")
+                .assertion_id
+        || !is_lowercase_sha256_hex(&registered_evidence.genesis_commitment_hash)
+    {
+        return Err(invalid(
+            "assertion.registered_evidence",
+            "does not match the immutable registered history",
+        ));
+    }
+    let mut prior = BTreeMap::<&str, &TemporalAssertion>::new();
+    let mut revised_parents = BTreeSet::new();
+    let verified_use_time = parse_time(
+        "assertion.registered_evidence.verified_use_time",
+        &registered_evidence.verified_use_time,
+    )?;
+    for assertion in assertions {
+        assertion.validate()?;
+        if parse_time("assertion.retrieval_time", &assertion.retrieval_time)? > verified_use_time {
+            return Err(invalid(
+                "assertion.registered_evidence.verified_use_time",
+                "cannot precede an assertion retrieval clock",
+            ));
+        }
+        if prior.contains_key(assertion.assertion_id.as_str()) {
+            return Err(invalid("assertion.assertion_id", "must be unique"));
+        }
+        if let Some(revision_of) = &assertion.revision_of {
+            if !revised_parents.insert(revision_of.as_str()) {
+                return Err(invalid(
+                    "assertion.revision_of",
+                    "a registered assertion may have only one successor",
+                ));
+            }
+            let parent = prior.get(revision_of.as_str()).ok_or_else(|| {
+                invalid(
+                    "assertion.revision_of",
+                    "must reference an earlier assertion",
+                )
+            })?;
+            if parent.subject_id != assertion.subject_id || parent.predicate != assertion.predicate
+            {
+                return Err(invalid(
+                    "assertion.revision_of",
+                    "revision must preserve subject and predicate",
+                ));
+            }
+            let parent_retrieval = parse_time(
+                "assertion.revision_of.retrieval_time",
+                &parent.retrieval_time,
+            )?;
+            let child_retrieval =
+                parse_time("assertion.retrieval_time", &assertion.retrieval_time)?;
+            if child_retrieval <= parent_retrieval {
+                return Err(invalid(
+                    "assertion.retrieval_time",
+                    "a revision must have a strictly later retrieval clock",
+                ));
+            }
+        }
+        prior.insert(assertion.assertion_id.as_str(), assertion);
+    }
+    let claimable_leaves = assertions
+        .iter()
+        .filter(|assertion| {
+            !revised_parents.contains(assertion.assertion_id.as_str())
+                && matches!(
+                    assertion.assertion_state,
+                    AssertionState::Active | AssertionState::Corrected
+                )
+        })
+        .collect::<Vec<_>>();
+    for (index, left) in claimable_leaves.iter().enumerate() {
+        let (left_start, left_end) = left.valid_time.parsed("assertion.valid_time")?;
+        for right in claimable_leaves.iter().skip(index + 1) {
+            if left.subject_id != right.subject_id || left.predicate != right.predicate {
+                continue;
+            }
+            let contradictory = match (&left.value, &right.value) {
+                (
+                    AssertionValue::IdentityMappingEvidence {
+                        mapping_commitment: left_commitment,
+                        ..
+                    },
+                    AssertionValue::IdentityMappingEvidence {
+                        mapping_commitment: right_commitment,
+                        ..
+                    },
+                ) => left_commitment != right_commitment,
+                _ => left.value != right.value,
+            };
+            if !contradictory {
+                continue;
+            }
+            let (right_start, right_end) = right.valid_time.parsed("assertion.valid_time")?;
+            if left_start < right_end && right_start < left_end {
+                return Err(invalid(
+                    "assertion.assertion_state",
+                    "contradictory overlapping current assertions require dispute resolution",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_temporal_assertion_claim_use(
+    assertions: &[TemporalAssertion],
+    registered_evidence: Option<&VerifiedTemporalAssertionHistoryEvidence>,
+    assertion_id: &str,
+    claim_use: ClaimUse,
+) -> Result<(), ExperimentError> {
+    validate_temporal_assertion_chain(assertions, registered_evidence)?;
+    let assertion = assertions
+        .iter()
+        .find(|assertion| assertion.assertion_id == assertion_id)
+        .ok_or_else(|| invalid("assertion.assertion_id", "is not in the registered history"))?;
+    if matches!(
+        assertion.assertion_state,
+        AssertionState::Retracted | AssertionState::Disputed
+    ) || assertions
+        .iter()
+        .any(|candidate| candidate.revision_of.as_deref() == Some(assertion_id))
+    {
+        return Err(invalid(
+            "assertion.assertion_state",
+            "retracted, disputed, or superseded assertions cannot support claims",
+        ));
+    }
+    assertion.validate_for_claim_use(claim_use)
+}
+
+fn temporal_assertion_history_hash(assertions: &[TemporalAssertion]) -> String {
+    sha256_hex(
+        &serde_json::to_vec(assertions)
+            .expect("typed temporal assertion history serialization is infallible"),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1000,29 +2676,41 @@ fn validate_frame(frame: &TargetFramePolicy) -> Result<(), ExperimentError> {
     required("target_frame.frame_id", &frame.frame_id)?;
     unique("target_frame.venue_keys", &frame.venue_keys)?;
     unique("target_frame.market_family_keys", &frame.market_family_keys)?;
-    unique(
-        "target_frame.inventory_source_refs",
-        &frame.inventory_source_refs,
-    )?;
-    for (field, value) in [
-        (
-            "target_frame.time_unit_grain",
-            frame.time_unit_grain.as_str(),
-        ),
-        (
-            "target_frame.outer_roster_rule",
-            frame.outer_roster_rule.as_str(),
-        ),
-        (
-            "target_frame.reconciliation_rule",
-            frame.reconciliation_rule.as_str(),
-        ),
-        (
-            "target_frame.disclosure_text",
-            frame.disclosure_text.as_str(),
-        ),
-    ] {
-        required(field, value)?;
+    let mut inventory_sources = BTreeSet::new();
+    if frame.inventory_source_refs.is_empty() {
+        return Err(invalid(
+            "target_frame.inventory_source_refs",
+            "must not be empty",
+        ));
+    }
+    for binding in &frame.inventory_source_refs {
+        for (field, value) in [
+            (
+                "target_frame.inventory_source_refs.source_ref",
+                binding.source_ref.as_str(),
+            ),
+            (
+                "target_frame.inventory_source_refs.source_entry_id",
+                binding.source_entry_id.as_str(),
+            ),
+        ] {
+            required(field, value)?;
+        }
+        for value in [
+            &binding.source_entry_content_hash,
+            &binding.manifest_hash,
+            &binding.coverage_hash,
+        ] {
+            hash("target_frame.inventory_source_refs", value)?;
+        }
+        if binding.source_entry_version == 0
+            || !inventory_sources.insert(binding.source_ref.as_str())
+        {
+            return Err(invalid(
+                "target_frame.inventory_source_refs",
+                "source bindings must be unique and versioned",
+            ));
+        }
     }
     let start = parse_time("target_frame.start_time", &frame.start_time)?;
     let end = parse_time("target_frame.end_time", &frame.end_time)?;
@@ -1586,7 +3274,6 @@ fn canonicalize(definition: &mut ExperimentDefinition) {
         .sort_by(|a, b| (&a.left_role, &a.right_role).cmp(&(&b.left_role, &b.right_role)));
     definition.target_frame.venue_keys.sort();
     definition.target_frame.market_family_keys.sort();
-    definition.target_frame.inventory_source_refs.sort();
     definition.source_policy.required_fidelity_classes.sort();
     definition.source_policy.required_rights.sort();
     definition
@@ -1980,7 +3667,12 @@ pub fn build_registration_plan(
         created_at: definition.experiment.created_at.clone(),
         created_by_role: caller_role.role_id.clone(),
         lineage_refs: definition.experiment.lineage_refs.clone(),
-        source_entry_refs: definition.target_frame.inventory_source_refs.clone(),
+        source_entry_refs: definition
+            .target_frame
+            .inventory_source_refs
+            .iter()
+            .map(|binding| binding.source_entry_id.clone())
+            .collect(),
         index_lifecycle_state: LifecycleState::Active,
         evidence_state: EvidenceState::Active,
         invalidated_by_refs: Vec::new(),
@@ -2065,9 +3757,9 @@ pub async fn register_version(
         &experiment,
         caller_role,
         expected_parent_version_id,
-        &artifact_root,
+        artifact_root,
     )?;
-    register_plan(&experiment, &plan, &artifact_root).await
+    register_plan(&experiment, &plan, artifact_root).await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3021,10 +4713,7 @@ current_snapshot_storage_profile = "active"
             .expect("store root")
     }
 
-    fn version_two_fixture(
-        parent: &ValidatedExperiment,
-        disclosure_text: &str,
-    ) -> ValidatedExperiment {
+    fn version_two_fixture(parent: &ValidatedExperiment, frame_id: &str) -> ValidatedExperiment {
         let mut document: toml::Value = toml::from_str(include_str!(
             "../../../config/research/pump-research-synthetic.toml"
         ))
@@ -3069,8 +4758,8 @@ current_snapshot_storage_profile = "active"
             .and_then(toml::Value::as_table_mut)
             .expect("target frame")
             .insert(
-                "disclosure_text".to_string(),
-                toml::Value::String(disclosure_text.to_string()),
+                "frame_id".to_string(),
+                toml::Value::String(frame_id.to_string()),
             );
         let bytes = toml::to_string(&document).expect("version two TOML");
         parse_and_validate(bytes.as_bytes(), ValidationMode::Fixture)
@@ -3305,7 +4994,7 @@ current_snapshot_storage_profile = "active"
             vec![row],
         )
         .expect("snapshot");
-        let mut child = version_two_fixture(&parent, "candidate child definition");
+        let mut child = version_two_fixture(&parent, "candidate-child-frame");
         validate_observed_parent(
             &child,
             Some(&snapshot),
@@ -3357,7 +5046,7 @@ current_snapshot_storage_profile = "active"
             .is_err()
         );
 
-        let sibling = version_two_fixture(&parent, "concurrently committed sibling definition");
+        let sibling = version_two_fixture(&parent, "concurrently-committed-sibling-frame");
         let sibling_role = sibling
             .definition
             .roles
@@ -3590,5 +5279,1115 @@ current_snapshot_storage_profile = "active"
             ),
             Err(ExperimentError::DirtyArtifact)
         ));
+    }
+
+    fn roster_test_observation(
+        observation_id: &str,
+        source_ref: &str,
+        instrument_id: &str,
+        start_time: &str,
+        end_time: &str,
+        status: RosterStatus,
+    ) -> InventoryObservation {
+        let observed_count = match status {
+            RosterStatus::EligibleObserved => 10,
+            RosterStatus::KnownInsufficientCoverage => 4,
+            RosterStatus::KnownIneligible | RosterStatus::ExistenceOrCoverageUnknown => 0,
+        };
+        let mut observation = InventoryObservation {
+            observation_id: observation_id.to_string(),
+            source_ref: source_ref.to_string(),
+            frame_id: "frame-a".to_string(),
+            venue_key: "venue-a".to_string(),
+            market_family_key: "perpetual".to_string(),
+            venue_instrument_identity: IdentityNode::new(IdentityNativeKey::VenueInstrument {
+                venue_key: "venue-a".to_string(),
+                instrument_id: instrument_id.to_string(),
+                listing_incarnation: format!("listing-{instrument_id}"),
+            })
+            .expect("venue instrument incarnation"),
+            time_unit: TimeInterval {
+                start_time: start_time.to_string(),
+                end_time: end_time.to_string(),
+            },
+            proposed_status: status,
+            status_reason: match status {
+                RosterStatus::KnownIneligible => RosterStatusReason::PolicyIneligible,
+                RosterStatus::ExistenceOrCoverageUnknown => RosterStatusReason::UnverifiedExistence,
+                RosterStatus::EligibleObserved | RosterStatus::KnownInsufficientCoverage => {
+                    RosterStatusReason::MeasuredCoverage
+                }
+            },
+            coverage_metrics: CoverageMetrics {
+                expected_count: 10,
+                observed_count,
+                missing_count: 10 - observed_count,
+                duplicated_count: 0,
+                interrupted_intervals: Vec::new(),
+            },
+            assertion_refs: Vec::new(),
+        };
+        observation.assertion_refs = vec![roster_test_assertion(&observation).assertion_id];
+        observation
+    }
+
+    fn roster_test_assertion(observation: &InventoryObservation) -> TemporalAssertion {
+        let mut assertion = TemporalAssertion {
+            assertion_id: String::new(),
+            subject_id: observation.venue_instrument_identity.identity_id.clone(),
+            predicate: AssertionPredicate::RosterStatus,
+            value: AssertionValue::RosterStatus {
+                status: observation.proposed_status,
+                reason: observation.status_reason,
+            },
+            valid_time: observation.time_unit.clone(),
+            publication_time: Some("2024-12-30T00:00:00Z".to_string()),
+            availability_time: Some("2024-12-31T00:00:00Z".to_string()),
+            retrieval_time: "2024-12-31T12:00:00Z".to_string(),
+            availability_status: AvailabilityStatus::ArchivallyAttested,
+            revision_of: None,
+            assertion_state: AssertionState::Active,
+            evidence_refs: vec!["archive://roster-status".to_string()],
+        };
+        assertion.assertion_id = assertion.derived_id();
+        assertion
+    }
+
+    fn roster_test_manifest(
+        source_ref: &str,
+        source_entry_content_hash: &str,
+        observations: Vec<InventoryObservation>,
+        completeness: RosterCompleteness,
+    ) -> (InventorySourceBinding, Vec<u8>) {
+        let mut coverage = InventoryCoverageArtifact {
+            schema_version: INVENTORY_COVERAGE_SCHEMA_VERSION.to_string(),
+            coverage_id: String::new(),
+            frame_id: "frame-a".to_string(),
+            source_entry_id: format!("source-{source_ref}"),
+            source_entry_version: 1,
+            source_entry_content_hash: source_entry_content_hash.to_string(),
+            roster_vintage: "2024-12-31T23:59:59Z".to_string(),
+            expected_unit_count: observations.len() as u64,
+            enumerated_unit_count: observations.len() as u64,
+            completeness,
+            evidence_hashes: vec!["d".repeat(64)],
+        };
+        let coverage_hash = inventory_coverage_hash(&coverage).expect("coverage hash");
+        coverage.coverage_id = format!("coverage-{coverage_hash}");
+        let manifest = InventoryManifestArtifact {
+            schema_version: INVENTORY_MANIFEST_SCHEMA_VERSION.to_string(),
+            source_ref: source_ref.to_string(),
+            frame_id: "frame-a".to_string(),
+            roster_vintage: "2024-12-31T23:59:59Z".to_string(),
+            coverage,
+            observations,
+        };
+        let bytes = serde_json::to_vec(&manifest).expect("manifest bytes");
+        (
+            InventorySourceBinding {
+                source_ref: source_ref.to_string(),
+                source_entry_id: format!("source-{source_ref}"),
+                source_entry_version: 1,
+                source_entry_content_hash: source_entry_content_hash.to_string(),
+                manifest_hash: sha256_hex(&bytes),
+                coverage_hash,
+            },
+            bytes,
+        )
+    }
+
+    fn roster_test_source_evidence(
+        binding: &InventorySourceBinding,
+    ) -> VerifiedRegisteredSourceEvidence {
+        VerifiedRegisteredSourceEvidence::synthetic(
+            &binding.source_entry_id,
+            binding.source_entry_version,
+            &binding.source_entry_content_hash,
+            Vec::new(),
+            vec!["d".repeat(64)],
+            "2025-01-01T00:00:00Z",
+        )
+    }
+
+    fn roster_test_coverage_evidence(
+        experiment_content_hash: &str,
+        frame: &TargetFramePolicy,
+        binding: &InventorySourceBinding,
+        manifest_bytes: &[u8],
+    ) -> VerifiedInventoryCoverageEvidence {
+        let manifest: InventoryManifestArtifact =
+            serde_json::from_slice(manifest_bytes).expect("inventory manifest");
+        let assertions = manifest
+            .observations
+            .iter()
+            .map(roster_test_assertion)
+            .collect::<Vec<_>>();
+        let temporal_evidence = VerifiedTemporalAssertionHistoryEvidence::synthetic(&assertions);
+        VerifiedInventoryCoverageEvidence::synthetic(
+            experiment_content_hash,
+            frame,
+            binding,
+            manifest.coverage.expected_unit_count,
+            &manifest.observations,
+            manifest.coverage.completeness,
+            manifest.coverage.evidence_hashes,
+            &temporal_evidence,
+        )
+    }
+
+    #[test]
+    fn verified_roster_derives_completeness_denominator_and_source_precedence() {
+        let experiment_content_hash = "f".repeat(64);
+        let source_hash_a = "a".repeat(64);
+        let source_hash_b = "b".repeat(64);
+        let (binding_a, bytes_a) = roster_test_manifest(
+            "inventory-a",
+            &source_hash_a,
+            vec![
+                roster_test_observation(
+                    "a-1",
+                    "inventory-a",
+                    "instrument-1",
+                    "2025-01-01T00:00:00Z",
+                    "2025-01-02T00:00:00Z",
+                    RosterStatus::KnownInsufficientCoverage,
+                ),
+                roster_test_observation(
+                    "a-2",
+                    "inventory-a",
+                    "instrument-2",
+                    "2025-01-02T00:00:00Z",
+                    "2025-01-03T00:00:00Z",
+                    RosterStatus::KnownIneligible,
+                ),
+                roster_test_observation(
+                    "a-3",
+                    "inventory-a",
+                    "instrument-3",
+                    "2025-01-01T00:00:00Z",
+                    "2025-01-02T00:00:00Z",
+                    RosterStatus::ExistenceOrCoverageUnknown,
+                ),
+            ],
+            RosterCompleteness::EnumeratedIncomplete,
+        );
+        let (binding_b, bytes_b) = roster_test_manifest(
+            "inventory-b",
+            &source_hash_b,
+            vec![roster_test_observation(
+                "b-1",
+                "inventory-b",
+                "instrument-1",
+                "2025-01-01T00:00:00Z",
+                "2025-01-02T00:00:00Z",
+                RosterStatus::EligibleObserved,
+            )],
+            RosterCompleteness::ProvenComplete,
+        );
+        let mut frame = TargetFramePolicy {
+            frame_id: "frame-a".to_string(),
+            venue_keys: vec!["venue-a".to_string()],
+            market_family_keys: vec!["perpetual".to_string()],
+            start_time: "2025-01-01T00:00:00Z".to_string(),
+            end_time: "2025-01-03T00:00:00Z".to_string(),
+            time_unit_grain: TimeUnitGrain::UtcDay,
+            outer_roster_rule: OuterRosterRule::UnionOfAdmittedVintageInventories,
+            roster_vintage: "2024-12-31T23:59:59Z".to_string(),
+            inventory_source_refs: vec![binding_a.clone(), binding_b.clone()],
+            reconciliation_rule: ReconciliationRule::IdentityFirstSourcePrecedenceV1,
+            status_precedence: vec![
+                RosterStatus::EligibleObserved,
+                RosterStatus::KnownIneligible,
+                RosterStatus::KnownInsufficientCoverage,
+                RosterStatus::ExistenceOrCoverageUnknown,
+            ],
+            generalization_scope: GeneralizationScope::EnumeratedRosterWithinConfiguredFrame,
+        };
+        let manifest_a = roster_test_source_evidence(&binding_a)
+            .load_and_verify_inventory_manifest(
+                roster_test_coverage_evidence(
+                    &experiment_content_hash,
+                    &frame,
+                    &binding_a,
+                    &bytes_a,
+                ),
+                &experiment_content_hash,
+                &frame,
+                &binding_a,
+                || Ok(bytes_a.clone()),
+            )
+            .expect("manifest A");
+        let manifest_b = roster_test_source_evidence(&binding_b)
+            .load_and_verify_inventory_manifest(
+                roster_test_coverage_evidence(
+                    &experiment_content_hash,
+                    &frame,
+                    &binding_b,
+                    &bytes_b,
+                ),
+                &experiment_content_hash,
+                &frame,
+                &binding_b,
+                || Ok(bytes_b.clone()),
+            )
+            .expect("manifest B");
+        let first = build_roster_manifest(
+            &experiment_content_hash,
+            &frame,
+            vec![manifest_a, manifest_b],
+        )
+        .expect("roster");
+        assert_eq!(first.denominator, 3);
+        assert_eq!(first.status_counts.known_ineligible, 1);
+        assert_eq!(first.status_counts.known_insufficient_coverage, 1);
+        assert_eq!(first.status_counts.existence_or_coverage_unknown, 1);
+        assert_eq!(first.completeness, RosterCompleteness::EnumeratedIncomplete);
+        assert_eq!(first.attrition.starting_denominator, 3);
+        assert!(first.units.iter().all(|unit| {
+            unit.status != RosterStatus::EligibleObserved
+                || unit.status_reason == RosterStatusReason::MeasuredCoverage
+        }));
+
+        frame.inventory_source_refs.reverse();
+        let manifest_a = roster_test_source_evidence(&binding_a)
+            .load_and_verify_inventory_manifest(
+                roster_test_coverage_evidence(
+                    &experiment_content_hash,
+                    &frame,
+                    &binding_a,
+                    &bytes_a,
+                ),
+                &experiment_content_hash,
+                &frame,
+                &binding_a,
+                || Ok(bytes_a.clone()),
+            )
+            .expect("manifest A");
+        let manifest_b = roster_test_source_evidence(&binding_b)
+            .load_and_verify_inventory_manifest(
+                roster_test_coverage_evidence(
+                    &experiment_content_hash,
+                    &frame,
+                    &binding_b,
+                    &bytes_b,
+                ),
+                &experiment_content_hash,
+                &frame,
+                &binding_b,
+                || Ok(bytes_b.clone()),
+            )
+            .expect("manifest B");
+        let second = build_roster_manifest(
+            &experiment_content_hash,
+            &frame,
+            vec![manifest_a, manifest_b],
+        )
+        .expect("roster");
+        assert_eq!(second.status_counts.eligible_observed, 1);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn inventory_manifest_rejects_duplicate_cells_and_contradictory_status_coverage() {
+        let experiment_content_hash = "f".repeat(64);
+        let source_hash = "a".repeat(64);
+        let first = roster_test_observation(
+            "duplicate-a",
+            "inventory-a",
+            "instrument-1",
+            "2025-01-01T00:00:00Z",
+            "2025-01-02T00:00:00Z",
+            RosterStatus::KnownInsufficientCoverage,
+        );
+        let mut duplicate = first.clone();
+        duplicate.observation_id = "duplicate-b".to_string();
+        let (binding, bytes) = roster_test_manifest(
+            "inventory-a",
+            &source_hash,
+            vec![first.clone(), duplicate],
+            RosterCompleteness::EnumeratedIncomplete,
+        );
+        let frame = TargetFramePolicy {
+            frame_id: "frame-a".to_string(),
+            venue_keys: vec!["venue-a".to_string()],
+            market_family_keys: vec!["perpetual".to_string()],
+            start_time: "2025-01-01T00:00:00Z".to_string(),
+            end_time: "2025-01-03T00:00:00Z".to_string(),
+            time_unit_grain: TimeUnitGrain::UtcDay,
+            outer_roster_rule: OuterRosterRule::UnionOfAdmittedVintageInventories,
+            roster_vintage: "2024-12-31T23:59:59Z".to_string(),
+            inventory_source_refs: vec![binding.clone()],
+            reconciliation_rule: ReconciliationRule::IdentityFirstSourcePrecedenceV1,
+            status_precedence: vec![
+                RosterStatus::EligibleObserved,
+                RosterStatus::KnownIneligible,
+                RosterStatus::KnownInsufficientCoverage,
+                RosterStatus::ExistenceOrCoverageUnknown,
+            ],
+            generalization_scope: GeneralizationScope::EnumeratedRosterWithinConfiguredFrame,
+        };
+        let unauthorized = VerifiedRegisteredSourceEvidence::synthetic(
+            "different-source-entry",
+            1,
+            &source_hash,
+            Vec::new(),
+            vec!["d".repeat(64)],
+            "2025-01-01T00:00:00Z",
+        );
+        let trusted_duplicate_universe = vec![
+            first,
+            roster_test_observation(
+                "independent-cell",
+                "inventory-a",
+                "instrument-2",
+                "2025-01-02T00:00:00Z",
+                "2025-01-03T00:00:00Z",
+                RosterStatus::KnownInsufficientCoverage,
+            ),
+        ];
+        let trusted_assertions = trusted_duplicate_universe
+            .iter()
+            .map(roster_test_assertion)
+            .collect::<Vec<_>>();
+        let trusted_history =
+            VerifiedTemporalAssertionHistoryEvidence::synthetic(&trusted_assertions);
+        let coverage_evidence = VerifiedInventoryCoverageEvidence::synthetic(
+            &experiment_content_hash,
+            &frame,
+            &binding,
+            2,
+            &trusted_duplicate_universe,
+            RosterCompleteness::EnumeratedIncomplete,
+            vec!["d".repeat(64)],
+            &trusted_history,
+        );
+        assert!(
+            unauthorized
+                .load_and_verify_inventory_manifest(
+                    coverage_evidence,
+                    &experiment_content_hash,
+                    &frame,
+                    &binding,
+                    || panic!("manifest loader must not run before authority validation"),
+                )
+                .is_err()
+        );
+        assert!(
+            roster_test_source_evidence(&binding)
+                .load_and_verify_inventory_manifest(
+                    VerifiedInventoryCoverageEvidence::synthetic(
+                        &experiment_content_hash,
+                        &frame,
+                        &binding,
+                        2,
+                        &trusted_duplicate_universe,
+                        RosterCompleteness::EnumeratedIncomplete,
+                        vec!["d".repeat(64)],
+                        &trusted_history,
+                    ),
+                    &experiment_content_hash,
+                    &frame,
+                    &binding,
+                    || Ok(bytes.clone()),
+                )
+                .is_err()
+        );
+
+        let mut contradictory = roster_test_observation(
+            "contradictory",
+            "inventory-a",
+            "instrument-2",
+            "2025-01-01T00:00:00Z",
+            "2025-01-02T00:00:00Z",
+            RosterStatus::KnownInsufficientCoverage,
+        );
+        contradictory.proposed_status = RosterStatus::EligibleObserved;
+        contradictory.assertion_refs = vec![roster_test_assertion(&contradictory).assertion_id];
+        let (binding, bytes) = roster_test_manifest(
+            "inventory-a",
+            &source_hash,
+            vec![contradictory],
+            RosterCompleteness::EnumeratedIncomplete,
+        );
+        let mut frame = frame;
+        frame.inventory_source_refs = vec![binding.clone()];
+        assert!(
+            roster_test_source_evidence(&binding)
+                .load_and_verify_inventory_manifest(
+                    roster_test_coverage_evidence(
+                        &experiment_content_hash,
+                        &frame,
+                        &binding,
+                        &bytes,
+                    ),
+                    &experiment_content_hash,
+                    &frame,
+                    &binding,
+                    || Ok(bytes.clone()),
+                )
+                .is_err()
+        );
+
+        let observed = roster_test_observation(
+            "complete-but-unverified",
+            "inventory-a",
+            "instrument-3",
+            "2025-01-01T00:00:00Z",
+            "2025-01-02T00:00:00Z",
+            RosterStatus::EligibleObserved,
+        );
+        let (binding, bytes) = roster_test_manifest(
+            "inventory-a",
+            &source_hash,
+            vec![observed.clone()],
+            RosterCompleteness::ProvenComplete,
+        );
+        frame.inventory_source_refs = vec![binding.clone()];
+        let independently_expected = vec![
+            observed,
+            roster_test_observation(
+                "missing-from-sparse-manifest",
+                "inventory-a",
+                "instrument-4",
+                "2025-01-02T00:00:00Z",
+                "2025-01-03T00:00:00Z",
+                RosterStatus::EligibleObserved,
+            ),
+        ];
+        let independently_registered_assertions = independently_expected
+            .iter()
+            .map(roster_test_assertion)
+            .collect::<Vec<_>>();
+        let independently_registered_history = VerifiedTemporalAssertionHistoryEvidence::synthetic(
+            &independently_registered_assertions,
+        );
+        let complete_coverage_evidence = VerifiedInventoryCoverageEvidence::synthetic(
+            &experiment_content_hash,
+            &frame,
+            &binding,
+            2,
+            &independently_expected,
+            RosterCompleteness::ProvenComplete,
+            vec!["d".repeat(64)],
+            &independently_registered_history,
+        );
+        assert!(
+            roster_test_source_evidence(&binding)
+                .load_and_verify_inventory_manifest(
+                    complete_coverage_evidence,
+                    &experiment_content_hash,
+                    &frame,
+                    &binding,
+                    || Ok(bytes.clone()),
+                )
+                .is_err()
+        );
+
+        let trusted_observation = roster_test_observation(
+            "registered-status",
+            "inventory-a",
+            "instrument-5",
+            "2025-01-01T00:00:00Z",
+            "2025-01-02T00:00:00Z",
+            RosterStatus::EligibleObserved,
+        );
+        let mut forged_observation = trusted_observation.clone();
+        forged_observation.assertion_refs = vec!["assertion-forged".to_string()];
+        let (binding, bytes) = roster_test_manifest(
+            "inventory-a",
+            &source_hash,
+            vec![forged_observation],
+            RosterCompleteness::EnumeratedIncomplete,
+        );
+        frame.inventory_source_refs = vec![binding.clone()];
+        let trusted_assertions = vec![roster_test_assertion(&trusted_observation)];
+        let trusted_history =
+            VerifiedTemporalAssertionHistoryEvidence::synthetic(&trusted_assertions);
+        let coverage_evidence = VerifiedInventoryCoverageEvidence::synthetic(
+            &experiment_content_hash,
+            &frame,
+            &binding,
+            1,
+            &[trusted_observation],
+            RosterCompleteness::EnumeratedIncomplete,
+            vec!["d".repeat(64)],
+            &trusted_history,
+        );
+        assert!(
+            roster_test_source_evidence(&binding)
+                .load_and_verify_inventory_manifest(
+                    coverage_evidence,
+                    &experiment_content_hash,
+                    &frame,
+                    &binding,
+                    || Ok(bytes.clone()),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn verified_roster_rejects_frame_replay_and_records_same_status_coverage_conflicts() {
+        let experiment_content_hash = "f".repeat(64);
+        let source_hash_a = "a".repeat(64);
+        let source_hash_b = "b".repeat(64);
+        let observation_a = roster_test_observation(
+            "coverage-a",
+            "inventory-a",
+            "instrument-1",
+            "2025-01-01T00:00:00Z",
+            "2025-01-02T00:00:00Z",
+            RosterStatus::KnownInsufficientCoverage,
+        );
+        let mut observation_b = roster_test_observation(
+            "coverage-b",
+            "inventory-b",
+            "instrument-1",
+            "2025-01-01T00:00:00Z",
+            "2025-01-02T00:00:00Z",
+            RosterStatus::KnownInsufficientCoverage,
+        );
+        observation_b.coverage_metrics.observed_count = 5;
+        observation_b.coverage_metrics.missing_count = 5;
+        observation_b.assertion_refs = vec![roster_test_assertion(&observation_b).assertion_id];
+        let (binding_a, bytes_a) = roster_test_manifest(
+            "inventory-a",
+            &source_hash_a,
+            vec![observation_a],
+            RosterCompleteness::EnumeratedIncomplete,
+        );
+        let (binding_b, bytes_b) = roster_test_manifest(
+            "inventory-b",
+            &source_hash_b,
+            vec![observation_b],
+            RosterCompleteness::EnumeratedIncomplete,
+        );
+        let frame = TargetFramePolicy {
+            frame_id: "frame-a".to_string(),
+            venue_keys: vec!["venue-a".to_string()],
+            market_family_keys: vec!["perpetual".to_string()],
+            start_time: "2025-01-01T00:00:00Z".to_string(),
+            end_time: "2025-01-03T00:00:00Z".to_string(),
+            time_unit_grain: TimeUnitGrain::UtcDay,
+            outer_roster_rule: OuterRosterRule::UnionOfAdmittedVintageInventories,
+            roster_vintage: "2024-12-31T23:59:59Z".to_string(),
+            inventory_source_refs: vec![binding_a.clone(), binding_b.clone()],
+            reconciliation_rule: ReconciliationRule::IdentityFirstSourcePrecedenceV1,
+            status_precedence: vec![
+                RosterStatus::EligibleObserved,
+                RosterStatus::KnownIneligible,
+                RosterStatus::KnownInsufficientCoverage,
+                RosterStatus::ExistenceOrCoverageUnknown,
+            ],
+            generalization_scope: GeneralizationScope::EnumeratedRosterWithinConfiguredFrame,
+        };
+        let manifest_a = roster_test_source_evidence(&binding_a)
+            .load_and_verify_inventory_manifest(
+                roster_test_coverage_evidence(
+                    &experiment_content_hash,
+                    &frame,
+                    &binding_a,
+                    &bytes_a,
+                ),
+                &experiment_content_hash,
+                &frame,
+                &binding_a,
+                || Ok(bytes_a.clone()),
+            )
+            .expect("manifest A");
+        let manifest_b = roster_test_source_evidence(&binding_b)
+            .load_and_verify_inventory_manifest(
+                roster_test_coverage_evidence(
+                    &experiment_content_hash,
+                    &frame,
+                    &binding_b,
+                    &bytes_b,
+                ),
+                &experiment_content_hash,
+                &frame,
+                &binding_b,
+                || Ok(bytes_b.clone()),
+            )
+            .expect("manifest B");
+        let roster = build_roster_manifest(
+            &experiment_content_hash,
+            &frame,
+            vec![manifest_a, manifest_b],
+        )
+        .expect("reconciled roster");
+        assert_eq!(roster.units[0].conflict_reasons.len(), 1);
+        assert_ne!(
+            roster.units[0].conflict_reasons[0].selected_coverage_metrics,
+            roster.units[0].conflict_reasons[0].rejected_coverage_metrics
+        );
+
+        let manifest = roster_test_source_evidence(&binding_a)
+            .load_and_verify_inventory_manifest(
+                roster_test_coverage_evidence(
+                    &experiment_content_hash,
+                    &frame,
+                    &binding_a,
+                    &bytes_a,
+                ),
+                &experiment_content_hash,
+                &frame,
+                &binding_a,
+                || Ok(bytes_a.clone()),
+            )
+            .expect("frame-bound manifest");
+        let second_manifest = roster_test_source_evidence(&binding_b)
+            .load_and_verify_inventory_manifest(
+                roster_test_coverage_evidence(
+                    &experiment_content_hash,
+                    &frame,
+                    &binding_b,
+                    &bytes_b,
+                ),
+                &experiment_content_hash,
+                &frame,
+                &binding_b,
+                || Ok(bytes_b.clone()),
+            )
+            .expect("second frame-bound manifest");
+        let mut changed_same_id_frame = frame;
+        changed_same_id_frame.status_precedence.reverse();
+        assert!(
+            build_roster_manifest(
+                &experiment_content_hash,
+                &changed_same_id_frame,
+                vec![manifest, second_manifest],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn roster_distinguishes_relisted_instrument_incarnations() {
+        let experiment_content_hash = "f".repeat(64);
+        let source_hash = "a".repeat(64);
+        let original = roster_test_observation(
+            "original-listing",
+            "inventory-a",
+            "instrument-reused",
+            "2025-01-01T00:00:00Z",
+            "2025-01-02T00:00:00Z",
+            RosterStatus::EligibleObserved,
+        );
+        let mut relisted = original.clone();
+        relisted.observation_id = "relisted-incarnation".to_string();
+        relisted.venue_instrument_identity =
+            IdentityNode::new(IdentityNativeKey::VenueInstrument {
+                venue_key: "venue-a".to_string(),
+                instrument_id: "instrument-reused".to_string(),
+                listing_incarnation: "listing-relisted".to_string(),
+            })
+            .expect("relisted identity");
+        relisted.assertion_refs = vec![roster_test_assertion(&relisted).assertion_id];
+        let (binding, bytes) = roster_test_manifest(
+            "inventory-a",
+            &source_hash,
+            vec![original, relisted],
+            RosterCompleteness::EnumeratedIncomplete,
+        );
+        let frame = TargetFramePolicy {
+            frame_id: "frame-a".to_string(),
+            venue_keys: vec!["venue-a".to_string()],
+            market_family_keys: vec!["perpetual".to_string()],
+            start_time: "2025-01-01T00:00:00Z".to_string(),
+            end_time: "2025-01-03T00:00:00Z".to_string(),
+            time_unit_grain: TimeUnitGrain::UtcDay,
+            outer_roster_rule: OuterRosterRule::UnionOfAdmittedVintageInventories,
+            roster_vintage: "2024-12-31T23:59:59Z".to_string(),
+            inventory_source_refs: vec![binding.clone()],
+            reconciliation_rule: ReconciliationRule::IdentityFirstSourcePrecedenceV1,
+            status_precedence: vec![
+                RosterStatus::EligibleObserved,
+                RosterStatus::KnownIneligible,
+                RosterStatus::KnownInsufficientCoverage,
+                RosterStatus::ExistenceOrCoverageUnknown,
+            ],
+            generalization_scope: GeneralizationScope::EnumeratedRosterWithinConfiguredFrame,
+        };
+        let manifest = roster_test_source_evidence(&binding)
+            .load_and_verify_inventory_manifest(
+                roster_test_coverage_evidence(&experiment_content_hash, &frame, &binding, &bytes),
+                &experiment_content_hash,
+                &frame,
+                &binding,
+                || Ok(bytes),
+            )
+            .expect("incarnation-bound manifest");
+        let roster = build_roster_manifest(&experiment_content_hash, &frame, vec![manifest])
+            .expect("incarnation-aware roster");
+        assert_eq!(roster.denominator, 2);
+        assert_ne!(
+            roster.units[0].venue_instrument_identity.identity_id,
+            roster.units[1].venue_instrument_identity.identity_id
+        );
+    }
+
+    fn registered_assertion(
+        state: AssertionState,
+        revision_of: Option<String>,
+        retrieval_time: &str,
+    ) -> TemporalAssertion {
+        let mut assertion = TemporalAssertion {
+            assertion_id: String::new(),
+            subject_id: "instrument-a".to_string(),
+            predicate: AssertionPredicate::ListingStatus,
+            value: AssertionValue::Text {
+                value: "listed".to_string(),
+            },
+            valid_time: TimeInterval {
+                start_time: "2025-01-01T00:00:00Z".to_string(),
+                end_time: "2025-02-01T00:00:00Z".to_string(),
+            },
+            publication_time: Some("2024-12-31T20:00:00Z".to_string()),
+            availability_time: Some("2024-12-31T21:00:00Z".to_string()),
+            retrieval_time: retrieval_time.to_string(),
+            availability_status: AvailabilityStatus::ArchivallyAttested,
+            revision_of,
+            assertion_state: state,
+            evidence_refs: vec!["archive://listing-status".to_string()],
+        };
+        assertion.assertion_id = assertion.derived_id();
+        assertion
+    }
+
+    fn identity_mapping_assertion(
+        mapping: &IdentityMapping,
+        evidence_kind: IdentityEvidenceKind,
+    ) -> TemporalAssertion {
+        let mut assertion = registered_assertion(
+            AssertionState::Active,
+            None,
+            mapping.retrieval_time.as_str(),
+        );
+        assertion.subject_id = mapping.mapping_id.clone();
+        assertion.predicate = AssertionPredicate::IdentityMappingEvidence;
+        assertion.value = AssertionValue::IdentityMappingEvidence {
+            mapping_commitment: mapping.evidence_commitment(),
+            evidence_kind,
+        };
+        assertion.valid_time = mapping.valid_time.clone();
+        assertion.availability_time = Some(mapping.availability_time.clone());
+        assertion.assertion_id = assertion.derived_id();
+        assertion
+    }
+
+    #[test]
+    fn identity_graph_distinguishes_listing_incarnations_and_requires_registered_assertions() {
+        let old_listing = IdentityNode::new(IdentityNativeKey::VenueInstrument {
+            venue_key: "venue-a".to_string(),
+            instrument_id: "instrument-reused".to_string(),
+            listing_incarnation: "listing-2024".to_string(),
+        })
+        .expect("old listing");
+        let new_listing = IdentityNode::new(IdentityNativeKey::VenueInstrument {
+            venue_key: "venue-a".to_string(),
+            instrument_id: "instrument-reused".to_string(),
+            listing_incarnation: "listing-2025".to_string(),
+        })
+        .expect("new listing");
+        assert_ne!(old_listing.identity_id, new_listing.identity_id);
+        let asset = IdentityNode::new(IdentityNativeKey::EconomicAsset {
+            registry_key: "asset-registry".to_string(),
+            asset_id: "asset-a".to_string(),
+        })
+        .expect("asset");
+        let mut mappings = [
+            (&old_listing, "mapping-old", "2025-01-03T00:00:00Z"),
+            (&new_listing, "mapping-new", "2025-01-04T00:00:00Z"),
+        ]
+        .into_iter()
+        .map(|(listing, mapping_id, retrieval_time)| IdentityMapping {
+            mapping_id: mapping_id.to_string(),
+            from_identity_id: listing.identity_id.clone(),
+            to_identity_id: asset.identity_id.clone(),
+            valid_time: TimeInterval {
+                start_time: "2025-01-01T00:00:00Z".to_string(),
+                end_time: "2025-02-01T00:00:00Z".to_string(),
+            },
+            availability_time: "2024-12-31T21:00:00Z".to_string(),
+            retrieval_time: retrieval_time.to_string(),
+            status: IdentityMappingStatus::Active,
+            confidence: EvidenceConfidence::High,
+            evidence: vec![IdentityEvidence {
+                kind: IdentityEvidenceKind::VenueMetadata,
+                assertion_id: String::new(),
+            }],
+            splice_rule: SeriesSpliceRule::Denied {
+                reason: "Listing incarnations remain separate series.".to_string(),
+            },
+        })
+        .collect::<Vec<_>>();
+        let assertions = mappings
+            .iter()
+            .map(|mapping| identity_mapping_assertion(mapping, mapping.evidence[0].kind))
+            .collect::<Vec<_>>();
+        for (mapping, assertion) in mappings.iter_mut().zip(&assertions) {
+            mapping.evidence[0].assertion_id = assertion.assertion_id.clone();
+        }
+        let evidence = VerifiedTemporalAssertionHistoryEvidence::synthetic(&assertions);
+        validate_identity_graph(
+            &[old_listing.clone(), new_listing.clone(), asset.clone()],
+            &mappings,
+            &assertions,
+            Some(&evidence),
+        )
+        .expect("registered mapping assertions");
+
+        let mut multi_evidence_mapping = mappings[0].clone();
+        multi_evidence_mapping.evidence.push(IdentityEvidence {
+            kind: IdentityEvidenceKind::ChainRegistry,
+            assertion_id: String::new(),
+        });
+        let mut venue_assertion = identity_mapping_assertion(
+            &multi_evidence_mapping,
+            IdentityEvidenceKind::VenueMetadata,
+        );
+        venue_assertion.evidence_refs = vec!["archive://venue-metadata".to_string()];
+        venue_assertion.assertion_id = venue_assertion.derived_id();
+        let mut chain_assertion = identity_mapping_assertion(
+            &multi_evidence_mapping,
+            IdentityEvidenceKind::ChainRegistry,
+        );
+        chain_assertion.evidence_refs = vec!["archive://chain-registry".to_string()];
+        chain_assertion.assertion_id = chain_assertion.derived_id();
+        multi_evidence_mapping.evidence[0].assertion_id = venue_assertion.assertion_id.clone();
+        multi_evidence_mapping.evidence[1].assertion_id = chain_assertion.assertion_id.clone();
+        let multi_assertions = vec![venue_assertion, chain_assertion];
+        let multi_evidence = VerifiedTemporalAssertionHistoryEvidence::synthetic(&multi_assertions);
+        validate_identity_graph(
+            &[old_listing.clone(), asset.clone()],
+            &[multi_evidence_mapping.clone()],
+            &multi_assertions,
+            Some(&multi_evidence),
+        )
+        .expect("each evidence kind is bound to its registered assertion");
+        let first_kind = multi_evidence_mapping.evidence[0].kind;
+        multi_evidence_mapping.evidence[0].kind = multi_evidence_mapping.evidence[1].kind;
+        multi_evidence_mapping.evidence[1].kind = first_kind;
+        assert!(
+            validate_identity_graph(
+                &[old_listing.clone(), asset.clone()],
+                &[multi_evidence_mapping],
+                &multi_assertions,
+                Some(&multi_evidence),
+            )
+            .is_err()
+        );
+
+        let mut tampered = mappings.clone();
+        tampered[0].confidence = EvidenceConfidence::Low;
+        assert!(
+            validate_identity_graph(
+                &[old_listing.clone(), new_listing.clone(), asset.clone()],
+                &tampered,
+                &assertions,
+                Some(&evidence),
+            )
+            .is_err()
+        );
+        let mut relabeled = mappings;
+        relabeled[0].evidence[0].kind = IdentityEvidenceKind::IssuerDisclosure;
+        assert!(
+            validate_identity_graph(
+                &[old_listing.clone(), new_listing.clone(), asset.clone()],
+                &relabeled,
+                &assertions,
+                Some(&evidence),
+            )
+            .is_err()
+        );
+        let mut retimed = relabeled;
+        retimed[0].evidence[0].kind = IdentityEvidenceKind::VenueMetadata;
+        retimed[0].valid_time.end_time = "2025-02-02T00:00:00Z".to_string();
+        assert!(
+            validate_identity_graph(
+                &[old_listing, new_listing, asset],
+                &retimed,
+                &assertions,
+                Some(&evidence),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn temporal_append_requires_content_identity_registered_head_and_monotonic_clock() {
+        let original = registered_assertion(AssertionState::Active, None, "2025-01-02T00:00:00Z");
+        let mut correction = registered_assertion(
+            AssertionState::Corrected,
+            Some(original.assertion_id.clone()),
+            "2025-01-03T00:00:00Z",
+        );
+        correction.publication_time = None;
+        correction.availability_time = None;
+        correction.availability_status = AvailabilityStatus::RetrievalTimeAttested;
+        correction.assertion_id = correction.derived_id();
+        let history = vec![original.clone(), correction.clone()];
+        let evidence = VerifiedTemporalAssertionHistoryEvidence::synthetic(&history);
+        validate_temporal_assertion_chain(&history, Some(&evidence))
+            .expect("registered append-only history");
+        validate_temporal_assertion_claim_use(
+            &history,
+            Some(&evidence),
+            &correction.assertion_id,
+            ClaimUse::RetrospectiveDescriptive,
+        )
+        .expect("registered retrospective claim");
+        assert!(
+            validate_temporal_assertion_claim_use(
+                &history,
+                Some(&evidence),
+                &original.assertion_id,
+                ClaimUse::RetrospectiveDescriptive,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_temporal_assertion_claim_use(
+                &history,
+                Some(&evidence),
+                &correction.assertion_id,
+                ClaimUse::Predictive,
+            )
+            .is_err()
+        );
+
+        let retraction = registered_assertion(
+            AssertionState::Retracted,
+            Some(correction.assertion_id.clone()),
+            "2025-01-04T00:00:00Z",
+        );
+        let retracted_history = vec![original.clone(), correction.clone(), retraction.clone()];
+        let retracted_evidence =
+            VerifiedTemporalAssertionHistoryEvidence::synthetic(&retracted_history);
+        validate_temporal_assertion_chain(&retracted_history, Some(&retracted_evidence))
+            .expect("registered retraction");
+        for assertion_id in [
+            &original.assertion_id,
+            &correction.assertion_id,
+            &retraction.assertion_id,
+        ] {
+            assert!(
+                validate_temporal_assertion_claim_use(
+                    &retracted_history,
+                    Some(&retracted_evidence),
+                    assertion_id,
+                    ClaimUse::RetrospectiveDescriptive,
+                )
+                .is_err()
+            );
+        }
+
+        let mut forged = history.clone();
+        forged[1].assertion_id = "caller-selected-id".to_string();
+        assert!(validate_temporal_assertion_chain(&forged, Some(&evidence)).is_err());
+
+        let same_clock = registered_assertion(
+            AssertionState::Corrected,
+            Some(original.assertion_id.clone()),
+            "2025-01-02T00:00:00Z",
+        );
+        let non_monotonic = vec![original.clone(), same_clock];
+        let evidence = VerifiedTemporalAssertionHistoryEvidence::synthetic(&non_monotonic);
+        assert!(validate_temporal_assertion_chain(&non_monotonic, Some(&evidence)).is_err());
+
+        let fork_a = registered_assertion(
+            AssertionState::Corrected,
+            Some(original.assertion_id.clone()),
+            "2025-01-03T00:00:00Z",
+        );
+        let mut fork_b = registered_assertion(
+            AssertionState::Corrected,
+            Some(original.assertion_id.clone()),
+            "2025-01-04T00:00:00Z",
+        );
+        fork_b.value = AssertionValue::Text {
+            value: "delisted".to_string(),
+        };
+        fork_b.assertion_id = fork_b.derived_id();
+        let forked = vec![original, fork_a, fork_b];
+        let forked_evidence = VerifiedTemporalAssertionHistoryEvidence::synthetic(&forked);
+        assert!(validate_temporal_assertion_chain(&forked, Some(&forked_evidence)).is_err());
+
+        let active_listed =
+            registered_assertion(AssertionState::Active, None, "2025-01-02T00:00:00Z");
+        let mut active_delisted = active_listed.clone();
+        active_delisted.value = AssertionValue::Text {
+            value: "delisted".to_string(),
+        };
+        active_delisted.retrieval_time = "2025-01-03T00:00:00Z".to_string();
+        active_delisted.assertion_id = active_delisted.derived_id();
+        let contradictory_roots = vec![active_listed.clone(), active_delisted.clone()];
+        let contradictory_evidence =
+            VerifiedTemporalAssertionHistoryEvidence::synthetic(&contradictory_roots);
+        for assertion in &contradictory_roots {
+            assert!(
+                validate_temporal_assertion_claim_use(
+                    &contradictory_roots,
+                    Some(&contradictory_evidence),
+                    &assertion.assertion_id,
+                    ClaimUse::RetrospectiveDescriptive,
+                )
+                .is_err()
+            );
+        }
+
+        let mut mapping_a = active_listed.clone();
+        mapping_a.subject_id = "mapping-a".to_string();
+        mapping_a.predicate = AssertionPredicate::IdentityMappingEvidence;
+        mapping_a.value = AssertionValue::IdentityMappingEvidence {
+            mapping_commitment: "commitment-a".to_string(),
+            evidence_kind: IdentityEvidenceKind::VenueMetadata,
+        };
+        mapping_a.assertion_id = mapping_a.derived_id();
+        let mut mapping_b = mapping_a.clone();
+        mapping_b.value = AssertionValue::IdentityMappingEvidence {
+            mapping_commitment: "commitment-b".to_string(),
+            evidence_kind: IdentityEvidenceKind::ChainRegistry,
+        };
+        mapping_b.retrieval_time = "2025-01-03T00:00:00Z".to_string();
+        mapping_b.evidence_refs = vec!["archive://conflicting-mapping".to_string()];
+        mapping_b.assertion_id = mapping_b.derived_id();
+        let conflicting_mappings = vec![mapping_a, mapping_b];
+        let conflicting_mapping_evidence =
+            VerifiedTemporalAssertionHistoryEvidence::synthetic(&conflicting_mappings);
+        assert!(
+            validate_temporal_assertion_claim_use(
+                &conflicting_mappings,
+                Some(&conflicting_mapping_evidence),
+                &conflicting_mappings[0].assertion_id,
+                ClaimUse::RetrospectiveDescriptive,
+            )
+            .is_err()
+        );
+
+        let mut roster_text = active_listed.clone();
+        roster_text.predicate = AssertionPredicate::RosterStatus;
+        roster_text.assertion_id = roster_text.derived_id();
+        let roster_text_history = vec![roster_text];
+        let roster_text_evidence =
+            VerifiedTemporalAssertionHistoryEvidence::synthetic(&roster_text_history);
+        assert!(
+            validate_temporal_assertion_chain(&roster_text_history, Some(&roster_text_evidence))
+                .is_err()
+        );
+
+        let mut untyped_mapping = active_listed;
+        untyped_mapping.predicate = AssertionPredicate::IdentityMappingEvidence;
+        untyped_mapping.assertion_id = untyped_mapping.derived_id();
+        let untyped_mapping_history = vec![untyped_mapping];
+        let untyped_mapping_evidence =
+            VerifiedTemporalAssertionHistoryEvidence::synthetic(&untyped_mapping_history);
+        assert!(
+            validate_temporal_assertion_chain(
+                &untyped_mapping_history,
+                Some(&untyped_mapping_evidence)
+            )
+            .is_err()
+        );
     }
 }

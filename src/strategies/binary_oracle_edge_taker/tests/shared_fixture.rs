@@ -947,8 +947,9 @@ fn submit_admission_with_limits_and_canonical_position(
         ),
         loss_snapshot: None,
     });
-    let rebuild =
-        admission.rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1);
+    let rebuild = admission
+        .rebuild_capital_admission_open_order_reservations_for_test(Vec::new(), 1)
+        .expect("capital admission fixture rebuild should preserve invariants");
     assert!(rebuild.accepted, "canonical test position should reconcile");
     admission
 }

@@ -1344,19 +1344,55 @@ fn risk_reducing_exit_admission_continues_when_its_evidence_write_fails() {
     );
     let admission = limited_admission_with_writer(writer.recorder(), 1, Decimal::new(5, 0));
 
+    let request = submit_request_with_kind_and_exit_proof(
+        Decimal::new(264, 2),
+        BoltV3SubmitIntentKind::RiskReducingExit,
+        Some(valid_risk_reducing_exit_proof()),
+    );
+    let permit = admission
+        .admit(&request)
+        .expect("risk-reducing admission must preserve its result when evidence fails");
+
+    assert_eq!(
+        admission
+            .admit(&request)
+            .expect_err("a live evidence-free exit permit must reject duplicate admission"),
+        BoltV3SubmitAdmissionError::ClientOrderAlreadyAuthorized
+    );
+
+    drop(permit);
     admission
-        .admit(&submit_request_with_kind_and_exit_proof(
-            Decimal::new(264, 2),
-            BoltV3SubmitIntentKind::RiskReducingExit,
-            Some(valid_risk_reducing_exit_proof()),
-        ))
-        .expect("risk-reducing admission must preserve its result when evidence fails")
+        .admit(&request)
+        .expect("dropping the unsubmitted permit must release its transient authority")
         .commit_submitted();
 
     assert_eq!(admission.admitted_order_count(), 1);
-    assert!(
-        writer.admission_decisions().is_empty(),
-        "the injected write failure must target the risk-reducing admission fact"
+}
+
+#[test]
+fn submitted_risk_reducing_exit_stays_unique_when_its_evidence_write_fails() {
+    let writer = support::current_evidence::RecordingDecisionEvidenceWriter::default();
+    writer.fail_purpose_on_attempt(
+        bolt_v2::bolt_v3_current_evidence::CurrentEvidenceTestPurpose::RiskReducingExitAdmission,
+        1,
+    );
+    let admission = limited_admission_with_writer(writer.recorder(), 2, Decimal::new(5, 0));
+    let request = submit_request_with_kind_and_exit_proof(
+        Decimal::new(264, 2),
+        BoltV3SubmitIntentKind::RiskReducingExit,
+        Some(valid_risk_reducing_exit_proof()),
+    );
+
+    admission
+        .admit(&request)
+        .expect("evidence failure must not block a verified risk-reducing exit")
+        .commit_submitted();
+
+    assert_eq!(
+        admission
+            .admit(&request)
+            .expect_err("a submitted evidence-free exit must reject duplicate admission"),
+        BoltV3SubmitAdmissionError::ClientOrderAlreadyAuthorized
     );
 }
 

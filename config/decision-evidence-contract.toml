@@ -509,7 +509,7 @@ classification = "no-named-reader"
 runtime_wiring = "unwired"
 reviewed_runtime_triggers = []
 call_sites = ["src/bolt_v3_basket_admission.rs::admit", "src/bolt_v3_submit_admission.rs::reserve_basket_submit_slots"]
-repeat_semantics = "owner approved retaining every basket admission result as append-complete event evidence"
+repeat_semantics = "owner approved retaining every basket admission result as append-complete event evidence; baskets containing new-risk require the append before admission, while a typed all-risk-reducing basket may continue when the append fails"
 dedupe_key_evidence = "basket_id event identity; no suppression"
 census_ancestor = "basket_admission_decision"
 

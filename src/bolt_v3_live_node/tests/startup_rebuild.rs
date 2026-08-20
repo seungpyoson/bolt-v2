@@ -101,7 +101,9 @@ fn startup_rebuild_does_not_recover_known_submit_reservation_from_nt_cache_witho
         "POLYMARKET-001",
     );
 
-    let rebuild = runtime.rebuild_capital_admission_from_nt_cache(2_000);
+    let rebuild = runtime
+        .rebuild_capital_admission_from_nt_cache(2_000)
+        .expect("startup rebuild should preserve internal invariants");
 
     assert_eq!(
         rebuild,
@@ -148,7 +150,9 @@ fn startup_rebuild_stays_closed_for_unknown_nt_cache_order() {
         "POLYMARKET-001",
     );
 
-    let rebuild = runtime.rebuild_capital_admission_from_nt_cache(2_000);
+    let rebuild = runtime
+        .rebuild_capital_admission_from_nt_cache(2_000)
+        .expect("startup rebuild should preserve internal invariants");
 
     assert_eq!(
         rebuild,
@@ -200,6 +204,7 @@ fn current_process_admission_remains_attributed_on_nt_reprojection() {
     assert!(
         runtime
             .rebuild_capital_admission_from_nt_cache(1_050)
+            .expect("startup rebuild should preserve internal invariants")
             .accepted
     );
 
@@ -249,7 +254,9 @@ fn current_process_admission_remains_attributed_on_nt_reprojection() {
         "POLYMARKET-001",
     );
 
-    let rebuild = runtime.rebuild_capital_admission_from_nt_cache(1_150);
+    let rebuild = runtime
+        .rebuild_capital_admission_from_nt_cache(1_150)
+        .expect("startup rebuild should preserve internal invariants");
 
     assert!(rebuild.accepted, "{rebuild:?}");
     assert_eq!(rebuild.rebuilt_reservation_count, 1);
@@ -290,7 +297,9 @@ fn startup_rebuild_reports_missing_nt_account_cache_balance() {
     let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
         .expect("fixture v3 LiveNode should build");
 
-    let rebuild = runtime.rebuild_capital_admission_from_nt_cache(2_000);
+    let rebuild = runtime
+        .rebuild_capital_admission_from_nt_cache(2_000)
+        .expect("startup rebuild should preserve internal invariants");
 
     assert_eq!(
         rebuild.missing_nt_account_cache_balance,
@@ -328,7 +337,7 @@ fn startup_rebuild_panics_on_poisoned_capital_admission_config_feed_lock() {
         .expect("fixture should configure capital-admission runtime feed");
     poison_mutex(feed);
 
-    runtime.rebuild_capital_admission_from_nt_cache(2_000);
+    let _ = runtime.rebuild_capital_admission_from_nt_cache(2_000);
 }
 
 #[test]
@@ -501,7 +510,9 @@ fn startup_rebuild_nt_cached_balance_is_advisory_without_provider_collateral_all
         assert_eq!(balance.free.as_decimal(), Decimal::new(60, 0));
     }
 
-    let rebuild = runtime.rebuild_capital_admission_from_nt_cache(2_000);
+    let rebuild = runtime
+        .rebuild_capital_admission_from_nt_cache(2_000)
+        .expect("startup rebuild should preserve internal invariants");
 
     assert_eq!(
         rebuild,
@@ -554,7 +565,9 @@ fn startup_rebuild_rejects_attribution_when_open_quantity_exceeds_submitted() {
         "POLYMARKET-001",
     );
 
-    let rebuild = runtime.rebuild_capital_admission_from_nt_cache(2_000);
+    let rebuild = runtime
+        .rebuild_capital_admission_from_nt_cache(2_000)
+        .expect("startup rebuild should preserve internal invariants");
 
     assert_eq!(
         rebuild,

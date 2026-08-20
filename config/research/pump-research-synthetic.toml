@@ -1,0 +1,279 @@
+[experiment]
+experiment_id = "synthetic-pump-research"
+version_sequence = 1
+schema_version = "pump-research-experiment.v1"
+canonicalization_version = "pump-research-canonical-json.v1"
+hash_algorithm = "sha256"
+created_at = "2026-08-20T00:00:00Z"
+append_role = "experiment-decision"
+purpose = "exploratory"
+state = "draft"
+
+[[experiment.lineage_refs]]
+artifact_kind = "research-analytics"
+artifact_id = "synthetic-governance-authority"
+artifact_version = 1
+content_hash = "1111111111111111111111111111111111111111111111111111111111111111"
+
+[target_frame]
+frame_id = "synthetic-frame"
+venue_keys = ["synthetic-venue-a", "synthetic-venue-b"]
+market_family_keys = ["synthetic-perpetual"]
+start_time = "2025-01-01T00:00:00Z"
+end_time = "2025-04-01T00:00:00Z"
+time_unit_grain = "utc-day"
+outer_roster_rule = "union-of-admitted-vintage-inventories"
+roster_vintage = "2024-12-31T23:59:59Z"
+inventory_source_refs = ["synthetic-inventory-a", "synthetic-inventory-b"]
+reconciliation_rule = "identity-first-source-precedence-v1"
+status_precedence = ["eligible_observed", "known_ineligible", "known_insufficient_coverage", "existence_or_coverage_unknown"]
+completeness = "enumerated_incomplete"
+disclosure_text = "Results cover only the enumerated synthetic roster and measured coverage."
+
+[roles]
+
+[[roles.bindings]]
+role_id = "ingestion"
+purpose = "ingestion"
+authority = "test_fixture"
+account_id = "fixture-account-ingestion"
+principal_arn_prefix = "fixture://ingestion/"
+user_id_prefix = "fixture-ingestion"
+credential_scope_ref = "fixture-scope-ingestion"
+can_append_versions = false
+
+[[roles.bindings]]
+role_id = "disclosure"
+purpose = "disclosure"
+authority = "test_fixture"
+account_id = "fixture-account-disclosure"
+principal_arn_prefix = "fixture://disclosure/"
+user_id_prefix = "fixture-disclosure"
+credential_scope_ref = "fixture-scope-disclosure"
+can_append_versions = false
+
+[[roles.bindings]]
+role_id = "canonical-evaluation"
+purpose = "canonical_evaluation"
+authority = "test_fixture"
+account_id = "fixture-account-canonical"
+principal_arn_prefix = "fixture://canonical/"
+user_id_prefix = "fixture-canonical"
+credential_scope_ref = "fixture-scope-canonical"
+can_append_versions = false
+
+[[roles.bindings]]
+role_id = "verification-replay"
+purpose = "verification_replay"
+authority = "test_fixture"
+account_id = "fixture-account-verification"
+principal_arn_prefix = "fixture://verification/"
+user_id_prefix = "fixture-verification"
+credential_scope_ref = "fixture-scope-verification"
+can_append_versions = false
+
+[[roles.bindings]]
+role_id = "custody"
+purpose = "custody"
+authority = "test_fixture"
+account_id = "fixture-account-custody"
+principal_arn_prefix = "fixture://custody/"
+user_id_prefix = "fixture-custody"
+credential_scope_ref = "fixture-scope-custody"
+can_append_versions = false
+
+[[roles.bindings]]
+role_id = "experiment-decision"
+purpose = "experiment_decision"
+authority = "test_fixture"
+account_id = "fixture-account-decision"
+principal_arn_prefix = "fixture://decision/"
+user_id_prefix = "fixture-decision"
+credential_scope_ref = "fixture-scope-decision"
+can_append_versions = true
+
+[[roles.bindings]]
+role_id = "governance-approval"
+purpose = "governance_approval"
+authority = "test_fixture"
+account_id = "fixture-account-governance"
+principal_arn_prefix = "fixture://governance/"
+user_id_prefix = "fixture-governance"
+credential_scope_ref = "fixture-scope-governance"
+can_append_versions = false
+
+[[roles.required_separations]]
+left_role = "custody"
+right_role = "experiment-decision"
+
+[[roles.required_separations]]
+left_role = "custody"
+right_role = "governance-approval"
+
+[[roles.required_separations]]
+left_role = "canonical-evaluation"
+right_role = "verification-replay"
+
+[storage]
+artifact_root = "s3://example-bucket/pump-research-fixture"
+artifact_store_config_path = "config/research/pump-research-artifact-store.toml"
+artifact_store_config_hash = "2222222222222222222222222222222222222222222222222222222222222222"
+producer_project = "bolt-v2"
+owner_project = "bolt-v2"
+writer_id = "pump-research-writer"
+snapshot_id_namespace = "synthetic-pump-research-v1-snapshot"
+credential_scope_ref = "fixture-scope-decision"
+local_work_max_bytes = 1048576
+retention_policy = "retain-immutable-lineage"
+registration_read_retry_limit = 2
+
+[storage.ssm_parameters]
+region = "us-east-1"
+access_key_id = "/fixture/pump-research/artifact-store/access-key-id"
+secret_access_key = "/fixture/pump-research/artifact-store/secret-access-key"
+session_token = "/fixture/pump-research/artifact-store/session-token"
+
+[timestamp_policy]
+receipt_schema = "fixture-timestamp-receipt.v1"
+custody_anchor_max_interval_seconds = 3600
+registry_anchor_max_interval_seconds = 3600
+
+[timestamp_policy.verifier]
+kind = "test_fixture"
+fixture_id = "fixture-independent-timestamp"
+
+[source_policy]
+registry_binding = "pump-research-source-register.v1"
+input_vintage_cutoff = "2024-12-31T23:59:59Z"
+zero_paid_queries = true
+zero_provider_access = true
+incremental_spend_cap_usd = "0"
+retain_exact_or_lossless = true
+correction_policy = "new_experiment_version"
+required_fidelity_classes = ["trade-bar-replay"]
+required_rights = ["derived-artifact", "internal-replay", "retention"]
+
+[partitions]
+e0_id = "synthetic-e0"
+e0_start_time = "2025-03-01T00:00:00Z"
+e0_end_time = "2025-04-01T00:00:00Z"
+discovery_partition_id = "synthetic-discovery"
+discovery_start_time = "2025-01-01T00:00:00Z"
+discovery_end_time = "2025-03-01T00:00:00Z"
+evaluation_partition_id = "synthetic-evaluation"
+evaluation_start_time = "2025-03-01T00:00:00Z"
+evaluation_end_time = "2025-04-01T00:00:00Z"
+purge_span_seconds = 604800
+boundary_policy = "censor-full-computation-span"
+censoring_statuses = ["left_censored", "right_censored"]
+
+[detector]
+detector_id = "synthetic-pump-giveback"
+observation_rule = "one-minute-admitted-trades"
+event_clock = "venue-event-time"
+decision_clock = "giveback-window-close"
+quote_normalization = "admitted-quote-to-usd-v1"
+return_definition = "log-mid-return"
+reported_volume_definition = "admitted-reported-quote-volume"
+baseline_rule = "trailing-median-same-clock"
+minimum_coverage_rule = "complete-pump-and-giveback-window"
+missing_data_rule = "censor"
+interruption_rule = "split-and-censor"
+pump_window_seconds = 3600
+giveback_window_seconds = 86400
+warmup_seconds = 604800
+overlap_rule = "merge-overlapping-trigger-spans"
+cooldown_seconds = 86400
+tie_rule = "earliest-anchor-then-identity"
+deduplication_rule = "one-episode-per-overlap-group"
+episode_identity_rule = "frame-instrument-anchor-cell-hash"
+
+[[detector.trigger_cells]]
+trigger_cell_id = "synthetic-primary-cell"
+abnormal_return_threshold = "3.0"
+abnormal_volume_threshold = "4.0"
+giveback_threshold = "0.5"
+
+[controls]
+control_policy_id = "synthetic-same-time-risk-set"
+risk_set_rule = "same-time-eligible-units"
+pseudo_anchor_rule = "treated-anchor-time"
+feature_ids = ["baseline-liquidity", "baseline-return", "market-regime"]
+feature_cutoff_rule = "strictly-before-anchor"
+regime_rule = "same-calendar-and-market-regime"
+matching_algorithm = "deterministic-nearest-neighbor"
+distance_rule = "standardized-l1"
+caliper_rule = "precommitted-feature-calipers"
+seed = 17
+reuse_rule = "no-reuse"
+relaxation_rule = "none"
+balance_rule = "all-feature-standardized-difference-bound"
+missingness_rule = "missing-indicator-and-censor"
+common_support_rule = "report-unmatched"
+contamination_rule = "future-episode-excluded-after-identities-freeze"
+unmatched_rule = "retain-without-forced-match"
+
+[analysis]
+primary_estimand_id = "synthetic-primary-estimand"
+estimand_ids = ["synthetic-primary-estimand", "synthetic-secondary-estimand"]
+hypothesis_families = ["pump-reversal"]
+unit_of_analysis = "episode"
+dependence_rule = "cluster-by-economic-asset-and-calendar-day"
+multiplicity_rule = "holm-within-family"
+uncertainty_rule = "cluster-bootstrap"
+null_result_rule = "publish-without-rule-change"
+ordered_diagnostics = ["coverage", "balance", "attrition"]
+
+[disclosure]
+program_id = "synthetic-preconfirmation-disclosure"
+table_ids = ["coverage-counts"]
+grouping_ids = ["partition"]
+filter_ids = ["enumerated-roster"]
+release_schedule = ["after-discovery-commitment"]
+maximum_release_count = 1
+suppression_rule = "suppress-cells-below-five"
+rounding_rule = "round-counts-to-five"
+censoring_rule = "report-censored-count-only"
+boundary_flag_rule = "include-left-and-right-counts"
+cross_version_accounting_rule = "cumulative-query-signature-budget"
+recipient_ids = ["synthetic-analysis-team"]
+
+[confirmation]
+comparator = "canonical-json-semantic-equality"
+normalization_rule = "exclude-declared-volatile-metadata"
+exclusion_rule = "no-post-commit-exclusions"
+numeric_tolerance = "exact-decimal-and-integer"
+retry_state_machine = "identical-input-retryable-infrastructure-only"
+maximum_attempts = 2
+failure_code_vocabulary = ["infrastructure_retryable", "semantic_mismatch_terminal"]
+
+[confirmation.primary_cell]
+kind = "trigger_cell"
+trigger_cell_id = "synthetic-primary-cell"
+
+[nt_run]
+manifest_hash = "3333333333333333333333333333333333333333333333333333333333333333"
+dependency_set_hash = "1111111111111111111111111111111111111111111111111111111111111111"
+execution_environment_hash = "1111111111111111111111111111111111111111111111111111111111111111"
+random_seeds = { control-matching = 17 }
+
+[enrichment]
+enabled = false
+requires_post_stage_one_authorization = true
+strata_rule = "detected-control-near-threshold-negative"
+draw_rule = "pre-provider-deterministic-stratified-draw"
+hypothesis_ids = ["synthetic-orderbook-mechanism"]
+falsifier_ids = ["synthetic-common-market-shock"]
+candidate_packet_schema = "pump-research-candidate-packet.v1"
+content_neutral_ranking_rule = "rights-fidelity-coverage-cost"
+tie_rule = "stable-dataset-id"
+storage_window_rule = "selected-windows-plus-fixed-warmup-only"
+provider_selected = false
+
+[claims]
+allowed_tiers = ["episode_detected", "not_proven", "manipulation_alleged", "venue_sanctioned", "mechanism_consistent_with", "manipulation_proven"]
+evidence_rule = "tier-specific-active-lineage"
+forbidden_promotions = ["episode-to-manipulation", "sanction-to-proof"]
+invalidation_rule = "transitive-active-descendant-invalidation"
+l3_claim_requires_market_by_order = true
+absence_of_authority_label = "not_proven"

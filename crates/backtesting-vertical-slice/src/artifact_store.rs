@@ -144,10 +144,12 @@ pub enum ArtifactKind {
 const RESEARCH_ANALYTICS_DATASETS_SUBFAMILY: &str = "datasets";
 const RESEARCH_ANALYTICS_FEATURE_TABLES_SUBFAMILY: &str = "feature-tables";
 const RESEARCH_ANALYTICS_EXPERIMENT_RESULTS_SUBFAMILY: &str = "experiment-results";
+const RESEARCH_ANALYTICS_EXPERIMENT_CONTRACTS_SUBFAMILY: &str = "experiment-contracts";
 const RESEARCH_ANALYTICS_ARTIFACT_FAMILIES: &[&str] = &[
     RESEARCH_ANALYTICS_DATASETS_SUBFAMILY,
     RESEARCH_ANALYTICS_FEATURE_TABLES_SUBFAMILY,
     RESEARCH_ANALYTICS_EXPERIMENT_RESULTS_SUBFAMILY,
+    RESEARCH_ANALYTICS_EXPERIMENT_CONTRACTS_SUBFAMILY,
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1471,6 +1473,17 @@ pub struct ArtifactIndexCommitOutcome {
     pub audit_intent: ArtifactIndexAuditIntentV1,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArtifactIndexPointerConflict;
+
+impl std::fmt::Display for ArtifactIndexPointerConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("artifact index pointer changed before commit")
+    }
+}
+
+impl std::error::Error for ArtifactIndexPointerConflict {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactIndexWriteAuthority {
     writer_id: String,
@@ -1683,7 +1696,7 @@ impl<'a> ArtifactIndexWriter<'a> {
                 Err(err) => return Err(err),
             }
         }
-        bail!("artifact index commit exhausted supplied snapshot ids")
+        Err(ArtifactIndexPointerConflict.into())
     }
 
     /// # Errors

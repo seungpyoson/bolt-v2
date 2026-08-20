@@ -25,6 +25,7 @@ anyhow = "1"
 arrow = "58.3.0"
 aws-config = "=1.8.18"
 aws-sdk-ssm = { version = "=1.113.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-sts = { version = "=1.107.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 bytes = "=1.12.1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }

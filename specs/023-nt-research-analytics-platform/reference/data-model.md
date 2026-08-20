@@ -120,7 +120,7 @@ data models are defined inside the numbered project specs/plans:
   artifact_index, or research_analytics.
 - `artifact_subfamily`: Optional subfamily inside the top-level kind. Required
   for Research Analytics artifacts: datasets, feature_tables,
-  experiment_results, or promotion_packages.
+  experiment_results, promotion_packages, or experiment_contracts.
 - `producer_project`: Project or job family that produced the artifact and owns
   its index record.
 - `manifest_uri`: Artifact-local structured manifest URI under `artifact_root`.
@@ -144,18 +144,32 @@ data models are defined inside the numbered project specs/plans:
 
 ## ResearchAnalyticsArtifact
 
-Research Analytics may write only these derived families under the
-`artifact_root/research-analytics/v1/` prefix:
+Research Analytics may write only these derived families under the configured
+Research Analytics typed root (`artifact_root/<research_analytics_subpath>/v1/`):
 
 - `datasets`: point-in-time research datasets.
 - `feature-tables`: point-in-time feature tables.
 - `experiment-results`: experiment metadata, metrics pointers, consumed BTE
   result ids, leakage reports, verdict fields, and optional typed
   promotion-config refs for real GO findings.
+- `experiment-contracts`: immutable research definitions, commitments, custody
+  evidence, execution comparisons, reports, claims, and invalidation events.
+
+Artifact Index `lifecycle_state` continues to mean storage activity only.
+Research experiment artifacts separately record evidence validity as active,
+quarantined, revoked, expired, or invalidated. Cold/inactive storage does not
+invalidate evidence, and hot/active storage does not make invalid evidence
+admissible.
 
 Every RA-owned artifact records owner, schema version, source refs, source
 hashes, content hash, lifecycle state, and Artifact Index event behavior. RA
 does not write upstream raw, NT catalog, source-proof, or backtest records.
+The existing RA record carries the subfamily, while the shared S3 event and
+snapshot v1 wire shape remains unchanged; its typed URI and manifest identify
+the subfamily. Experiment state is not an unverified index-row string. Version
+appends hash-load the typed envelope and payload for every committed state
+transition, verify the exact predecessor/evidence chain, and derive the current
+state from that chain.
 
 ## IssueSlice
 

@@ -2266,7 +2266,13 @@ async fn research_analytics_writer_commits_all_owned_families_to_one_kind_snapsh
         "experiment-result-001",
         'd',
     );
-
+    let experiment_contract = research_analytics_event(
+        &root,
+        "experiment-contracts",
+        "ra-event-004",
+        "experiment-contract-001",
+        'e',
+    );
     writer
         .commit_event(
             &root,
@@ -2296,6 +2302,17 @@ async fn research_analytics_writer_commits_all_owned_families_to_one_kind_snapsh
         )
         .await
         .expect("experiment-results commit succeeds");
+    writer
+        .commit_event(
+            &root,
+            commit_plan_with_writer(
+                experiment_contract,
+                &["snapshot-ra-004"],
+                "research-analytics-writer",
+            ),
+        )
+        .await
+        .expect("experiment-contract commit succeeds");
 
     let snapshot = writer
         .read_verified_latest_snapshot(&root, ArtifactKind::ResearchAnalytics)
@@ -2303,7 +2320,7 @@ async fn research_analytics_writer_commits_all_owned_families_to_one_kind_snapsh
         .expect("research analytics latest snapshot verifies");
 
     assert_eq!(snapshot.artifact_kind, ArtifactKind::ResearchAnalytics);
-    assert_eq!(snapshot.rows.len(), 3);
+    assert_eq!(snapshot.rows.len(), 4);
     assert_eq!(
         root.latest_pointer(ArtifactKind::ResearchAnalytics),
         "s3://bolt-ra-artifacts/prod/artifact-index/v1/pointers/kind=research-analytics/latest.json"
@@ -2322,11 +2339,24 @@ async fn research_analytics_writer_commits_all_owned_families_to_one_kind_snapsh
                     .contains("/research-analytics/v1/feature-tables/")
                 || row
                     .manifest_uri
-                    .contains("/research-analytics/v1/experiment-results/"),
+                    .contains("/research-analytics/v1/experiment-results/")
+                || row
+                    .manifest_uri
+                    .contains("/research-analytics/v1/experiment-contracts/"),
             "{}",
             row.manifest_uri
         );
     }
+    let contract = snapshot
+        .rows
+        .iter()
+        .find(|row| row.artifact_id == "experiment-contract-001")
+        .expect("experiment contract row");
+    assert!(
+        contract
+            .artifact_uri
+            .contains("/research-analytics/v1/experiment-contracts/")
+    );
 
     let experiment_row = writer
         .read_committed_row(

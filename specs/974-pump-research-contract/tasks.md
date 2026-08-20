@@ -41,8 +41,8 @@ cannot claim residual scope.
 code, creating a second project, or leaving placeholder modules.
 
 - [x] T001 Record stable Slice-1 through Slice-7 identifiers, dependency links, accepted/residual scope, branch naming, and evidence classes in `specs/974-pump-research-contract/tasks.md`
-- [ ] T002 Add only Slice-1 credential-free definition, authority, timestamp-policy, and artifact fixtures under `config/research/pump-research-synthetic.toml`
-- [ ] T003 [P] Align the Research Analytics reference contract with one `experiment-contracts` subfamily and separate evidence-validity semantics in `specs/023-nt-research-analytics-platform/reference/data-model.md`
+- [x] T002 Add only Slice-1 credential-free definition, authority, timestamp-policy, and artifact fixtures under `config/research/pump-research-synthetic.toml`
+- [x] T003 [P] Align the Research Analytics reference contract with one `experiment-contracts` subfamily and separate evidence-validity semantics in `specs/023-nt-research-analytics-platform/reference/data-model.md`
 
 **Checkpoint**: Every implementation change has one declared owning spec slice
 and no future slice is represented by empty code.
@@ -56,18 +56,18 @@ artifact registration, authenticated role binding, and NT compile boundary.
 
 **Requirements**: FR-001–FR-006, FR-049–FR-052; SC-001, SC-004, SC-007, SC-015.
 
-- [ ] T004 Register only `research_experiment`, the `pump_research` Slice-1 commands, and the Slice-1 test module, and promote locked `aws-sdk-sts = 1.107.0` to a direct dependency in `crates/backtesting-vertical-slice/src/lib.rs`, `crates/backtesting-vertical-slice/src/bin/pump_research.rs`, `crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_tests.rs`, and `crates/backtesting-vertical-slice/Cargo.toml`
-- [ ] T005 Implement strict serde models for `ExperimentVersion`, role bindings, storage/timestamp/source/partition/detector/control/analysis/disclosure/confirmation/enrichment/claim policies, and all top-level TOML tables in `crates/backtesting-vertical-slice/src/research_experiment.rs`
-- [ ] T006 Implement unknown-field rejection, parent/version chains, authorized append roles, cross-table references, ordered identifiers, and terminal-state transition rejection in `crates/backtesting-vertical-slice/src/research_experiment.rs`
-- [ ] T007 Implement versioned deterministic semantic serialization with ordered maps/sets plus original-byte and semantic SHA-256 hashes in `crates/backtesting-vertical-slice/src/research_experiment.rs`
-- [ ] T008 Extend `ResearchAnalyticsSubfamily` with exactly one `experiment-contracts` subfamily while preserving Artifact Index active/inactive storage semantics in `crates/backtesting-vertical-slice/src/artifact_index.rs`
-- [ ] T009 Implement typed research artifact envelopes, artifact types, evidence-validity state, URI/hash/lineage checks, and fail-on-dirty commit plans in `crates/backtesting-vertical-slice/src/research_experiment.rs`
-- [ ] T010 Implement non-test AWS STS `GetCallerIdentity` principal resolution and TOML role matching that rejects missing/mismatched identity, payload/CLI self-assertion, and fixture principals/authorities outside tests in `crates/backtesting-vertical-slice/src/research_experiment.rs`
-- [ ] T011 Implement immutable NT run-input compilation that preserves experiment/source/code/schema/NT/dependency/environment/numeric/seed identities and rejects semantic override in `crates/backtesting-vertical-slice/src/run_manifest.rs`
-- [ ] T012 Implement the single CLI with `validate` and `register-version`, structured non-secret output, and no provider/query/purchase/alternate-replay surface in `crates/backtesting-vertical-slice/src/bin/pump_research.rs`
-- [ ] T013 [P] Add strict TOML, canonical byte/hash, version-parent, role, terminal-state, fixture-authority, malformed-reference, and missing-value behavior tests in `crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_research_experiment.rs`
-- [ ] T014 [P] Add subfamily, evidence-vs-storage lifecycle, stale-pointer, bad URI/hash/lineage, and dirty-write behavior tests in `crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_artifact_index.rs`
-- [ ] T015 Add NT compile-boundary and CLI tests proving equal semantic inputs compile equally and alternate semantic flags/provider commands are rejected in `crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_research_experiment.rs`
+- [x] T004 Register only `research_experiment`, the `pump_research` Slice-1 commands, and the Slice-1 test module, and promote locked `aws-sdk-sts = 1.107.0` to a direct dependency in `crates/backtesting-vertical-slice/src/lib.rs`, `crates/backtesting-vertical-slice/src/bin/pump_research.rs`, `crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_tests.rs`, and `crates/backtesting-vertical-slice/Cargo.toml`
+- [x] T005 Implement strict serde models for `ExperimentVersion`, role bindings, storage/timestamp/source/partition/detector/control/analysis/disclosure/confirmation/enrichment/claim policies, and all top-level TOML tables in `crates/backtesting-vertical-slice/src/research_experiment.rs`
+- [x] T006 Implement unknown-field rejection, parent/version chains, authorized append roles, cross-table references, ordered identifiers, and terminal-state transition rejection in `crates/backtesting-vertical-slice/src/research_experiment.rs`
+- [x] T007 Implement versioned deterministic semantic serialization with ordered maps/sets plus original-byte and semantic SHA-256 hashes in `crates/backtesting-vertical-slice/src/research_experiment.rs`
+- [x] T008 Extend `ResearchAnalyticsSubfamily` with exactly one `experiment-contracts` subfamily while preserving Artifact Index active/inactive storage semantics in `crates/backtesting-vertical-slice/src/artifact_index.rs`
+- [x] T009 Implement typed research artifact envelopes, artifact types, evidence-validity state, URI/hash/lineage checks, and fail-on-dirty commit plans in `crates/backtesting-vertical-slice/src/research_experiment.rs`
+- [x] T010 Implement non-test AWS STS `GetCallerIdentity` principal resolution and TOML role matching that rejects missing/mismatched identity, payload/CLI self-assertion, and fixture principals/authorities outside tests in `crates/backtesting-vertical-slice/src/research_experiment.rs`
+- [x] T011 Implement immutable NT run-input compilation that preserves experiment/source/code/schema/NT/dependency/environment/numeric/seed identities and rejects semantic override in `crates/backtesting-vertical-slice/src/run_manifest.rs`
+- [x] T012 Implement the single CLI with `validate` and `register-version`, structured non-secret output, and no provider/query/purchase/alternate-replay surface in `crates/backtesting-vertical-slice/src/bin/pump_research.rs`
+- [x] T013 [P] Add strict TOML, canonical byte/hash, version-parent, role, terminal-state, fixture-authority, malformed-reference, and missing-value behavior tests in `crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_research_experiment.rs`
+- [x] T014 [P] Add subfamily, evidence-vs-storage lifecycle, stale-pointer, bad URI/hash/lineage, and dirty-write behavior tests in `crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_artifact_index.rs`
+- [x] T015 Add NT compile-boundary and CLI tests proving equal semantic inputs compile equally and alternate semantic flags/provider commands are rejected in `crates/backtesting-vertical-slice/tests/backtesting_vertical_slice_research_experiment.rs`
 
 **Checkpoint**: One strict experiment version can be validated and registered;
 it cannot yet access data, discover, confirm, enrich, or publish.

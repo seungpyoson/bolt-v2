@@ -55,6 +55,7 @@ pub enum ResearchAnalyticsSubfamily {
     Datasets,
     FeatureTables,
     ExperimentResults,
+    ExperimentContracts,
 }
 
 impl ResearchAnalyticsSubfamily {
@@ -63,6 +64,7 @@ impl ResearchAnalyticsSubfamily {
             Self::Datasets => "datasets",
             Self::FeatureTables => "feature-tables",
             Self::ExperimentResults => "experiment-results",
+            Self::ExperimentContracts => "experiment-contracts",
         }
     }
 }

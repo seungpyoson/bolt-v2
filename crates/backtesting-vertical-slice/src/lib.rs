@@ -67,6 +67,7 @@ pub mod polymarket_nt_surface_proof;
 pub mod reference_artifact;
 pub mod reference_fixture_index;
 pub mod research_analytics;
+pub mod research_experiment;
 pub mod research_reader;
 pub mod result_contract;
 pub mod run_manifest;

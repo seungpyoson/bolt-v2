@@ -805,6 +805,170 @@ pub struct BacktestingRunManifest {
     pub end_time: Option<i64>,
 }
 
+/// Immutable Bolt-to-NT boundary. NT remains the only replay/backtest engine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResearchNtRunInput {
+    pub identity: crate::research_experiment::ResearchNtRunIdentity,
+    pub experiment_id: String,
+    pub target_frame_id: String,
+    pub partition_id: String,
+    pub manifest: BacktestingRunManifest,
+    pub manifest_hash: String,
+    pub compiled_input_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResearchNtCompileError {
+    SemanticOverride(&'static str),
+    InvalidTime(&'static str),
+    InvalidManifest,
+}
+
+impl std::fmt::Display for ResearchNtCompileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SemanticOverride(field) => write!(f, "NT semantic override at {field}"),
+            Self::InvalidTime(field) => write!(f, "invalid research partition time at {field}"),
+            Self::InvalidManifest => write!(f, "research NT manifest failed admission validation"),
+        }
+    }
+}
+
+impl std::error::Error for ResearchNtCompileError {}
+
+pub fn compile_research_nt_run_input(
+    experiment: &crate::research_experiment::ValidatedExperiment,
+    manifest: BacktestingRunManifest,
+    accepted: &AcceptedDataset,
+    store_config: &crate::research_experiment::BoundArtifactStoreConfig,
+) -> Result<ResearchNtRunInput, ResearchNtCompileError> {
+    use crate::research_experiment::{ExperimentPurpose, ResearchNtRunIdentity};
+
+    let definition = &experiment.definition;
+    let version = &definition.experiment;
+    let manifest_hash = manifest.manifest_hash();
+    if manifest_hash != definition.nt_run.manifest_hash {
+        return Err(ResearchNtCompileError::SemanticOverride("manifest_hash"));
+    }
+    if store_config.config_hash() != definition.storage.artifact_store_config_hash {
+        return Err(ResearchNtCompileError::SemanticOverride(
+            "artifact_store_config_hash",
+        ));
+    }
+    let artifact_root = store_config.artifact_root();
+    if artifact_root.artifact_root_uri() != definition.storage.artifact_root {
+        return Err(ResearchNtCompileError::SemanticOverride("artifact_root"));
+    }
+    manifest
+        .validate_with_artifact_root(accepted, artifact_root)
+        .map_err(|_| ResearchNtCompileError::InvalidManifest)?;
+    let numeric_rules_hash = experiment.numeric_rules_hash();
+    if manifest.strategy_config_hash != numeric_rules_hash {
+        return Err(ResearchNtCompileError::SemanticOverride(
+            "numeric_rules_hash",
+        ));
+    }
+    let source_identity = format!(
+        "source-proof:{}:{}",
+        manifest.source_proof_id, manifest.source_proof_version
+    );
+    let identity = ResearchNtRunIdentity {
+        experiment_version_id: experiment.version_id.clone(),
+        experiment_semantic_hash: experiment.semantic_hash.clone(),
+        source_identity,
+        code_version: manifest.target_bolt_v2_ref.clone(),
+        schema_version: version.schema_version.clone(),
+        nt_version: manifest.resolved_nt_version.clone(),
+        catalog_version: manifest.catalog_hash.clone(),
+        dependency_set_hash: definition.nt_run.dependency_set_hash.clone(),
+        execution_environment_hash: definition.nt_run.execution_environment_hash.clone(),
+        numeric_rules_hash,
+        random_seeds: definition.nt_run.random_seeds.clone(),
+    };
+    if manifest.artifact_root != definition.storage.artifact_root {
+        return Err(ResearchNtCompileError::SemanticOverride("artifact_root"));
+    }
+    if !manifest.output_prefix.starts_with(&format!(
+        "{}/",
+        artifact_root.typed_root(crate::artifact_store::ArtifactKind::Backtests)
+    )) {
+        return Err(ResearchNtCompileError::SemanticOverride("output_prefix"));
+    }
+    if !definition
+        .target_frame
+        .venue_keys
+        .contains(&manifest.venue_binding_key)
+        || !manifest.additional_venues.is_empty()
+    {
+        return Err(ResearchNtCompileError::SemanticOverride("venue_bindings"));
+    }
+    if manifest.strategy.source_kind != StrategySourceKind::CompiledRustRegistry
+        || manifest.strategy.typed_config_uri.is_some()
+        || manifest.strategy.typed_config_hash.is_some()
+        || manifest.strategy.experiment_result_uri.is_some()
+        || manifest.strategy.experiment_result_hash.is_some()
+        || manifest.strategy.config_overlay.is_some()
+    {
+        return Err(ResearchNtCompileError::SemanticOverride("strategy"));
+    }
+    let (partition_id, start, end) = match version.purpose {
+        ExperimentPurpose::Exploratory => (
+            definition.partitions.discovery_partition_id.clone(),
+            &definition.partitions.discovery_start_time,
+            &definition.partitions.discovery_end_time,
+        ),
+        ExperimentPurpose::Confirmatory
+        | ExperimentPurpose::Reproduction
+        | ExperimentPurpose::Audit
+        | ExperimentPurpose::MechanismStudy => (
+            definition.partitions.evaluation_partition_id.clone(),
+            &definition.partitions.evaluation_start_time,
+            &definition.partitions.evaluation_end_time,
+        ),
+    };
+    let start = chrono::DateTime::parse_from_rfc3339(start)
+        .map_err(|_| ResearchNtCompileError::InvalidTime("start_time"))?
+        .timestamp_nanos_opt()
+        .ok_or(ResearchNtCompileError::InvalidTime("start_time"))?;
+    let end = chrono::DateTime::parse_from_rfc3339(end)
+        .map_err(|_| ResearchNtCompileError::InvalidTime("end_time"))?
+        .timestamp_nanos_opt()
+        .ok_or(ResearchNtCompileError::InvalidTime("end_time"))?;
+    if manifest.start_time != Some(start) || manifest.end_time != Some(end) {
+        return Err(ResearchNtCompileError::SemanticOverride("partition_times"));
+    }
+    #[derive(Serialize)]
+    struct HashInput<'a> {
+        identity: &'a crate::research_experiment::ResearchNtRunIdentity,
+        experiment_id: &'a str,
+        target_frame_id: &'a str,
+        partition_id: &'a str,
+        manifest: &'a BacktestingRunManifest,
+        manifest_hash: &'a str,
+    }
+    let compiled_input_hash = crate::hashing::sha256_hex(
+        &serde_json::to_vec(&HashInput {
+            identity: &identity,
+            experiment_id: &version.experiment_id,
+            target_frame_id: &definition.target_frame.frame_id,
+            partition_id: &partition_id,
+            manifest: &manifest,
+            manifest_hash: &manifest_hash,
+        })
+        .expect("typed research NT input serialization is infallible"),
+    );
+    Ok(ResearchNtRunInput {
+        identity,
+        experiment_id: version.experiment_id.clone(),
+        target_frame_id: definition.target_frame.frame_id.clone(),
+        partition_id,
+        manifest,
+        manifest_hash,
+        compiled_input_hash,
+    })
+}
+
 /// Why a manifest is invalid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestError {
@@ -2212,6 +2376,36 @@ impl BacktestingRunManifest {
     ///
     /// Returns the first blocking [`ManifestError`].
     pub fn validate(&self, accepted: &AcceptedDataset) -> Result<(), ManifestError> {
+        let default_backtests_root =
+            format!("{}/backtests", self.artifact_root.trim_end_matches('/'));
+        self.validate_with_output_root(accepted, &default_backtests_root)
+    }
+
+    /// Validate against a hash-bound artifact-store configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first blocking [`ManifestError`], including a root or
+    /// configured backtest-subpath mismatch.
+    pub fn validate_with_artifact_root(
+        &self,
+        accepted: &AcceptedDataset,
+        artifact_root: &crate::artifact_store::ResolvedArtifactRoot,
+    ) -> Result<(), ManifestError> {
+        if artifact_root.artifact_root_uri() != self.artifact_root {
+            return Err(ManifestError::OutputPrefixOutsideArtifactRoot);
+        }
+        self.validate_with_output_root(
+            accepted,
+            &artifact_root.typed_root(crate::artifact_store::ArtifactKind::Backtests),
+        )
+    }
+
+    fn validate_with_output_root(
+        &self,
+        accepted: &AcceptedDataset,
+        expected_output_root: &str,
+    ) -> Result<(), ManifestError> {
         for (name, value) in [
             (
                 "manifest_schema_version",
@@ -2456,10 +2650,10 @@ impl BacktestingRunManifest {
         {
             return Err(ManifestError::InvertedTimeWindow { start, end });
         }
-        if !self.output_prefix.starts_with(&format!(
-            "{}/backtests/",
-            self.artifact_root.trim_end_matches('/')
-        )) {
+        if !self
+            .output_prefix
+            .starts_with(&format!("{expected_output_root}/"))
+        {
             return Err(ManifestError::OutputPrefixOutsideArtifactRoot);
         }
         Ok(())
@@ -3721,6 +3915,50 @@ mod tests {
         synthetic_accepted_dataset_for_tests()
     }
 
+    fn research_artifact_store_config_bytes() -> &'static [u8] {
+        br#"
+artifact_root = "s3://example-bucket/pump-research-fixture"
+catalog_projection_manifest_object = "catalog-projection-manifest.json"
+
+[s3]
+region = "us-east-1"
+conditional_put = "etag"
+copy_if_not_exists = "multipart"
+
+[create_only_probe]
+prefix = ".writer-probe"
+object_name = "sentinel"
+copy_source_object_name = "copy-source"
+copy_dest_object_name = "copy-dest"
+
+[subpaths]
+raw = "raw"
+nt_catalog = "nt-catalog"
+nt_catalog_synthetic_proof = "nt-catalog-synthetic-proof"
+source_proofs = "source-proofs"
+backtests = "configured-backtests"
+artifact_index = "artifact-index"
+research_analytics = "configured-research-analytics"
+
+[lifecycle]
+retention = "forever"
+default_delete_expiration = "disabled"
+storage_profiles = ["active", "archive", "deep_archive"]
+
+[lifecycle.quiet_window_seconds]
+raw = 7200
+nt_catalog = 7200
+source_proofs = 7200
+backtests = 3600
+artifact_index = 0
+research_analytics = 7200
+
+[lifecycle.hot_index]
+latest_pointer_storage_profile = "active"
+current_snapshot_storage_profile = "active"
+"#
+    }
+
     fn binary_option_accepted_dataset() -> AcceptedDataset {
         let mut accepted = accepted_dataset();
         accepted.product_family = "prediction-market".to_string();
@@ -3827,6 +4065,139 @@ mod tests {
             start_time: None,
             end_time: None,
         }
+    }
+
+    #[test]
+    fn research_nt_compile_boundary_is_deterministic_and_rejects_overrides() {
+        let store_bytes = research_artifact_store_config_bytes();
+        let store_hash = crate::hashing::sha256_hex(store_bytes);
+        let mut manifest = valid_manifest();
+        manifest.venue_binding_key = "synthetic-venue-a".to_string();
+        manifest.artifact_root = "s3://example-bucket/pump-research-fixture".to_string();
+        let preliminary_experiment =
+            crate::research_experiment::parse_fixture_experiment_with_nt_manifest_and_store_hash(
+                &manifest.manifest_hash(),
+                &store_hash,
+            );
+        let store_config = crate::research_experiment::parse_bound_artifact_store_config(
+            &preliminary_experiment.definition.storage,
+            store_bytes,
+        )
+        .expect("hash-bound artifact-store config");
+        manifest.output_prefix = format!(
+            "{}/run",
+            store_config
+                .artifact_root()
+                .typed_root(crate::artifact_store::ArtifactKind::Backtests)
+        );
+        manifest.start_time = Some(
+            chrono::DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+                .expect("start")
+                .timestamp_nanos_opt()
+                .expect("start nanos"),
+        );
+        manifest.end_time = Some(
+            chrono::DateTime::parse_from_rfc3339("2025-03-01T00:00:00Z")
+                .expect("end")
+                .timestamp_nanos_opt()
+                .expect("end nanos"),
+        );
+        manifest.strategy_config_hash =
+            crate::research_experiment::parse_fixture_experiment().numeric_rules_hash();
+        let mut accepted = accepted_dataset();
+        accepted.source_binding = manifest.venue_binding_key.clone();
+        let experiment =
+            crate::research_experiment::parse_fixture_experiment_with_nt_manifest_and_store_hash(
+                &manifest.manifest_hash(),
+                &store_hash,
+            );
+        let first =
+            compile_research_nt_run_input(&experiment, manifest.clone(), &accepted, &store_config)
+                .expect("compiled input");
+        let second =
+            compile_research_nt_run_input(&experiment, manifest.clone(), &accepted, &store_config)
+                .expect("compiled input");
+        assert_eq!(first, second);
+        assert_eq!(
+            first.identity.numeric_rules_hash,
+            experiment.numeric_rules_hash()
+        );
+
+        let mut changed_numeric_rules = experiment.clone();
+        changed_numeric_rules.definition.controls.seed += 1;
+        assert!(matches!(
+            compile_research_nt_run_input(
+                &changed_numeric_rules,
+                manifest.clone(),
+                &accepted,
+                &store_config,
+            ),
+            Err(ResearchNtCompileError::SemanticOverride(
+                "numeric_rules_hash"
+            ))
+        ));
+
+        for mutate in [
+            |manifest: &mut BacktestingRunManifest| {
+                manifest.start_time = manifest.start_time.map(|value| value + 1)
+            },
+            |manifest: &mut BacktestingRunManifest| {
+                manifest.venue.nt_venue = "OVERRIDE".to_string()
+            },
+            |manifest: &mut BacktestingRunManifest| manifest.source_proof_version += 1,
+            |manifest: &mut BacktestingRunManifest| {
+                manifest.execution_model = "override".to_string()
+            },
+        ] {
+            let mut changed = manifest.clone();
+            mutate(&mut changed);
+            assert!(matches!(
+                compile_research_nt_run_input(&experiment, changed, &accepted, &store_config),
+                Err(ResearchNtCompileError::SemanticOverride("manifest_hash"))
+            ));
+        }
+
+        let mut default_subpath = manifest.clone();
+        default_subpath.output_prefix = format!("{}/backtests/run", manifest.artifact_root);
+        assert!(matches!(
+            default_subpath.validate_with_artifact_root(&accepted, store_config.artifact_root()),
+            Err(ManifestError::OutputPrefixOutsideArtifactRoot)
+        ));
+
+        let rogue_store_bytes = std::str::from_utf8(store_bytes)
+            .expect("store config text")
+            .replace("configured-backtests", "rogue-backtests");
+        let mut rogue_storage = experiment.definition.storage.clone();
+        rogue_storage.artifact_store_config_hash =
+            crate::hashing::sha256_hex(rogue_store_bytes.as_bytes());
+        let rogue_store_config = crate::research_experiment::parse_bound_artifact_store_config(
+            &rogue_storage,
+            rogue_store_bytes.as_bytes(),
+        )
+        .expect("independently hash-bound rogue config");
+        assert!(matches!(
+            compile_research_nt_run_input(
+                &experiment,
+                manifest.clone(),
+                &accepted,
+                &rogue_store_config,
+            ),
+            Err(ResearchNtCompileError::SemanticOverride(
+                "artifact_store_config_hash"
+            ))
+        ));
+
+        let mut invalid = manifest;
+        invalid.source_proof_version += 1;
+        let invalid_experiment =
+            crate::research_experiment::parse_fixture_experiment_with_nt_manifest_and_store_hash(
+                &invalid.manifest_hash(),
+                &store_hash,
+            );
+        assert!(matches!(
+            compile_research_nt_run_input(&invalid_experiment, invalid, &accepted, &store_config,),
+            Err(ResearchNtCompileError::InvalidManifest)
+        ));
     }
 
     #[test]

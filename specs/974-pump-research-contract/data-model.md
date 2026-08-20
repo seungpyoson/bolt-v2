@@ -30,28 +30,64 @@ Validation:
   match the TOML role binding; role names in payloads are assertions to verify,
   not authentication.
 - A new version never edits or replaces its parent.
+- Every definition version begins in `draft`. Registration loads the immutable
+  parent definition envelope and bytes plus every typed state-transition
+  envelope and payload reachable from the committed Artifact Index snapshot.
+  It verifies the exact predecessor and active evidence chain, derives the
+  current state, and requires the immediate next sequence. A child cannot
+  assert its parent's state.
 - Any post-C change creates a new version and cannot reuse exposed evaluation
   information except through a precommitted sequential family.
 
 State transitions:
 
-```text
-draft
-  -> genesis_committed
-  -> discovery_committed
-  -> discovery_released
-  -> confirmation_committed
-  -> confirmation_released
-  -> enrichment_committed
-  -> provider_selection_committed
-  -> mechanism_released
+Slice 1 registers definitions in `draft` and recognizes one state transition:
+`draft -> invalidated`, backed by a typed `InvalidationEvent`. All commitment,
+release, exploratory, enrichment, provider-selection, and mechanism transitions
+remain later-slice contracts and are rejected fail-closed until their typed
+validators land.
 
-any pre-release state -> exploratory
-any active state      -> invalidated
-```
+The invalidation transition is a strict `ExperimentStateTransition` payload with experiment
+and version ids, monotonic sequence, from/to states, exact predecessor id/hash,
+governance role, recorded time, and typed evidence references. Its active typed
+envelope, payload hash, predecessor, and evidence artifacts must all verify from
+the same committed Research Analytics snapshot; arbitrary index metadata cannot
+invalidate or reopen state.
 
-Only verified commitment/checkpoint artifacts permit forward transitions.
-`exploratory` and `invalidated` preserve lineage and cannot transition back.
+Definition registration also binds the artifact-store configuration by content
+hash and binds the authenticated append role to the exact TOML credential-scope
+reference before any SSM lookup. Experiment-contract URIs derive from the
+resolved configured Research Analytics subpath. Snapshot attempt ids bind a
+configured namespace, the initially observed pointer, and event identity. Each
+registration call supplies one candidate, so a pointer race cannot auto-rebase
+past parent validation; an exact retry re-reads and revalidates the new head
+before deriving a collision-free id. An identical already-committed definition
+returns an explicit idempotent disposition without another pointer mutation.
+Artifact paths remain configuration values;
+credentials remain SSM-only runtime values.
+
+Timestamp verifier authority is a tagged binding. `test_fixture` carries only a
+fixture id and is rejected by non-test validation; `registered` carries a
+registry key that later commitment slices must resolve through the registered
+verifier boundary. A payload boolean cannot promote a fixture verifier.
+
+## ResearchNtRunInput
+
+The TOML `nt_run` policy pins the complete `BacktestingRunManifest` hash,
+dependency-set hash, execution-environment hash, and named random seeds. The
+compiler accepts an existing `AcceptedDataset` capability, runs the full
+manifest admission validator, derives all run identities rather than accepting
+a caller-authored identity, and rejects any changed venue, source, catalog,
+model, strategy, time, or output field through the full-manifest hash. The
+compiler also accepts only an artifact-store capability constructed by hashing
+and parsing the exact bytes pinned by `storage.artifact_store_config_hash`; a
+root resolved from any other config is rejected before manifest admission. The
+strategy-config hash must equal the canonical projection of the
+experiment's partition, detector, control, analysis, disclosure, and
+confirmation numeric rules; the compiler derives the recorded numeric identity
+from that projection. Output must remain beneath the hash-bound artifact-store
+configuration's resolved Backtests typed root. NT remains the only
+replay/backtest engine.
 
 ## TargetFrame
 

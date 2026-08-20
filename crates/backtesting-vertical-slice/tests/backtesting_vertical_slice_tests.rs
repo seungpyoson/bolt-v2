@@ -88,6 +88,8 @@ mod backtesting_vertical_slice_polymarket_nt_surface;
 mod backtesting_vertical_slice_reference_fixture_eviction;
 #[path = "backtesting_vertical_slice_research_analytics.rs"]
 mod backtesting_vertical_slice_research_analytics;
+#[path = "backtesting_vertical_slice_research_experiment.rs"]
+mod backtesting_vertical_slice_research_experiment;
 #[path = "backtesting_vertical_slice_s3_catalog_smoke.rs"]
 mod backtesting_vertical_slice_s3_catalog_smoke;
 #[path = "backtesting_vertical_slice_sample_venue_guard.rs"]

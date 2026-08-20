@@ -179,6 +179,48 @@ fn lifecycle_config_requires_all_storage_profiles() {
 }
 
 #[test]
+fn experiment_contracts_use_one_research_analytics_subfamily() {
+    let root = "s3://example-bucket/nt-research-analytics";
+    let record = ArtifactIndexRecord::new_research_analytics_staged(
+        root,
+        ResearchAnalyticsSubfamily::ExperimentContracts,
+        "experiment-synthetic-version",
+        "bolt-v2",
+        format!(
+            "{root}/research-analytics/v1/experiment-contracts/synthetic/version/envelope.json"
+        ),
+        &sha256_a(),
+        vec![ArtifactIndexLineageRef::new(
+            "governance-authority",
+            Some(1),
+            sha256_b(),
+        )],
+    )
+    .expect("experiment-contract index record");
+    assert_eq!(
+        record.artifact_subfamily.as_deref(),
+        Some("experiment-contracts")
+    );
+    assert_eq!(record.lifecycle_state, LifecycleState::Active);
+
+    let error = ArtifactIndexRecord::new_research_analytics_staged(
+        root,
+        ResearchAnalyticsSubfamily::ExperimentContracts,
+        "experiment-synthetic-version",
+        "bolt-v2",
+        format!("{root}/research-analytics/v1/experiment-results/result.json"),
+        &sha256_a(),
+        vec![ArtifactIndexLineageRef::new(
+            "governance-authority",
+            Some(1),
+            sha256_b(),
+        )],
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("experiment-contracts"));
+}
+
+#[test]
 fn committed_snapshot_resolution_rejects_hash_invalid_latest_pointer() {
     let root = "s3://example-bucket/nt-research-analytics";
     let snapshot_id = "snapshot-2026-06-06";

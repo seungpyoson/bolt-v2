@@ -62,16 +62,12 @@ impl SourceBindingRegistry {
         source_binding: &str,
         venue: &str,
     ) -> Option<SourceBindingConfig> {
-        let source_binding = source_binding.trim();
-        let venue = venue.trim();
-        if source_binding.is_empty() || venue.is_empty() {
+        if source_binding.trim().is_empty() || venue.trim().is_empty() {
             return None;
         }
         self.source_bindings
             .iter()
-            .find(|binding| {
-                binding.key == source_binding && binding.venue.eq_ignore_ascii_case(venue)
-            })
+            .find(|binding| binding.key == source_binding && binding.venue == venue)
             .cloned()
     }
 

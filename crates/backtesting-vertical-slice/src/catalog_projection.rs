@@ -2036,25 +2036,23 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
     });
     let delta_files =
         catalog_files_for_instruments::<OrderBookDelta>(&catalog, root, &instrument_ids)?;
-    let mut deltas = if delta_files.is_empty() {
+    let deltas = if delta_files.is_empty() {
         Vec::new()
     } else {
         catalog
             .query_typed_data::<OrderBookDelta>(None, None, None, None, Some(delta_files), false)
             .context("query order book deltas from catalog for logical hash")?
     };
-    deltas.sort_by_key(|delta| {
-        (
-            delta.ts_event.as_u64(),
-            delta.instrument_id.to_string(),
-            delta.sequence,
-            delta.action.to_string(),
-            delta.order.side.to_string(),
-            delta.order.price.as_decimal().to_string(),
-            delta.order.size.as_decimal().to_string(),
-            delta.order.order_id,
-        )
-    });
+    // `query_typed_data` returns NT's explicit-file replay stream, sorted by
+    // `ts_init`. At the pinned NT revision this query preserves the tested
+    // written order for equal timestamps within one file and deterministically
+    // K-merges its lexically sorted file list. The heap's equal-key order is not
+    // insertion-stable for three or more streams, so both the one-file and
+    // three-file shapes are pinned below. NT sequence is venue-native and
+    // event-scoped: every row in a multi-level event can share it, while an
+    // unavailable sequence is zero. Hash the returned stream directly so the
+    // catalog identity commits to NT's replay order rather than reducing
+    // equal-sequence events to a content-sorted multiset.
     // NautilusTrader keys the bar catalog directory by the full bar type, not by
     // the bare instrument id, so bars are resolved through NautilusTrader's own
     // identifier filtering (instrument ids passed to `query_typed_data`) rather
@@ -2179,7 +2177,11 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(tick.ts_init.as_u64().to_string().as_bytes());
     }
     for delta in deltas {
-        hasher.update([9u8]);
+        // Tag 0xfe is the v2 delta-record domain separator. It retires tag 9,
+        // whose records were content-sorted, without changing catalogs that
+        // contain no deltas. Unlike printable tag 48 (`0`), 0xfe cannot occur
+        // inside the UTF-8 field bytes that follow.
+        hasher.update([0xfe]);
         hasher.update(delta.instrument_id.to_string().as_bytes());
         hasher.update([10u8]);
         hasher.update(delta.action.to_string().as_bytes());
@@ -2218,11 +2220,8 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update([26u8]);
         hasher.update(bar.ts_init.as_u64().to_string().as_bytes());
     }
-    // Quote loop appended AFTER the bars loop with NEW unique domain-separator
-    // tags 27..33 (existing tags: 0,2..8 ticks; 9..18 deltas; 19..26 bars). The
-    // existing instrument/tick/delta/bar byte stream is unperturbed, so any
-    // committed reference catalog that holds zero quote files keeps hashing to
-    // its recorded value — this loop emits nothing for it.
+    // Quote loop appended AFTER the bars loop with unique domain-separator tags
+    // 27..33. It emits nothing for catalogs without quotes.
     for quote in quotes {
         hasher.update([27u8]);
         hasher.update(quote.instrument_id.to_string().as_bytes());
@@ -2241,9 +2240,8 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
     }
     // Index-price loop appended AFTER the quote loop with NEW unique
     // domain-separator tags 34..37 (existing tags end at 33 for quotes). Reusing
-    // any earlier tag would let two different families hash equal; these are
-    // fresh, so the committed reference catalog (which holds zero index files)
-    // keeps hashing to its recorded value — this loop emits nothing for it.
+    // any earlier tag would let two different families hash equal. This loop
+    // emits nothing for catalogs without index prices.
     for index_price in index_prices {
         hasher.update([34u8]);
         hasher.update(index_price.instrument_id.to_string().as_bytes());
@@ -2256,9 +2254,8 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
     }
     // Mark-price loop appended AFTER the index loop with NEW unique
     // domain-separator tags 38..41 (existing tags end at 37 for index prices).
-    // Reusing any earlier tag would let two different families hash equal; these
-    // are fresh, so the committed reference catalog (which holds zero mark files)
-    // keeps hashing to its recorded value — this loop emits nothing for it.
+    // Reusing any earlier tag would let two different families hash equal. This
+    // loop emits nothing for catalogs without mark prices.
     for mark_price in mark_prices {
         hasher.update([38u8]);
         hasher.update(mark_price.instrument_id.to_string().as_bytes());
@@ -2269,11 +2266,10 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update([41u8]);
         hasher.update(mark_price.ts_init.as_u64().to_string().as_bytes());
     }
-    // Funding-rate loop appended AFTER the mark loop with NEW unique
-    // domain-separator tags 42..47 (existing tags end at 41 for mark prices).
-    // Empty funding catalogs emit nothing, preserving existing reference hashes;
-    // funding-bearing catalog bytes are pinned by
-    // `funding_catalog_hash_matches_golden_v1`.
+    // Funding-rate loop uses unique domain-separator tags 42..47; the replay-
+    // ordered v2 delta record uses 0xfe.
+    // Empty funding catalogs emit no funding fields; funding-bearing v1 bytes
+    // are pinned by `funding_catalog_hash_matches_golden_v1`.
     for funding_rate in funding_rates {
         hasher.update([42u8]);
         hasher.update(funding_rate.instrument_id.to_string().as_bytes());
@@ -3375,6 +3371,216 @@ mod tests {
         assert!(
             error.to_string().contains("invalid native source sequence"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn logical_catalog_hash_preserves_equal_sequence_delta_event_order() {
+        let instrument = build_catalog_instrument(&CatalogInstrumentSpec::Spot(spec()))
+            .expect("build catalog instrument");
+        let instrument_id = instrument.id();
+        let flags = nautilus_model::enums::RecordFlag::F_MBP as u8
+            | nautilus_model::enums::RecordFlag::F_LAST as u8;
+        let ts = UnixNanos::from(1_700_000_000_000_000_000u64);
+        let first = OrderBookDelta::new_checked(
+            instrument_id,
+            BookAction::Update,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("617.0"),
+                Quantity::from("10"),
+                0,
+            ),
+            flags,
+            0,
+            ts,
+            ts,
+        )
+        .expect("first delta");
+        let second = OrderBookDelta::new_checked(
+            instrument_id,
+            BookAction::Update,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("617.0"),
+                Quantity::from("11"),
+                0,
+            ),
+            flags,
+            0,
+            ts,
+            ts,
+        )
+        .expect("second delta");
+
+        let root_a = tempfile::TempDir::new().expect("catalog A");
+        let root_b = tempfile::TempDir::new().expect("catalog B");
+        let root_c = tempfile::TempDir::new().expect("catalog C");
+        for (root, deltas) in [
+            (root_a.path(), vec![first, second]),
+            (root_b.path(), vec![second, first]),
+            (root_c.path(), vec![first, second]),
+        ] {
+            let catalog = ParquetDataCatalog::new(root, None, None, None, None);
+            catalog
+                .write_instruments(vec![instrument.clone()])
+                .expect("write instrument");
+            catalog
+                .write_to_parquet(&deltas, None, None, None)
+                .expect("write deltas");
+        }
+
+        let hash_a = logical_catalog_hash(root_a.path()).expect("hash catalog A");
+        let hash_b = logical_catalog_hash(root_b.path()).expect("hash catalog B");
+        let hash_c = logical_catalog_hash(root_c.path()).expect("hash catalog C");
+        assert_ne!(
+            hash_a, hash_b,
+            "catalog identity must retain replay order when native sequences tie"
+        );
+        assert_eq!(
+            hash_a, hash_c,
+            "identical replay streams must hash identically across roots"
+        );
+    }
+
+    #[test]
+    fn logical_catalog_hash_preserves_equal_timestamp_order_across_delta_files() {
+        let instrument = build_catalog_instrument(&CatalogInstrumentSpec::Spot(spec()))
+            .expect("build catalog instrument");
+        let instrument_id = instrument.id();
+        let flags = nautilus_model::enums::RecordFlag::F_MBP as u8
+            | nautilus_model::enums::RecordFlag::F_LAST as u8;
+        let ts = UnixNanos::from(1_700_000_000_000_000_000u64);
+        let later_file_name = UnixNanos::from(ts.as_u64() + 1);
+        let first = OrderBookDelta::new_checked(
+            instrument_id,
+            BookAction::Update,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("617.0"),
+                Quantity::from("10"),
+                0,
+            ),
+            flags,
+            0,
+            ts,
+            ts,
+        )
+        .expect("first delta");
+        let second = OrderBookDelta::new_checked(
+            instrument_id,
+            BookAction::Update,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("617.0"),
+                Quantity::from("11"),
+                0,
+            ),
+            flags,
+            0,
+            ts,
+            ts,
+        )
+        .expect("second delta");
+        let third = OrderBookDelta::new_checked(
+            instrument_id,
+            BookAction::Update,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("617.0"),
+                Quantity::from("12"),
+                0,
+            ),
+            flags,
+            0,
+            ts,
+            ts,
+        )
+        .expect("third delta");
+        let third_file_name = UnixNanos::from(ts.as_u64() + 2);
+
+        let root_a = tempfile::TempDir::new().expect("catalog A");
+        let root_b = tempfile::TempDir::new().expect("catalog B");
+        let root_c = tempfile::TempDir::new().expect("catalog C");
+        for root in [root_a.path(), root_b.path(), root_c.path()] {
+            ParquetDataCatalog::new(root, None, None, None, None)
+                .write_instruments(vec![instrument.clone()])
+                .expect("write instrument");
+        }
+
+        let catalog_a = ParquetDataCatalog::new(root_a.path(), None, None, None, None);
+        catalog_a
+            .write_to_parquet(&[first], Some(ts), Some(ts), Some(true))
+            .expect("write first delta file");
+        catalog_a
+            .write_to_parquet(
+                &[second],
+                Some(later_file_name),
+                Some(later_file_name),
+                Some(true),
+            )
+            .expect("write second delta file");
+        catalog_a
+            .write_to_parquet(
+                &[third],
+                Some(third_file_name),
+                Some(third_file_name),
+                Some(true),
+            )
+            .expect("write third delta file");
+
+        let catalog_b = ParquetDataCatalog::new(root_b.path(), None, None, None, None);
+        catalog_b
+            .write_to_parquet(
+                &[third],
+                Some(third_file_name),
+                Some(third_file_name),
+                Some(true),
+            )
+            .expect("write third delta file first");
+        catalog_b
+            .write_to_parquet(
+                &[second],
+                Some(later_file_name),
+                Some(later_file_name),
+                Some(true),
+            )
+            .expect("write second delta file first");
+        catalog_b
+            .write_to_parquet(&[first], Some(ts), Some(ts), Some(true))
+            .expect("write first delta file second");
+
+        let catalog_c = ParquetDataCatalog::new(root_c.path(), None, None, None, None);
+        catalog_c
+            .write_to_parquet(&[second], Some(ts), Some(ts), Some(true))
+            .expect("write second delta under first file name");
+        catalog_c
+            .write_to_parquet(
+                &[first],
+                Some(later_file_name),
+                Some(later_file_name),
+                Some(true),
+            )
+            .expect("write first delta under second file name");
+        catalog_c
+            .write_to_parquet(
+                &[third],
+                Some(third_file_name),
+                Some(third_file_name),
+                Some(true),
+            )
+            .expect("write third delta under third file name");
+
+        let hash_a = logical_catalog_hash(root_a.path()).expect("hash catalog A");
+        let hash_b = logical_catalog_hash(root_b.path()).expect("hash catalog B");
+        let hash_c = logical_catalog_hash(root_c.path()).expect("hash catalog C");
+        assert_eq!(
+            hash_a, hash_b,
+            "file creation order must not perturb NT's deterministic three-stream merge"
+        );
+        assert_ne!(
+            hash_a, hash_c,
+            "equal-timestamp replay order across files must remain hash-visible"
         );
     }
 
@@ -5733,12 +5939,11 @@ max_notional = "200000"
     }
 
     #[test]
-    fn logical_catalog_hash_reproduces_committed_pmxt_reference_catalog_hash() {
-        // Hash-invariance regression pin: the committed PMXT reference catalog
-        // hash was recorded under the pre-explicit-file-list query mechanics.
-        // Recomputing over the committed bytes must keep producing the
-        // recorded value, or committed ledger records silently stop
-        // verifying against their catalogs.
+    fn delta_replay_hash_v2_retires_committed_pmxt_v1_identity() {
+        // The PMXT artifact is retained historical evidence. Its result
+        // contract was issued under the v1, content-sorted delta digest and
+        // must not be silently re-certified under the replay-order-sensitive
+        // v2 delta-section authority.
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(2)
@@ -5756,7 +5961,14 @@ max_notional = "200000"
             .expect("catalog_hash present in committed metadata");
         let recomputed =
             logical_catalog_hash(&run_dir.join("nt-catalog")).expect("recompute logical hash");
-        assert_eq!(recomputed, recorded);
+        assert_eq!(
+            recorded,
+            "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236"
+        );
+        assert_eq!(
+            recomputed,
+            "5ff9821765a1a12a974ce9b4dd0fed2837415a9b4c73fb205f0ba37d929eb45e"
+        );
     }
 
     #[test]

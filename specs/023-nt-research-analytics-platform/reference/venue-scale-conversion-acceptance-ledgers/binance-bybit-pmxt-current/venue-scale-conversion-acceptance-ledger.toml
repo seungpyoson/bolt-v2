@@ -60,9 +60,11 @@ venue = "pmxt"
 [[venue.universe]]
 universe_id = "pmxt-polymarket-selected-source-2026-05-20"
 scope_label = "Polymarket selected source one binary option"
-status = "converted"
-selected_conversion_manifest_path = "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/backtests/pmxt-run/conversion-manifest.json"
+status = "blocked"
 selected_source_report_path = "specs/023-nt-research-analytics-platform/reference/pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json"
+blocking_issues = [
+  "historical_v1_delta_conversion_requires_v2_recertification",
+]
 
 [[venue.universe]]
 universe_id = "pmxt-polymarket-full-current-data"

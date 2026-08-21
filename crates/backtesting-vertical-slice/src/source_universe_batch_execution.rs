@@ -1801,11 +1801,10 @@ mod tests {
         );
     }
 
-    /// Repo-relative path to the committed PMXT reference NT catalog and the
-    /// metadata that records its logical hash. Reusing the same fixture the
-    /// `catalog_projection` hash-invariance test pins gives a real catalog whose
-    /// `logical_catalog_hash` is known, so the carry-forward gate can be proven
-    /// in both directions without hand-building a catalog.
+    /// Repo-relative path to the committed PMXT reference NT catalog and its
+    /// historical metadata. The catalog is copied into a temporary directory
+    /// and re-certified there under the current logical-hash contract; the
+    /// committed v1 evidence remains immutable historical evidence.
     fn committed_reference_run_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
@@ -1817,22 +1816,10 @@ mod tests {
             )
     }
 
-    fn committed_reference_catalog_hash() -> String {
-        let metadata: serde_json::Value = serde_json::from_slice(
-            &fs::read(committed_reference_run_dir().join("catalog-metadata.json"))
-                .expect("read committed catalog metadata"),
-        )
-        .expect("parse committed catalog metadata");
-        metadata["catalog_hash"]
-            .as_str()
-            .expect("catalog_hash present in committed metadata")
-            .to_string()
-    }
-
-    fn committed_reference_catalog_metadata_sha256() -> String {
+    fn copied_catalog_metadata_sha256(output_dir: &Path) -> String {
         hex::encode(Sha256::digest(
-            fs::read(committed_reference_run_dir().join(CATALOG_METADATA_FILE))
-                .expect("read committed catalog metadata"),
+            fs::read(output_dir.join(CATALOG_METADATA_FILE))
+                .expect("read copied catalog metadata"),
         ))
     }
 
@@ -1867,16 +1854,27 @@ mod tests {
         }
     }
 
-    fn copy_reference_output(output_dir: &Path) {
+    fn copy_reference_output(output_dir: &Path) -> String {
         copy_dir_all(
             &committed_reference_run_dir().join(CATALOG_DIR),
             &output_dir.join(CATALOG_DIR),
         );
-        fs::copy(
-            committed_reference_run_dir().join(CATALOG_METADATA_FILE),
-            output_dir.join(CATALOG_METADATA_FILE),
+        let mut metadata: ConversionCatalogMetadata = serde_json::from_slice(
+            &fs::read(committed_reference_run_dir().join(CATALOG_METADATA_FILE))
+                .expect("read committed catalog metadata"),
         )
-        .expect("copy committed catalog metadata");
+        .expect("parse committed catalog metadata");
+        let catalog_hash = logical_catalog_hash(&output_dir.join(CATALOG_DIR))
+            .expect("hash copied reference catalog under the current contract");
+        metadata.catalog_hash.clone_from(&catalog_hash);
+        crate::reference_artifact::write_reference_artifact(
+            output_dir.join(CATALOG_METADATA_FILE),
+            CATALOG_METADATA_FILE,
+            &metadata,
+            crate::reference_artifact::ReferenceArtifactRewrite::OverwriteAlways,
+        )
+        .expect("write current metadata beside copied reference catalog");
+        catalog_hash
     }
 
     fn carried_record_with_output(
@@ -1893,7 +1891,7 @@ mod tests {
             selected_object_sha256: "a".repeat(64),
             selected_object_bytes: 0,
             execution_plan_sha256: "a".repeat(64),
-            catalog_metadata_sha256: committed_reference_catalog_metadata_sha256(),
+            catalog_metadata_sha256: copied_catalog_metadata_sha256(&output_dir),
             canonical_rows: 7,
             nt_catalog_rows: 7,
             catalog_hash,
@@ -1988,8 +1986,8 @@ mod tests {
         // not vacuously rejecting every record.
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-carried");
-        copy_reference_output(&output_dir);
-        let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
+        let catalog_hash = copy_reference_output(&output_dir);
+        let record = carried_record_with_output(output_dir, catalog_hash);
         assert!(
             carried_output_still_verifies(&record),
             "intact prior catalog matching the carried hash must verify"
@@ -2002,8 +2000,9 @@ mod tests {
         // bare sha match must NOT carry it forward off the stale marker.
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-carried");
-        fs::create_dir_all(&output_dir).expect("create empty output dir");
-        let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
+        let catalog_hash = copy_reference_output(&output_dir);
+        fs::remove_dir_all(output_dir.join(CATALOG_DIR)).expect("delete copied catalog");
+        let record = carried_record_with_output(output_dir, catalog_hash);
         assert!(
             !carried_output_still_verifies(&record),
             "a deleted prior catalog must fail re-verification"
@@ -2030,9 +2029,8 @@ mod tests {
     fn carried_output_does_not_verify_when_catalog_metadata_changes() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-carried");
-        copy_reference_output(&output_dir);
-        let record =
-            carried_record_with_output(output_dir.clone(), committed_reference_catalog_hash());
+        let catalog_hash = copy_reference_output(&output_dir);
+        let record = carried_record_with_output(output_dir.clone(), catalog_hash);
         let metadata_path = output_dir.join(CATALOG_METADATA_FILE);
         let mut metadata: serde_json::Value = serde_json::from_slice(
             &fs::read(&metadata_path).expect("read copied catalog metadata"),
@@ -2061,8 +2059,9 @@ mod tests {
         // stale resume marker.
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-carried");
-        fs::create_dir_all(&output_dir).expect("create empty output dir");
-        let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
+        let catalog_hash = copy_reference_output(&output_dir);
+        fs::remove_dir_all(output_dir.join(CATALOG_DIR)).expect("delete copied catalog");
+        let record = carried_record_with_output(output_dir, catalog_hash);
         let owned_plan = owned_plan_with_carry(&record);
         let plan = owned_plan.plan();
         assert!(
@@ -2080,8 +2079,8 @@ mod tests {
         // prior catalog the record is still carried forward (no needless re-run).
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-carried");
-        copy_reference_output(&output_dir);
-        let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
+        let catalog_hash = copy_reference_output(&output_dir);
+        let record = carried_record_with_output(output_dir, catalog_hash);
         let owned_plan = owned_plan_with_carry(&record);
         let plan = owned_plan.plan();
         assert!(
@@ -2094,8 +2093,8 @@ mod tests {
     fn plan_reexecutes_carried_record_when_execution_plan_changes() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-carried");
-        copy_reference_output(&output_dir);
-        let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
+        let catalog_hash = copy_reference_output(&output_dir);
+        let record = carried_record_with_output(output_dir, catalog_hash);
         let mut owned_plan = owned_plan_with_carry(&record);
         owned_plan.pack.records[0].execution_plan_sha256 = "b".repeat(64);
 
@@ -2114,8 +2113,8 @@ mod tests {
     fn plan_reexecutes_carried_record_when_selected_object_changes() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-carried");
-        copy_reference_output(&output_dir);
-        let record = carried_record_with_output(output_dir, committed_reference_catalog_hash());
+        let catalog_hash = copy_reference_output(&output_dir);
+        let record = carried_record_with_output(output_dir, catalog_hash);
         let mut owned_plan = owned_plan_with_carry(&record);
         owned_plan.pack.records[0].selected_object_sha256 = "b".repeat(64);
 

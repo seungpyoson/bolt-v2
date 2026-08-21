@@ -1018,6 +1018,15 @@ mod tests {
     const BASE_NS: i64 = BASE_MS * 1_000_000;
     const NT_INSTRUMENT_ID: &str = "BTC-USDT.TESTVENUE";
 
+    #[test]
+    fn seeded_level_set_transform_hash_is_stable() {
+        assert_eq!(
+            seeded_level_set_transform_hash(),
+            "f729f684aa764f1e7b70753b4a38f54080ac0a0631705f38052903fe0b122272",
+            "seeded level-set transform identity changed; bump its version deliberately"
+        );
+    }
+
     fn raw_payload(bytes: &[u8]) -> RawPayloadConfig {
         RawPayloadConfig {
             container: RawPayloadContainer::JsonlText,

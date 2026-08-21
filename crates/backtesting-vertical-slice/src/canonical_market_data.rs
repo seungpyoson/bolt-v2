@@ -259,7 +259,7 @@ impl CanonicalOrderBookDeltasTable {
             validate_delta_action_payload(index, row, snapshot_flag)?;
         }
 
-        validate_delta_events(&self.rows, last_flag)?;
+        validate_delta_events(&self.rows, last_flag, snapshot_flag)?;
         Ok(())
     }
 }
@@ -331,11 +331,18 @@ fn validate_delta_action_payload(
 /// Every book event ends with exactly one `F_LAST` row. An event starts at row
 /// 0 or immediately after a row carrying `F_LAST`. A snapshot expansion is one
 /// such event whose first row is a `CLEAR` (and whose final row carries
-/// `F_LAST`). An incremental source event can carry one or more level changes;
-/// only its final row carries `F_LAST`. A `CLEAR` may therefore appear only at
-/// an event start, and the final row of the table must close its event.
-fn validate_delta_events(rows: &[CanonicalOrderBookDeltaRow], last_flag: u8) -> Result<()> {
+/// `F_LAST`), except that a snapshot immediately following a lone `CLEAR` may
+/// contain only `ADD` rows because the book is already established empty. An
+/// incremental source event can carry one or more level changes; only its final
+/// row carries `F_LAST`. A `CLEAR` may therefore appear only at an event start,
+/// and the final row of the table must close its event.
+fn validate_delta_events(
+    rows: &[CanonicalOrderBookDeltaRow],
+    last_flag: u8,
+    snapshot_flag: u8,
+) -> Result<()> {
     let mut event_start = 0;
+    let mut book_established_empty = false;
     for (index, row) in rows.iter().enumerate() {
         if index != event_start {
             validate_same_delta_event(index, &rows[event_start], row)?;
@@ -347,8 +354,34 @@ fn validate_delta_events(rows: &[CanonicalOrderBookDeltaRow], last_flag: u8) -> 
                 "row {index}: CLEAR may only begin a book event (previous event not closed with F_LAST)"
             );
         }
+        let event_is_snapshot = rows[event_start].flags & snapshot_flag != 0;
+        if index == event_start && event_is_snapshot && !is_clear {
+            ensure!(
+                book_established_empty,
+                "row {index}: F_SNAPSHOT event without CLEAR requires an immediately preceding lone CLEAR"
+            );
+        }
+        let carries_snapshot = row.flags & snapshot_flag != 0;
+        if event_is_snapshot {
+            ensure!(
+                carries_snapshot,
+                "row {index}: every row in a snapshot event must contain F_SNAPSHOT"
+            );
+            if !is_clear {
+                ensure!(
+                    row.action == DeltaAction::Add.as_str(),
+                    "row {index}: snapshot payload rows must use ADD"
+                );
+            }
+        } else {
+            ensure!(
+                !carries_snapshot,
+                "row {index}: incremental event rows must not contain F_SNAPSHOT"
+            );
+        }
         let closes_event = row.flags & last_flag != 0;
         if closes_event {
+            book_established_empty = index == event_start && is_clear;
             event_start = index + 1;
         }
     }
@@ -2078,6 +2111,38 @@ mod tests {
     }
 
     #[test]
+    fn deltas_validate_accepts_snapshot_adds_after_lone_clear() {
+        let mut table = snapshot_table();
+        let snapshot_flags = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
+        let last = RecordFlag::F_LAST as u8;
+        let event_time = table.rows[0].event_time;
+        table.rows = vec![
+            delta_row(
+                0,
+                event_time,
+                DeltaAction::Clear,
+                "",
+                "",
+                "",
+                snapshot_flags | last,
+            ),
+            delta_row(
+                1,
+                event_time + 1,
+                DeltaAction::Add,
+                DeltaSide::Buy.as_str(),
+                "0.49",
+                "10",
+                snapshot_flags | last,
+            ),
+        ];
+
+        table
+            .validate()
+            .expect("a snapshot after an established empty book may omit CLEAR");
+    }
+
+    #[test]
     fn deltas_validate_rejects_empty_table() {
         let mut table = snapshot_table();
         table.rows.clear();
@@ -2150,6 +2215,48 @@ mod tests {
             error.to_string().contains("must contain F_SNAPSHOT"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn deltas_validate_rejects_snapshot_payload_missing_snapshot_flag() {
+        let mut table = snapshot_table();
+        table.rows[1].flags = RecordFlag::F_MBP as u8;
+        let error = table
+            .validate()
+            .expect_err("every row in a snapshot event must carry F_SNAPSHOT");
+        assert!(error.to_string().contains("F_SNAPSHOT"), "{error}");
+    }
+
+    #[test]
+    fn deltas_validate_rejects_non_add_snapshot_payload() {
+        let mut table = snapshot_table();
+        table.rows[1].action = DeltaAction::Update.as_str().to_string();
+
+        let error = table
+            .validate()
+            .expect_err("snapshot payloads must use ADD semantics");
+
+        assert!(error.to_string().contains("must use ADD"), "{error}");
+    }
+
+    #[test]
+    fn deltas_validate_rejects_incremental_event_with_snapshot_flag() {
+        let mut table = snapshot_table();
+        table.rows.push(delta_row(
+            3,
+            table.rows[2].event_time + 1,
+            DeltaAction::Update,
+            DeltaSide::Buy.as_str(),
+            "0.48",
+            "5",
+            RecordFlag::F_MBP as u8
+                | RecordFlag::F_SNAPSHOT as u8
+                | RecordFlag::F_LAST as u8,
+        ));
+        let error = table
+            .validate()
+            .expect_err("incremental events must not claim snapshot semantics");
+        assert!(error.to_string().contains("F_SNAPSHOT"), "{error}");
     }
 
     #[test]

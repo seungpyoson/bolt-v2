@@ -4,12 +4,16 @@
 //! records what is converted, what is only source-accepted, and what is blocked.
 
 use std::{
-    collections::BTreeMap,
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
 
-use crate::hashing::sha256_hex;
+use crate::backfill_conversion_completion::{
+    BACKFILL_CONVERSION_COMPLETION_SCHEMA_VERSION, BackfillConversionCompletionLedger,
+    BackfillConversionCompletionStatus,
+};
+use crate::hashing::{is_lowercase_sha256_hex, sha256_hex};
 use crate::path_resolution::{
     portable_artifact_path, resolve_existing_path, resolve_output_dir,
     stable_artifact_identity_path_for_spec,
@@ -19,7 +23,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
 pub const VENUE_SCALE_CONVERSION_ACCEPTANCE_SCHEMA_VERSION: &str =
-    "venue-scale-conversion-acceptance-ledger.v1";
+    "venue-scale-conversion-acceptance-ledger.v2";
 pub const VENUE_SCALE_CONVERSION_ACCEPTANCE_LEDGER_FILE: &str =
     "venue-scale-conversion-acceptance-ledger.json";
 
@@ -63,8 +67,6 @@ pub struct VenueScaleConversionAcceptanceUniverseSpec {
     pub source_universe_object_gates_artifact_path: Option<PathBuf>,
     pub source_universe_conversion_run_plan_path: Option<PathBuf>,
     pub source_universe_conversion_run_plan_artifact_path: Option<PathBuf>,
-    pub selected_conversion_manifest_path: Option<PathBuf>,
-    pub selected_conversion_manifest_artifact_path: Option<PathBuf>,
     pub selected_source_report_path: Option<PathBuf>,
     pub selected_source_report_artifact_path: Option<PathBuf>,
     #[serde(default)]
@@ -128,9 +130,6 @@ pub struct VenueScaleConversionAcceptanceUniverse {
     pub source_object_gate_count: u64,
     pub source_object_gate_source_binding_count: u64,
     pub source_accepted_bytes: u64,
-    pub catalog_rows_by_nt_data_type: BTreeMap<String, u64>,
-    pub catalog_hash: Option<String>,
-    pub output_catalog_uri: Option<String>,
     pub selected_source_rows: Option<u64>,
     pub selected_source_row_groups: Option<u64>,
     pub selected_projected_row_groups: Option<u64>,
@@ -187,15 +186,6 @@ pub struct VenueScaleConversionAcceptanceLedgerArtifact {
     pub bytes: u64,
     pub venue_count: u64,
     pub universe_count: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct CompletionLedgerSummary {
-    ledger_id: String,
-    status: String,
-    record_count: u64,
-    total_canonical_rows: u64,
-    total_nt_iterations: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -277,20 +267,6 @@ struct SourceUniverseCategorySummary {
     instrument_count: u64,
     object_count: u64,
     compressed_bytes: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct SelectedConversionManifestSummary {
-    canonical_rows: u64,
-    #[serde(default)]
-    catalog_rows_by_nt_data_type: BTreeMap<String, u64>,
-    // `catalog_hash` and `completed_at` are required, not optional: a manifest is
-    // a completion proof only when it attests a finalized conversion that actually
-    // wrote a catalog. A stub manifest that omits them must fail to parse here
-    // rather than be accepted as coverage evidence.
-    catalog_hash: String,
-    output_catalog_uri: Option<String>,
-    completed_at: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -542,9 +518,6 @@ fn evaluate_universe(
     let mut source_object_gate_count = 0;
     let mut source_object_gate_source_binding_count = 0;
     let mut source_accepted_bytes = 0;
-    let mut catalog_rows_by_nt_data_type = BTreeMap::new();
-    let mut catalog_hash = None;
-    let mut output_catalog_uri = None;
     let mut selected_source_rows = None;
     let mut selected_source_row_groups = None;
     let mut selected_projected_row_groups = None;
@@ -559,12 +532,8 @@ fn evaluate_universe(
             &path,
             spec.completion_ledger_artifact_path.as_deref(),
         )?);
-        let ledger: CompletionLedgerSummary = read_json(&path)?;
-        ensure!(
-            ledger.status == "ready",
-            "completion ledger {} is not ready",
-            path.display()
-        );
+        let ledger: BackfillConversionCompletionLedger = read_json(&path)?;
+        validate_ready_completion_ledger(&ledger, &path)?;
         completion_ledger_id = Some(ledger.ledger_id);
         converted_completion_proof_seen = true;
         converted_record_count += ledger.record_count;
@@ -847,51 +816,6 @@ fn evaluate_universe(
         source_conversion_run_planned_bytes = run_plan.planned_source_bytes;
     }
 
-    if let Some(path) = &spec.selected_conversion_manifest_path {
-        let path = resolve_existing_path(base_dir, path);
-        artifact_refs.push(artifact_ref(
-            "selected_conversion_manifest",
-            &path,
-            spec.selected_conversion_manifest_artifact_path.as_deref(),
-        )?);
-        let conversion: SelectedConversionManifestSummary = read_json(&path)?;
-        // A selected conversion manifest is accepted as a completion proof only
-        // when it attests a *finalized* conversion that actually produced catalog
-        // output, mirroring the completion-ledger `status == "ready"` gate above.
-        // Parseability alone is not proof: a stub manifest with zero canonical
-        // rows, no catalog hash, or no completion timestamp must be rejected so it
-        // cannot satisfy the Converted coverage requirement through the
-        // planned == 0 path.
-        ensure!(
-            conversion.canonical_rows > 0,
-            "selected conversion manifest {} reports zero canonical rows and is not a finalized conversion",
-            path.display()
-        );
-        ensure!(
-            !conversion.catalog_hash.trim().is_empty(),
-            "selected conversion manifest {} is missing a catalog hash and is not a finalized conversion",
-            path.display()
-        );
-        ensure!(
-            !conversion.completed_at.trim().is_empty(),
-            "selected conversion manifest {} is missing a completion timestamp and is not a finalized conversion",
-            path.display()
-        );
-        converted_completion_proof_seen = true;
-        converted_record_count += 1;
-        converted_canonical_rows += conversion.canonical_rows;
-        converted_nt_catalog_rows += conversion
-            .catalog_rows_by_nt_data_type
-            .values()
-            .copied()
-            .sum::<u64>();
-        for (data_type, rows) in conversion.catalog_rows_by_nt_data_type {
-            *catalog_rows_by_nt_data_type.entry(data_type).or_insert(0) += rows;
-        }
-        catalog_hash = Some(conversion.catalog_hash);
-        output_catalog_uri = conversion.output_catalog_uri;
-    }
-
     if let Some(path) = &spec.selected_source_report_path {
         let path = resolve_existing_path(base_dir, path);
         artifact_refs.push(artifact_ref(
@@ -953,9 +877,6 @@ fn evaluate_universe(
         source_object_gate_count,
         source_object_gate_source_binding_count,
         source_accepted_bytes,
-        catalog_rows_by_nt_data_type,
-        catalog_hash,
-        output_catalog_uri,
         selected_source_rows,
         selected_source_row_groups,
         selected_projected_row_groups,
@@ -965,6 +886,264 @@ fn evaluate_universe(
         artifact_refs,
         blocking_issues: spec.blocking_issues.clone(),
     })
+}
+
+fn validate_ready_completion_ledger(
+    ledger: &BackfillConversionCompletionLedger,
+    path: &Path,
+) -> Result<()> {
+    ensure!(
+        ledger.schema_version == BACKFILL_CONVERSION_COMPLETION_SCHEMA_VERSION,
+        "completion ledger {} uses unsupported schema {:?}; expected {:?}",
+        path.display(),
+        ledger.schema_version,
+        BACKFILL_CONVERSION_COMPLETION_SCHEMA_VERSION
+    );
+    ensure!(
+        !ledger.ledger_id.trim().is_empty(),
+        "ready completion ledger {} contains an empty ledger_id",
+        path.display()
+    );
+    ensure!(
+        !ledger.batch_id.trim().is_empty(),
+        "ready completion ledger {} contains an empty batch_id",
+        path.display()
+    );
+    ensure!(
+        ledger.status == BackfillConversionCompletionStatus::Ready,
+        "completion ledger {} is not ready",
+        path.display()
+    );
+    ensure!(
+        ledger.blocking_issues.is_empty(),
+        "ready completion ledger {} contains blocking issues",
+        path.display()
+    );
+    for (field, value) in [
+        ("scope_status", ledger.requirements.scope_status.as_str()),
+        (
+            "current_bte_status",
+            ledger.requirements.current_bte_status.as_str(),
+        ),
+        (
+            "parquet_catalog_status",
+            ledger.requirements.parquet_catalog_status.as_str(),
+        ),
+        ("nt_data_type", ledger.requirements.nt_data_type.as_str()),
+        (
+            "fidelity_class",
+            ledger.requirements.fidelity_class.as_str(),
+        ),
+    ] {
+        ensure!(
+            !value.trim().is_empty(),
+            "ready completion ledger {} contains empty requirement {field}",
+            path.display()
+        );
+    }
+
+    let actual_record_count = u64::try_from(ledger.records.len())
+        .context("completion ledger record count does not fit u64")?;
+    ensure!(
+        actual_record_count > 0,
+        "ready completion ledger {} must contain at least one record",
+        path.display()
+    );
+    ensure!(
+        ledger.record_count == actual_record_count,
+        "completion ledger {} record_count mismatch: declared {}, actual {}",
+        path.display(),
+        ledger.record_count,
+        actual_record_count
+    );
+
+    let actual_published_records = u64::try_from(
+        ledger
+            .records
+            .iter()
+            .filter(|record| record.published_catalog_direct_s3)
+            .count(),
+    )
+    .context("completion ledger published-record count does not fit u64")?;
+    ensure!(
+        ledger.published_records == actual_published_records,
+        "completion ledger {} published_records mismatch: declared {}, actual {}",
+        path.display(),
+        ledger.published_records,
+        actual_published_records
+    );
+    if ledger.requirements.require_direct_s3_catalog_access {
+        ensure!(
+            actual_published_records == actual_record_count,
+            "ready completion ledger {} does not prove direct S3 publication for every record: published {}, records {}",
+            path.display(),
+            actual_published_records,
+            actual_record_count
+        );
+    }
+
+    let actual_mapping_proven_records = u64::try_from(
+        ledger
+            .records
+            .iter()
+            .filter(|record| {
+                record.mapping_current_bte_status == ledger.requirements.current_bte_status
+                    && record.mapping_parquet_catalog_status
+                        == ledger.requirements.parquet_catalog_status
+            })
+            .count(),
+    )
+    .context("completion ledger mapping-proven record count does not fit u64")?;
+    ensure!(
+        ledger.mapping_proven_records == actual_mapping_proven_records,
+        "completion ledger {} mapping_proven_records mismatch: declared {}, actual {}",
+        path.display(),
+        ledger.mapping_proven_records,
+        actual_mapping_proven_records
+    );
+    ensure!(
+        actual_mapping_proven_records == actual_record_count,
+        "ready completion ledger {} does not prove catalog mapping for every record: mapped {}, records {}",
+        path.display(),
+        actual_mapping_proven_records,
+        actual_record_count
+    );
+
+    let mut actual_accepted_bytes = 0_u64;
+    let mut actual_canonical_rows = 0_u64;
+    let mut actual_nt_iterations = 0_u64;
+    let mut record_ids = BTreeSet::new();
+    for record in &ledger.records {
+        ensure!(
+            !record.record_id.trim().is_empty(),
+            "ready completion ledger {} contains an empty record_id",
+            path.display()
+        );
+        ensure!(
+            record_ids.insert(record.record_id.as_str()),
+            "ready completion ledger {} contains duplicate record_id {:?}",
+            path.display(),
+            record.record_id
+        );
+        for (field, value) in [
+            ("archive_date", record.archive_date.as_str()),
+            ("source_binding", record.source_binding.as_str()),
+            ("table_family", record.table_family.as_str()),
+            ("source_proof_id", record.source_proof_id.as_str()),
+            ("operator_run_id", record.operator_run_id.as_str()),
+            ("output_prefix", record.output_prefix.as_str()),
+            ("published_catalog_uri", record.published_catalog_uri.as_str()),
+        ] {
+            ensure!(
+                !value.trim().is_empty(),
+                "ready completion ledger {} contains empty record {field}",
+                path.display()
+            );
+        }
+        ensure!(
+            record.source_proof_version > 0,
+            "ready completion ledger {} contains zero record source_proof_version",
+            path.display()
+        );
+        for (field, value) in [
+            (
+                "accepted_object_sha256",
+                record.accepted_object_sha256.as_str(),
+            ),
+            (
+                "publication_evidence_hash",
+                record.publication_evidence_hash.as_str(),
+            ),
+            (
+                "catalog_mapping_evaluation_hash",
+                record.catalog_mapping_evaluation_hash.as_str(),
+            ),
+            ("catalog_hash", record.catalog_hash.as_str()),
+        ] {
+            ensure!(
+                is_lowercase_sha256_hex(value),
+                "ready completion ledger {} contains invalid record {field}",
+                path.display()
+            );
+        }
+        for (field, value) in [
+            (
+                "publication_evidence_path",
+                record.publication_evidence_path.as_path(),
+            ),
+            (
+                "catalog_mapping_evaluation_path",
+                record.catalog_mapping_evaluation_path.as_path(),
+            ),
+        ] {
+            ensure!(
+                !value.as_os_str().is_empty(),
+                "ready completion ledger {} contains empty record {field}",
+                path.display()
+            );
+        }
+        ensure!(
+            record.accepted_bytes > 0,
+            "ready completion ledger {} contains zero record accepted_bytes",
+            path.display()
+        );
+        ensure!(
+            record.canonical_rows > 0,
+            "ready completion ledger {} contains zero record canonical_rows",
+            path.display()
+        );
+        ensure!(
+            record.nt_data_type == ledger.requirements.nt_data_type,
+            "completion ledger {} record {:?} nt_data_type does not match requirements",
+            path.display(),
+            record.record_id
+        );
+        ensure!(
+            record.fidelity_class == ledger.requirements.fidelity_class,
+            "completion ledger {} record {:?} fidelity_class does not match requirements",
+            path.display(),
+            record.record_id
+        );
+        ensure!(
+            record.canonical_rows == record.catalog_read_back_trade_ticks
+                && record.canonical_rows == record.published_catalog_expected_iterations
+                && record.canonical_rows == record.published_catalog_nt_iterations,
+            "completion ledger {} record {:?} row-count lineage is inconsistent",
+            path.display(),
+            record.record_id
+        );
+        actual_accepted_bytes = actual_accepted_bytes
+            .checked_add(record.accepted_bytes)
+            .context("completion ledger accepted-byte total overflow")?;
+        actual_canonical_rows = actual_canonical_rows
+            .checked_add(record.canonical_rows)
+            .context("completion ledger canonical-row total overflow")?;
+        actual_nt_iterations = actual_nt_iterations
+            .checked_add(record.published_catalog_nt_iterations)
+            .context("completion ledger NT-iteration total overflow")?;
+    }
+    ensure!(
+        ledger.total_accepted_bytes == actual_accepted_bytes,
+        "completion ledger {} total_accepted_bytes mismatch: declared {}, actual {}",
+        path.display(),
+        ledger.total_accepted_bytes,
+        actual_accepted_bytes
+    );
+    ensure!(
+        ledger.total_canonical_rows == actual_canonical_rows,
+        "completion ledger {} total_canonical_rows mismatch: declared {}, actual {}",
+        path.display(),
+        ledger.total_canonical_rows,
+        actual_canonical_rows
+    );
+    ensure!(
+        ledger.total_nt_iterations == actual_nt_iterations,
+        "completion ledger {} total_nt_iterations mismatch: declared {}, actual {}",
+        path.display(),
+        ledger.total_nt_iterations,
+        actual_nt_iterations
+    );
+    Ok(())
 }
 
 fn validate_status_inputs(
@@ -988,17 +1167,16 @@ fn validate_status_inputs(
                 "converted universe {} must not contain blocking issues",
                 spec.universe_id
             );
-            // A Converted status must rest on a self-attesting completion-proof
-            // artifact, never on a raw converted_record_count > 0: a completion
-            // ledger reaches `status: ready` only after its own internal coverage
-            // computation, and a selected conversion manifest is a finalized
-            // conversion output. Without such a proof there is no coverage
-            // evidence at all (the run-plan equality check below is skipped
-            // whenever no run plan is referenced, planned == 0).
+            // A Converted status must rest on the completion-ledger authority,
+            // never on a raw converted_record_count > 0. A completion ledger
+            // reaches `status: ready` only after its own internal coverage
+            // computation. A conversion manifest is an output record, not a
+            // second venue-scale completion authority. Without a ready ledger
+            // there is no coverage evidence at all (the run-plan equality check
+            // below is skipped whenever no run plan is referenced, planned == 0).
             ensure!(
                 converted_completion_proof_seen,
-                "converted universe {} must reference a completion ledger or selected conversion \
-                 manifest as coverage proof",
+                "converted universe {} must reference a ready completion ledger as coverage proof",
                 spec.universe_id
             );
             // When a conversion run plan declares planned objects, every one must
@@ -1155,8 +1333,6 @@ mod tests {
             source_universe_object_gates_artifact_path: None,
             source_universe_conversion_run_plan_path: None,
             source_universe_conversion_run_plan_artifact_path: None,
-            selected_conversion_manifest_path: None,
-            selected_conversion_manifest_artifact_path: None,
             selected_source_report_path: None,
             selected_source_report_artifact_path: None,
             blocking_issues: Vec::new(),
@@ -1229,9 +1405,8 @@ mod tests {
     #[test]
     fn converted_status_with_completion_proof_and_no_run_plan_is_accepted() {
         let spec = converted_universe_spec();
-        // Control: a self-attesting completion proof with no run plan
-        // (planned == 0) is the legitimate Converted-via-completion-ledger or
-        // selected-manifest case.
+        // Control: a ready completion-ledger proof with no run plan
+        // (planned == 0) is the legitimate Converted case.
         validate_status_inputs(&spec, 7, 0, 0, true, 0, 0)
             .expect("converted universe with a completion proof and no run plan is accepted");
     }

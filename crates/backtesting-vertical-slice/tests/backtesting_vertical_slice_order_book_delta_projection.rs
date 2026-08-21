@@ -273,6 +273,60 @@ fn deltas_round_trip_through_nt_catalog() {
 }
 
 #[test]
+fn consecutive_empty_snapshots_preserve_later_level_precision() {
+    let snapshot = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
+    let last = RecordFlag::F_LAST as u8;
+    let rows = vec![
+        delta_row(
+            0,
+            BASE_EVENT_TIME,
+            DeltaAction::Clear,
+            "",
+            "",
+            "",
+            snapshot | last,
+        ),
+        delta_row(
+            1,
+            BASE_EVENT_TIME + 1,
+            DeltaAction::Clear,
+            "",
+            "",
+            "",
+            snapshot | last,
+        ),
+        delta_row(
+            2,
+            BASE_EVENT_TIME + 2,
+            DeltaAction::Update,
+            DeltaSide::Buy.as_str(),
+            "0.49",
+            "10.125",
+            RecordFlag::F_MBP as u8 | last,
+        ),
+    ];
+    let table = table_with_rows(rows);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+
+    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
+        .expect("project consecutive empty snapshots");
+    let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID)
+        .expect("read consecutive empty snapshots back");
+
+    assert_eq!(loaded.len(), table.rows.len());
+    assert_eq!(loaded[0].action, BookAction::Clear);
+    assert_eq!(loaded[1].action, BookAction::Clear);
+    assert_eq!(loaded[2].action, BookAction::Update);
+    assert_eq!(loaded[2].order.price.precision, 2);
+    assert_eq!(loaded[2].order.size.precision, 3);
+    assert_eq!(loaded[2].order.price.as_decimal(), Price::from("0.49").as_decimal());
+    assert_eq!(
+        loaded[2].order.size.as_decimal(),
+        Quantity::from("10.125").as_decimal()
+    );
+}
+
+#[test]
 fn deltas_round_trip_through_binary_option_spec() {
     // The same synthetic prediction-market deltas must project through the
     // generic catalog seam when bound to a BinaryOption instrument, proving the

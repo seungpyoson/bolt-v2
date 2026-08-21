@@ -79,11 +79,14 @@ pub const JSONL_MULTI_INTERVAL_BARS_TRANSFORM_VERSION: &str = "1";
 
 /// Stable identity of the config-driven JSONL periodic-full-snapshot
 /// order-book-delta normalization transform.
+///
+/// Version 2 separates the converter-assigned audit ordinal from the optional
+/// native venue sequence consumed by NT replay.
 pub const DELTAS_TRANSFORM_IDENTITY: &str =
-    "jsonl-snapshot-deltas-to-canonical-order-book-deltas.v1";
+    "jsonl-snapshot-deltas-to-canonical-order-book-deltas.v2";
 
 /// Version of the registered compiled order-book-delta converter implementation.
-pub const DELTAS_TRANSFORM_VERSION: &str = "1";
+pub const DELTAS_TRANSFORM_VERSION: &str = "2";
 
 /// Stable identity of the streaming tar-of-JSONL periodic-full-snapshot
 /// order-book-delta normalization transform.
@@ -92,12 +95,14 @@ pub const DELTAS_TRANSFORM_VERSION: &str = "1";
 /// streaming gzip-tar of JSONL members vs a single decoded JSONL object); the
 /// table family, normalized schema, and NT data type match the JSONL deltas
 /// adapter because both produce the same `order_book_snapshot_deltas` rows.
+/// Version 2 applies the same native-sequence semantic cutover as the JSONL
+/// adapter.
 pub const TAR_DELTAS_TRANSFORM_IDENTITY: &str =
-    "tar-jsonl-snapshot-deltas-to-canonical-order-book-deltas.v1";
+    "tar-jsonl-snapshot-deltas-to-canonical-order-book-deltas.v2";
 
 /// Version of the registered compiled tar-of-JSONL order-book-delta converter
 /// implementation.
-pub const TAR_DELTAS_TRANSFORM_VERSION: &str = "1";
+pub const TAR_DELTAS_TRANSFORM_VERSION: &str = "2";
 
 /// Stable identity of the typed-event Parquet stream normalization transform that
 /// dual-emits the order-book-delta AND trades families from one L2 archive
@@ -109,12 +114,14 @@ pub const TAR_DELTAS_TRANSFORM_VERSION: &str = "1";
 /// dual-fidelity rule documented in
 /// [`super::canonical_order_book_deltas`]. The delta rows it produces share the
 /// `order_book_snapshot_deltas` table family and the `OrderBookDelta` NT type.
+/// Version 2 additionally gives every L2 delta `F_MBP` and separates the
+/// converter audit ordinal from the optional native venue sequence.
 pub const EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY: &str =
-    "parquet-event-stream-to-canonical-order-book-deltas-and-trades.v1";
+    "parquet-event-stream-to-canonical-order-book-deltas-and-trades.v2";
 
 /// Version of the registered compiled event-stream dual-emit converter
 /// implementation.
-pub const EVENT_STREAM_DELTAS_TRANSFORM_VERSION: &str = "1";
+pub const EVENT_STREAM_DELTAS_TRANSFORM_VERSION: &str = "2";
 
 /// Source-proof table family accepted by the JSONL snapshot-delta converter.
 pub const DELTAS_TABLE_FAMILY: &str = "order_book_snapshot_deltas";
@@ -2957,6 +2964,31 @@ mod tests {
             ),
             Some(&JSONL_SNAPSHOT_DELTAS_ADAPTER)
         );
+    }
+
+    #[test]
+    fn changed_delta_semantics_retire_v1_adapter_identities() {
+        for (identity, version) in [
+            (
+                "jsonl-snapshot-deltas-to-canonical-order-book-deltas.v1",
+                "1",
+            ),
+            (
+                "tar-jsonl-snapshot-deltas-to-canonical-order-book-deltas.v1",
+                "1",
+            ),
+            (
+                "parquet-event-stream-to-canonical-order-book-deltas-and-trades.v1",
+                "1",
+            ),
+        ] {
+            let err = require_registered_source_adapter(identity, version)
+                .expect_err("retired v1 delta semantics must fail closed");
+            assert!(
+                err.to_string().contains("registered source adapter"),
+                "unexpected error for {identity:?}: {err}"
+            );
+        }
     }
 
     #[test]

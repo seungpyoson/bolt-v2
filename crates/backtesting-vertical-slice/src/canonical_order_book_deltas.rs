@@ -2540,8 +2540,8 @@ table_families = ["order_book_snapshot_deltas"]
     /// identity's pinned hex, proving the two transforms are not conflated.
     #[test]
     fn tar_snapshot_delta_transform_hash_is_stable() {
-        // SHA-256("tar-jsonl-snapshot-deltas-to-canonical-order-book-deltas.v1")
-        let expected = "ce47520b2c136a91e7edbe7bf733e3b0217330801580a9f9aaf4636ab419e2f7";
+        // SHA-256("tar-jsonl-snapshot-deltas-to-canonical-order-book-deltas.v2")
+        let expected = "f628dde58aa5912b3e64ecc7d9fea6fe48f7182f50cba384b60f8150bc3e4ff8";
         assert_eq!(
             delta_transform_hash(TAR_DELTAS_TRANSFORM_IDENTITY),
             expected,
@@ -3636,8 +3636,8 @@ table_families = ["order_book_snapshot_deltas"]
     /// must be changed deliberately.
     #[test]
     fn jsonl_snapshot_delta_transform_hash_is_stable() {
-        // SHA-256("jsonl-snapshot-deltas-to-canonical-order-book-deltas.v1")
-        let expected = "3a06800b8fb1971b991255cde14c031dedb02de2fe16daf3d08af9cc6b0882f7";
+        // SHA-256("jsonl-snapshot-deltas-to-canonical-order-book-deltas.v2")
+        let expected = "8ca2089d842c95fe0565fe9fd2142902383aab2d1f131ca5fcff096d6f870517";
         assert_eq!(
             delta_transform_hash(DELTAS_TRANSFORM_IDENTITY),
             expected,
@@ -3653,8 +3653,8 @@ table_families = ["order_book_snapshot_deltas"]
     /// change breaks this test by design (the identity is provenance contract).
     #[test]
     fn event_stream_delta_transform_hash_is_stable() {
-        // SHA-256("parquet-event-stream-to-canonical-order-book-deltas-and-trades.v1")
-        let expected = "ad79aeea655c683a1c5b2375fd39e46fde6540f2efa40b23f9552c504e753669";
+        // SHA-256("parquet-event-stream-to-canonical-order-book-deltas-and-trades.v2")
+        let expected = "d49a1ad5339f9b359a933dc2294f55bad0fee65b2eee48d6130ac30c54f36acc";
         assert_eq!(
             delta_transform_hash(EVENT_STREAM_DELTAS_TRANSFORM_IDENTITY),
             expected,

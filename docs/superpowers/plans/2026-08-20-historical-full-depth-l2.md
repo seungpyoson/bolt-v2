@@ -21,6 +21,9 @@
 - Snapshot source events emit `CLEAR` followed by `ADD`; positive incremental levels emit `UPDATE`; zero-size levels emit `DELETE`. All L2 rows carry `F_MBP`, snapshot rows also carry `F_SNAPSHOT`, and only the final row of each source event carries `F_LAST`.
 - Set canonical `availability_time` to the source event time on every emitted row. Catalog projection uses that value for `ts_init`, preventing the issue-789 batch-timestamp freeze.
 - `CanonicalOrderBookDeltaRow.sequence` is a dense audit row ordinal. NT `OrderBookDelta.sequence` uses the numeric native source-event sequence for every row of that event, or `0` when the venue provides no native sequence.
+- Retire the three existing delta adapters' `v1` identities when applying those event/sequence semantics. Register only `v2`; old run specs fail closed instead of attributing changed output to the old provenance identity.
+- Retire the content-sorted delta-section identity by hashing NT's replay stream under the `v2` delta-record tag. Catalogs without deltas retain their identities; historical v1 delta result contracts remain historical and are not silently re-certified.
+- Retire the venue-scale selected-conversion-manifest shortcut: current `converted` status now requires a full typed current-schema Ready completion ledger with no blockers, non-empty record lineage, positive accepted-byte and canonical-row counts, valid evidence/catalog hashes and paths, complete mapping/publication coverage, and internally recomputed totals. Downgrade the committed PMXT v1 delta slice from `converted` to blocked until it is regenerated and certified under the v2 delta identity; dated source-proof records remain historical evidence only.
 - Validate configured order-count fields as nonnegative integers, but declare and test their intentional loss because NT full-depth `OrderBookDelta` cannot represent per-level order counts. Do not encode counts into `order_id` and do not emit `OrderBookDepth10`.
 - Maintain a capped NT L2 book while scanning. At the selected window boundary, emit one reconstructed snapshot seed representing the immediately preceding state; the seed establishes replay state and does not emit a quote.
 - Emit one derived quote after each selected source event only when both sides exist, matching the accepted issue-789 cardinality. Group source events by `F_LAST`; do not use NT `deltas_to_quotes`.
@@ -66,6 +69,8 @@ Expected: the absent-native-sequence case reports dense canonical row ordinals i
 - [x] **Step 3: Implement the minimal projection and validation changes**
 
 Parse `source_sequence` as `u64` when present and project it into NT; use `0` when absent. Keep the dense canonical ordinal only in `CanonicalOrderBookDeltaRow.sequence`, and correct its documentation so it does not claim venue ownership. Validate rows as `F_LAST`-closed source-event groups with consistent instrument, event time, availability time, and native sequence; require `F_MBP` on L2 payload rows. Update existing event-stream expansion to emit `F_MBP` and one terminal `F_LAST` per source event.
+
+Because these corrections change both canonical rows and NT replay semantics, bump the JSONL snapshot, tar snapshot, and Parquet event-stream adapter identities and versions to `v2`/`2`. Do not retain a `v1` compatibility registration.
 
 - [x] **Step 4: Run focused and module tests to GREEN**
 

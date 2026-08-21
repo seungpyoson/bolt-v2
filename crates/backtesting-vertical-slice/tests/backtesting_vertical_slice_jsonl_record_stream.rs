@@ -57,6 +57,32 @@ fn orphan_local_header_zip() -> Vec<u8> {
     prefix
 }
 
+fn zip_with_false_uncompressed_size() -> Vec<u8> {
+    const LOCAL_SIGNATURE: [u8; 4] = *b"PK\x03\x04";
+    const CENTRAL_SIGNATURE: [u8; 4] = *b"PK\x01\x02";
+
+    let input = b"{\"event\":\"listed\"}\n";
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    writer
+        .start_file("listed.jsonl", zip::write::FileOptions::default())
+        .expect("start ZIP member");
+    writer.write_all(input).expect("write ZIP member");
+    let mut archive = writer.finish().expect("finish ZIP").into_inner();
+
+    let local = archive
+        .windows(LOCAL_SIGNATURE.len())
+        .position(|window| window == LOCAL_SIGNATURE)
+        .expect("local header");
+    let central = archive
+        .windows(CENTRAL_SIGNATURE.len())
+        .position(|window| window == CENTRAL_SIGNATURE)
+        .expect("central directory");
+    let false_size = u32::try_from(input.len() + 1).expect("fixture size fits ZIP32");
+    archive[local + 22..local + 26].copy_from_slice(&false_size.to_le_bytes());
+    archive[central + 24..central + 28].copy_from_slice(&false_size.to_le_bytes());
+    archive
+}
+
 fn limits() -> JsonlStreamLimits {
     JsonlStreamLimits {
         max_decoded_bytes: 128,
@@ -181,6 +207,20 @@ fn single_member_zip_reads_the_central_directory_member_not_an_orphan_header() {
     .expect("visit the one central-directory member");
 
     assert_eq!(visited, vec![br#"{"event":"listed"}"#.to_vec()]);
+}
+
+#[test]
+fn single_member_zip_rejects_false_declared_uncompressed_size() {
+    let error = visit_jsonl_records(
+        RawPayloadContainer::SingleJsonlZip,
+        &zip_with_false_uncompressed_size(),
+        &limits(),
+        |_, _| Ok(()),
+    )
+    .expect_err("decoded length must match the ZIP member declaration");
+
+    assert!(error.to_string().contains("declares"), "{error:#}");
+    assert!(error.to_string().contains("decoded"), "{error:#}");
 }
 
 fn tar_gzip_fixture(members: &[(&str, &[u8])]) -> Vec<u8> {

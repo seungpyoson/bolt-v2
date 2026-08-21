@@ -98,13 +98,20 @@ pub fn visit_jsonl_records(
             );
             let member = archive.by_index(0).context("open JSONL ZIP member")?;
             ensure!(!member.is_dir(), "single_jsonl_zip member is a directory");
+            let declared_member_bytes = member.size();
             ensure!(
-                member.size() <= limits.max_member_bytes,
+                declared_member_bytes <= limits.max_member_bytes,
                 "ZIP JSONL member declares {} bytes, exceeding max_member_bytes {}",
-                member.size(),
+                declared_member_bytes,
                 limits.max_member_bytes
             );
-            visit_single_reader(member, limits, &mut visit)
+            let stats = visit_single_reader(member, limits, &mut visit)?;
+            ensure!(
+                stats.decoded_bytes == declared_member_bytes,
+                "ZIP JSONL member declares {declared_member_bytes} bytes but decoded {}",
+                stats.decoded_bytes
+            );
+            Ok(stats)
         }
         RawPayloadContainer::TarGzipJsonl => {
             let member_suffix = limits

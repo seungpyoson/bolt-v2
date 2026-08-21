@@ -48,6 +48,7 @@ nautilus-analysis = { git = "https://github.com/nautechsystems/nautilus_trader.g
 nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "c9732b4704a09f2dbc8a4d442fb78da27039bf04", features = ["streaming", "examples"] }
 nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "c9732b4704a09f2dbc8a4d442fb78da27039bf04" }
 nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "c9732b4704a09f2dbc8a4d442fb78da27039bf04" }
+nautilus-data = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "c9732b4704a09f2dbc8a4d442fb78da27039bf04" }
 nautilus-execution = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "c9732b4704a09f2dbc8a4d442fb78da27039bf04" }
 nautilus-model = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "c9732b4704a09f2dbc8a4d442fb78da27039bf04" }
 nautilus-persistence = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "c9732b4704a09f2dbc8a4d442fb78da27039bf04", features = ["cloud"] }

@@ -3,13 +3,13 @@
 //!
 //! Proves, against the NautilusTrader dependency resolved by this `bolt-v2`
 //! branch, that a synthetic gzip-tar of JSONL members streams through
-//! [`gzip_tar_members`] + [`normalize_tar_jsonl_snapshot_deltas`] into validated
+//! [`normalize_tar_jsonl_snapshot_deltas`] into validated
 //! [`CanonicalOrderBookDeltasTable`]s — one per instrument, with grouping
 //! spanning members — and projects into a local `ParquetDataCatalog` as
 //! `OrderBookDelta` data that reads back with per-field equality. A second test
-//! proves the per-member byte bound is per-member, not cumulative: an archive of
-//! many small members all pass under a small bound that the whole archive would
-//! exceed.
+//! proves the per-member byte bound is independent of the cumulative archive
+//! bound: many small members pass when each member and the whole archive remain
+//! inside their separately configured limits.
 //!
 //! This is the tar-container sibling of the JSONL `l2_snapshot_adapter` proof and
 //! exists to kill two defects of the superseded converter lane: gunzipping a
@@ -36,6 +36,7 @@ use backtesting_vertical_slice::{
         SpotInstrumentSpec, project_canonical_order_book_deltas_to_catalog,
         read_back_order_book_deltas,
     },
+    jsonl_record_stream::JsonlStreamLimits,
     source_proof::{
         AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
         IngestManifestObjectRecord, L2ReplayEvidence, LicenseScope, NtMappingStatus, RequiredCheck,
@@ -43,7 +44,6 @@ use backtesting_vertical_slice::{
         SourceProofFidelityClass, SourceProofReport, SourceProofStatus, SourceProofUsageScope,
         SourceSelectionStatus, TimeRange, select_accepted_dataset_with_registry,
     },
-    tar_reader::gzip_tar_members,
 };
 use flate2::{Compression, write::GzEncoder};
 use nautilus_model::{
@@ -56,6 +56,17 @@ const SOURCE_URL: &str = "https://synthetic.invalid/data";
 
 /// POSIX tar block size (header + data are laid out in 512-byte blocks).
 const TAR_BLOCK: usize = 512;
+
+fn stream_limits(max_decoded_bytes: u64, max_member_bytes: u64) -> JsonlStreamLimits {
+    JsonlStreamLimits {
+        max_decoded_bytes,
+        max_members: max_decoded_bytes,
+        max_member_bytes,
+        max_record_bytes: usize::try_from(max_member_bytes).expect("test member bound fits usize"),
+        max_records: max_decoded_bytes,
+        member_suffix: Some(".data".to_string()),
+    }
+}
 
 /// One synthetic instrument's NT/raw identity pair.
 struct Instrument {
@@ -339,12 +350,13 @@ fn tar_snapshot_deltas_split_across_members_round_trip_to_catalog() {
     ]);
 
     let accepted = accepted_dataset();
-    let members = gzip_tar_members(archive.as_slice(), ".data", 1 << 20);
+    let limits = stream_limits(1 << 20, 1 << 20);
     let mut tables = normalize_tar_jsonl_snapshot_deltas(
         &accepted,
         &keyed_identities(),
         &keyed_mapping(),
-        members,
+        &archive,
+        &limits,
         42,
         "ingest-run-test",
     )
@@ -383,13 +395,12 @@ fn tar_snapshot_deltas_split_across_members_round_trip_to_catalog() {
         SourceProofFidelityClass::L2Replay
     );
 
-    let mut loaded =
+    let loaded =
         read_back_order_book_deltas(dir.path(), INSTRUMENT_ONE.nt).expect("read back deltas");
     assert_eq!(loaded.len(), table_one.rows.len());
-    loaded.sort_by_key(|delta| delta.sequence);
     for (delta, row) in loaded.iter().zip(table_one.rows.iter()) {
         assert_eq!(delta.instrument_id.to_string(), INSTRUMENT_ONE.nt);
-        assert_eq!(delta.sequence, row.sequence);
+        assert_eq!(delta.sequence, 0, "source carries no native sequence");
         assert_eq!(delta.flags, row.flags);
         assert_eq!(delta.ts_event.as_u64(), row.event_time as u64);
         if row.action == DeltaAction::Clear.as_str() {
@@ -439,21 +450,23 @@ fn many_small_members_pass_under_a_small_per_member_bound() {
     let archive = gzip_tar(&members_spec);
 
     let single_member_len = lines[0].len() as u64;
-    // Bound generously above one member but far below the whole archive.
+    // Bound generously above one member but below the aggregate member payload.
     let per_member_bound = single_member_len + 64;
+    let decoded_payload_bytes: u64 = lines.iter().map(|line| line.len() as u64).sum();
     assert!(
-        per_member_bound * member_count as u64 > archive.len() as u64,
-        "the per-member bound times member count must exceed the archive, \
-         so a cumulative bound would reject this input"
+        decoded_payload_bytes > per_member_bound,
+        "the aggregate member payload must exceed the per-member bound"
     );
 
     let accepted = accepted_dataset();
-    let members = gzip_tar_members(archive.as_slice(), ".data", per_member_bound);
+    let decoded_bound = (member_count as u64 + 1) * 2 * TAR_BLOCK as u64;
+    let limits = stream_limits(decoded_bound, per_member_bound);
     let tables = normalize_tar_jsonl_snapshot_deltas(
         &accepted,
         &keyed_identities(),
         &keyed_mapping(),
-        members,
+        &archive,
+        &limits,
         42,
         "ingest-run-test",
     )
@@ -461,4 +474,32 @@ fn many_small_members_pass_under_a_small_per_member_bound() {
     assert_eq!(tables.len(), 1, "all members carry the same instrument");
     // Each member contributes one photo = CLEAR + bid ADD + ask ADD = 3 rows.
     assert_eq!(tables[0].rows.len(), member_count * 3);
+}
+
+#[test]
+fn tar_snapshot_adapter_enforces_the_shared_cumulative_decode_bound() {
+    let member = photo_line(INSTRUMENT_ONE.key, 1_700_000_000_000, "0.49", "0.51");
+    let archive = gzip_tar(&[("000.data", member.as_bytes())]);
+    let limits = JsonlStreamLimits {
+        max_decoded_bytes: TAR_BLOCK as u64,
+        max_members: 4,
+        max_member_bytes: 1 << 20,
+        max_record_bytes: 1 << 20,
+        max_records: 4,
+        member_suffix: Some(".data".to_string()),
+    };
+
+    let error = normalize_tar_jsonl_snapshot_deltas(
+        &accepted_dataset(),
+        &keyed_identities(),
+        &keyed_mapping(),
+        &archive,
+        &limits,
+        42,
+        "ingest-run-test",
+    )
+    .expect_err("tar snapshot decoding must enforce cumulative decoded bytes");
+
+    let message = format!("{error:#}");
+    assert!(message.contains("max_decoded_bytes"), "{message}");
 }

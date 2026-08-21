@@ -867,6 +867,7 @@ fn materialize_run_spec(
                 zip_member: record.zip_member.clone(),
                 max_member_bytes: None,
                 member_suffix: None,
+                jsonl_stream: None,
             },
             csv: converter_csv,
             bars: None,
@@ -874,7 +875,7 @@ fn materialize_run_spec(
             jsonl_bars: None,
             deltas: None,
             quotes: None,
-            seeded_l2_quotes: None,
+            seeded_level_set: None,
         })
         .context("serialize converter config to TOML")?,
     )?;

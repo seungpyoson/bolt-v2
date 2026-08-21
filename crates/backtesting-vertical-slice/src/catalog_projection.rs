@@ -1124,14 +1124,16 @@ fn ensure_clean_catalog_root(catalog_root: &Path) -> Result<()> {
 ///
 /// `CLEAR` rows become `OrderBookDelta::clear` deltas carrying the row's flags;
 /// `ADD`/`UPDATE`/`DELETE` rows build a price-keyed `BookOrder` (order_id from
-/// the row, `0` for L2/MBP levels) under the matching `BookAction`. Flags,
-/// sequence, and timestamps are carried verbatim from the canonical rows, which
-/// the table's `validate()` has already proven dense and well-formed.
+/// the row, `0` for L2/MBP levels) under the matching `BookAction`. Flags and
+/// timestamps are carried from the canonical rows. NT sequence is parsed from
+/// the venue-native `source_sequence`, or set to `0` when unavailable; the
+/// canonical `sequence` remains only the dense audit row ordinal.
 ///
 /// # Errors
 ///
 /// Returns an error if a price/size cannot be represented at the instrument
-/// precision, a side/action token is unknown, or an event time is negative.
+/// precision, a side/action token is unknown, the native source sequence is not
+/// numeric, or an event time is negative.
 pub fn canonical_rows_to_order_book_deltas<I: Instrument + ?Sized>(
     table: &CanonicalOrderBookDeltasTable,
     instrument: &I,
@@ -1143,13 +1145,7 @@ pub fn canonical_rows_to_order_book_deltas<I: Instrument + ?Sized>(
         .rows
         .iter()
         .map(|row| {
-            let delta = canonical_row_to_order_book_delta(
-                instrument_id,
-                row,
-                price_precision,
-                size_precision,
-            )?;
-            order_book_delta_at_precision(delta, price_precision, size_precision)
+            canonical_row_to_order_book_delta(instrument_id, row, price_precision, size_precision)
         })
         .collect()
 }
@@ -1186,21 +1182,36 @@ pub(crate) fn order_book_delta_at_precision(
     .context("rebuild order-book delta at instrument precision")
 }
 
-fn canonical_row_to_order_book_delta(
+pub(crate) fn canonical_row_to_order_book_delta(
     instrument_id: InstrumentId,
     row: &CanonicalOrderBookDeltaRow,
     price_precision: u8,
     size_precision: u8,
 ) -> Result<OrderBookDelta> {
+    let delta = canonical_row_to_order_book_delta_at_source_precision(instrument_id, row)?;
+    order_book_delta_at_precision(delta, price_precision, size_precision)
+}
+
+/// Convert one canonical row to NT without rescaling source price/size text.
+///
+/// Streaming seeded-book compilation uses this before the complete table is
+/// available to the catalog projection's instrument-precision widening pass.
+/// Action, side, native-sequence, flag, and timestamp mapping therefore retain
+/// one owner while source precision remains lossless in the in-memory NT book.
+pub(crate) fn canonical_row_to_order_book_delta_at_source_precision(
+    instrument_id: InstrumentId,
+    row: &CanonicalOrderBookDeltaRow,
+) -> Result<OrderBookDelta> {
     let label = format!("delta sequence {}", row.sequence);
     let ts_event = ts_event_nanos(row.event_time, &label)?;
     let ts_init = ts_init_nanos(row.availability_time, row.capture_time, &label)?;
+    let source_sequence = native_order_book_sequence(row, &label)?;
     if row.action == DeltaAction::Clear.as_str() {
         // NautilusTrader's `clear` sets F_SNAPSHOT only; carry the canonical
-        // row's full flag bitmask (F_SNAPSHOT required, optionally F_MBP and
-        // F_LAST when the row closes a snapshot expansion), which validate()
-        // has already enforced.
-        let mut clear = OrderBookDelta::clear(instrument_id, row.sequence, ts_event, ts_init);
+        // row's full flag bitmask (F_SNAPSHOT and F_MBP required, plus F_LAST
+        // when the row closes a snapshot expansion), which validate() has
+        // already enforced.
+        let mut clear = OrderBookDelta::clear(instrument_id, source_sequence, ts_event, ts_init);
         clear.flags = row.flags;
         return Ok(clear);
     }
@@ -1215,19 +1226,17 @@ fn canonical_row_to_order_book_delta(
         s if s == DeltaSide::Sell.as_str() => OrderSide::Sell,
         other => anyhow::bail!("unknown delta side {other:?}"),
     };
-    let price_str = rescaled(&row.price, price_precision)?;
-    let price = Price::from_str(&price_str)
-        .map_err(|error| anyhow::anyhow!("invalid rescaled price {price_str:?}: {error}"))?;
-    let size_str = rescaled(&row.size, size_precision)?;
-    let size = Quantity::from_str(&size_str)
-        .map_err(|error| anyhow::anyhow!("invalid rescaled size {size_str:?}: {error}"))?;
+    let price = Price::from_str(&row.price)
+        .map_err(|error| anyhow::anyhow!("invalid source price {:?}: {error}", row.price))?;
+    let size = Quantity::from_str(&row.size)
+        .map_err(|error| anyhow::anyhow!("invalid source size {:?}: {error}", row.size))?;
     let order = BookOrder::new(side, price, size, row.order_id);
     OrderBookDelta::new_checked(
         instrument_id,
         action,
         order,
         row.flags,
-        row.sequence,
+        source_sequence,
         ts_event,
         ts_init,
     )
@@ -1237,6 +1246,18 @@ fn canonical_row_to_order_book_delta(
             row.sequence
         )
     })
+}
+
+pub(crate) fn native_order_book_sequence(
+    row: &CanonicalOrderBookDeltaRow,
+    label: &str,
+) -> Result<u64> {
+    match row.source_sequence.as_deref() {
+        Some(value) => value
+            .parse::<u64>()
+            .with_context(|| format!("{label}: invalid native source sequence {value:?}")),
+        None => Ok(0),
+    }
 }
 
 /// Project a canonical order-book-delta table into a NautilusTrader
@@ -1988,7 +2009,12 @@ pub fn read_back_bars(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec
 /// This intentionally hashes NT-read instruments and `TradeTick` values, not
 /// raw Parquet bytes or paths. Parquet writer metadata can legitimately drift
 /// across NT/Arrow builds while representing identical logical catalog input.
-pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
+///
+/// # Errors
+///
+/// Returns an error when the catalog cannot be queried or any logical record
+/// cannot be encoded into the stable digest.
+pub fn logical_catalog_hash(root: &Path) -> Result<String> {
     let mut catalog = ParquetDataCatalog::new(root, None, None, None, None);
     let mut instruments = catalog
         .query_instruments(None)
@@ -2015,25 +2041,23 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
     });
     let delta_files =
         catalog_files_for_instruments::<OrderBookDelta>(&catalog, root, &instrument_ids)?;
-    let mut deltas = if delta_files.is_empty() {
+    let deltas = if delta_files.is_empty() {
         Vec::new()
     } else {
         catalog
             .query_typed_data::<OrderBookDelta>(None, None, None, None, Some(delta_files), false)
             .context("query order book deltas from catalog for logical hash")?
     };
-    deltas.sort_by_key(|delta| {
-        (
-            delta.ts_event.as_u64(),
-            delta.instrument_id.to_string(),
-            delta.sequence,
-            delta.action.to_string(),
-            delta.order.side.to_string(),
-            delta.order.price.as_decimal().to_string(),
-            delta.order.size.as_decimal().to_string(),
-            delta.order.order_id,
-        )
-    });
+    // `query_typed_data` returns NT's explicit-file replay stream, sorted by
+    // `ts_init`. At the pinned NT revision this query preserves the tested
+    // written order for equal timestamps within one file and deterministically
+    // K-merges its lexically sorted file list. The heap's equal-key order is not
+    // insertion-stable for three or more streams, so both the one-file and
+    // three-file shapes are pinned below. NT sequence is venue-native and
+    // event-scoped: every row in a multi-level event can share it, while an
+    // unavailable sequence is zero. Hash the returned stream directly so the
+    // catalog identity commits to NT's replay order rather than reducing
+    // equal-sequence events to a content-sorted multiset.
     // NautilusTrader keys the bar catalog directory by the full bar type, not by
     // the bare instrument id, so bars are resolved through NautilusTrader's own
     // identifier filtering (instrument ids passed to `query_typed_data`) rather
@@ -2158,7 +2182,11 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update(tick.ts_init.as_u64().to_string().as_bytes());
     }
     for delta in deltas {
-        hasher.update([9u8]);
+        // Tag 0xfe is the v2 delta-record domain separator. It retires tag 9,
+        // whose records were content-sorted, without changing catalogs that
+        // contain no deltas. Unlike printable tag 48 (`0`), 0xfe cannot occur
+        // inside the UTF-8 field bytes that follow.
+        hasher.update([0xfe]);
         hasher.update(delta.instrument_id.to_string().as_bytes());
         hasher.update([10u8]);
         hasher.update(delta.action.to_string().as_bytes());
@@ -2197,11 +2225,8 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update([26u8]);
         hasher.update(bar.ts_init.as_u64().to_string().as_bytes());
     }
-    // Quote loop appended AFTER the bars loop with NEW unique domain-separator
-    // tags 27..33 (existing tags: 0,2..8 ticks; 9..18 deltas; 19..26 bars). The
-    // existing instrument/tick/delta/bar byte stream is unperturbed, so any
-    // committed reference catalog that holds zero quote files keeps hashing to
-    // its recorded value — this loop emits nothing for it.
+    // Quote loop appended AFTER the bars loop with unique domain-separator tags
+    // 27..33. It emits nothing for catalogs without quotes.
     for quote in quotes {
         hasher.update([27u8]);
         hasher.update(quote.instrument_id.to_string().as_bytes());
@@ -2220,9 +2245,8 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
     }
     // Index-price loop appended AFTER the quote loop with NEW unique
     // domain-separator tags 34..37 (existing tags end at 33 for quotes). Reusing
-    // any earlier tag would let two different families hash equal; these are
-    // fresh, so the committed reference catalog (which holds zero index files)
-    // keeps hashing to its recorded value — this loop emits nothing for it.
+    // any earlier tag would let two different families hash equal. This loop
+    // emits nothing for catalogs without index prices.
     for index_price in index_prices {
         hasher.update([34u8]);
         hasher.update(index_price.instrument_id.to_string().as_bytes());
@@ -2235,9 +2259,8 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
     }
     // Mark-price loop appended AFTER the index loop with NEW unique
     // domain-separator tags 38..41 (existing tags end at 37 for index prices).
-    // Reusing any earlier tag would let two different families hash equal; these
-    // are fresh, so the committed reference catalog (which holds zero mark files)
-    // keeps hashing to its recorded value — this loop emits nothing for it.
+    // Reusing any earlier tag would let two different families hash equal. This
+    // loop emits nothing for catalogs without mark prices.
     for mark_price in mark_prices {
         hasher.update([38u8]);
         hasher.update(mark_price.instrument_id.to_string().as_bytes());
@@ -2248,11 +2271,10 @@ pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
         hasher.update([41u8]);
         hasher.update(mark_price.ts_init.as_u64().to_string().as_bytes());
     }
-    // Funding-rate loop appended AFTER the mark loop with NEW unique
-    // domain-separator tags 42..47 (existing tags end at 41 for mark prices).
-    // Empty funding catalogs emit nothing, preserving existing reference hashes;
-    // funding-bearing catalog bytes are pinned by
-    // `funding_catalog_hash_matches_golden_v1`.
+    // Funding-rate loop uses unique domain-separator tags 42..47; the replay-
+    // ordered v2 delta record uses 0xfe.
+    // Empty funding catalogs emit no funding fields; funding-bearing v1 bytes
+    // are pinned by `funding_catalog_hash_matches_golden_v1`.
     for funding_rate in funding_rates {
         hasher.update([42u8]);
         hasher.update(funding_rate.instrument_id.to_string().as_bytes());
@@ -2345,6 +2367,12 @@ fn update_optional_hash_field<T: ToString>(hasher: &mut Sha256, label: &str, val
     match value {
         Some(value) => update_hash_field(hasher, label, &value.to_string()),
         None => update_hash_field(hasher, label, "<none>"),
+    }
+}
+
+fn update_tick_scheme_hash<T: ToString>(hasher: &mut Sha256, value: Option<&T>) {
+    if let Some(value) = value {
+        update_hash_field(hasher, "instrument.tick_scheme", &value.to_string());
     }
 }
 
@@ -2485,6 +2513,7 @@ fn update_crypto_perpetual_hash(hasher: &mut Sha256, instrument: &CryptoPerpetua
         "instrument.taker_fee",
         &instrument.taker_fee.to_string(),
     );
+    update_tick_scheme_hash(hasher, instrument.tick_scheme.as_ref());
     update_hash_field(
         hasher,
         "instrument.ts_event",
@@ -2621,6 +2650,7 @@ fn update_crypto_future_hash(hasher: &mut Sha256, instrument: &CryptoFuture) -> 
         "instrument.taker_fee",
         &instrument.taker_fee.to_string(),
     );
+    update_tick_scheme_hash(hasher, instrument.tick_scheme.as_ref());
     update_hash_field(
         hasher,
         "instrument.ts_event",
@@ -2738,6 +2768,7 @@ fn update_binary_option_hash(hasher: &mut Sha256, instrument: &BinaryOption) -> 
         "instrument.min_price",
         instrument.min_price.as_ref(),
     );
+    update_tick_scheme_hash(hasher, instrument.tick_scheme.as_ref());
     update_optional_params_hash(hasher, "instrument.info", instrument.info.as_ref())?;
     update_hash_field(
         hasher,
@@ -2854,6 +2885,7 @@ fn update_currency_pair_hash(hasher: &mut Sha256, instrument: &CurrencyPair) -> 
         "instrument.min_price",
         instrument.min_price.as_ref(),
     );
+    update_tick_scheme_hash(hasher, instrument.tick_scheme.as_ref());
     update_hash_field(
         hasher,
         "instrument.margin_init",
@@ -3284,6 +3316,286 @@ mod tests {
         assert!(
             error.to_string().contains("missing nt_instrument_id"),
             "{error}"
+        );
+    }
+
+    fn order_book_delta_row(source_sequence: Option<&str>) -> CanonicalOrderBookDeltaRow {
+        CanonicalOrderBookDeltaRow {
+            schema_version: crate::canonical_trades::NORMALIZED_SCHEMA_VERSION.to_string(),
+            ingest_run_id: "ingest-run-test".to_string(),
+            source_binding: "synthetic-archive".to_string(),
+            venue: "BYBIT".to_string(),
+            product_family: "spot".to_string(),
+            product_category: "spot".to_string(),
+            instrument_id: "BNBUSDC".to_string(),
+            canonical_instrument_key: "bybit/spot/BNBUSDC".to_string(),
+            venue_symbol: "BNBUSDC".to_string(),
+            nt_instrument_id: Some("BNBUSDC.BYBIT".to_string()),
+            event_time: 1_700_000_000_000_000_000,
+            capture_time: 1_700_000_000_000_000_500,
+            availability_time: Some(1_700_000_000_000_000_000),
+            source_sequence: source_sequence.map(str::to_string),
+            raw_payload_id: "feedface".to_string(),
+            source_proof_id: "source-proof-synthetic".to_string(),
+            payload_hash: "feedface".to_string(),
+            transform_hash: "0badc0de".to_string(),
+            action: DeltaAction::Add.as_str().to_string(),
+            side: DeltaSide::Buy.as_str().to_string(),
+            price: "617.0".to_string(),
+            size: "10".to_string(),
+            order_id: 0,
+            flags: nautilus_model::enums::RecordFlag::F_MBP as u8
+                | nautilus_model::enums::RecordFlag::F_LAST as u8,
+            sequence: 41,
+        }
+    }
+
+    #[test]
+    fn order_book_projection_uses_zero_when_native_source_sequence_is_unavailable() {
+        let row = order_book_delta_row(None);
+
+        let delta =
+            canonical_row_to_order_book_delta(InstrumentId::from("BNBUSDC.BYBIT"), &row, 1, 4)
+                .expect("convert canonical L2 row");
+
+        assert_eq!(
+            delta.sequence, 0,
+            "NT sequence is venue-native; an unavailable venue sequence must remain zero"
+        );
+    }
+
+    #[test]
+    fn order_book_projection_preserves_numeric_native_source_sequence() {
+        let row = order_book_delta_row(Some("77"));
+
+        let delta =
+            canonical_row_to_order_book_delta(InstrumentId::from("BNBUSDC.BYBIT"), &row, 1, 4)
+                .expect("convert canonical L2 row with a native sequence");
+
+        assert_eq!(delta.sequence, 77);
+    }
+
+    #[test]
+    fn order_book_projection_rejects_non_numeric_native_source_sequence() {
+        let row = order_book_delta_row(Some("native-77"));
+
+        let error =
+            canonical_row_to_order_book_delta(InstrumentId::from("BNBUSDC.BYBIT"), &row, 1, 4)
+                .expect_err("NT sequence cannot carry a non-numeric venue value");
+
+        assert!(
+            error.to_string().contains("invalid native source sequence"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn logical_catalog_hash_preserves_equal_sequence_delta_event_order() {
+        let instrument = build_catalog_instrument(&CatalogInstrumentSpec::Spot(spec()))
+            .expect("build catalog instrument");
+        let instrument_id = instrument.id();
+        let flags = nautilus_model::enums::RecordFlag::F_MBP as u8
+            | nautilus_model::enums::RecordFlag::F_LAST as u8;
+        let ts = UnixNanos::from(1_700_000_000_000_000_000u64);
+        let first = OrderBookDelta::new_checked(
+            instrument_id,
+            BookAction::Update,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("617.0"),
+                Quantity::from("10"),
+                0,
+            ),
+            flags,
+            0,
+            ts,
+            ts,
+        )
+        .expect("first delta");
+        let second = OrderBookDelta::new_checked(
+            instrument_id,
+            BookAction::Update,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("617.0"),
+                Quantity::from("11"),
+                0,
+            ),
+            flags,
+            0,
+            ts,
+            ts,
+        )
+        .expect("second delta");
+
+        let root_a = tempfile::TempDir::new().expect("catalog A");
+        let root_b = tempfile::TempDir::new().expect("catalog B");
+        let root_c = tempfile::TempDir::new().expect("catalog C");
+        for (root, deltas) in [
+            (root_a.path(), vec![first, second]),
+            (root_b.path(), vec![second, first]),
+            (root_c.path(), vec![first, second]),
+        ] {
+            let catalog = ParquetDataCatalog::new(root, None, None, None, None);
+            catalog
+                .write_instruments(vec![instrument.clone()])
+                .expect("write instrument");
+            catalog
+                .write_to_parquet(&deltas, None, None, None)
+                .expect("write deltas");
+        }
+
+        let hash_a = logical_catalog_hash(root_a.path()).expect("hash catalog A");
+        let hash_b = logical_catalog_hash(root_b.path()).expect("hash catalog B");
+        let hash_c = logical_catalog_hash(root_c.path()).expect("hash catalog C");
+        assert_ne!(
+            hash_a, hash_b,
+            "catalog identity must retain replay order when native sequences tie"
+        );
+        assert_eq!(
+            hash_a, hash_c,
+            "identical replay streams must hash identically across roots"
+        );
+    }
+
+    #[test]
+    fn logical_catalog_hash_preserves_equal_timestamp_order_across_delta_files() {
+        let instrument = build_catalog_instrument(&CatalogInstrumentSpec::Spot(spec()))
+            .expect("build catalog instrument");
+        let instrument_id = instrument.id();
+        let flags = nautilus_model::enums::RecordFlag::F_MBP as u8
+            | nautilus_model::enums::RecordFlag::F_LAST as u8;
+        let ts = UnixNanos::from(1_700_000_000_000_000_000u64);
+        let later_file_name = UnixNanos::from(ts.as_u64() + 1);
+        let first = OrderBookDelta::new_checked(
+            instrument_id,
+            BookAction::Update,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("617.0"),
+                Quantity::from("10"),
+                0,
+            ),
+            flags,
+            0,
+            ts,
+            ts,
+        )
+        .expect("first delta");
+        let second = OrderBookDelta::new_checked(
+            instrument_id,
+            BookAction::Update,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("617.0"),
+                Quantity::from("11"),
+                0,
+            ),
+            flags,
+            0,
+            ts,
+            ts,
+        )
+        .expect("second delta");
+        let third = OrderBookDelta::new_checked(
+            instrument_id,
+            BookAction::Update,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("617.0"),
+                Quantity::from("12"),
+                0,
+            ),
+            flags,
+            0,
+            ts,
+            ts,
+        )
+        .expect("third delta");
+        let third_file_name = UnixNanos::from(ts.as_u64() + 2);
+
+        let root_a = tempfile::TempDir::new().expect("catalog A");
+        let root_b = tempfile::TempDir::new().expect("catalog B");
+        let root_c = tempfile::TempDir::new().expect("catalog C");
+        for root in [root_a.path(), root_b.path(), root_c.path()] {
+            ParquetDataCatalog::new(root, None, None, None, None)
+                .write_instruments(vec![instrument.clone()])
+                .expect("write instrument");
+        }
+
+        let catalog_a = ParquetDataCatalog::new(root_a.path(), None, None, None, None);
+        catalog_a
+            .write_to_parquet(&[first], Some(ts), Some(ts), Some(true))
+            .expect("write first delta file");
+        catalog_a
+            .write_to_parquet(
+                &[second],
+                Some(later_file_name),
+                Some(later_file_name),
+                Some(true),
+            )
+            .expect("write second delta file");
+        catalog_a
+            .write_to_parquet(
+                &[third],
+                Some(third_file_name),
+                Some(third_file_name),
+                Some(true),
+            )
+            .expect("write third delta file");
+
+        let catalog_b = ParquetDataCatalog::new(root_b.path(), None, None, None, None);
+        catalog_b
+            .write_to_parquet(
+                &[third],
+                Some(third_file_name),
+                Some(third_file_name),
+                Some(true),
+            )
+            .expect("write third delta file first");
+        catalog_b
+            .write_to_parquet(
+                &[second],
+                Some(later_file_name),
+                Some(later_file_name),
+                Some(true),
+            )
+            .expect("write second delta file first");
+        catalog_b
+            .write_to_parquet(&[first], Some(ts), Some(ts), Some(true))
+            .expect("write first delta file second");
+
+        let catalog_c = ParquetDataCatalog::new(root_c.path(), None, None, None, None);
+        catalog_c
+            .write_to_parquet(&[second], Some(ts), Some(ts), Some(true))
+            .expect("write second delta under first file name");
+        catalog_c
+            .write_to_parquet(
+                &[first],
+                Some(later_file_name),
+                Some(later_file_name),
+                Some(true),
+            )
+            .expect("write first delta under second file name");
+        catalog_c
+            .write_to_parquet(
+                &[third],
+                Some(third_file_name),
+                Some(third_file_name),
+                Some(true),
+            )
+            .expect("write third delta under third file name");
+
+        let hash_a = logical_catalog_hash(root_a.path()).expect("hash catalog A");
+        let hash_b = logical_catalog_hash(root_b.path()).expect("hash catalog B");
+        let hash_c = logical_catalog_hash(root_c.path()).expect("hash catalog C");
+        assert_eq!(
+            hash_a, hash_b,
+            "file creation order must not perturb NT's deterministic three-stream merge"
+        );
+        assert_ne!(
+            hash_a, hash_c,
+            "equal-timestamp replay order across files must remain hash-visible"
         );
     }
 
@@ -5461,6 +5773,28 @@ max_notional = "200000"
         );
     }
 
+    #[test]
+    fn catalog_hash_changes_with_instrument_tick_scheme() {
+        let plain_root = tempfile::TempDir::new().expect("plain catalog root");
+        let scheme_root = tempfile::TempDir::new().expect("tick-scheme catalog root");
+        let plain = build_currency_pair(&spec()).expect("plain instrument");
+        let mut with_scheme = plain.clone();
+        with_scheme.tick_scheme = Some(Ustr::from("fixed_precision_1"));
+
+        ParquetDataCatalog::new(plain_root.path(), None, None, None, None)
+            .write_instruments(vec![InstrumentAny::CurrencyPair(plain)])
+            .expect("write plain instrument");
+        ParquetDataCatalog::new(scheme_root.path(), None, None, None, None)
+            .write_instruments(vec![InstrumentAny::CurrencyPair(with_scheme)])
+            .expect("write tick-scheme instrument");
+
+        assert_ne!(
+            logical_catalog_hash(plain_root.path()).expect("plain hash"),
+            logical_catalog_hash(scheme_root.path()).expect("tick-scheme hash"),
+            "runtime-relevant tick_scheme must participate in catalog identity"
+        );
+    }
+
     fn expected_hash_field(hasher: &mut Sha256, label: &str, value: &str) {
         hasher.update(label.as_bytes());
         hasher.update([0]);
@@ -5642,12 +5976,11 @@ max_notional = "200000"
     }
 
     #[test]
-    fn logical_catalog_hash_reproduces_committed_pmxt_reference_catalog_hash() {
-        // Hash-invariance regression pin: the committed PMXT reference catalog
-        // hash was recorded under the pre-explicit-file-list query mechanics.
-        // Recomputing over the committed bytes must keep producing the
-        // recorded value, or committed ledger records silently stop
-        // verifying against their catalogs.
+    fn delta_replay_hash_v2_retires_committed_pmxt_v1_identity() {
+        // The PMXT artifact is retained historical evidence. Its result
+        // contract was issued under the v1, content-sorted delta digest and
+        // must not be silently re-certified under the replay-order-sensitive
+        // v2 delta-section authority.
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
             .nth(2)
@@ -5665,7 +5998,14 @@ max_notional = "200000"
             .expect("catalog_hash present in committed metadata");
         let recomputed =
             logical_catalog_hash(&run_dir.join("nt-catalog")).expect("recompute logical hash");
-        assert_eq!(recomputed, recorded);
+        assert_eq!(
+            recorded,
+            "3a26bebf03e4a2c4eef1bd344a8b1c6f1b78ef7d3c7f43d6279ac9d029fab236"
+        );
+        assert_eq!(
+            recomputed,
+            "5ff9821765a1a12a974ce9b4dd0fed2837415a9b4c73fb205f0ba37d929eb45e"
+        );
     }
 
     #[test]

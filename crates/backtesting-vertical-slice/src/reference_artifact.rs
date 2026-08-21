@@ -76,6 +76,17 @@ pub fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
         .map_err(|error| ReferenceArtifactError::Serialize(error.to_string()))
 }
 
+/// Serialize one reference-artifact value as canonical pretty JSON into a writer.
+///
+/// This is the streaming counterpart to [`canonical_json_bytes`].
+pub(crate) fn write_canonical_json<T: Serialize, W: std::io::Write>(
+    writer: W,
+    value: &T,
+) -> Result<()> {
+    serde_json::to_writer_pretty(writer, value)
+        .map_err(|error| ReferenceArtifactError::Serialize(error.to_string()))
+}
+
 pub fn canonical_json_sha256<T: Serialize>(value: &T) -> Result<String> {
     let bytes = canonical_json_bytes(value)?;
     Ok(sha256_hex(&bytes))
@@ -206,6 +217,14 @@ where
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn streaming_canonical_json_matches_owned_bytes() {
+        let value = json!({"nested": {"value": 7}, "items": ["a", "b"]});
+        let mut streamed = Vec::new();
+        write_canonical_json(&mut streamed, &value).unwrap();
+        assert_eq!(streamed, canonical_json_bytes(&value).unwrap());
+    }
 
     #[test]
     #[cfg(unix)]

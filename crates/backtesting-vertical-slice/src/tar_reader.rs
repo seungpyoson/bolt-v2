@@ -13,7 +13,7 @@
 //!    decompressed stream — the whole archive is never resident.
 //! 2. The superseded path returned only the *first* matching member and dropped
 //!    the rest. Here *every* member whose name ends with `member_suffix` is
-//!    yielded, in archive order, and non-matching members are skipped by
+//!    visited, in archive order, and non-matching members are skipped by
 //!    consuming (never retaining) their bytes.
 //!
 //! Decompression uses [`flate2::read::MultiGzDecoder`], not the single-stream
@@ -27,7 +27,7 @@
 //! stream, so the tar walk sees the whole archive regardless of how many gzip
 //! streams it was written as.
 //!
-//! Each yielded member's content read is bounded by `max_member_bytes` and fails
+//! Each visited member's content read is bounded by `max_member_bytes` and fails
 //! loud naming the offending member when exceeded, so one pathological member
 //! cannot blow the bound for the rest of the archive. A truncated archive (a
 //! header or data block that runs past the end of the stream) also fails loud.
@@ -35,9 +35,9 @@
 //! This module owns only the container concern (decompress + walk tar members);
 //! it does not parse JSONL or know anything about the order-book-delta wire
 //! shape. The normalize path in
-//! [`super::canonical_order_book_deltas`] consumes the member iterator.
+//! [`super::jsonl_record_stream`] consumes the visitor.
 
-use std::io::Read;
+use std::io::{self, Read};
 
 use anyhow::{Context, Result, bail, ensure};
 use flate2::read::MultiGzDecoder;
@@ -51,150 +51,204 @@ const NAME_OFFSET: usize = 0;
 /// Length of the `name` field within a tar header block.
 const NAME_LEN: usize = 100;
 
+/// Byte offset and length of the optional POSIX `prefix` field.
+const PREFIX_OFFSET: usize = 345;
+const PREFIX_LEN: usize = 155;
+
 /// Byte offset of the octal `size` field within a tar header block.
 const SIZE_OFFSET: usize = 124;
 
 /// Length of the octal `size` field within a tar header block.
 const SIZE_LEN: usize = 12;
 
+/// Byte offset of the octal header-checksum field.
+const CHECKSUM_OFFSET: usize = 148;
+
+/// Length of the header-checksum field.
+const CHECKSUM_LEN: usize = 8;
+
 /// Byte offset of the `typeflag` field within a tar header block.
 const TYPEFLAG_OFFSET: usize = 156;
 
-/// One extracted tar member: its name and decoded UTF-8 text.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TarMember {
-    pub name: String,
-    pub text: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GzipTarVisitStats {
+    pub decoded_bytes: u64,
+    pub members: u64,
 }
 
-/// Stream the members of a gzip-compressed POSIX tar whose names end with
-/// `member_suffix`.
-///
-/// Decompression and tar walking are both streaming: `reader` is wrapped in a
-/// [`MultiGzDecoder`] and tar entries are read sequentially from the decompressed
-/// stream, so the whole archive is never held in memory. A multi-member gzip
-/// stream is transparently concatenated, so no tar member is lost when the gzip
-/// was written as several streams. Each *matching*
-/// member's text is read under a `max_member_bytes` bound (per member, not
-/// cumulative); a non-matching member's bytes are consumed and discarded.
-///
-/// Members are yielded in archive order. The returned iterator yields `Err` for
-/// the first malformed/oversize/truncated member and then stops; callers that
-/// must process the whole archive should treat any `Err` as fatal.
-pub fn gzip_tar_members<R: Read>(
+/// Visit matching regular tar members through a size-limited reader without
+/// retaining member bodies. Every archive member consumes `max_members` and
+/// `max_member_bytes`; every decompressed tar byte, including skipped members
+/// and end padding, consumes `max_decoded_bytes`.
+pub fn visit_gzip_tar_members<R: Read>(
     reader: R,
     member_suffix: &str,
+    max_decoded_bytes: u64,
+    max_members: u64,
     max_member_bytes: u64,
-) -> GzipTarMembers<R> {
-    GzipTarMembers {
-        decoder: MultiGzDecoder::new(reader),
-        member_suffix: member_suffix.to_string(),
-        max_member_bytes,
-        done: false,
-    }
-}
+    mut visit: impl FnMut(&str, u64, &mut dyn Read) -> Result<()>,
+) -> Result<GzipTarVisitStats> {
+    ensure!(
+        !member_suffix.is_empty(),
+        "tar member suffix must not be empty"
+    );
+    ensure!(max_decoded_bytes > 0, "max_decoded_bytes must be positive");
+    ensure!(max_members > 0, "max_members must be positive");
+    ensure!(max_member_bytes > 0, "max_member_bytes must be positive");
 
-/// Streaming iterator over the matching members of a gzip-compressed POSIX tar.
-///
-/// Created by [`gzip_tar_members`]. Holds the streaming [`MultiGzDecoder`] and the
-/// member filter; it never buffers more than one member's bytes at a time.
-pub struct GzipTarMembers<R: Read> {
-    decoder: MultiGzDecoder<R>,
-    member_suffix: String,
-    max_member_bytes: u64,
-    done: bool,
-}
-
-impl<R: Read> GzipTarMembers<R> {
-    /// Advance to and return the next matching member, or `Ok(None)` at
-    /// end-of-archive.
-    ///
-    /// Skips non-matching members by consuming their padded data blocks without
-    /// retention. Fails loud on a truncated header/data block, a malformed
-    /// octal size, or a matching member whose text exceeds `max_member_bytes`.
-    fn next_member(&mut self) -> Result<Option<TarMember>> {
-        loop {
-            let mut header = [0u8; TAR_BLOCK];
-            match read_full_block(&mut self.decoder, &mut header)? {
-                BlockRead::Eof => return Ok(None),
-                BlockRead::Truncated(read) => {
-                    bail!("tar header truncated: read {read} of {TAR_BLOCK} bytes")
+    let decoder = MultiGzDecoder::new(reader);
+    let mut decoder = DecodedLimitReader::new(decoder, max_decoded_bytes);
+    let mut members = 0u64;
+    loop {
+        let mut header = [0u8; TAR_BLOCK];
+        match read_full_block(&mut decoder, &mut header)? {
+            BlockRead::Eof => bail!("tar archive ended before its end-of-archive marker"),
+            BlockRead::Truncated(read) => {
+                bail!("tar header truncated: read {read} of {TAR_BLOCK} bytes")
+            }
+            BlockRead::Full => {}
+        }
+        if header.iter().all(|&byte| byte == 0) {
+            let mut second_end_block = [0u8; TAR_BLOCK];
+            match read_full_block(&mut decoder, &mut second_end_block)? {
+                BlockRead::Full => ensure!(
+                    second_end_block.iter().all(|&byte| byte == 0),
+                    "tar archive second end-of-archive block is not zero"
+                ),
+                BlockRead::Eof => {
+                    bail!("tar archive ended after only one end-of-archive zero block")
                 }
-                BlockRead::Full => {}
+                BlockRead::Truncated(read) => bail!(
+                    "tar second end-of-archive block truncated: read {read} of {TAR_BLOCK} bytes"
+                ),
             }
+            drain_zero_tar_tail(&mut decoder)?;
+            break;
+        }
 
-            // An all-zero block marks the end-of-archive padding; stop the walk.
-            if header.iter().all(|&byte| byte == 0) {
-                return Ok(None);
+        validate_header_checksum(&header)?;
+
+        members = members
+            .checked_add(1)
+            .context("tar member count overflow")?;
+        ensure!(
+            members <= max_members,
+            "tar member count {members} exceeds max_members {max_members}"
+        );
+        let typeflag = header[TYPEFLAG_OFFSET];
+        if let Some(extension) = match typeflag {
+            b'L' => Some("GNU longname"),
+            b'K' => Some("GNU longlink"),
+            b'x' => Some("PAX extended header"),
+            b'g' => Some("PAX global extended header"),
+            _ => None,
+        } {
+            bail!("tar member {members} uses unsupported {extension} record");
+        }
+        let is_regular_file = match typeflag {
+            0 | b'0' => true,
+            b'1'..=b'6' => false,
+            _ => bail!("tar member {members} uses unsupported typeflag 0x{typeflag:02x}"),
+        };
+        let name = parse_name(&header).with_context(|| format!("tar member {members} name"))?;
+        let size = parse_octal_size(&header)?;
+        ensure!(
+            size <= max_member_bytes,
+            "tar member {name:?} declares {size} bytes, exceeding max_member_bytes {max_member_bytes}"
+        );
+        let matches = is_regular_file && name.ends_with(member_suffix);
+
+        if matches {
+            {
+                let mut member = (&mut decoder).take(size);
+                visit(&name, size, &mut member)?;
+                let remaining = member.limit();
+                let consumed = io::copy(&mut member, &mut io::sink())
+                    .with_context(|| format!("drain tar member {name:?}"))?;
+                ensure!(
+                    consumed == remaining,
+                    "tar member {name:?} truncated: drained {consumed} of {remaining} remaining bytes"
+                );
             }
-
-            let name = parse_name(&header);
-            let size = parse_octal_size(&header)?;
-            let typeflag = header[TYPEFLAG_OFFSET];
-            // typeflag '0' or NUL = regular file; only regular files carry the
-            // JSONL member payload. Directory/link/extended entries are walked
-            // past by their (block-padded) size like any other member.
-            let is_regular_file = typeflag == b'0' || typeflag == 0;
-            let matches = is_regular_file && name.ends_with(self.member_suffix.as_str());
-
-            if matches {
-                let text = self.read_member_text(&name, size)?;
-                return Ok(Some(TarMember { name, text }));
-            }
-
-            // Non-matching member: consume its data (block-padded) without
-            // retaining it, then continue to the next header.
-            self.skip_member_data(&name, size)?;
+            consume_padding(&mut decoder, size, &name)?;
+        } else {
+            skip_padded_member(&mut decoder, size, &name)?;
         }
     }
 
-    /// Read one matching member's `size` data bytes under the per-member bound,
-    /// then consume its block padding, returning the decoded UTF-8 text.
-    fn read_member_text(&mut self, name: &str, size: u64) -> Result<String> {
-        ensure!(
-            size <= self.max_member_bytes,
-            "tar member {name:?} declares {size} bytes, exceeding per-member limit {}",
-            self.max_member_bytes
-        );
-        let mut bytes = vec![0u8; usize_from_size(size, name)?];
-        read_exact_member(&mut self.decoder, &mut bytes, name)?;
-        consume_padding(&mut self.decoder, size, name)?;
-        String::from_utf8(bytes).with_context(|| format!("tar member {name:?} is not valid UTF-8"))
+    Ok(GzipTarVisitStats {
+        decoded_bytes: decoder.bytes_read(),
+        members,
+    })
+}
+
+struct DecodedLimitReader<R> {
+    inner: R,
+    max_bytes: u64,
+    bytes_read: u64,
+}
+
+impl<R> DecodedLimitReader<R> {
+    fn new(inner: R, max_bytes: u64) -> Self {
+        Self {
+            inner,
+            max_bytes,
+            bytes_read: 0,
+        }
     }
 
-    /// Consume a non-matching member's `size` data bytes plus block padding
-    /// without retaining them, so memory stays bounded regardless of the
-    /// member's declared size.
-    fn skip_member_data(&mut self, name: &str, size: u64) -> Result<()> {
-        let total = padded_len(size, name)?;
-        let consumed = std::io::copy(&mut (&mut self.decoder).take(total), &mut std::io::sink())
-            .with_context(|| format!("skip tar member {name:?}"))?;
-        ensure!(
-            consumed == total,
-            "tar member {name:?} truncated: skipped {consumed} of {total} bytes"
-        );
-        Ok(())
+    fn bytes_read(&self) -> u64 {
+        self.bytes_read
     }
 }
 
-impl<R: Read> Iterator for GzipTarMembers<R> {
-    type Item = Result<TarMember>;
+impl<R: Read> Read for DecodedLimitReader<R> {
+    fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        let remaining = self.max_bytes.saturating_sub(self.bytes_read);
+        if remaining == 0 {
+            let mut probe = [0u8; 1];
+            return match self.inner.read(&mut probe)? {
+                0 => Ok(0),
+                _ => Err(io::Error::other(format!(
+                    "decoded tar bytes exceed max_decoded_bytes {}",
+                    self.max_bytes
+                ))),
+            };
+        }
+        let allowed = output
+            .len()
+            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+        let read = self.inner.read(&mut output[..allowed])?;
+        self.bytes_read += read as u64;
+        Ok(read)
+    }
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
-            return None;
+fn skip_padded_member(reader: &mut impl Read, size: u64, name: &str) -> Result<()> {
+    let total = padded_len(size, name)?;
+    let consumed = io::copy(&mut reader.take(total), &mut io::sink())
+        .map_err(|error| anyhow::anyhow!("skip tar member {name:?}: {error}"))?;
+    ensure!(
+        consumed == total,
+        "tar member {name:?} truncated: skipped {consumed} of {total} bytes"
+    );
+    Ok(())
+}
+
+fn drain_zero_tar_tail(reader: &mut impl Read) -> Result<()> {
+    let mut buffer = [0u8; TAR_BLOCK];
+    loop {
+        let read = reader.read(&mut buffer).context("drain tar end padding")?;
+        if read == 0 {
+            return Ok(());
         }
-        match self.next_member() {
-            Ok(Some(member)) => Some(Ok(member)),
-            Ok(None) => {
-                self.done = true;
-                None
-            }
-            Err(error) => {
-                self.done = true;
-                Some(Err(error))
-            }
-        }
+        ensure!(
+            buffer[..read].iter().all(|byte| *byte == 0),
+            "tar archive contains non-zero bytes after its end marker"
+        );
     }
 }
 
@@ -230,24 +284,6 @@ fn read_full_block<R: Read>(reader: &mut R, block: &mut [u8; TAR_BLOCK]) -> Resu
     Ok(BlockRead::Full)
 }
 
-/// Read exactly `buffer.len()` bytes for a matching member, failing loud if the
-/// stream ends early (truncated archive).
-fn read_exact_member<R: Read>(reader: &mut R, buffer: &mut [u8], name: &str) -> Result<()> {
-    let mut filled = 0usize;
-    while filled < buffer.len() {
-        let read = reader
-            .read(&mut buffer[filled..])
-            .with_context(|| format!("read tar member {name:?} data"))?;
-        ensure!(
-            read != 0,
-            "tar member {name:?} truncated: read {filled} of {} bytes",
-            buffer.len()
-        );
-        filled += read;
-    }
-    Ok(())
-}
-
 /// Consume the block padding that follows a member's data, failing loud if the
 /// stream ends before the padding is fully read.
 fn consume_padding<R: Read>(reader: &mut R, size: u64, name: &str) -> Result<()> {
@@ -277,18 +313,23 @@ fn padded_len(size: u64, name: &str) -> Result<u64> {
         .with_context(|| format!("tar member {name:?} padded size overflow"))
 }
 
-/// Narrow a member's declared `u64` size to `usize` for buffer allocation,
-/// failing loud on platforms where it does not fit.
-fn usize_from_size(size: u64, name: &str) -> Result<usize> {
-    usize::try_from(size)
-        .with_context(|| format!("tar member {name:?} size {size} exceeds addressable memory"))
-}
+/// Parse the strict UTF-8 POSIX `prefix/name` fields of a tar header.
+fn parse_name(header: &[u8; TAR_BLOCK]) -> Result<String> {
+    fn parse_field<'a>(raw: &'a [u8], label: &str) -> Result<&'a str> {
+        // POSIX fields are fixed width. Short values are NUL padded, while a
+        // value that occupies the field exactly has no trailing terminator.
+        let end = raw.iter().position(|&byte| byte == 0).unwrap_or(raw.len());
+        std::str::from_utf8(&raw[..end]).with_context(|| format!("tar {label} field is not UTF-8"))
+    }
 
-/// Parse the NUL-terminated `name` field of a tar header.
-fn parse_name(header: &[u8; TAR_BLOCK]) -> String {
-    let raw = &header[NAME_OFFSET..NAME_OFFSET + NAME_LEN];
-    let end = raw.iter().position(|&byte| byte == 0).unwrap_or(raw.len());
-    String::from_utf8_lossy(&raw[..end]).into_owned()
+    let name = parse_field(&header[NAME_OFFSET..NAME_OFFSET + NAME_LEN], "name")?;
+    ensure!(!name.is_empty(), "tar name field is empty");
+    let prefix = parse_field(&header[PREFIX_OFFSET..PREFIX_OFFSET + PREFIX_LEN], "prefix")?;
+    if prefix.is_empty() {
+        Ok(name.to_string())
+    } else {
+        Ok(format!("{prefix}/{name}"))
+    }
 }
 
 /// Parse the octal `size` field (bytes 124..136) of a tar header.
@@ -309,6 +350,35 @@ fn parse_octal_size(header: &[u8; TAR_BLOCK]) -> Result<u64> {
     let text = text.trim();
     ensure!(!text.is_empty(), "tar size field is empty");
     u64::from_str_radix(text, 8).context("tar size field is not octal")
+}
+
+/// Validate the POSIX tar header checksum before trusting any header field.
+fn validate_header_checksum(header: &[u8; TAR_BLOCK]) -> Result<()> {
+    let field = &header[CHECKSUM_OFFSET..CHECKSUM_OFFSET + CHECKSUM_LEN];
+    let text = std::str::from_utf8(field).context("tar checksum field is not ASCII")?;
+    let text = text.trim_matches(['\0', ' ']);
+    ensure!(!text.is_empty(), "tar checksum field is empty");
+    let expected = u64::from_str_radix(text, 8).context("tar checksum field is not octal")?;
+    let actual = tar_header_checksum(header);
+    ensure!(
+        expected == actual,
+        "tar header checksum mismatch: declared {expected:o}, computed {actual:o}"
+    );
+    Ok(())
+}
+
+fn tar_header_checksum(header: &[u8; TAR_BLOCK]) -> u64 {
+    header
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| {
+            if (CHECKSUM_OFFSET..CHECKSUM_OFFSET + CHECKSUM_LEN).contains(&index) {
+                u64::from(b' ')
+            } else {
+                u64::from(*byte)
+            }
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -340,16 +410,17 @@ mod tests {
         // ustar magic + version.
         header[257..263].copy_from_slice(b"ustar\0");
         header[263..265].copy_from_slice(b"00");
-        // Checksum: tar checksum is the sum of all header bytes with the
-        // checksum field treated as spaces. The streaming reader does not
-        // verify it, but a real tar layout carries it, so fill it faithfully.
-        header[148..156].copy_from_slice(b"        ");
-        let checksum: u32 = header.iter().map(|&byte| u32::from(byte)).sum();
-        let checksum_field = format!("{checksum:06o}");
-        header[148..154].copy_from_slice(checksum_field.as_bytes());
-        header[154] = 0;
-        header[155] = b' ';
+        write_test_checksum(&mut header);
         header
+    }
+
+    fn write_test_checksum(header: &mut [u8; TAR_BLOCK]) {
+        header[CHECKSUM_OFFSET..CHECKSUM_OFFSET + CHECKSUM_LEN].fill(b' ');
+        let checksum = tar_header_checksum(header);
+        let checksum_field = format!("{checksum:06o}");
+        header[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 6].copy_from_slice(checksum_field.as_bytes());
+        header[CHECKSUM_OFFSET + 6] = 0;
+        header[CHECKSUM_OFFSET + 7] = b' ';
     }
 
     /// Append one member (header + data + block padding) to a raw tar buffer.
@@ -379,8 +450,33 @@ mod tests {
         gzip(&tar)
     }
 
-    fn collect(bytes: Vec<u8>, suffix: &str, limit: u64) -> Result<Vec<TarMember>> {
-        gzip_tar_members(Cursor::new(bytes), suffix, limit).collect()
+    #[derive(Debug, PartialEq, Eq)]
+    struct CollectedMember {
+        name: String,
+        text: String,
+    }
+
+    fn collect(bytes: Vec<u8>, suffix: &str, limit: u64) -> Result<Vec<CollectedMember>> {
+        let mut members = Vec::new();
+        visit_gzip_tar_members(
+            Cursor::new(bytes),
+            suffix,
+            1 << 20,
+            128,
+            limit,
+            |name, _, reader| {
+                let mut text = String::new();
+                reader
+                    .read_to_string(&mut text)
+                    .with_context(|| format!("read test member {name:?}"))?;
+                members.push(CollectedMember {
+                    name: name.to_string(),
+                    text,
+                });
+                Ok(())
+            },
+        )?;
+        Ok(members)
     }
 
     #[test]
@@ -430,7 +526,7 @@ mod tests {
         let err = collect(archive, ".data", 100).expect_err("oversize member must be rejected");
         let message = err.to_string();
         assert!(message.contains("huge.data"), "{message}");
-        assert!(message.contains("per-member limit"), "{message}");
+        assert!(message.contains("max_member_bytes"), "{message}");
     }
 
     #[test]
@@ -445,12 +541,163 @@ mod tests {
     }
 
     #[test]
+    fn rejects_archive_without_end_of_archive_marker() {
+        let mut tar = Vec::new();
+        push_member(&mut tar, "only.data", b"payload");
+        let err = collect(gzip(&tar), ".data", 4096)
+            .expect_err("tar EOF before the zero end marker must fail loud");
+        assert!(err.to_string().contains("end-of-archive marker"), "{err}");
+    }
+
+    #[test]
+    fn rejects_archive_with_only_one_end_of_archive_zero_block() {
+        let mut tar = Vec::new();
+        push_member(&mut tar, "only.data", b"payload");
+        tar.extend_from_slice(&[0; TAR_BLOCK]);
+        let err = collect(gzip(&tar), ".data", 4096)
+            .expect_err("one zero block is a truncated tar end marker");
+        assert!(err.to_string().contains("only one"), "{err}");
+    }
+
+    #[test]
+    fn rejects_invalid_header_checksum() {
+        let mut tar = Vec::new();
+        let mut header = ustar_header("only.data", 7);
+        header[0] = b'X';
+        tar.extend_from_slice(&header);
+        tar.extend_from_slice(b"payload");
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK - 7));
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK * 2));
+
+        let err = collect(gzip(&tar), ".data", 4096)
+            .expect_err("a tar header with a stale checksum must fail closed");
+        assert!(err.to_string().contains("checksum"), "{err}");
+    }
+
+    #[test]
+    fn rejects_gnu_longname_extension_instead_of_silently_skipping_payload() {
+        let long_name = format!("{}.data", "nested/segment".repeat(10));
+        let mut tar = Vec::new();
+        let mut longname_header = ustar_header("././@LongLink", long_name.len() as u64 + 1);
+        longname_header[TYPEFLAG_OFFSET] = b'L';
+        write_test_checksum(&mut longname_header);
+        tar.extend_from_slice(&longname_header);
+        tar.extend_from_slice(long_name.as_bytes());
+        tar.push(0);
+        let longname_padding = (TAR_BLOCK - (long_name.len() + 1) % TAR_BLOCK) % TAR_BLOCK;
+        tar.extend(std::iter::repeat_n(0u8, longname_padding));
+        push_member(&mut tar, &long_name[..NAME_LEN], b"payload");
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK * 2));
+
+        let err = collect(gzip(&tar), ".data", 4096)
+            .expect_err("unsupported GNU longname records must fail loud");
+        let message = err.to_string();
+        assert!(message.contains("member 1"), "{message}");
+        assert!(message.contains("longname"), "{message}");
+    }
+
+    #[test]
+    fn reads_real_bsdtar_gzip_with_posix_prefix_name() {
+        // Produced outside this parser with:
+        // bsdtar 3.5.3/libarchive 3.7.4
+        // `COPYFILE_DISABLE=1 tar --format=ustar -cf long.tar <120-char-dir>/sample.jsonl`
+        // followed by `gzip -n -k long.tar`. The path exceeds the legacy
+        // 100-byte name field and exercises the POSIX ustar prefix field.
+        let encoded =
+            include_str!("../tests/fixtures/tar_reader/bsdtar-3.5.3-posix-prefix.tar.gz.hex")
+                .split_whitespace()
+                .collect::<String>();
+        let archive = hex::decode(encoded).expect("committed external tar fixture hex");
+
+        let members = collect(archive, ".jsonl", 4096).expect("read externally produced tar");
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].name, format!("{}/sample.jsonl", "a".repeat(120)));
+        assert_eq!(
+            members[0].text.as_bytes(),
+            b"{\"instrument\":\"BASEQUOTE\",\"action\":\"snapshot\"}\n"
+        );
+    }
+
+    #[test]
+    fn rejects_non_utf8_member_name_instead_of_lossy_matching() {
+        let mut tar = Vec::new();
+        let mut header = ustar_header("valid.data", 7);
+        header[NAME_OFFSET] = 0xff;
+        write_test_checksum(&mut header);
+        tar.extend_from_slice(&header);
+        tar.extend_from_slice(b"payload");
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK - 7));
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK * 2));
+
+        let err = collect(gzip(&tar), ".data", 4096)
+            .expect_err("non-UTF-8 tar member names must fail loud");
+        let message = format!("{err:#}");
+        assert!(message.contains("member 1"), "{message}");
+        assert!(message.contains("UTF-8"), "{message}");
+    }
+
+    #[test]
+    fn reads_exact_width_posix_member_name_without_nul_padding() {
+        let mut tar = Vec::new();
+        let name = format!("{}.data", "x".repeat(NAME_LEN - ".data".len()));
+        assert_eq!(name.len(), NAME_LEN);
+        let header = ustar_header(&name, 7);
+        tar.extend_from_slice(&header);
+        tar.extend_from_slice(b"payload");
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK - 7));
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK * 2));
+
+        let members = collect(gzip(&tar), ".data", 4096)
+            .expect("a full POSIX name field does not require trailing NUL padding");
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].name, name);
+        assert_eq!(members[0].text, "payload");
+    }
+
+    #[test]
+    fn rejects_unknown_extension_typeflag_instead_of_guessing_its_layout() {
+        let mut tar = Vec::new();
+        let mut header = ustar_header("sparse.data", 7);
+        header[TYPEFLAG_OFFSET] = b'S';
+        write_test_checksum(&mut header);
+        tar.extend_from_slice(&header);
+        tar.extend_from_slice(b"payload");
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK - 7));
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK * 2));
+
+        let err = collect(gzip(&tar), ".data", 4096)
+            .expect_err("unknown extension headers must fail before layout-dependent skipping");
+        let message = err.to_string();
+        assert!(message.contains("member 1"), "{message}");
+        assert!(message.contains("typeflag"), "{message}");
+    }
+
+    #[test]
+    fn rejects_contiguous_file_typeflag_instead_of_silently_skipping_data() {
+        let mut tar = Vec::new();
+        let mut header = ustar_header("contiguous.data", 7);
+        header[TYPEFLAG_OFFSET] = b'7';
+        write_test_checksum(&mut header);
+        tar.extend_from_slice(&header);
+        tar.extend_from_slice(b"payload");
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK - 7));
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK * 2));
+
+        let err = collect(gzip(&tar), ".data", 4096)
+            .expect_err("data-carrying contiguous members must fail rather than disappear");
+        let message = err.to_string();
+        assert!(message.contains("member 1"), "{message}");
+        assert!(message.contains("typeflag"), "{message}");
+    }
+
+    #[test]
     fn rejects_malformed_octal_size_field() {
         let mut tar = Vec::new();
         let mut header = ustar_header("bad.data", 4);
         // Corrupt the size field with a non-octal byte.
         header[SIZE_OFFSET] = b'9';
         header[SIZE_OFFSET + 1] = b'Z';
+        write_test_checksum(&mut header);
         tar.extend_from_slice(&header);
         tar.extend_from_slice(b"data");
         tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK - 4));
@@ -485,6 +732,7 @@ mod tests {
         }
         header[SIZE_OFFSET..SIZE_OFFSET + 4].copy_from_slice(b"  12");
         header[SIZE_OFFSET + 4] = b' ';
+        write_test_checksum(&mut header);
 
         let mut tar = Vec::new();
         tar.extend_from_slice(&header);

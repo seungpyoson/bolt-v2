@@ -56,6 +56,8 @@ mod backtesting_vertical_slice_end_to_end;
 mod backtesting_vertical_slice_first_proof_selector;
 #[path = "backtesting_vertical_slice_hash_what_you_write.rs"]
 mod backtesting_vertical_slice_hash_what_you_write;
+#[path = "backtesting_vertical_slice_jsonl_record_stream.rs"]
+mod backtesting_vertical_slice_jsonl_record_stream;
 #[path = "backtesting_vertical_slice_l2_snapshot_adapter.rs"]
 mod backtesting_vertical_slice_l2_snapshot_adapter;
 #[path = "backtesting_vertical_slice_mechanical_order_proof.rs"]
@@ -92,6 +94,8 @@ mod backtesting_vertical_slice_research_analytics;
 mod backtesting_vertical_slice_s3_catalog_smoke;
 #[path = "backtesting_vertical_slice_sample_venue_guard.rs"]
 mod backtesting_vertical_slice_sample_venue_guard;
+#[path = "backtesting_vertical_slice_seeded_level_set_deltas.rs"]
+mod backtesting_vertical_slice_seeded_level_set_deltas;
 #[path = "backtesting_vertical_slice_selected_source_slice.rs"]
 mod backtesting_vertical_slice_selected_source_slice;
 #[path = "backtesting_vertical_slice_source_archive_discovery_seed.rs"]

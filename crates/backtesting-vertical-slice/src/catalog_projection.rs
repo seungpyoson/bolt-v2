@@ -2009,7 +2009,12 @@ pub fn read_back_bars(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec
 /// This intentionally hashes NT-read instruments and `TradeTick` values, not
 /// raw Parquet bytes or paths. Parquet writer metadata can legitimately drift
 /// across NT/Arrow builds while representing identical logical catalog input.
-pub(crate) fn logical_catalog_hash(root: &Path) -> Result<String> {
+///
+/// # Errors
+///
+/// Returns an error when the catalog cannot be queried or any logical record
+/// cannot be encoded into the stable digest.
+pub fn logical_catalog_hash(root: &Path) -> Result<String> {
     let mut catalog = ParquetDataCatalog::new(root, None, None, None, None);
     let mut instruments = catalog
         .query_instruments(None)

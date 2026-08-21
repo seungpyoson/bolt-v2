@@ -2619,20 +2619,7 @@ impl BacktestingRunManifest {
             .end_time
             .map(|value| manifest_time_to_nanos("end_time", value))
             .transpose()?;
-        let has_order_book_deltas = self.catalog_inputs.iter().any(|input| {
-            parse_data_type_str(&input.data_type)
-                .is_ok_and(|data_type| data_type == NautilusDataType::OrderBookDelta)
-        });
-        let has_explicit_quotes = self.catalog_inputs.iter().any(|input| {
-            parse_data_type_str(&input.data_type)
-                .is_ok_and(|data_type| data_type == NautilusDataType::QuoteTick)
-        });
-        let data_engine = (has_order_book_deltas && !has_explicit_quotes).then(|| {
-            DataEngineConfig::builder()
-                .buffer_deltas(true)
-                .emit_quotes_from_book(true)
-                .build()
-        });
+        let data_engine = data_engine_config_for_catalog_inputs(&self.catalog_inputs)?;
         let engine = BacktestEngineConfig::builder()
             .maybe_data_engine(data_engine)
             .build();
@@ -2658,6 +2645,63 @@ impl BacktestingRunManifest {
                 message: error.to_string(),
             })
     }
+}
+
+/// Resolve NT's process-wide delta buffering and book-quote authority from the
+/// manifest's per-instrument catalog inputs.
+///
+/// `buffer_deltas` must remain enabled for every delta replay so an `F_LAST`
+/// batch is applied atomically, even when an explicit quote stream owns the
+/// strategy-visible quote surface. NT's `emit_quotes_from_book` switch is
+/// global, however, so a manifest where only some delta instruments have an
+/// explicit quote stream is not representable without either duplicating
+/// quotes or starving an instrument. Reject that mixed authority fail closed.
+fn data_engine_config_for_catalog_inputs(
+    inputs: &[ManifestCatalogInput],
+) -> Result<Option<DataEngineConfig>, ManifestError> {
+    let mut delta_instruments = BTreeSet::new();
+    let mut explicit_quote_instruments = BTreeSet::new();
+
+    for input in inputs {
+        let target = match parse_data_type_str(&input.data_type)? {
+            NautilusDataType::OrderBookDelta => &mut delta_instruments,
+            NautilusDataType::QuoteTick => &mut explicit_quote_instruments,
+            _ => continue,
+        };
+        let (instrument_id, instrument_ids) =
+            parse_and_validate_catalog_input_instrument_ids(input)?;
+        if let Some(instrument_ids) = instrument_ids {
+            target.extend(instrument_ids.into_iter().map(|id| id.to_string()));
+        } else {
+            target.insert(instrument_id.to_string());
+        }
+    }
+
+    if delta_instruments.is_empty() {
+        return Ok(None);
+    }
+
+    let explicit_delta_quote_count = delta_instruments
+        .intersection(&explicit_quote_instruments)
+        .count();
+    let emit_quotes_from_book = match explicit_delta_quote_count {
+        0 => true,
+        covered if covered == delta_instruments.len() => false,
+        _ => {
+            return Err(ManifestError::InvalidNtConfig {
+                field: "engine.data_engine.emit_quotes_from_book",
+                message: "delta instruments must use one quote authority: explicit QuoteTick data must cover every OrderBookDelta instrument or none"
+                    .to_string(),
+            });
+        }
+    };
+
+    Ok(Some(
+        DataEngineConfig::builder()
+            .buffer_deltas(true)
+            .emit_quotes_from_book(emit_quotes_from_book)
+            .build(),
+    ))
 }
 
 fn catalog_input_to_nt_data_config(
@@ -6103,9 +6147,65 @@ mod tests {
         manifest.catalog_inputs.push(quotes);
 
         let run = manifest.to_nt_run_config().expect("L2 NT run config");
+        let data_engine = run
+            .engine()
+            .data_engine
+            .as_ref()
+            .expect("delta replay must retain atomic F_LAST buffering");
+        assert!(data_engine.buffer_deltas);
         assert!(
-            run.engine().data_engine.is_none(),
-            "an explicit quote stream remains the strategy-visible authority"
+            !data_engine.emit_quotes_from_book,
+            "the same instrument's explicit quote stream remains the strategy-visible authority"
+        );
+    }
+
+    #[test]
+    fn unrelated_explicit_quotes_do_not_suppress_delta_book_quotes() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut unrelated_quotes = manifest.catalog_inputs[0].clone();
+        unrelated_quotes.data_type = "QuoteTick".to_string();
+        unrelated_quotes.nt_instrument_id = "UNRELATED.TESTVENUE".to_string();
+        unrelated_quotes.catalog_path = "/tmp/unrelated-explicit-quotes".to_string();
+        manifest.catalog_inputs.push(unrelated_quotes);
+
+        let run = manifest.to_nt_run_config().expect("L2 NT run config");
+        let data_engine = run
+            .engine()
+            .data_engine
+            .as_ref()
+            .expect("delta replay must configure the NT data engine");
+        assert!(data_engine.buffer_deltas);
+        assert!(
+            data_engine.emit_quotes_from_book,
+            "an unrelated quote stream must not starve the delta instrument"
+        );
+    }
+
+    #[test]
+    fn mixed_explicit_and_derived_delta_quote_authority_fails_closed() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+
+        let mut second_delta = manifest.catalog_inputs[0].clone();
+        second_delta.nt_instrument_id = "SECOND.TESTVENUE".to_string();
+        second_delta.catalog_path = "/tmp/second-deltas".to_string();
+        manifest.catalog_inputs.push(second_delta);
+
+        let mut first_quotes = manifest.catalog_inputs[0].clone();
+        first_quotes.data_type = "QuoteTick".to_string();
+        first_quotes.catalog_path = "/tmp/first-explicit-quotes".to_string();
+        manifest.catalog_inputs.push(first_quotes);
+
+        assert_eq!(
+            manifest.to_nt_run_config().unwrap_err(),
+            ManifestError::InvalidNtConfig {
+                field: "engine.data_engine.emit_quotes_from_book",
+                message: "delta instruments must use one quote authority: explicit QuoteTick data must cover every OrderBookDelta instrument or none"
+                    .to_string(),
+            }
         );
     }
 

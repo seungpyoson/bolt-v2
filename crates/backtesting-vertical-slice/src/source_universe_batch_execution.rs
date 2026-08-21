@@ -2186,9 +2186,8 @@ mod tests {
     fn plan_reexecutes_carried_record_with_fifo_catalog_metadata() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-carried");
-        copy_reference_output(&output_dir);
-        let record =
-            carried_record_with_output(output_dir.clone(), committed_reference_catalog_hash());
+        let catalog_hash = copy_reference_output(&output_dir);
+        let record = carried_record_with_output(output_dir.clone(), catalog_hash);
         let metadata_path = output_dir.join(CATALOG_METADATA_FILE);
         let metadata_bytes = fs::read(&metadata_path).expect("read copied catalog metadata");
         fs::remove_file(&metadata_path).expect("remove copied catalog metadata");
@@ -2217,9 +2216,8 @@ mod tests {
     fn plan_reexecutes_carried_record_with_catalog_tree_symlink() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-carried");
-        copy_reference_output(&output_dir);
-        let record =
-            carried_record_with_output(output_dir.clone(), committed_reference_catalog_hash());
+        let catalog_hash = copy_reference_output(&output_dir);
+        let record = carried_record_with_output(output_dir.clone(), catalog_hash);
         let outside = temp_dir.path().join("outside");
         fs::create_dir(&outside).expect("create symlink target");
         std::os::unix::fs::symlink(
@@ -2245,9 +2243,8 @@ mod tests {
     fn plan_reexecutes_carried_record_with_symlinked_catalog_root() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let output_dir = temp_dir.path().join("operator-run-carried");
-        copy_reference_output(&output_dir);
-        let record =
-            carried_record_with_output(output_dir.clone(), committed_reference_catalog_hash());
+        let catalog_hash = copy_reference_output(&output_dir);
+        let record = carried_record_with_output(output_dir.clone(), catalog_hash);
         let catalog_root = output_dir.join(CATALOG_DIR);
         let outside_catalog = temp_dir.path().join("outside-catalog");
         fs::rename(&catalog_root, &outside_catalog).expect("move catalog outside record output");

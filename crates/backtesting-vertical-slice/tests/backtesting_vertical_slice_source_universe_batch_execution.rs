@@ -17,8 +17,13 @@ use backtesting_vertical_slice::backfill_execution_plan::{
     BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
     BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
 };
+use backtesting_vertical_slice::catalog_projection::logical_catalog_hash;
+use backtesting_vertical_slice::conversion_boundary::ConversionCatalogMetadata;
 use backtesting_vertical_slice::operator::{
     CANONICAL_ARTIFACT_FILE, CATALOG_DIR, RunSpec, RunSpecInstrumentIdentities,
+};
+use backtesting_vertical_slice::reference_artifact::{
+    ReferenceArtifactRewrite, write_reference_artifact,
 };
 use backtesting_vertical_slice::source_proof::read_source_binding_registry_from_path;
 use backtesting_vertical_slice::source_universe_batch_execution::{
@@ -2229,30 +2234,17 @@ fn resume_carries_forward_prior_clean_record_without_refetch() {
     // recorded `catalog_hash`. The in-test `RecordingRunner` double records a
     // synthetic hash but writes no real NT catalog under `output_dir`, so to
     // exercise the intended "clean record, prior output present and matching"
-    // path the test plants a real, hash-matching NT catalog under the prior
-    // record's `output_dir` before resuming. This mirrors the src-side unit
-    // test `carried_output_verifies_against_intact_reference_catalog`, which
-    // copies the committed PMXT reference catalog into the record's output and
-    // pins the catalog's recorded hash. It is NOT a second verification seam:
-    // the resume run still proves carry-forward through the one real gate.
+    // path the test plants a real NT catalog under the prior record's
+    // `output_dir` and certifies only that temporary copy under the current
+    // logical-hash contract before resuming. This mirrors the src-side unit
+    // test `carried_output_verifies_against_intact_reference_catalog`. It is
+    // NOT a second verification seam: the resume run still proves
+    // carry-forward through the one real gate.
     let prior_output_dir = first_report.records[0].output_dir.clone();
-    copy_dir_all(
-        &committed_reference_run_dir().join("nt-catalog"),
-        &prior_output_dir.join("nt-catalog"),
-    );
-    // Pin the carried record's `catalog_hash` to the planted catalog's recorded
-    // hash so the gate verifies. Never mutate the committed reference; only the
-    // temp copy and the in-memory prior report are touched.
-    first_report.records[0].catalog_hash = committed_reference_catalog_hash();
-    fs::copy(
-        committed_reference_run_dir().join("catalog-metadata.json"),
-        prior_output_dir.join("catalog-metadata.json"),
-    )
-    .expect("copy committed catalog metadata");
-    first_report.records[0].catalog_metadata_sha256 = sha256_hex(
-        &fs::read(prior_output_dir.join("catalog-metadata.json"))
-            .expect("read copied catalog metadata"),
-    );
+    let (catalog_hash, catalog_metadata_sha256) =
+        install_current_reference_output(&prior_output_dir);
+    first_report.records[0].catalog_hash = catalog_hash;
+    first_report.records[0].catalog_metadata_sha256 = catalog_metadata_sha256;
     first_report.records[0].operator_run_id = "forged-prior-run".to_string();
     first_report.records[0].source_binding = "forged-prior-binding".to_string();
     first_report.records[0].symbol = "FORGED".to_string();
@@ -3275,17 +3267,35 @@ fn committed_reference_run_dir() -> std::path::PathBuf {
         )
 }
 
-/// Recorded logical catalog hash of the committed PMXT reference catalog.
-fn committed_reference_catalog_hash() -> String {
-    let metadata: serde_json::Value = serde_json::from_slice(
+/// Copy the immutable v1 reference catalog, then certify only the temporary
+/// copy under the current logical-hash contract. This keeps the carry test
+/// current without relabeling or rewriting the committed historical evidence.
+fn install_current_reference_output(output_dir: &Path) -> (String, String) {
+    copy_dir_all(
+        &committed_reference_run_dir().join("nt-catalog"),
+        &output_dir.join("nt-catalog"),
+    );
+
+    let mut metadata: ConversionCatalogMetadata = serde_json::from_slice(
         &fs::read(committed_reference_run_dir().join("catalog-metadata.json"))
             .expect("read committed catalog metadata"),
     )
     .expect("parse committed catalog metadata");
-    metadata["catalog_hash"]
-        .as_str()
-        .expect("catalog_hash present in committed metadata")
-        .to_string()
+    let catalog_hash = logical_catalog_hash(&output_dir.join("nt-catalog"))
+        .expect("hash temporary catalog under current semantics");
+    metadata.catalog_hash.clone_from(&catalog_hash);
+
+    let metadata_path = output_dir.join("catalog-metadata.json");
+    write_reference_artifact(
+        &metadata_path,
+        "catalog-metadata.json",
+        &metadata,
+        ReferenceArtifactRewrite::OverwriteAlways,
+    )
+    .expect("write current metadata beside temporary catalog");
+    let metadata_sha256 = sha256_hex(&fs::read(metadata_path).expect("read current metadata"));
+
+    (catalog_hash, metadata_sha256)
 }
 
 /// Recursively copy `src` into `dst`, used to plant the committed reference

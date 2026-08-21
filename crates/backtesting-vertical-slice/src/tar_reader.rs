@@ -145,6 +145,10 @@ pub fn visit_gzip_tar_members<R: Read>(
         } {
             bail!("tar member {members} uses unsupported {extension} record");
         }
+        ensure!(
+            typeflag == 0 || matches!(typeflag, b'0'..=b'7'),
+            "tar member {members} uses unsupported typeflag 0x{typeflag:02x}"
+        );
         let name = parse_name(&header).with_context(|| format!("tar member {members} name"))?;
         let size = parse_octal_size(&header)?;
         ensure!(
@@ -312,10 +316,9 @@ fn padded_len(size: u64, name: &str) -> Result<u64> {
 /// Parse the strict UTF-8 POSIX `prefix/name` fields of a tar header.
 fn parse_name(header: &[u8; TAR_BLOCK]) -> Result<String> {
     fn parse_field<'a>(raw: &'a [u8], label: &str) -> Result<&'a str> {
-        let end = raw
-            .iter()
-            .position(|&byte| byte == 0)
-            .with_context(|| format!("tar {label} field has no NUL terminator"))?;
+        // POSIX fields are fixed width. Short values are NUL padded, while a
+        // value that occupies the field exactly has no trailing terminator.
+        let end = raw.iter().position(|&byte| byte == 0).unwrap_or(raw.len());
         std::str::from_utf8(&raw[..end]).with_context(|| format!("tar {label} field is not UTF-8"))
     }
 
@@ -634,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unterminated_full_width_member_name() {
+    fn reads_exact_width_posix_member_name_without_nul_padding() {
         let mut tar = Vec::new();
         let name = format!("{}.data", "x".repeat(NAME_LEN - ".data".len()));
         assert_eq!(name.len(), NAME_LEN);
@@ -644,11 +647,29 @@ mod tests {
         tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK - 7));
         tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK * 2));
 
+        let members = collect(gzip(&tar), ".data", 4096)
+            .expect("a full POSIX name field does not require trailing NUL padding");
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].name, name);
+        assert_eq!(members[0].text, "payload");
+    }
+
+    #[test]
+    fn rejects_unknown_extension_typeflag_instead_of_guessing_its_layout() {
+        let mut tar = Vec::new();
+        let mut header = ustar_header("sparse.data", 7);
+        header[TYPEFLAG_OFFSET] = b'S';
+        write_test_checksum(&mut header);
+        tar.extend_from_slice(&header);
+        tar.extend_from_slice(b"payload");
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK - 7));
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK * 2));
+
         let err = collect(gzip(&tar), ".data", 4096)
-            .expect_err("unterminated full-width tar member names must fail loud");
-        let message = format!("{err:#}");
+            .expect_err("unknown extension headers must fail before layout-dependent skipping");
+        let message = err.to_string();
         assert!(message.contains("member 1"), "{message}");
-        assert!(message.contains("NUL terminator"), "{message}");
+        assert!(message.contains("typeflag"), "{message}");
     }
 
     #[test]

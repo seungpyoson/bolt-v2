@@ -716,7 +716,8 @@ fn pmxt_selected_source_projection_requires_selector_to_exclude_forbidden_event_
 fn pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_metadata() {
     let projection = pmxt_projection_fixture();
     let output_dir = tempfile::TempDir::new().expect("output dir");
-    let catalog_root = output_dir.path().join("nt-catalog");
+    let catalog_root_dir = tempfile::TempDir::new().expect("empty catalog root");
+    let catalog_root = catalog_root_dir.path().to_path_buf();
     let fingerprint = pmxt_conversion_fingerprint();
 
     let completed = write_pmxt_one_off_conversion_projection(PmxtOneOffConversionProjectionSpec {
@@ -772,6 +773,42 @@ fn pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_met
             checkpoint_hash: completed.conversion_checkpoint_hash.clone(),
             catalog_hash: completed.catalog_projection.catalog_hash.clone(),
         }
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn pmxt_fresh_projection_rejects_a_symlinked_catalog_root() {
+    let output_dir = tempfile::TempDir::new().expect("output dir");
+    let catalog_parent = tempfile::TempDir::new().expect("catalog parent");
+    let external_target = tempfile::TempDir::new().expect("external target");
+    let catalog_root = catalog_parent.path().join("catalog-root");
+    symlink(external_target.path(), &catalog_root).expect("plant catalog-root symlink");
+    let spec = PmxtOneOffConversionProjectionSpec {
+        output_dir: output_dir.path().to_path_buf(),
+        catalog_root: catalog_root.clone(),
+        projection: pmxt_projection_fixture(),
+        fingerprint: pmxt_conversion_fingerprint(),
+        normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
+        output_catalog_uri: catalog_root.display().to_string(),
+        execution_catalog_uri: catalog_root.display().to_string(),
+        direct_s3_catalog_access_proven: false,
+        completed_at: "2026-06-08T00:00:00Z".to_string(),
+    };
+
+    let error = write_pmxt_one_off_conversion_projection(spec)
+        .expect_err("fresh projection must not follow a symlinked catalog root");
+
+    assert!(
+        error.to_string().contains("not a real directory"),
+        "{error:#}"
+    );
+    assert!(
+        std::fs::read_dir(external_target.path())
+            .expect("read outside target")
+            .next()
+            .is_none(),
+        "fresh projection must not write through the catalog-root symlink"
     );
 }
 

@@ -1997,15 +1997,31 @@ fn ensure_selected_row(
 }
 
 fn ensure_clean_catalog_root(catalog_root: &Path) -> Result<()> {
-    if catalog_root.exists() {
-        let mut entries = fs::read_dir(catalog_root)
-            .with_context(|| format!("read catalog root {}", catalog_root.display()))?;
-        ensure!(
-            entries.next().is_none(),
-            "catalog root {} is not empty; refusing to project into a dirty catalog",
-            catalog_root.display()
-        );
-    }
+    let metadata = match fs::symlink_metadata(catalog_root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect catalog root {}", catalog_root.display()));
+        }
+    };
+    ensure!(
+        metadata.file_type().is_dir(),
+        "catalog root {} is not a real directory",
+        catalog_root.display()
+    );
+
+    let mut entries = fs::read_dir(catalog_root)
+        .with_context(|| format!("read catalog root {}", catalog_root.display()))?;
+    let first_entry = entries
+        .next()
+        .transpose()
+        .with_context(|| format!("read catalog root entry {}", catalog_root.display()))?;
+    ensure!(
+        first_entry.is_none(),
+        "catalog root {} is not empty; refusing to project into a dirty catalog",
+        catalog_root.display()
+    );
     Ok(())
 }
 

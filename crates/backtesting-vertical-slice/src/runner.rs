@@ -1866,19 +1866,30 @@ where
 fn replay_executable_book_at_cursor(
     instrument_id: InstrumentId,
     deltas: &[OrderBookDelta],
-    delta_count: usize,
+    event_count: usize,
 ) -> Result<OrderBook> {
-    ensure!(
-        delta_count <= deltas.len(),
-        "event-store book cursor {delta_count} exceeds hash-bound catalog length {}",
-        deltas.len()
-    );
+    ensure!(event_count > 0, "event-store book cursor is empty");
+    let last_flag = nautilus_model::enums::RecordFlag::F_LAST as u8;
     let mut book = OrderBook::new(instrument_id, nautilus_model::enums::BookType::L2_MBP);
-    for delta in deltas.iter().take(delta_count) {
+    let mut replayed_events = 0usize;
+    // The marker counts `OrderBookDeltas` publishes. Replay complete catalog
+    // events through the Nth `F_LAST`, rather than mistaking that event ordinal
+    // for an individual-delta row count.
+    for delta in deltas {
         book.apply_delta(delta)
             .map_err(|error| anyhow::anyhow!(error))
             .context("replay executable book to event-store cursor")?;
+        if delta.flags & last_flag != 0 {
+            replayed_events += 1;
+            if replayed_events == event_count {
+                break;
+            }
+        }
     }
+    ensure!(
+        replayed_events == event_count,
+        "event-store book cursor {event_count} exceeds {replayed_events} replayable hash-bound catalog events"
+    );
     Ok(book)
 }
 
@@ -5448,6 +5459,26 @@ mod tests {
     }
 
     #[test]
+    fn issue_789_replays_marker_cursor_as_book_delta_events() -> Result<()> {
+        let instrument_id = issue_789_admission_instrument().id();
+        let first = issue_789_admission_delta(instrument_id, BookAction::Add, "0.500", "1.00");
+        let mut second = issue_789_admission_delta(instrument_id, BookAction::Add, "0.600", "2.00");
+        second.flags = RecordFlag::F_LAST as u8;
+        let mut third =
+            issue_789_admission_delta(instrument_id, BookAction::Delete, "0.600", "0.00");
+        third.flags = RecordFlag::F_LAST as u8;
+
+        let first_event =
+            replay_executable_book_at_cursor(instrument_id, &[first, second, third], 1)?;
+        assert_eq!(first_event.best_bid_price(), Some(Price::from("0.600")));
+
+        let second_event =
+            replay_executable_book_at_cursor(instrument_id, &[first, second, third], 2)?;
+        assert_eq!(second_event.best_bid_price(), Some(Price::from("0.500")));
+        Ok(())
+    }
+
+    #[test]
     fn issue_789_static_admission_rejects_invalid_executable_book_values() {
         let instrument = issue_789_admission_instrument();
         let instrument_id = instrument.id();
@@ -7223,7 +7254,7 @@ mod tests {
                     order_acceptances.get(&client_order_id),
                     first_fill_seq,
                 )?;
-                let delta_count = evidence.book_delta_count_at(
+                let event_count = evidence.book_delta_event_count_at(
                     *submit_seq,
                     *submit_ts_init,
                     &instrument_id.to_string(),
@@ -7232,7 +7263,7 @@ mod tests {
                 let executable_book = replay_executable_book_at_cursor(
                     instrument_id,
                     &projection.order_book_deltas,
-                    delta_count,
+                    event_count,
                 )?;
                 crate::execution_contract::ExecutionOrderCause::Submitted {
                     executable_book: Box::new(executable_book),

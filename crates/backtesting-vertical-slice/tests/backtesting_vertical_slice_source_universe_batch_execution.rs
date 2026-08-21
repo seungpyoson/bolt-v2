@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::{Cursor, Write},
     path::{Path, PathBuf},
     sync::{
         Mutex,
@@ -16,13 +17,17 @@ use backtesting_vertical_slice::backfill_execution_plan::{
     BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
     BackfillExecutionWorkBudget, evaluate_backfill_execution_plan,
 };
-use backtesting_vertical_slice::operator::{RunSpec, RunSpecInstrumentIdentities};
+use backtesting_vertical_slice::operator::{
+    CANONICAL_ARTIFACT_FILE, CATALOG_DIR, RunSpec, RunSpecInstrumentIdentities,
+};
+use backtesting_vertical_slice::source_proof::read_source_binding_registry_from_path;
 use backtesting_vertical_slice::source_universe_batch_execution::{
     CachingSourceUniverseObjectFetcher, HttpSourceUniverseObjectFetcher,
-    SourceUniverseAdmittedControls, SourceUniverseBatchExecutionConfig,
-    SourceUniverseBatchExecutionReport, SourceUniverseBatchExecutionReportStatus,
-    SourceUniverseBatchExecutionRunOutput, SourceUniverseControlAdmissionPolicy,
-    SourceUniverseObjectFetcher, SourceUniverseOperatorRunner, execute_source_universe_batch,
+    LocalSourceUniverseOperatorRunner, SourceUniverseAdmittedControls,
+    SourceUniverseBatchExecutionConfig, SourceUniverseBatchExecutionReport,
+    SourceUniverseBatchExecutionReportStatus, SourceUniverseBatchExecutionRunOutput,
+    SourceUniverseControlAdmissionPolicy, SourceUniverseObjectFetcher,
+    SourceUniverseOperatorRunner, execute_source_universe_batch,
     execute_source_universe_batch_with_config, execute_source_universe_batch_with_factories,
     load_source_universe_control_admission_policy, write_source_universe_batch_execution_report,
 };
@@ -30,6 +35,50 @@ use backtesting_vertical_slice::source_universe_execution_pack::{
     SourceUniverseExecutionPack, SourceUniverseExecutionPackRecord,
     SourceUniverseExecutionPackStatus,
 };
+
+#[cfg(unix)]
+struct OneShotFifoWriter {
+    opened: std::sync::mpsc::Receiver<()>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+#[cfg(unix)]
+impl OneShotFifoWriter {
+    fn start(path: &Path, bytes: Vec<u8>) -> Self {
+        let path = path.to_path_buf();
+        let (opened_tx, opened) = std::sync::mpsc::sync_channel(1);
+        let thread = std::thread::spawn(move || {
+            let mut writer = fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .expect("open FIFO writer");
+            opened_tx.send(()).expect("report opened FIFO writer");
+            std::io::Write::write_all(&mut writer, &bytes).expect("write FIFO payload");
+        });
+        Self { opened, thread }
+    }
+
+    fn finish(self, path: &Path) {
+        let cleanup_reader = match self.opened.try_recv() {
+            Ok(()) => None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                let cleanup_reader = fs::OpenOptions::new()
+                    .read(true)
+                    .open(path)
+                    .expect("open FIFO cleanup reader");
+                self.opened
+                    .recv_timeout(Duration::from_secs(1))
+                    .expect("FIFO writer opens for cleanup");
+                Some(cleanup_reader)
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                panic!("FIFO writer disconnected before opening")
+            }
+        };
+        self.thread.join().expect("FIFO writer exits");
+        drop(cleanup_reader);
+    }
+}
 
 #[test]
 fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
@@ -99,6 +148,280 @@ fn source_universe_batch_execution_fetches_verifies_and_runs_pack_record() {
     assert_eq!(written["batch_id"], "source-universe-batch-synthetic");
     assert_eq!(written["completed_record_count"], 1);
     assert_eq!(artifact.completed_record_count, 1);
+}
+
+#[test]
+fn needs_work_replaces_the_record_directory_before_any_runner_observes_it() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let output_dir = temp_dir.path().join("batch-output");
+    let object_bytes = b"accepted object bytes";
+    let (pack_path, _, _, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, object_bytes.to_vec())]);
+    let record_output_dir = output_dir.join("source-universe-operator-run-synthetic-00000");
+    fs::create_dir_all(&record_output_dir).expect("create stale record output");
+    fs::write(record_output_dir.join("unverified-prior-output"), b"stale")
+        .expect("write stale record output");
+
+    let mut fetcher = StaticFetcher {
+        expected_source_url: "https://public.synthetic.example/object-0.csv.gz".to_string(),
+        object_bytes: object_bytes.to_vec(),
+        calls: 0,
+    };
+    let mut runner = EmptyDirectoryRunner;
+
+    let report = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        Some(1),
+        test_control_admission_policy(temp_dir.path()),
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect("NeedsWork must run against a fresh record directory");
+
+    assert_eq!(report.completed_record_count, 1);
+    assert!(record_output_dir.is_dir());
+    assert!(
+        !record_output_dir.join("unverified-prior-output").exists(),
+        "unverified prior output must not survive a NeedsWork transition"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn needs_work_unlinks_a_special_canonical_artifact_before_running() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let output_dir = temp_dir.path().join("batch-output");
+    let object_bytes = b"accepted object bytes";
+    let (pack_path, _, _, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, object_bytes.to_vec())]);
+    let record_output_dir = output_dir.join("source-universe-operator-run-synthetic-00000");
+    fs::create_dir_all(&record_output_dir).expect("create stale record output");
+    let canonical_path = record_output_dir.join(CANONICAL_ARTIFACT_FILE);
+    let status = std::process::Command::new("mkfifo")
+        .arg(&canonical_path)
+        .status()
+        .expect("create canonical-artifact FIFO");
+    assert!(status.success(), "mkfifo must create the test FIFO");
+
+    let mut fetcher = StaticFetcher {
+        expected_source_url: "https://public.synthetic.example/object-0.csv.gz".to_string(),
+        object_bytes: object_bytes.to_vec(),
+        calls: 0,
+    };
+    let mut runner = EmptyDirectoryRunner;
+
+    let report = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        Some(1),
+        test_control_admission_policy(temp_dir.path()),
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect("NeedsWork must unlink a special canonical artifact without opening it");
+
+    assert_eq!(report.completed_record_count, 1);
+    assert!(
+        !canonical_path.exists(),
+        "the special canonical artifact must be gone before runner invocation"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn needs_work_replaces_a_record_directory_symlink_without_touching_its_target() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let output_dir = temp_dir.path().join("batch-output");
+    fs::create_dir(&output_dir).expect("create batch output");
+    let outside_dir = temp_dir.path().join("outside-record-output");
+    fs::create_dir(&outside_dir).expect("create outside record output");
+    let outside_sentinel = outside_dir.join("must-survive");
+    fs::write(&outside_sentinel, b"outside").expect("write outside sentinel");
+    let record_output_dir = output_dir.join("source-universe-operator-run-synthetic-00000");
+    std::os::unix::fs::symlink(&outside_dir, &record_output_dir)
+        .expect("plant record-directory symlink");
+
+    let object_bytes = b"accepted object bytes";
+    let (pack_path, _, _, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, object_bytes.to_vec())]);
+    let mut fetcher = StaticFetcher {
+        expected_source_url: "https://public.synthetic.example/object-0.csv.gz".to_string(),
+        object_bytes: object_bytes.to_vec(),
+        calls: 0,
+    };
+    let mut runner = EmptyDirectoryRunner;
+
+    execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        Some(1),
+        test_control_admission_policy(temp_dir.path()),
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect("NeedsWork must replace the record-directory symlink itself");
+
+    let metadata = fs::symlink_metadata(&record_output_dir).expect("record output metadata");
+    assert!(metadata.file_type().is_dir());
+    assert!(!metadata.file_type().is_symlink());
+    assert_eq!(
+        fs::read(&outside_sentinel).expect("outside sentinel survives"),
+        b"outside"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn batch_output_root_symlink_rejects_before_fetch_or_runner_invocation() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let outside_dir = temp_dir.path().join("outside-batch-output");
+    fs::create_dir(&outside_dir).expect("create outside batch output");
+    let outside_sentinel = outside_dir.join("must-survive");
+    fs::write(&outside_sentinel, b"outside").expect("write outside sentinel");
+    let output_dir = temp_dir.path().join("batch-output");
+    std::os::unix::fs::symlink(&outside_dir, &output_dir).expect("plant batch-output symlink");
+    let object_bytes = b"accepted object bytes";
+    let (pack_path, _, _, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, object_bytes.to_vec())]);
+    let mut runner = RecordingRunner::default();
+
+    let error = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        Some(1),
+        test_control_admission_policy(temp_dir.path()),
+        &mut NeverFetcher,
+        &mut runner,
+    )
+    .expect_err("a symlinked batch output root must reject before execution");
+
+    assert!(
+        format!("{error:#}").contains("batch output dir"),
+        "{error:#}"
+    );
+    assert!(runner.calls.is_empty());
+    assert_eq!(
+        fs::read(&outside_sentinel).expect("outside sentinel survives"),
+        b"outside"
+    );
+}
+
+#[test]
+fn needs_work_executes_the_real_local_runner_against_a_fresh_directory() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let output_dir = temp_dir.path().join("batch-output");
+    let object_bytes = reference_binance_zip_object();
+    let (pack_path, _, _, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, object_bytes.clone())]);
+    let record_output_dir = output_dir.join("source-universe-operator-run-synthetic-00000");
+    fs::create_dir_all(&record_output_dir).expect("create stale record output");
+    let stale_path = record_output_dir.join("unverified-prior-output");
+    fs::write(&stale_path, b"stale").expect("write stale record output");
+    let mut fetcher = StaticFetcher {
+        expected_source_url: "https://public.synthetic.example/object-0.csv.gz".to_string(),
+        object_bytes,
+        calls: 0,
+    };
+    let mut runner = LocalSourceUniverseOperatorRunner;
+
+    let report = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        Some(1),
+        test_control_admission_policy(temp_dir.path()),
+        &mut fetcher,
+        &mut runner,
+    )
+    .expect("real local runner executes fresh work");
+
+    assert_eq!(report.completed_record_count, 1);
+    assert!(!stale_path.exists());
+    assert!(record_output_dir.join(CANONICAL_ARTIFACT_FILE).is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn unverifiable_resume_output_is_rebuilt_by_the_real_local_runner() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let output_dir = temp_dir.path().join("batch-output");
+    let object_bytes = reference_binance_zip_object();
+    let (pack_path, _, _, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, object_bytes.clone())]);
+    let mut initial_fetcher = StaticFetcher {
+        expected_source_url: "https://public.synthetic.example/object-0.csv.gz".to_string(),
+        object_bytes: object_bytes.clone(),
+        calls: 0,
+    };
+    let mut initial_runner = LocalSourceUniverseOperatorRunner;
+    let prior_report = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        Some(1),
+        test_control_admission_policy(temp_dir.path()),
+        &mut initial_fetcher,
+        &mut initial_runner,
+    )
+    .expect("initial real run completes");
+    let prior_report_path = temp_dir.path().join("prior-report.json");
+    fs::write(
+        &prior_report_path,
+        serde_json::to_vec_pretty(&prior_report).expect("serialize prior report"),
+    )
+    .expect("write prior report outside the batch output root");
+
+    let outside_target = temp_dir.path().join("outside-catalog-target");
+    fs::write(&outside_target, b"outside").expect("write outside target");
+    let record_output_dir = prior_report.records[0].output_dir.clone();
+    let planted_symlink = record_output_dir
+        .join(CATALOG_DIR)
+        .join("ignored-special-entry");
+    std::os::unix::fs::symlink(&outside_target, &planted_symlink)
+        .expect("plant an unverifiable catalog descendant");
+
+    let mut resumed_fetcher = StaticFetcher {
+        expected_source_url: "https://public.synthetic.example/object-0.csv.gz".to_string(),
+        object_bytes,
+        calls: 0,
+    };
+    let mut resumed_runner = LocalSourceUniverseOperatorRunner;
+    let resumed_report = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
+            start_sequence: None,
+            record_limit: Some(1),
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: Some(prior_report_path),
+        },
+        &mut resumed_fetcher,
+        &mut resumed_runner,
+    )
+    .expect("unverifiable prior output is rebuilt fresh");
+
+    assert_eq!(resumed_report.completed_record_count, 1);
+    assert_eq!(
+        resumed_fetcher.calls, 1,
+        "NeedsWork must refetch the object"
+    );
+    assert!(
+        fs::symlink_metadata(&planted_symlink).is_err(),
+        "fresh execution must remove the unverifiable prior entry"
+    );
+    assert_eq!(
+        fs::read(&outside_target).expect("outside target survives"),
+        b"outside"
+    );
+    assert!(record_output_dir.join(CANONICAL_ARTIFACT_FILE).is_file());
 }
 
 #[test]
@@ -208,6 +531,176 @@ fn fifo_control_file_rejects_before_fetch_or_output_creation() {
         &pack_path,
         &temp_dir.path().join("batch-output"),
         "pinned accepted_tranche",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn fifo_execution_pack_rejects_before_fetch_or_output_creation() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, _, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, b"accepted object bytes".to_vec())]);
+    let policy = test_control_admission_policy(temp_dir.path());
+    fs::remove_file(&pack_path).expect("remove execution pack");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&pack_path)
+        .status()
+        .expect("create execution-pack FIFO");
+    assert!(status.success(), "mkfifo must create the test FIFO");
+    let fifo_writer = OneShotFifoWriter::start(&pack_path, b"not-json".to_vec());
+    let output_dir = temp_dir.path().join("batch-output");
+    let mut runner = RecordingRunner::default();
+
+    let result = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        None,
+        policy,
+        &mut NeverFetcher,
+        &mut runner,
+    );
+    fifo_writer.finish(&pack_path);
+    let error = result.expect_err("execution-pack FIFO must reject before parsing");
+    let error = format!("{error:#}");
+
+    assert!(error.contains("execution pack"), "{error}");
+    assert!(error.contains("is not a regular file"), "{error}");
+    assert!(!output_dir.exists(), "rejection must create no output");
+    assert!(runner.calls.is_empty(), "rejection must not run");
+}
+
+#[cfg(unix)]
+#[test]
+fn fifo_resume_report_rejects_before_fetch_or_output_creation() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let (pack_path, _, _, _) =
+        write_control_admission_fixture(temp_dir.path(), &[(0, b"accepted object bytes".to_vec())]);
+    let resume_report = temp_dir.path().join("prior-report.json");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&resume_report)
+        .status()
+        .expect("create resume-report FIFO");
+    assert!(status.success(), "mkfifo must create the test FIFO");
+    let fifo_writer = OneShotFifoWriter::start(&resume_report, b"not-json".to_vec());
+    let output_dir = temp_dir.path().join("batch-output");
+    let mut runner = RecordingRunner::default();
+
+    let result = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &output_dir,
+        SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(temp_dir.path()),
+            start_sequence: None,
+            record_limit: None,
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: Some(resume_report.clone()),
+        },
+        &mut NeverFetcher,
+        &mut runner,
+    );
+    fifo_writer.finish(&resume_report);
+    let error = result.expect_err("resume-report FIFO must reject before parsing");
+    let error = format!("{error:#}");
+
+    assert!(error.contains("resume report"), "{error}");
+    assert!(error.contains("is not a regular file"), "{error}");
+    assert!(!output_dir.exists(), "rejection must create no output");
+    assert!(runner.calls.is_empty(), "rejection must not run");
+}
+
+#[cfg(unix)]
+#[test]
+fn standalone_registry_loader_rejects_fifo_before_parsing() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let registry_path = temp_dir.path().join("source-bindings.toml");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&registry_path)
+        .status()
+        .expect("create source-bindings FIFO");
+    assert!(status.success(), "mkfifo must create the test FIFO");
+    let fifo_writer = OneShotFifoWriter::start(&registry_path, b"not-toml".to_vec());
+
+    let result = read_source_binding_registry_from_path(&registry_path);
+    fifo_writer.finish(&registry_path);
+    let error = result.expect_err("source-bindings FIFO must reject before parsing");
+    let error = format!("{error:#}");
+
+    assert!(error.contains("source-binding registry"), "{error}");
+    assert!(error.contains("is not a regular file"), "{error}");
+}
+
+#[test]
+fn missing_outer_inputs_retain_path_specific_error_context() {
+    let pack_temp_dir = tempfile::tempdir().expect("pack temp dir");
+    let (pack_path, _, _, _) = write_control_admission_fixture(
+        pack_temp_dir.path(),
+        &[(0, b"accepted object bytes".to_vec())],
+    );
+    let policy = test_control_admission_policy(pack_temp_dir.path());
+    fs::remove_file(&pack_path).expect("remove execution pack");
+    let pack_error = execute_source_universe_batch(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &pack_temp_dir.path().join("batch-output"),
+        None,
+        policy,
+        &mut NeverFetcher,
+        &mut RecordingRunner::default(),
+    )
+    .expect_err("missing execution pack must reject");
+    let pack_error = format!("{pack_error:#}");
+    assert!(pack_error.contains("open execution pack"), "{pack_error}");
+    assert!(
+        pack_error.contains(pack_path.to_string_lossy().as_ref()),
+        "{pack_error}"
+    );
+
+    let resume_temp_dir = tempfile::tempdir().expect("resume temp dir");
+    let (pack_path, _, _, _) = write_control_admission_fixture(
+        resume_temp_dir.path(),
+        &[(0, b"accepted object bytes".to_vec())],
+    );
+    let resume_report = resume_temp_dir.path().join("missing-resume-report.json");
+    let resume_error = execute_source_universe_batch_with_config(
+        "source-universe-batch-synthetic",
+        &pack_path,
+        &resume_temp_dir.path().join("batch-output"),
+        SourceUniverseBatchExecutionConfig {
+            control_admission: test_control_admission_policy(resume_temp_dir.path()),
+            start_sequence: None,
+            record_limit: None,
+            continue_on_error: false,
+            max_concurrent_records: None,
+            resume_report: Some(resume_report.clone()),
+        },
+        &mut NeverFetcher,
+        &mut RecordingRunner::default(),
+    )
+    .expect_err("missing resume report must reject");
+    let resume_error = format!("{resume_error:#}");
+    assert!(
+        resume_error.contains("open resume report"),
+        "{resume_error}"
+    );
+    assert!(
+        resume_error.contains(resume_report.to_string_lossy().as_ref()),
+        "{resume_error}"
+    );
+
+    let registry_path = resume_temp_dir.path().join("missing-source-bindings.toml");
+    let registry_error = read_source_binding_registry_from_path(&registry_path)
+        .expect_err("missing standalone registry must reject");
+    let registry_error = format!("{registry_error:#}");
+    assert!(
+        registry_error.contains("open source-binding registry"),
+        "{registry_error}"
+    );
+    assert!(
+        registry_error.contains(registry_path.to_string_lossy().as_ref()),
+        "{registry_error}"
     );
 }
 
@@ -2652,6 +3145,33 @@ struct RecordingRunner {
     calls: Vec<RunCall>,
 }
 
+struct EmptyDirectoryRunner;
+
+impl SourceUniverseOperatorRunner for EmptyDirectoryRunner {
+    fn run(
+        &mut self,
+        _record: &SourceUniverseExecutionPackRecord,
+        _object_bytes: &[u8],
+        _controls: &SourceUniverseAdmittedControls,
+        output_dir: &Path,
+    ) -> anyhow::Result<SourceUniverseBatchExecutionRunOutput> {
+        anyhow::ensure!(
+            output_dir.is_dir(),
+            "runner output directory must be a real directory"
+        );
+        anyhow::ensure!(
+            fs::read_dir(output_dir)?.next().is_none(),
+            "runner output directory must be empty"
+        );
+        Ok(SourceUniverseBatchExecutionRunOutput {
+            canonical_rows: 7,
+            nt_catalog_rows: 7,
+            catalog_hash: "catalog-hash".to_string(),
+            catalog_metadata_sha256: "b".repeat(64),
+        })
+    }
+}
+
 struct RunCall {
     operator_run_id: String,
     object_bytes: Vec<u8>,
@@ -2723,6 +3243,21 @@ fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
 
     hex::encode(Sha256::digest(bytes))
+}
+
+fn reference_binance_zip_object() -> Vec<u8> {
+    const MEMBER: &str = "0GTRY-trades-2026-03-01.csv";
+    const CSV: &str = "101735393,617.34000000,1.61900000,999.47346000,1772323201711256,True,True\n\
+        101735394,617.34000000,0.07200000,44.44848000,1772323201815330,False,True\n";
+    let cursor = Cursor::new(Vec::new());
+    let mut writer = zip::ZipWriter::new(cursor);
+    writer
+        .start_file(MEMBER, zip::write::FileOptions::default())
+        .expect("start reference ZIP member");
+    writer
+        .write_all(CSV.as_bytes())
+        .expect("write reference CSV");
+    writer.finish().expect("finish reference ZIP").into_inner()
 }
 
 /// Repo-relative path to the committed PMXT reference NT catalog run, whose

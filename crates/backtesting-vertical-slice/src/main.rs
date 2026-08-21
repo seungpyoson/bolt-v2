@@ -10,7 +10,7 @@
 //! the produced artifacts.
 
 use std::{
-    fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -24,6 +24,7 @@ use backtesting_vertical_slice::{
     backfill_execution_plan::{
         BackfillExecutionPlan, BackfillExecutionPlanStatus, BackfillExecutionRunBinding,
     },
+    io_safety::open_regular_file,
     nt_catalog_capability::NtCatalogSsmCredentialResolver,
     operator::{
         MultiTableRunArtifacts, OperatorRunArtifacts, PublishOptions, PublishedArtifact,
@@ -446,8 +447,10 @@ fn read_run_spec_with_hash(path: &Path) -> Result<(RunSpec, String)> {
 }
 
 fn read_execution_plan(path: &Path) -> Result<BackfillExecutionPlan> {
-    let bytes =
-        fs::read(path).with_context(|| format!("read execution plan {}", path.display()))?;
+    let mut file = open_regular_file(path, "execution plan")?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("read execution plan {}", path.display()))?;
     serde_json::from_slice(&bytes).context("parse execution-plan JSON")
 }
 
@@ -545,18 +548,25 @@ fn validate_execution_plan_for_run_spec(
     Ok(())
 }
 fn read_object_checked(path: &Path, expected_bytes: u64) -> Result<Vec<u8>> {
-    let metadata = fs::metadata(path).with_context(|| format!("stat object {}", path.display()))?;
+    let mut file = open_regular_file(path, "object")?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspect object {}", path.display()))?;
     let actual_bytes = metadata.len();
     ensure!(
         actual_bytes == expected_bytes,
         "object byte length {actual_bytes} does not match run-spec {expected_bytes}"
     );
-    fs::read(path).with_context(|| format!("read object {}", path.display()))
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("read object {}", path.display()))?;
+    Ok(bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use backtesting_vertical_slice::backfill_execution_plan::BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION;
     use backtesting_vertical_slice::hashing::sha256_hex;
     use clap::error::ErrorKind;
@@ -567,6 +577,146 @@ mod tests {
     const TEST_MAX_SOURCE_ROWS: u64 = 100_000;
     const TEST_MAX_PROJECTED_ROW_GROUPS: u64 = 1;
     const TEST_MAX_WALL_SECONDS: u64 = 300;
+
+    #[cfg(unix)]
+    struct OneShotFifoWriter {
+        opened: std::sync::mpsc::Receiver<()>,
+        thread: std::thread::JoinHandle<()>,
+    }
+
+    #[cfg(unix)]
+    impl OneShotFifoWriter {
+        fn start(path: &Path, bytes: Vec<u8>) -> Self {
+            let path = path.to_path_buf();
+            let (opened_tx, opened) = std::sync::mpsc::sync_channel(1);
+            let thread = std::thread::spawn(move || {
+                let mut writer = fs::OpenOptions::new()
+                    .write(true)
+                    .open(&path)
+                    .expect("open FIFO writer");
+                opened_tx.send(()).expect("report opened FIFO writer");
+                std::io::Write::write_all(&mut writer, &bytes).expect("write FIFO payload");
+            });
+            Self { opened, thread }
+        }
+
+        fn finish(self, path: &Path) {
+            let mut cleanup_reader = match self.opened.try_recv() {
+                Ok(()) => None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    let cleanup_reader = fs::OpenOptions::new()
+                        .read(true)
+                        .open(path)
+                        .expect("open FIFO cleanup reader");
+                    self.opened
+                        .recv_timeout(std::time::Duration::from_secs(1))
+                        .expect("FIFO writer opens for cleanup");
+                    Some(cleanup_reader)
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    panic!("FIFO writer disconnected before opening")
+                }
+            };
+            if let Some(reader) = cleanup_reader.as_mut() {
+                let mut drained = Vec::new();
+                reader
+                    .read_to_end(&mut drained)
+                    .expect("drain FIFO payload");
+            }
+            self.thread.join().expect("FIFO writer exits");
+            drop(cleanup_reader);
+        }
+    }
+
+    #[cfg(unix)]
+    fn fifo_path(dir: &Path, name: &str) -> PathBuf {
+        let path = dir.join(name);
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo must create the test FIFO");
+        path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_spec_fifo_is_rejected_before_parsing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = fifo_path(dir.path(), "run-spec.fifo");
+        let writer = OneShotFifoWriter::start(&path, b"not-toml".to_vec());
+
+        let error = read_run_spec_with_hash(&path).expect_err("RunSpec FIFO must be rejected");
+        assert!(
+            error.to_string().contains("not a regular file"),
+            "{error:#}"
+        );
+
+        writer.finish(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn execution_plan_fifo_is_rejected_before_parsing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = fifo_path(dir.path(), "execution-plan.fifo");
+        let writer = OneShotFifoWriter::start(&path, b"not-json".to_vec());
+
+        let error = read_execution_plan(&path).expect_err("execution-plan FIFO must be rejected");
+        assert!(
+            error.to_string().contains("not a regular file"),
+            "{error:#}"
+        );
+
+        writer.finish(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn zero_byte_object_fifo_is_rejected_before_reading() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = fifo_path(dir.path(), "object.fifo");
+        let writer = OneShotFifoWriter::start(&path, Vec::new());
+
+        let error = read_object_checked(&path, 0).expect_err("object FIFO must be rejected");
+        assert!(
+            error.to_string().contains("not a regular file"),
+            "{error:#}"
+        );
+
+        writer.finish(&path);
+    }
+
+    #[test]
+    fn missing_cli_inputs_retain_path_context_and_not_found_kind() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let run_spec_path = dir.path().join("missing-run-spec.toml");
+        let execution_plan_path = dir.path().join("missing-execution-plan.json");
+        let object_path = dir.path().join("missing-object.bin");
+
+        for (path, error) in [
+            (
+                &run_spec_path,
+                read_run_spec_with_hash(&run_spec_path).unwrap_err(),
+            ),
+            (
+                &execution_plan_path,
+                read_execution_plan(&execution_plan_path).unwrap_err(),
+            ),
+            (
+                &object_path,
+                read_object_checked(&object_path, 0).unwrap_err(),
+            ),
+        ] {
+            assert!(format!("{error:#}").contains(&path.display().to_string()));
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .map(std::io::Error::kind),
+                Some(std::io::ErrorKind::NotFound)
+            );
+        }
+    }
 
     fn write_matching_execution_plan(dir: &Path, spec: &RunSpec, run_spec_hash: &str) -> PathBuf {
         let path = dir.join("execution-plan.json");

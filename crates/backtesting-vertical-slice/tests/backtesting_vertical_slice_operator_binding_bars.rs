@@ -9,6 +9,8 @@
 //! gate with a synthetic source-binding registry (the committed registry rejects
 //! synthetic bindings), mirroring `backtesting_vertical_slice_bar_format_families`.
 
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use backtesting_vertical_slice::{
@@ -688,4 +690,27 @@ fn tampered_tables_index_fails_loud_on_reuse() {
             || err.to_string().contains(CONVERSION_TABLES_FILE),
         "{err}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn multi_table_reuse_rejects_a_special_output_descendant() {
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let (spec, object_bytes) =
+        two_interval_run_spec(temp.path(), "operator-binding-special-descendant");
+    let output_dir = temp.path().join("out");
+    run_operator_from_run_spec(&spec, object_bytes, &output_dir).expect("initial operator run");
+
+    let outside = tempfile::NamedTempFile::new().expect("outside target");
+    fs::write(outside.path(), b"outside").expect("write outside target");
+    symlink(outside.path(), output_dir.join("linked-output")).expect("plant output symlink");
+
+    let error = run_operator_from_run_spec(&spec, object_bytes, &output_dir)
+        .err()
+        .expect("multi-table reuse must reject a special output descendant");
+    assert!(
+        error.to_string().contains("non-regular file linked-output"),
+        "{error:#}"
+    );
+    assert_eq!(fs::read(outside.path()).unwrap(), b"outside");
 }

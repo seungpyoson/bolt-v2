@@ -7,6 +7,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -58,6 +59,7 @@ use crate::{
         ConversionOutputState, inspect_conversion_output, write_completed_conversion_artifacts,
     },
     first_proof_selector::{FirstProofSelectorReport, FirstProofSelectorStatus},
+    io_safety::{collect_regular_files, open_regular_file},
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
@@ -356,12 +358,7 @@ pub struct PmxtOneOffArtifactRootRunArtifact {
 pub fn write_pmxt_one_off_l2_artifact_root_run_from_spec_file(
     spec_path: &Path,
 ) -> Result<PmxtOneOffArtifactRootRunArtifact> {
-    let spec_text = fs::read_to_string(spec_path).with_context(|| {
-        format!(
-            "read PMXT one-off artifact-root spec {}",
-            spec_path.display()
-        )
-    })?;
+    let spec_text = read_regular_string(spec_path, "PMXT one-off artifact-root spec")?;
     let spec: PmxtOneOffArtifactRootRunTomlSpec =
         toml::from_str(&spec_text).with_context(|| {
             format!(
@@ -385,12 +382,7 @@ fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base(
 ) -> Result<PmxtOneOffArtifactRootRunArtifact> {
     let gamma_markets_path =
         resolve_existing_path(base_dir, &spec.selected_source.gamma_markets_json_path);
-    let gamma_markets_bytes = fs::read(&gamma_markets_path).with_context(|| {
-        format!(
-            "read PMXT Gamma metadata {}",
-            spec.selected_source.gamma_markets_json_path.display()
-        )
-    })?;
+    let gamma_markets_bytes = read_regular_bytes(&gamma_markets_path, "PMXT Gamma metadata")?;
     let gamma_markets: Vec<GammaMarket> = serde_json::from_slice(&gamma_markets_bytes)
         .with_context(|| {
             format!(
@@ -399,12 +391,7 @@ fn write_pmxt_one_off_l2_artifact_root_run_from_toml_spec_with_base(
             )
         })?;
     let manifest_path = resolve_existing_path(base_dir, &spec.manifest_path);
-    let manifest_text = fs::read_to_string(&manifest_path).with_context(|| {
-        format!(
-            "read PMXT one-off manifest {}",
-            spec.manifest_path.display()
-        )
-    })?;
+    let manifest_text = read_regular_string(&manifest_path, "PMXT one-off manifest")?;
     let manifest = parse_manifest_toml(&manifest_text).with_context(|| {
         format!(
             "parse PMXT one-off manifest {}",
@@ -485,12 +472,7 @@ fn project_pmxt_selected_source_parquet_to_nt_with_base(
     );
     let selected_source_report_path =
         resolve_existing_path(base_dir, &spec.selected_source_report_path);
-    let report_bytes = fs::read(&selected_source_report_path).with_context(|| {
-        format!(
-            "read selected-source report {}",
-            spec.selected_source_report_path.display()
-        )
-    })?;
+    let report_bytes = read_regular_bytes(&selected_source_report_path, "selected-source report")?;
     let selected_source_report_hash = sha256_hex(&report_bytes);
     let report: SelectedSourceSliceReport =
         serde_json::from_slice(&report_bytes).with_context(|| {
@@ -580,8 +562,7 @@ fn read_selected_source_selector_report(
 ) -> Result<FirstProofSelectorReport> {
     let selector_path = Path::new(&report.selector_report_path);
     let resolved_selector_path = resolve_existing_path(base_dir, selector_path);
-    let selector_bytes = fs::read(&resolved_selector_path)
-        .with_context(|| format!("read selector report {}", selector_path.display()))?;
+    let selector_bytes = read_regular_bytes(&resolved_selector_path, "selector report")?;
     let selector_sha256 = sha256_hex(&selector_bytes);
     ensure!(
         selector_sha256 == report.selector_report_sha256,
@@ -636,12 +617,7 @@ fn decode_selected_source_rows(
 ) -> Result<DecodedSelectedSourceRows> {
     let selected_source_parquet_path =
         resolve_existing_path(base_dir, &spec.selected_source_parquet_path);
-    let file = fs::File::open(&selected_source_parquet_path).with_context(|| {
-        format!(
-            "open selected-source parquet {}",
-            spec.selected_source_parquet_path.display()
-        )
-    })?;
+    let file = open_regular_file(&selected_source_parquet_path, "selected-source parquet")?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)
         .with_context(|| {
             format!(
@@ -1377,13 +1353,22 @@ fn write_pmxt_one_off_conversion_projection_with_base(
             manifest_hash,
             checkpoint_hash,
             catalog_hash,
-        } => reuse_completed_pmxt_one_off_conversion_projection(
-            spec,
-            &output_dir,
-            manifest_hash,
-            checkpoint_hash,
-            catalog_hash,
-        ),
+        } => {
+            collect_regular_files(&catalog_root, "PMXT completed catalog")?;
+            let recomputed_catalog_hash = logical_catalog_hash(&catalog_root)
+                .context("recompute PMXT completed catalog hash")?;
+            ensure!(
+                recomputed_catalog_hash == catalog_hash,
+                "PMXT completed catalog hash {recomputed_catalog_hash} does not match manifest {catalog_hash}"
+            );
+            reuse_completed_pmxt_one_off_conversion_projection(
+                spec,
+                &output_dir,
+                manifest_hash,
+                checkpoint_hash,
+                recomputed_catalog_hash,
+            )
+        }
         ConversionOutputState::ResumeFromCheckpoint { stage } => {
             bail!(
                 "PMXT one-off conversion projection cannot resume from checkpoint stage {stage:?}"
@@ -1620,7 +1605,7 @@ fn projection_rows_by_nt_data_type(projection: &PmxtOneOffNtProjection) -> BTree
 }
 
 fn read_conversion_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
-    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let bytes = read_regular_bytes(path, "PMXT conversion artifact")?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
@@ -1978,7 +1963,7 @@ fn write_result_contract_idempotent(
 }
 
 fn read_json_artifact<T: DeserializeOwned>(path: &Path) -> Result<T> {
-    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let bytes = read_regular_bytes(path, "PMXT result artifact")?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
@@ -2274,9 +2259,24 @@ fn required_column<'a>(batch: &'a RecordBatch, column: &str) -> Result<&'a dyn A
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
-    let bytes =
-        fs::read(path).with_context(|| format!("read file for sha256 {}", path.display()))?;
+    let bytes = read_regular_bytes(path, "file for sha256")?;
     Ok(sha256_hex(&bytes))
+}
+
+fn read_regular_bytes(path: &Path, label: &str) -> Result<Vec<u8>> {
+    let mut file = open_regular_file(path, label)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("read {label} {}", path.display()))?;
+    Ok(bytes)
+}
+
+fn read_regular_string(path: &Path, label: &str) -> Result<String> {
+    let mut file = open_regular_file(path, label)?;
+    let mut text = String::new();
+    file.read_to_string(&mut text)
+        .with_context(|| format!("read {label} {}", path.display()))?;
+    Ok(text)
 }
 fn push_surface_once(surfaces: &mut Vec<String>, surface: &str) {
     if !surfaces.iter().any(|existing| existing == surface) {

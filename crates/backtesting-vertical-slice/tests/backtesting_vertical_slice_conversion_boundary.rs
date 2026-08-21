@@ -1,5 +1,8 @@
 use std::fs;
 
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+
 use backtesting_vertical_slice::conversion_boundary::{
     CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
     ConversionCatalogMetadata, ConversionCheckpoint, ConversionCheckpointStage,
@@ -218,6 +221,92 @@ fn partial_failed_run_without_valid_checkpoint_refuses_to_continue() {
     let err = inspect_conversion_output(dir.path(), &fingerprint()).unwrap_err();
 
     assert!(err.to_string().contains("dirty conversion output"), "{err}");
+}
+
+#[test]
+fn missing_and_empty_output_roots_are_clean_new_but_empty_subdirectories_are_dirty() {
+    let parent = tempfile::TempDir::new().unwrap();
+    let missing = parent.path().join("missing-output");
+    assert_eq!(
+        inspect_conversion_output(&missing, &fingerprint()).unwrap(),
+        ConversionOutputState::CleanNew
+    );
+
+    let empty = parent.path().join("empty-output");
+    fs::create_dir(&empty).unwrap();
+    assert_eq!(
+        inspect_conversion_output(&empty, &fingerprint()).unwrap(),
+        ConversionOutputState::CleanNew
+    );
+
+    fs::create_dir(empty.join("empty-subdirectory")).unwrap();
+    let error = inspect_conversion_output(&empty, &fingerprint()).unwrap_err();
+    assert!(
+        error.to_string().contains("dirty conversion output"),
+        "{error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_output_roots_are_dirty_without_following_the_target() {
+    let parent = tempfile::TempDir::new().unwrap();
+    let target = parent.path().join("outside-output");
+    fs::create_dir(&target).unwrap();
+    let sentinel = target.join("sentinel");
+    fs::write(&sentinel, b"outside").unwrap();
+
+    let output = parent.path().join("output-link");
+    symlink(&target, &output).unwrap();
+
+    let error = inspect_conversion_output(&output, &fingerprint()).unwrap_err();
+    assert!(
+        error.to_string().contains("not a real directory"),
+        "{error}"
+    );
+    assert_eq!(fs::read(&sentinel).unwrap(), b"outside");
+}
+
+#[cfg(unix)]
+#[test]
+fn dangling_symlink_output_root_is_dirty_instead_of_clean_new() {
+    let parent = tempfile::TempDir::new().unwrap();
+    let output = parent.path().join("dangling-output-link");
+    symlink(parent.path().join("missing-target"), &output).unwrap();
+
+    let error = inspect_conversion_output(&output, &fingerprint()).unwrap_err();
+    assert!(
+        error.to_string().contains("not a real directory"),
+        "{error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn completed_output_with_symlink_descendant_is_rejected_before_reuse() {
+    let output = tempfile::TempDir::new().unwrap();
+    let checkpoint = completed_checkpoint(&fingerprint());
+    let checkpoint_hash = checkpoint.content_hash().unwrap();
+    let manifest = completed_manifest(&fingerprint(), checkpoint_hash.clone());
+    let metadata = ConversionCatalogMetadata::from_manifest(
+        &manifest,
+        manifest.content_hash().unwrap(),
+        checkpoint_hash,
+    );
+    write_completed_conversion_artifacts(output.path(), &manifest, &checkpoint, &metadata).unwrap();
+
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    fs::write(outside.path(), b"outside").unwrap();
+    symlink(outside.path(), output.path().join("linked-artifact")).unwrap();
+
+    let error = inspect_conversion_output(output.path(), &fingerprint()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("non-regular file linked-artifact"),
+        "{error}"
+    );
+    assert_eq!(fs::read(outside.path()).unwrap(), b"outside");
 }
 
 #[test]

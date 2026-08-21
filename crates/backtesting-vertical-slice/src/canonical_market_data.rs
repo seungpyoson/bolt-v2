@@ -2249,9 +2249,7 @@ mod tests {
             DeltaSide::Buy.as_str(),
             "0.48",
             "5",
-            RecordFlag::F_MBP as u8
-                | RecordFlag::F_SNAPSHOT as u8
-                | RecordFlag::F_LAST as u8,
+            RecordFlag::F_MBP as u8 | RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8,
         ));
         let error = table
             .validate()

@@ -1009,22 +1009,21 @@ fn completion_ledger_without_required_record_coverage_cannot_grant_converted_sta
     )
     .expect("parse generated completion ledger");
 
-    let assert_rejected =
-        |case: &str, ledger: &serde_json::Value, expected_error: &str| {
-            let case_root = temp_dir.path().join(case);
-            fs::create_dir_all(&case_root).expect("create coverage case directory");
-            let completion_ledger_path = case_root.join("completion-ledger.json");
-            fs::write(
-                &completion_ledger_path,
-                serde_json::to_vec_pretty(ledger).expect("serialize incomplete ledger"),
-            )
-            .expect("write incomplete completion ledger");
-            let output_dir = case_root.join("acceptance-ledger");
-            let spec_path = case_root.join("acceptance-spec.toml");
-            fs::write(
-                &spec_path,
-                format!(
-                    r#"ledger_id = "venue-scale-conversion-acceptance-ledger-{case}"
+    let assert_rejected = |case: &str, ledger: &serde_json::Value, expected_error: &str| {
+        let case_root = temp_dir.path().join(case);
+        fs::create_dir_all(&case_root).expect("create coverage case directory");
+        let completion_ledger_path = case_root.join("completion-ledger.json");
+        fs::write(
+            &completion_ledger_path,
+            serde_json::to_vec_pretty(ledger).expect("serialize incomplete ledger"),
+        )
+        .expect("write incomplete completion ledger");
+        let output_dir = case_root.join("acceptance-ledger");
+        let spec_path = case_root.join("acceptance-spec.toml");
+        fs::write(
+            &spec_path,
+            format!(
+                r#"ledger_id = "venue-scale-conversion-acceptance-ledger-{case}"
 output_dir = "{output_dir}"
 
 [[venue]]
@@ -1037,19 +1036,19 @@ scope_label = "incomplete completion-ledger coverage"
 status = "converted"
 completion_ledger_path = "{completion_ledger_path}"
 "#,
-                    output_dir = output_dir.display(),
-                    completion_ledger_path = completion_ledger_path.display(),
-                ),
-            )
-            .expect("write coverage case spec");
+                output_dir = output_dir.display(),
+                completion_ledger_path = completion_ledger_path.display(),
+            ),
+        )
+        .expect("write coverage case spec");
 
-            let error = write_venue_scale_conversion_acceptance_ledger_from_spec_file(&spec_path)
-                .expect_err("incomplete ready-ledger coverage must not grant converted authority");
-            assert!(
-                format!("{error:#}").contains(expected_error),
-                "expected {expected_error:?} rejection for {case}, got: {error:#}"
-            );
-        };
+        let error = write_venue_scale_conversion_acceptance_ledger_from_spec_file(&spec_path)
+            .expect_err("incomplete ready-ledger coverage must not grant converted authority");
+        assert!(
+            format!("{error:#}").contains(expected_error),
+            "expected {expected_error:?} rejection for {case}, got: {error:#}"
+        );
+    };
 
     let mut incomplete_mapping = completion_ledger.clone();
     let mapped = incomplete_mapping["mapping_proven_records"]
@@ -1068,8 +1067,7 @@ completion_ledger_path = "{completion_ledger_path}"
     let published = incomplete_publication["published_records"]
         .as_u64()
         .expect("completion ledger declares published_records");
-    incomplete_publication["records"][0]["published_catalog_direct_s3"] =
-        serde_json::json!(false);
+    incomplete_publication["records"][0]["published_catalog_direct_s3"] = serde_json::json!(false);
     incomplete_publication["published_records"] = serde_json::json!(published - 1);
     assert_rejected(
         "incomplete-publication",
@@ -1147,7 +1145,10 @@ completion_ledger_path = "{completion_ledger_path}"
     }
 
     for (case, field) in [
-        ("empty-publication-evidence-path", "publication_evidence_path"),
+        (
+            "empty-publication-evidence-path",
+            "publication_evidence_path",
+        ),
         (
             "empty-catalog-mapping-path",
             "catalog_mapping_evaluation_path",

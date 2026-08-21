@@ -1032,7 +1032,10 @@ fn validate_ready_completion_ledger(
             ("source_proof_id", record.source_proof_id.as_str()),
             ("operator_run_id", record.operator_run_id.as_str()),
             ("output_prefix", record.output_prefix.as_str()),
-            ("published_catalog_uri", record.published_catalog_uri.as_str()),
+            (
+                "published_catalog_uri",
+                record.published_catalog_uri.as_str(),
+            ),
         ] {
             ensure!(
                 !value.trim().is_empty(),

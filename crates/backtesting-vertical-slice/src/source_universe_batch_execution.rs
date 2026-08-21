@@ -1818,8 +1818,7 @@ mod tests {
 
     fn copied_catalog_metadata_sha256(output_dir: &Path) -> String {
         hex::encode(Sha256::digest(
-            fs::read(output_dir.join(CATALOG_METADATA_FILE))
-                .expect("read copied catalog metadata"),
+            fs::read(output_dir.join(CATALOG_METADATA_FILE)).expect("read copied catalog metadata"),
         ))
     }
 

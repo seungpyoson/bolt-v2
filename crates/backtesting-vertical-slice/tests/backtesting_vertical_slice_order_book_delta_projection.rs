@@ -319,7 +319,10 @@ fn consecutive_empty_snapshots_preserve_later_level_precision() {
     assert_eq!(loaded[2].action, BookAction::Update);
     assert_eq!(loaded[2].order.price.precision, 2);
     assert_eq!(loaded[2].order.size.precision, 3);
-    assert_eq!(loaded[2].order.price.as_decimal(), Price::from("0.49").as_decimal());
+    assert_eq!(
+        loaded[2].order.price.as_decimal(),
+        Price::from("0.49").as_decimal()
+    );
     assert_eq!(
         loaded[2].order.size.as_decimal(),
         Quantity::from("10.125").as_decimal()

@@ -308,7 +308,7 @@ pub(crate) fn install_seeded_l2_quote_bridge(
     engine: &mut BacktestEngine,
     plan: SeededL2QuoteBridgePlan,
 ) -> Result<SeededL2QuoteBridgeCapture> {
-    let actor_id = ActorId::from(format!("SEEDED-L2-QUOTE-BRIDGE-{}", plan.plan_hash).as_str());
+    let actor_id = ActorId::from(plan.plan_hash.as_str());
     let entries = plan
         .entries
         .into_iter()

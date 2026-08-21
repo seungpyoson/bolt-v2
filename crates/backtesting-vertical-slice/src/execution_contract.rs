@@ -356,21 +356,19 @@ pub fn validate_execution_contract(
             }
             let expected =
                 independent_market_sweep(executable_book, side, order.effective_quantity)?;
+            let observed = order
+                .fills
+                .iter()
+                .map(|fill| (fill.last_px.as_decimal(), fill.last_qty.as_decimal()))
+                .collect::<Vec<_>>();
             let observed_quantity = order
                 .fills
                 .iter()
                 .map(|fill| fill.last_qty.as_decimal())
                 .sum::<Decimal>();
             ensure!(
-                expected.len() == order.fills.len()
-                    && expected
-                        .iter()
-                        .zip(&order.fills)
-                        .all(|((price, quantity), fill)| {
-                            *price == fill.last_px.as_decimal()
-                                && *quantity == fill.last_qty.as_decimal()
-                        }),
-                "observed normal-order fills do not equal the executable book at submission"
+                expected == observed,
+                "observed normal-order fills do not equal the executable book at submission: expected={expected:?}, observed={observed:?}"
             );
             ensure!(
                 observed_quantity == order.effective_quantity.as_decimal(),

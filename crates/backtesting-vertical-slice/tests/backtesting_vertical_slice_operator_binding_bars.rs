@@ -349,6 +349,7 @@ fn converter(adapter: &SourceAdapterDefinition, object_len: u64) -> ConverterCon
             zip_member: None,
             max_member_bytes: None,
             member_suffix: None,
+            jsonl_stream: None,
         },
         csv: csv_filler_mapping(),
         bars: None,
@@ -356,7 +357,7 @@ fn converter(adapter: &SourceAdapterDefinition, object_len: u64) -> ConverterCon
         jsonl_bars: None,
         deltas: None,
         quotes: None,
-        seeded_l2_quotes: None,
+        seeded_level_set: None,
     }
 }
 

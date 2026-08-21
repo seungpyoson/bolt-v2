@@ -9,7 +9,7 @@
 //! local `ParquetDataCatalog` and reads back with per-field equality:
 //!
 //! - deltas -> `project_canonical_order_book_deltas_to_catalog` ->
-//!   `read_back_order_book_deltas` (action/side/price/size/flags/sequence/ts),
+//!   `read_back_order_book_deltas` (action/side/price/size/flags/native-sequence/ts),
 //! - trades -> `project_canonical_trades_to_catalog` -> `read_back_trade_ticks`
 //!   (price/size/aggressor/trade_id/ts).
 //!
@@ -421,13 +421,12 @@ fn event_stream_deltas_round_trip_to_catalog() {
         SourceProofFidelityClass::L2Replay
     );
 
-    let mut loaded =
+    let loaded =
         read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back deltas");
     assert_eq!(loaded.len(), table.rows.len());
-    loaded.sort_by_key(|delta| delta.sequence);
     for (delta, row) in loaded.iter().zip(table.rows.iter()) {
         assert_eq!(delta.instrument_id.to_string(), NT_INSTRUMENT_ID);
-        assert_eq!(delta.sequence, row.sequence);
+        assert_eq!(delta.sequence, 0);
         assert_eq!(delta.flags, row.flags);
         assert_eq!(delta.ts_event.as_u64(), row.event_time as u64);
         if row.action == DeltaAction::Clear.as_str() {
@@ -484,13 +483,12 @@ fn event_stream_deltas_round_trip_through_binary_option_spec() {
     assert_eq!(instruments.len(), 1);
     assert!(matches!(&instruments[0], InstrumentAny::BinaryOption(_)));
 
-    let mut loaded =
+    let loaded =
         read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back deltas");
     assert_eq!(loaded.len(), table.rows.len());
-    loaded.sort_by_key(|delta| delta.sequence);
     for (delta, row) in loaded.iter().zip(table.rows.iter()) {
         assert_eq!(delta.instrument_id.to_string(), NT_INSTRUMENT_ID);
-        assert_eq!(delta.sequence, row.sequence);
+        assert_eq!(delta.sequence, 0);
         assert_eq!(delta.flags, row.flags);
         if row.action == DeltaAction::Clear.as_str() {
             assert_eq!(delta.action, BookAction::Clear);

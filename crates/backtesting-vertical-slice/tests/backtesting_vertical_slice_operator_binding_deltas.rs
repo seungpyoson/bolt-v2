@@ -18,8 +18,9 @@ use backtesting_vertical_slice::{
     },
     canonical_trades::{
         CanonicalInstrumentIdentity, ConverterConfig, CsvTimestampUnit, CsvTradeMappingConfig,
-        JSONL_SNAPSHOT_DELTAS_ADAPTER, RawPayloadConfig, RawPayloadContainer,
-        SourceAdapterDefinition, TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
+        JSONL_SNAPSHOT_DELTAS_ADAPTER, JsonlStreamConfig, RawPayloadConfig, RawPayloadContainer,
+        SEEDED_LEVEL_SET_DELTAS_ADAPTER, SourceAdapterDefinition,
+        TAR_JSONL_SNAPSHOT_DELTAS_ADAPTER,
     },
     catalog_projection::{CatalogInstrumentSpec, SpotInstrumentSpec},
     conversion_boundary::{
@@ -36,6 +37,10 @@ use backtesting_vertical_slice::{
         BACKTESTING_RUN_MANIFEST_SCHEMA_VERSION, BacktestingRunManifest, ManifestArtifactStore,
         ManifestCatalogInput, ManifestVenueConfig, MarketStructureFixture, RunPurpose,
         STRATEGY_HURST_VPIN_DIRECTIONAL, StrategySource, StrategySourceKind,
+    },
+    seeded_level_set_deltas::{
+        OrderCountPolicy, SeededLevelSetMappingConfig, SeededLevelSetOutputLimits,
+        SourceSequencePolicy,
     },
     source_proof::{
         AcceptanceMode, AcceptanceScope, EvidenceState, FixtureType, IngestManifestObjectRecord,
@@ -267,6 +272,13 @@ fn delta_catalog_input(nt_instrument_id: &str) -> ManifestCatalogInput {
     }
 }
 
+fn quote_catalog_input(nt_instrument_id: &str) -> ManifestCatalogInput {
+    ManifestCatalogInput {
+        data_type: "QuoteTick".to_string(),
+        ..delta_catalog_input(nt_instrument_id)
+    }
+}
+
 fn manifest(
     run_id: &str,
     strategy_instrument: &str,
@@ -352,7 +364,7 @@ fn converter(adapter: &SourceAdapterDefinition, raw_payload: RawPayloadConfig) -
         jsonl_bars: None,
         deltas: None,
         quotes: None,
-        seeded_l2_quotes: None,
+        seeded_level_set: None,
     }
 }
 
@@ -364,6 +376,18 @@ fn jsonl_payload(object_len: u64) -> RawPayloadConfig {
         zip_member: None,
         max_member_bytes: None,
         member_suffix: None,
+        jsonl_stream: None,
+    }
+}
+
+fn seeded_jsonl_payload(object_len: u64) -> RawPayloadConfig {
+    RawPayloadConfig {
+        jsonl_stream: Some(JsonlStreamConfig {
+            max_members: 1,
+            max_record_bytes: 65_536,
+            max_records: 100,
+        }),
+        ..jsonl_payload(object_len)
     }
 }
 
@@ -375,6 +399,11 @@ fn tar_payload(object_len: u64) -> RawPayloadConfig {
         zip_member: None,
         max_member_bytes: Some(65_536),
         member_suffix: Some(".jsonl".to_string()),
+        jsonl_stream: Some(JsonlStreamConfig {
+            max_members: 16,
+            max_record_bytes: 65_536,
+            max_records: 1_000,
+        }),
     }
 }
 
@@ -395,6 +424,32 @@ fn snapshot_delta_mapping(key_field: Option<&str>) -> DeltaMappingConfig {
         ordering: OrderingAuthority::EventTime,
         price_sign_policy: DeltaPriceSignPolicy::StrictlyPositive,
         empty_book_policy: EmptyBookPolicy::LoneClearLast,
+    }
+}
+
+fn seeded_level_set_mapping() -> SeededLevelSetMappingConfig {
+    SeededLevelSetMappingConfig {
+        record_identity_path: vec!["instrument".to_string()],
+        action_path: vec!["action".to_string()],
+        event_time_path: vec!["time".to_string()],
+        event_time_unit: CsvTimestampUnit::Milliseconds,
+        bids_path: vec!["bids".to_string()],
+        asks_path: vec!["asks".to_string()],
+        level_arity: 3,
+        level_price_index: 0,
+        level_size_index: 1,
+        order_count: OrderCountPolicy::ValidateNonNegativeAndDrop { index: 2 },
+        snapshot_action_values: vec!["snapshot".to_string()],
+        update_action_values: vec!["update".to_string()],
+        source_sequence: SourceSequencePolicy::Unavailable,
+        output: SeededLevelSetOutputLimits {
+            max_levels_per_event: 100,
+            max_active_levels_per_side: 50,
+            max_selected_events: 100,
+            max_selected_delta_rows: 1_000,
+            max_emitted_bytes: 1_048_576,
+            max_published_bytes: 2_097_152,
+        },
     }
 }
 
@@ -450,6 +505,18 @@ fn assert_multi(artifacts: OperatorRunArtifacts) -> MultiTableRunArtifacts {
 
 fn read_artifact_bytes(dir: &std::path::Path, name: &str) -> Vec<u8> {
     fs::read(dir.join(name)).unwrap_or_else(|error| panic!("read artifact {name}: {error}"))
+}
+
+fn regular_path_bytes(path: &std::path::Path) -> u64 {
+    let metadata = fs::symlink_metadata(path).expect("projected path metadata");
+    if metadata.is_file() {
+        return metadata.len();
+    }
+    assert!(metadata.is_dir(), "unexpected projected path: {path:?}");
+    fs::read_dir(path)
+        .expect("projected directory")
+        .map(|entry| regular_path_bytes(&entry.expect("projected entry").path()))
+        .sum()
 }
 
 /// Run a second time on the same output dir and prove the reuse path keeps
@@ -598,6 +665,320 @@ fn jsonl_snapshot_deltas_run_spec_end_to_end() {
 }
 
 #[test]
+fn seeded_level_set_run_spec_emits_full_depth_and_derived_bbo_through_existing_catalogs() {
+    let jsonl = "{\"instrument\":\"BASEQUOTE\",\"action\":\"snapshot\",\"time\":1700000000000,\"bids\":[[\"0.49\",\"10\",\"2\"],[\"0.48\",\"7\",\"1\"]],\"asks\":[[\"0.51\",\"12\",\"3\"]]}\n\
+        {\"instrument\":\"BASEQUOTE\",\"action\":\"update\",\"time\":1700000060000,\"bids\":[[\"0.49\",\"0\",\"0\"],[\"0.50\",\"11\",\"2\"]],\"asks\":[[\"0.51\",\"13\",\"3\"]]}\n";
+    let object_bytes = jsonl.as_bytes();
+    let (proof, object) = accepted_proof_and_object(object_bytes);
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let registry_path = write_registry(temp.path());
+    let mut converter = converter(
+        &SEEDED_LEVEL_SET_DELTAS_ADAPTER,
+        seeded_jsonl_payload(object_bytes.len() as u64),
+    );
+    converter.seeded_level_set = Some(seeded_level_set_mapping());
+    let manifest = manifest(
+        "operator-binding-seeded-level-set",
+        NT_INSTRUMENT_ID,
+        vec![
+            delta_catalog_input(NT_INSTRUMENT_ID),
+            quote_catalog_input(NT_INSTRUMENT_ID),
+        ],
+    );
+    let mut spec = run_spec(
+        registry_path,
+        proof,
+        object,
+        RunSpecInstrumentSpecs::Single(Box::new(CatalogInstrumentSpec::Spot(spot_spec(
+            NT_INSTRUMENT_ID,
+            INSTRUMENT_ID,
+        )))),
+        RunSpecInstrumentIdentities::Single(identity(INSTRUMENT_ID, NT_INSTRUMENT_ID)),
+        converter,
+        manifest,
+    );
+    spec.selector_provenance = l2_provenance();
+
+    let output_dir = temp.path().join("out");
+    let artifacts = assert_multi(
+        run_operator_from_run_spec(&spec, object_bytes, &output_dir).expect("operator run"),
+    );
+
+    assert_eq!(artifacts.tables.len(), 2);
+    let deltas = artifacts
+        .tables
+        .iter()
+        .find(|table| table.data_type == "OrderBookDelta")
+        .expect("full-depth table");
+    let quotes = artifacts
+        .tables
+        .iter()
+        .find(|table| table.data_type == "QuoteTick")
+        .expect("derived BBO table");
+    assert_eq!(deltas.table_family, "order_book_snapshot_deltas");
+    assert_eq!(quotes.table_family, "quotes");
+    assert_eq!(deltas.rows, 7);
+    assert_eq!(quotes.rows, 2);
+    assert!(deltas.canonical_path.is_file());
+    assert!(quotes.canonical_path.is_file());
+    assert_eq!(
+        artifacts.nt_result.iterations, deltas.rows,
+        "derived BBO is an audit artifact; only authoritative deltas enter NT replay"
+    );
+    assert_eq!(
+        artifacts.contract.catalog_data_types,
+        ["OrderBookDelta".to_string()]
+    );
+    assert!(artifacts.conversion_tables_path.is_some());
+
+    assert_idempotent_rerun(&spec, object_bytes, &output_dir);
+}
+
+#[test]
+fn seeded_level_set_completed_reuse_rejects_tampered_canonical_parquet() {
+    let jsonl = "{\"instrument\":\"BASEQUOTE\",\"action\":\"snapshot\",\"time\":1700000000000,\"bids\":[[\"0.49\",\"10\",\"2\"]],\"asks\":[[\"0.51\",\"12\",\"3\"]]}\n";
+    let object_bytes = jsonl.as_bytes();
+    let (proof, object) = accepted_proof_and_object(object_bytes);
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let registry_path = write_registry(temp.path());
+    let mut converter = converter(
+        &SEEDED_LEVEL_SET_DELTAS_ADAPTER,
+        seeded_jsonl_payload(object_bytes.len() as u64),
+    );
+    converter.seeded_level_set = Some(seeded_level_set_mapping());
+    let manifest = manifest(
+        "operator-binding-seeded-level-set-canonical-tamper",
+        NT_INSTRUMENT_ID,
+        vec![
+            delta_catalog_input(NT_INSTRUMENT_ID),
+            quote_catalog_input(NT_INSTRUMENT_ID),
+        ],
+    );
+    let mut spec = run_spec(
+        registry_path,
+        proof,
+        object,
+        RunSpecInstrumentSpecs::Single(Box::new(CatalogInstrumentSpec::Spot(spot_spec(
+            NT_INSTRUMENT_ID,
+            INSTRUMENT_ID,
+        )))),
+        RunSpecInstrumentIdentities::Single(identity(INSTRUMENT_ID, NT_INSTRUMENT_ID)),
+        converter,
+        manifest,
+    );
+    spec.selector_provenance = l2_provenance();
+    let output_dir = temp.path().join("out");
+    let first = assert_multi(
+        run_operator_from_run_spec(&spec, object_bytes, &output_dir).expect("initial run"),
+    );
+    let primary = first
+        .tables
+        .iter()
+        .find(|table| table.data_type == "OrderBookDelta")
+        .expect("primary delta table");
+    fs::write(&primary.canonical_path, b"tampered canonical parquet")
+        .expect("tamper canonical parquet");
+
+    let error = run_operator_from_run_spec(&spec, object_bytes, &output_dir)
+        .err()
+        .expect("completed reuse must authenticate canonical parquet");
+    assert!(error.to_string().contains("canonical"), "{error:#}");
+}
+
+#[test]
+fn seeded_level_set_one_sided_window_publishes_primary_deltas_without_quotes() {
+    let jsonl = "{\"instrument\":\"BASEQUOTE\",\"action\":\"snapshot\",\"time\":1700000000000,\"bids\":[[\"0.49\",\"10\",\"2\"]],\"asks\":[]}\n\
+        {\"instrument\":\"BASEQUOTE\",\"action\":\"update\",\"time\":1700000060000,\"bids\":[[\"0.49\",\"11\",\"2\"]],\"asks\":[]}\n";
+    let object_bytes = jsonl.as_bytes();
+    let (proof, object) = accepted_proof_and_object(object_bytes);
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let registry_path = write_registry(temp.path());
+    let mut converter = converter(
+        &SEEDED_LEVEL_SET_DELTAS_ADAPTER,
+        seeded_jsonl_payload(object_bytes.len() as u64),
+    );
+    converter.seeded_level_set = Some(seeded_level_set_mapping());
+    let manifest = manifest(
+        "operator-binding-seeded-level-set-one-sided",
+        NT_INSTRUMENT_ID,
+        vec![
+            delta_catalog_input(NT_INSTRUMENT_ID),
+            quote_catalog_input(NT_INSTRUMENT_ID),
+        ],
+    );
+    let mut spec = run_spec(
+        registry_path,
+        proof,
+        object,
+        RunSpecInstrumentSpecs::Single(Box::new(CatalogInstrumentSpec::Spot(spot_spec(
+            NT_INSTRUMENT_ID,
+            INSTRUMENT_ID,
+        )))),
+        RunSpecInstrumentIdentities::Single(identity(INSTRUMENT_ID, NT_INSTRUMENT_ID)),
+        converter,
+        manifest,
+    );
+    spec.selector_provenance = l2_provenance();
+
+    let mut missing_quote_declaration = spec.clone();
+    missing_quote_declaration.manifest.catalog_inputs.pop();
+    let invalid_output = temp.path().join("invalid-out");
+    let error =
+        run_operator_from_run_spec(&missing_quote_declaration, object_bytes, &invalid_output)
+            .err()
+            .expect("seeded manifest without its conditional QuoteTick declaration must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("must declare exactly one conditional QuoteTick input"),
+        "{error:#}"
+    );
+    assert!(
+        !invalid_output.exists(),
+        "invalid manifest must fail before publishing output"
+    );
+
+    let output_dir = temp.path().join("out");
+    let artifacts = assert_multi(
+        run_operator_from_run_spec(&spec, object_bytes, &output_dir).expect("operator run"),
+    );
+
+    assert_eq!(artifacts.tables.len(), 1);
+    assert_eq!(artifacts.tables[0].data_type, "OrderBookDelta");
+    assert_eq!(
+        artifacts.contract.fidelity_class,
+        SourceProofFidelityClass::L2Replay
+    );
+    assert!(artifacts.conversion_tables_path.is_none());
+    assert_idempotent_rerun(&spec, object_bytes, &output_dir);
+}
+
+#[test]
+fn seeded_level_set_refuses_completion_when_projected_bytes_exceed_cap() {
+    let jsonl = "{\"instrument\":\"BASEQUOTE\",\"action\":\"snapshot\",\"time\":1700000000000,\"bids\":[[\"0.49\",\"10\",\"2\"]],\"asks\":[[\"0.51\",\"12\",\"3\"]]}\n";
+    let object_bytes = jsonl.as_bytes();
+    let (proof, object) = accepted_proof_and_object(object_bytes);
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let registry_path = write_registry(temp.path());
+    let mut converter = converter(
+        &SEEDED_LEVEL_SET_DELTAS_ADAPTER,
+        seeded_jsonl_payload(object_bytes.len() as u64),
+    );
+    converter.seeded_level_set = Some(seeded_level_set_mapping());
+    let manifest = manifest(
+        "operator-binding-seeded-published-cap",
+        NT_INSTRUMENT_ID,
+        vec![
+            delta_catalog_input(NT_INSTRUMENT_ID),
+            quote_catalog_input(NT_INSTRUMENT_ID),
+        ],
+    );
+    let mut spec = run_spec(
+        registry_path,
+        proof,
+        object,
+        RunSpecInstrumentSpecs::Single(Box::new(CatalogInstrumentSpec::Spot(spot_spec(
+            NT_INSTRUMENT_ID,
+            INSTRUMENT_ID,
+        )))),
+        RunSpecInstrumentIdentities::Single(identity(INSTRUMENT_ID, NT_INSTRUMENT_ID)),
+        converter,
+        manifest,
+    );
+    spec.selector_provenance = l2_provenance();
+
+    let measurement_dir = temp.path().join("measurement");
+    let measurement = assert_multi(
+        run_operator_from_run_spec(&spec, object_bytes, &measurement_dir)
+            .expect("measure projected bytes under the generous configured cap"),
+    );
+    let published_bytes: u64 = measurement
+        .tables
+        .iter()
+        .map(|table| regular_path_bytes(&table.subroot) + regular_path_bytes(&table.canonical_path))
+        .sum();
+    assert!(published_bytes > 1);
+
+    spec.converter
+        .seeded_level_set
+        .as_mut()
+        .expect("seeded level-set config")
+        .output
+        .max_published_bytes = published_bytes;
+    run_operator_from_run_spec(&spec, object_bytes, &temp.path().join("exact-cap"))
+        .expect("exact published-byte cap must pass");
+
+    spec.converter
+        .seeded_level_set
+        .as_mut()
+        .expect("seeded level-set config")
+        .output
+        .max_published_bytes = published_bytes - 1;
+    let output_dir = temp.path().join("cap-minus-one");
+    let error = run_operator_from_run_spec(&spec, object_bytes, &output_dir)
+        .err()
+        .expect("cap-minus-one must fail");
+    assert!(
+        error.to_string().contains("max_published_bytes"),
+        "{error:#}"
+    );
+    assert!(
+        !output_dir.join("conversion-manifest.json").exists(),
+        "an over-cap staging tree must not become a completed conversion"
+    );
+}
+
+#[test]
+fn seeded_level_set_malformed_tail_publishes_no_catalog() {
+    let jsonl = "{\"instrument\":\"BASEQUOTE\",\"action\":\"snapshot\",\"time\":1700000000000,\"bids\":[[\"0.49\",\"10\",\"2\"]],\"asks\":[[\"0.51\",\"12\",\"3\"]]}\n\
+        {\"instrument\":\"BASEQUOTE\",\"action\":\"update\",\"time\":1700000060000,\"bids\":[[\"0.49\",\"11\",\"2\"]],\"asks\":[]}\n\
+        {not-json}\n";
+    let object_bytes = jsonl.as_bytes();
+    let (proof, object) = accepted_proof_and_object(object_bytes);
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let registry_path = write_registry(temp.path());
+    let mut converter = converter(
+        &SEEDED_LEVEL_SET_DELTAS_ADAPTER,
+        seeded_jsonl_payload(object_bytes.len() as u64),
+    );
+    converter.seeded_level_set = Some(seeded_level_set_mapping());
+    let mut manifest = manifest(
+        "operator-binding-seeded-level-set-malformed-tail",
+        NT_INSTRUMENT_ID,
+        vec![
+            delta_catalog_input(NT_INSTRUMENT_ID),
+            quote_catalog_input(NT_INSTRUMENT_ID),
+        ],
+    );
+    manifest.start_time = Some(1_700_000_000_000_000_000);
+    manifest.end_time = manifest.start_time;
+    let mut spec = run_spec(
+        registry_path,
+        proof,
+        object,
+        RunSpecInstrumentSpecs::Single(Box::new(CatalogInstrumentSpec::Spot(spot_spec(
+            NT_INSTRUMENT_ID,
+            INSTRUMENT_ID,
+        )))),
+        RunSpecInstrumentIdentities::Single(identity(INSTRUMENT_ID, NT_INSTRUMENT_ID)),
+        converter,
+        manifest,
+    );
+    spec.selector_provenance = l2_provenance();
+
+    let output_dir = temp.path().join("out");
+    let error = match run_operator_from_run_spec(&spec, object_bytes, &output_dir) {
+        Err(error) => error,
+        Ok(_) => panic!("malformed tail must reject the complete conversion"),
+    };
+    assert!(format!("{error:#}").contains("parse JSON"), "{error:#}");
+    assert!(
+        !output_dir.join("nt-catalogs").exists(),
+        "failed conversion must not publish a catalog root"
+    );
+}
+
+#[test]
 fn tar_jsonl_snapshot_deltas_run_spec_end_to_end_multi_member() {
     // Two members in archive order; the photo stream continues across members.
     let member_one = "{\"time\":1700000000000,\"bids\":[{\"px\":\"0.49\",\"sz\":\"10\"}],\"asks\":[{\"px\":\"0.51\",\"sz\":\"12\"}]}\n";
@@ -632,6 +1013,44 @@ fn tar_jsonl_snapshot_deltas_run_spec_end_to_end_multi_member() {
         manifest,
     );
     spec.selector_provenance = l2_provenance();
+
+    for (label, configure, expected) in [
+        (
+            "member-count",
+            (|stream: &mut JsonlStreamConfig| stream.max_members = 1) as fn(&mut JsonlStreamConfig),
+            "max_members",
+        ),
+        (
+            "record-bytes",
+            (|stream: &mut JsonlStreamConfig| stream.max_record_bytes = 8)
+                as fn(&mut JsonlStreamConfig),
+            "max_record_bytes",
+        ),
+        (
+            "record-count",
+            (|stream: &mut JsonlStreamConfig| stream.max_records = 1) as fn(&mut JsonlStreamConfig),
+            "max_records",
+        ),
+    ] {
+        let mut invalid = spec.clone();
+        configure(
+            invalid
+                .converter
+                .raw_payload
+                .jsonl_stream
+                .as_mut()
+                .expect("tar snapshot stream limits"),
+        );
+        let invalid_output = temp.path().join(format!("invalid-{label}"));
+        let error = run_operator_from_run_spec(&invalid, &object_bytes, &invalid_output)
+            .err()
+            .expect("independent tar JSONL bound must reject its violation");
+        assert!(format!("{error:#}").contains(expected), "{error:#}");
+        assert!(
+            !invalid_output.exists(),
+            "bound violation must fail before publishing output"
+        );
+    }
 
     let output_dir = temp.path().join("out");
     let artifacts = assert_multi(

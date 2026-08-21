@@ -40,11 +40,9 @@ const DATED_SOURCE_ATTESTATION_OWNERS: &[&str] = &[
 ];
 
 /// Gate policy: committed reference JSON can contain both live artifact pins and
-/// historical source attestations. Reference-tree targets remain live pins
-/// checked against current bytes or the evicted-fixture index. Source-tree
-/// targets inside registered dated source attestations are delegated to the
-/// dedicated verifier for that attestation, so this matcher avoids duplicate
-/// enforcement instead of treating stale source pins as valid.
+/// dated historical attestations. Registered dated owners preserve their pins
+/// as observations of the recorded date; this current-byte gate validates only
+/// live pins owned by every other document.
 #[test]
 fn committed_source_universe_artifact_refs_match_current_reference_bytes() {
     let repo_root = repo_root_from_manifest_dir();
@@ -216,7 +214,7 @@ fn artifact_ref_collector_treats_named_path_sha256_objects_as_pins() {
 }
 
 #[test]
-fn registered_dated_source_attestation_pins_are_delegated_to_dedicated_verifier() {
+fn registered_dated_source_attestation_pins_are_snapshot_only() {
     let dated_status = Path::new(
         "specs/023-nt-research-analytics-platform/reference/source-proof-pmxt-durable-source-selection-status.2026-06-16.json",
     );
@@ -233,7 +231,7 @@ fn registered_dated_source_attestation_pins_are_delegated_to_dedicated_verifier(
         dated_status,
         "scripts/verify_source_proof.py"
     ));
-    assert!(should_enforce_artifact_ref(
+    assert!(!should_enforce_artifact_ref(
         dated_status,
         "specs/023-nt-research-analytics-platform/reference/source-proof-fixture.binary-option.polymarket-pmxt-official-free-pending.v1.json"
     ));
@@ -480,8 +478,8 @@ fn check_artifact_ref(
     }
 }
 
-fn should_enforce_artifact_ref(owner_path: &Path, artifact_path: &str) -> bool {
-    !(is_registered_dated_source_attestation(owner_path) && is_source_tree_path(artifact_path))
+fn should_enforce_artifact_ref(owner_path: &Path, _artifact_path: &str) -> bool {
+    !is_registered_dated_source_attestation(owner_path)
 }
 
 fn is_registered_dated_source_attestation(path: &Path) -> bool {
@@ -514,10 +512,6 @@ fn is_dated_status_file(path: &Path) -> bool {
                 character.is_ascii_digit()
             }
         })
-}
-
-fn is_source_tree_path(path: &str) -> bool {
-    path.starts_with("crates/") || path.starts_with("src/") || path.starts_with("scripts/")
 }
 
 fn normalize_repo_path(path: &str) -> Result<String, RepoPathError> {

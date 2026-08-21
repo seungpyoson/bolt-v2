@@ -25,8 +25,10 @@ use backtesting_vertical_slice::{
     source_proof::SourceProofFidelityClass,
 };
 use nautilus_model::{
-    enums::{BookAction, OrderSide, RecordFlag},
+    data::OrderBookDeltas,
+    enums::{BookAction, BookType, OrderSide, RecordFlag},
     instruments::InstrumentAny,
+    orderbook::OrderBook,
     types::{Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
@@ -105,7 +107,7 @@ fn delta_row(
         event_time,
         capture_time: event_time,
         availability_time: None,
-        source_sequence: Some(sequence.to_string()),
+        source_sequence: None,
         raw_payload_id: "feedface".to_string(),
         source_proof_id: "source-proof-synthetic".to_string(),
         payload_hash: "feedface".to_string(),
@@ -224,13 +226,11 @@ fn deltas_round_trip_through_nt_catalog() {
     let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     assert_eq!(loaded.len(), table.rows.len());
 
-    // Read-back is sorted by NautilusTrader; assert per-field equality against
-    // the canonical rows keyed by sequence.
-    let mut by_sequence = loaded.clone();
-    by_sequence.sort_by_key(|delta| delta.sequence);
-    for (delta, row) in by_sequence.iter().zip(table.rows.iter()) {
+    // The source has no venue sequence, so exact encounter order must survive
+    // the catalog even though every NT sequence carries the `0` sentinel.
+    for (delta, row) in loaded.iter().zip(table.rows.iter()) {
         assert_eq!(delta.instrument_id.to_string(), NT_INSTRUMENT_ID);
-        assert_eq!(delta.sequence, row.sequence);
+        assert_eq!(delta.sequence, 0);
         assert_eq!(delta.flags, row.flags);
         assert_eq!(delta.ts_event.as_u64(), row.event_time as u64);
         // Assert the round-tripped BookAction for every row — including
@@ -273,6 +273,63 @@ fn deltas_round_trip_through_nt_catalog() {
 }
 
 #[test]
+fn consecutive_empty_snapshots_preserve_later_level_precision() {
+    let snapshot = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
+    let last = RecordFlag::F_LAST as u8;
+    let rows = vec![
+        delta_row(
+            0,
+            BASE_EVENT_TIME,
+            DeltaAction::Clear,
+            "",
+            "",
+            "",
+            snapshot | last,
+        ),
+        delta_row(
+            1,
+            BASE_EVENT_TIME + 1,
+            DeltaAction::Clear,
+            "",
+            "",
+            "",
+            snapshot | last,
+        ),
+        delta_row(
+            2,
+            BASE_EVENT_TIME + 2,
+            DeltaAction::Update,
+            DeltaSide::Buy.as_str(),
+            "0.49",
+            "10.125",
+            RecordFlag::F_MBP as u8 | last,
+        ),
+    ];
+    let table = table_with_rows(rows);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+
+    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
+        .expect("project consecutive empty snapshots");
+    let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID)
+        .expect("read consecutive empty snapshots back");
+
+    assert_eq!(loaded.len(), table.rows.len());
+    assert_eq!(loaded[0].action, BookAction::Clear);
+    assert_eq!(loaded[1].action, BookAction::Clear);
+    assert_eq!(loaded[2].action, BookAction::Update);
+    assert_eq!(loaded[2].order.price.precision, 2);
+    assert_eq!(loaded[2].order.size.precision, 3);
+    assert_eq!(
+        loaded[2].order.price.as_decimal(),
+        Price::from("0.49").as_decimal()
+    );
+    assert_eq!(
+        loaded[2].order.size.as_decimal(),
+        Quantity::from("10.125").as_decimal()
+    );
+}
+
+#[test]
 fn deltas_round_trip_through_binary_option_spec() {
     // The same synthetic prediction-market deltas must project through the
     // generic catalog seam when bound to a BinaryOption instrument, proving the
@@ -295,12 +352,11 @@ fn deltas_round_trip_through_binary_option_spec() {
     assert_eq!(instruments.len(), 1);
     assert!(matches!(&instruments[0], InstrumentAny::BinaryOption(_)));
 
-    let mut loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
+    let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     assert_eq!(loaded.len(), table.rows.len());
-    loaded.sort_by_key(|delta| delta.sequence);
     for (delta, row) in loaded.iter().zip(table.rows.iter()) {
         assert_eq!(delta.instrument_id.to_string(), NT_INSTRUMENT_ID);
-        assert_eq!(delta.sequence, row.sequence);
+        assert_eq!(delta.sequence, 0);
         assert_eq!(delta.flags, row.flags);
         assert_eq!(delta.ts_event.as_u64(), row.event_time as u64);
         if row.action == DeltaAction::Clear.as_str() {
@@ -371,8 +427,7 @@ fn zero_size_delete_round_trips_through_nt_catalog() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path()).expect("project");
 
-    let mut loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
-    loaded.sort_by_key(|delta| delta.sequence);
+    let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     assert_eq!(loaded.len(), 3);
 
     let delete = &loaded[2];
@@ -403,8 +458,7 @@ fn snapshot_expands_to_clear_then_adds_with_f_last() {
     let table = snapshot_then_delta_table();
     let dir = tempfile::TempDir::new().expect("temp dir");
     project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path()).expect("project");
-    let mut loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
-    loaded.sort_by_key(|delta| delta.sequence);
+    let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
 
     // The first delta is the snapshot Clear; the next two are Adds.
     assert_eq!(loaded[0].action, BookAction::Clear);
@@ -414,13 +468,99 @@ fn snapshot_expands_to_clear_then_adds_with_f_last() {
     assert_ne!(loaded[2].flags & RecordFlag::F_LAST as u8, 0);
     // The Clear does NOT carry F_LAST (the expansion continues past it).
     assert_eq!(loaded[0].flags & RecordFlag::F_LAST as u8, 0);
-    // Sequences are dense and 0-based; ts_init is non-strict ascending.
+    // No venue sequence exists; NT carries zero while encounter order and
+    // non-strict ts_init ordering survive the catalog round-trip.
     let mut prev_ts = u64::MIN;
-    for (index, delta) in loaded.iter().enumerate() {
-        assert_eq!(delta.sequence, index as u64);
+    for delta in &loaded {
+        assert_eq!(delta.sequence, 0);
         assert!(delta.ts_init.as_u64() >= prev_ts);
         prev_ts = delta.ts_init.as_u64();
     }
+}
+
+#[test]
+fn replay_seed_precedes_same_timestamp_selected_event_after_catalog_round_trip() {
+    let snapshot = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
+    let mbp = RecordFlag::F_MBP as u8;
+    let last = RecordFlag::F_LAST as u8;
+    let table = table_with_rows(vec![
+        delta_row(0, BASE_EVENT_TIME, DeltaAction::Clear, "", "", "", snapshot),
+        delta_row(
+            1,
+            BASE_EVENT_TIME,
+            DeltaAction::Add,
+            DeltaSide::Buy.as_str(),
+            "100",
+            "1",
+            snapshot,
+        ),
+        delta_row(
+            2,
+            BASE_EVENT_TIME,
+            DeltaAction::Add,
+            DeltaSide::Sell.as_str(),
+            "101",
+            "2",
+            snapshot | last,
+        ),
+        delta_row(
+            3,
+            BASE_EVENT_TIME,
+            DeltaAction::Update,
+            DeltaSide::Buy.as_str(),
+            "100",
+            "3",
+            mbp | last,
+        ),
+    ]);
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
+        .expect("project replay seed and selected event");
+
+    let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
+    assert_eq!(
+        loaded.iter().map(|delta| delta.action).collect::<Vec<_>>(),
+        vec![
+            BookAction::Clear,
+            BookAction::Add,
+            BookAction::Add,
+            BookAction::Update,
+        ]
+    );
+    assert_eq!(loaded[2].flags & last, last);
+    assert_eq!(loaded[3].flags & last, last);
+
+    let instrument_id = loaded[0].instrument_id;
+    let mut book = OrderBook::new(instrument_id, BookType::L2_MBP);
+    let mut event = Vec::new();
+    for delta in loaded {
+        let closes_event = delta.flags & last != 0;
+        event.push(delta);
+        if closes_event {
+            book.apply_deltas(
+                &OrderBookDeltas::new_checked(instrument_id, std::mem::take(&mut event))
+                    .expect("construct replay event"),
+            )
+            .expect("apply replay event");
+        }
+    }
+    assert!(event.is_empty());
+    assert_eq!(
+        book.best_bid_price().expect("best bid").as_decimal(),
+        Price::from("100").as_decimal()
+    );
+    assert_eq!(
+        book.best_bid_size().expect("best bid size").as_decimal(),
+        Quantity::from("3").as_decimal()
+    );
+    assert_eq!(
+        book.best_ask_price().expect("best ask").as_decimal(),
+        Price::from("101").as_decimal()
+    );
+    assert_eq!(
+        book.best_ask_size().expect("best ask size").as_decimal(),
+        Quantity::from("2").as_decimal()
+    );
 }
 
 #[test]
@@ -501,8 +641,7 @@ fn delta_precision_widens_when_data_finer_than_tick() {
     project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
         .expect("projection widens precision instead of rejecting accepted data");
 
-    let mut loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
-    loaded.sort_by_key(|delta| delta.sequence);
+    let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     // Read-back preserves the exact archived values at the widened precision.
     assert_eq!(
         loaded[1].order.price.as_decimal(),

@@ -98,8 +98,9 @@ impl DeltaSide {
 ///
 /// The provenance prefix mirrors
 /// [`super::canonical_trades::CanonicalTradeRow`] exactly; the payload fields
-/// (`event_time`, `action`, `side`, `price`, `size`, `order_id`, `flags`,
-/// `sequence`) describe a single NautilusTrader `OrderBookDelta`.
+/// (`event_time`, `action`, `side`, `price`, `size`, `order_id`, and `flags`)
+/// describe a single NautilusTrader `OrderBookDelta`. `sequence` is canonical
+/// audit ordering; NT sequence comes from `source_sequence` when available.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalOrderBookDeltaRow {
     pub schema_version: String,
@@ -138,7 +139,8 @@ pub struct CanonicalOrderBookDeltaRow {
     pub order_id: u64,
     /// `RecordFlag` bitmask carried verbatim into the NautilusTrader delta.
     pub flags: u8,
-    /// Dense monotonic venue sequence assigned to the delta.
+    /// Dense monotonic converter row ordinal used for canonical audit ordering.
+    /// This is distinct from the venue-native [`Self::source_sequence`].
     pub sequence: u64,
 }
 
@@ -157,8 +159,8 @@ pub struct CanonicalOrderBookDeltasTable {
 }
 
 impl CanonicalOrderBookDeltasTable {
-    /// Validate required fields, fidelity class, timestamps, sequence density,
-    /// and the snapshot delta-flag contract.
+    /// Validate required fields, fidelity class, timestamps, audit ordering,
+    /// L2 flags, and `F_LAST`-closed source-event consistency.
     ///
     /// # Errors
     ///
@@ -196,6 +198,7 @@ impl CanonicalOrderBookDeltasTable {
 
         let snapshot_flag = RecordFlag::F_SNAPSHOT as u8;
         let last_flag = RecordFlag::F_LAST as u8;
+        let mbp_flag = RecordFlag::F_MBP as u8;
         let mut previous_event_time = i64::MIN;
         for (index, row) in self.rows.iter().enumerate() {
             ensure!(
@@ -249,10 +252,14 @@ impl CanonicalOrderBookDeltasTable {
                     );
                 }
             }
+            ensure!(
+                row.flags & mbp_flag == mbp_flag,
+                "row {index}: L2 order-book delta flags must contain F_MBP"
+            );
             validate_delta_action_payload(index, row, snapshot_flag)?;
         }
 
-        validate_snapshot_f_last(&self.rows, last_flag)?;
+        validate_delta_events(&self.rows, last_flag, snapshot_flag)?;
         Ok(())
     }
 }
@@ -277,9 +284,8 @@ fn validate_delta_action_payload(
                 row.size.is_empty(),
                 "row {index}: CLEAR row must have empty size"
             );
-            // NautilusTrader's own snapshot helpers emit CLEAR rows carrying
-            // F_SNAPSHOT only; F_MBP is an informational price-level marker
-            // that converters may add but the contract must not mandate.
+            // The table-wide L2 contract already requires F_MBP. CLEAR also
+            // requires F_SNAPSHOT so replay can reset the book atomically.
             ensure!(
                 row.flags & snapshot_flag == snapshot_flag,
                 "row {index}: CLEAR row flags must contain F_SNAPSHOT"
@@ -320,42 +326,95 @@ fn validate_delta_action_payload(
     Ok(())
 }
 
-/// Validate that every snapshot expansion closes with `F_LAST` and that each
-/// standalone (non-snapshot) delta is self-closing.
+/// Validate that every source event closes with exactly one final `F_LAST`.
 ///
 /// Every book event ends with exactly one `F_LAST` row. An event starts at row
 /// 0 or immediately after a row carrying `F_LAST`. A snapshot expansion is one
 /// such event whose first row is a `CLEAR` (and whose final row carries
-/// `F_LAST`); a single-level delta is a one-row event that carries `F_LAST` on
-/// its own row. A `CLEAR` may therefore appear only at an event start, and the
-/// final row of the table must close its event with `F_LAST`.
-fn validate_snapshot_f_last(rows: &[CanonicalOrderBookDeltaRow], last_flag: u8) -> Result<()> {
-    let mut at_event_start = true;
-    let mut previous_was_clear = false;
+/// `F_LAST`), except that a snapshot immediately following a lone `CLEAR` may
+/// contain only `ADD` rows because the book is already established empty. An
+/// incremental source event can carry one or more level changes; only its final
+/// row carries `F_LAST`. A `CLEAR` may therefore appear only at an event start,
+/// and the final row of the table must close its event.
+fn validate_delta_events(
+    rows: &[CanonicalOrderBookDeltaRow],
+    last_flag: u8,
+    snapshot_flag: u8,
+) -> Result<()> {
+    let mut event_start = 0;
+    let mut book_established_empty = false;
     for (index, row) in rows.iter().enumerate() {
+        if index != event_start {
+            validate_same_delta_event(index, &rows[event_start], row)?;
+        }
         let is_clear = row.action == DeltaAction::Clear.as_str();
         if is_clear {
             ensure!(
-                at_event_start,
+                index == event_start,
                 "row {index}: CLEAR may only begin a book event (previous event not closed with F_LAST)"
             );
-            // Two CLEARs in a row carry no book information, and a table that
-            // OPENS with two CLEARs would make the catalog's Parquet metadata
-            // pin file precision from a payload-free row, silently corrupting
-            // every later price/size on read-back. Forbid the shape outright.
+        }
+        let event_is_snapshot = rows[event_start].flags & snapshot_flag != 0;
+        if index == event_start && event_is_snapshot && !is_clear {
             ensure!(
-                !previous_was_clear,
-                "row {index}: consecutive CLEAR rows are not a valid book event sequence"
+                book_established_empty,
+                "row {index}: F_SNAPSHOT event without CLEAR requires an immediately preceding lone CLEAR"
             );
         }
-        previous_was_clear = is_clear;
+        let carries_snapshot = row.flags & snapshot_flag != 0;
+        if event_is_snapshot {
+            ensure!(
+                carries_snapshot,
+                "row {index}: every row in a snapshot event must contain F_SNAPSHOT"
+            );
+            if !is_clear {
+                ensure!(
+                    row.action == DeltaAction::Add.as_str(),
+                    "row {index}: snapshot payload rows must use ADD"
+                );
+            }
+        } else {
+            ensure!(
+                !carries_snapshot,
+                "row {index}: incremental event rows must not contain F_SNAPSHOT"
+            );
+        }
         let closes_event = row.flags & last_flag != 0;
-        at_event_start = closes_event;
+        if closes_event {
+            book_established_empty = index == event_start && is_clear;
+            event_start = index + 1;
+        }
     }
     ensure!(
-        at_event_start,
+        event_start == rows.len(),
         "row {}: final book event is not closed with F_LAST",
         rows.len() - 1
+    );
+    Ok(())
+}
+
+fn validate_same_delta_event(
+    index: usize,
+    first: &CanonicalOrderBookDeltaRow,
+    row: &CanonicalOrderBookDeltaRow,
+) -> Result<()> {
+    ensure!(
+        row.event_time == first.event_time,
+        "row {index}: event_time {} differs from source-event start {}",
+        row.event_time,
+        first.event_time
+    );
+    ensure!(
+        row.availability_time == first.availability_time,
+        "row {index}: availability_time {:?} differs from source-event start {:?}",
+        row.availability_time,
+        first.availability_time
+    );
+    ensure!(
+        row.source_sequence == first.source_sequence,
+        "row {index}: source_sequence {:?} differs from source-event start {:?}",
+        row.source_sequence,
+        first.source_sequence
     );
     Ok(())
 }
@@ -1983,7 +2042,7 @@ mod tests {
             event_time,
             capture_time: event_time,
             availability_time: None,
-            source_sequence: Some(sequence.to_string()),
+            source_sequence: None,
             raw_payload_id: "feedface".to_string(),
             source_proof_id: "source-proof-synthetic".to_string(),
             payload_hash: "feedface".to_string(),
@@ -2049,6 +2108,38 @@ mod tests {
         snapshot_table()
             .validate()
             .expect("snapshot expansion is valid");
+    }
+
+    #[test]
+    fn deltas_validate_accepts_snapshot_adds_after_lone_clear() {
+        let mut table = snapshot_table();
+        let snapshot_flags = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
+        let last = RecordFlag::F_LAST as u8;
+        let event_time = table.rows[0].event_time;
+        table.rows = vec![
+            delta_row(
+                0,
+                event_time,
+                DeltaAction::Clear,
+                "",
+                "",
+                "",
+                snapshot_flags | last,
+            ),
+            delta_row(
+                1,
+                event_time + 1,
+                DeltaAction::Add,
+                DeltaSide::Buy.as_str(),
+                "0.49",
+                "10",
+                snapshot_flags | last,
+            ),
+        ];
+
+        table
+            .validate()
+            .expect("a snapshot after an established empty book may omit CLEAR");
     }
 
     #[test]
@@ -2127,10 +2218,50 @@ mod tests {
     }
 
     #[test]
-    fn deltas_validate_accepts_snapshot_flag_only_clear() {
-        // NautilusTrader's own snapshot helpers emit CLEAR rows carrying
-        // F_SNAPSHOT only (no F_MBP); the canonical contract must accept the
-        // shape converters faithfully port from that helper.
+    fn deltas_validate_rejects_snapshot_payload_missing_snapshot_flag() {
+        let mut table = snapshot_table();
+        table.rows[1].flags = RecordFlag::F_MBP as u8;
+        let error = table
+            .validate()
+            .expect_err("every row in a snapshot event must carry F_SNAPSHOT");
+        assert!(error.to_string().contains("F_SNAPSHOT"), "{error}");
+    }
+
+    #[test]
+    fn deltas_validate_rejects_non_add_snapshot_payload() {
+        let mut table = snapshot_table();
+        table.rows[1].action = DeltaAction::Update.as_str().to_string();
+
+        let error = table
+            .validate()
+            .expect_err("snapshot payloads must use ADD semantics");
+
+        assert!(error.to_string().contains("must use ADD"), "{error}");
+    }
+
+    #[test]
+    fn deltas_validate_rejects_incremental_event_with_snapshot_flag() {
+        let mut table = snapshot_table();
+        table.rows.push(delta_row(
+            3,
+            table.rows[2].event_time + 1,
+            DeltaAction::Update,
+            DeltaSide::Buy.as_str(),
+            "0.48",
+            "5",
+            RecordFlag::F_MBP as u8 | RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_LAST as u8,
+        ));
+        let error = table
+            .validate()
+            .expect_err("incremental events must not claim snapshot semantics");
+        assert!(error.to_string().contains("F_SNAPSHOT"), "{error}");
+    }
+
+    #[test]
+    fn deltas_validate_rejects_snapshot_rows_missing_mbp() {
+        // Native NT helpers do not always add F_MBP, but this canonical table
+        // specifically claims full-depth L2/MBP evidence and must retain that
+        // semantic marker on every row before entering the catalog bridge.
         let snapshot = RecordFlag::F_SNAPSHOT as u8;
         let last = RecordFlag::F_LAST as u8;
         let event_time = 1_700_000_000_000_000_000;
@@ -2159,17 +2290,55 @@ mod tests {
             rows,
             ..snapshot_table()
         };
-        table
+        let error = table
             .validate()
-            .expect("snapshot-flag-only CLEAR expansion is valid");
+            .expect_err("snapshot rows missing F_MBP must be rejected");
+        assert!(error.to_string().contains("F_MBP"), "{error}");
     }
 
     #[test]
-    fn deltas_validate_rejects_consecutive_clear_rows() {
-        // A table opening with two CLEAR rows would let the catalog's Parquet
-        // metadata pin file precision from a payload-free row, silently
-        // corrupting every later price/size on read-back.
-        let snapshot = RecordFlag::F_SNAPSHOT as u8;
+    fn deltas_validate_rejects_event_time_change_before_f_last() {
+        let mut table = snapshot_table();
+        table.rows[1].event_time += 1;
+        table.rows[2].event_time += 1;
+
+        let error = table
+            .validate()
+            .expect_err("one source event cannot carry multiple event times");
+
+        assert!(error.to_string().contains("event_time"), "{error}");
+    }
+
+    #[test]
+    fn deltas_validate_rejects_availability_time_change_before_f_last() {
+        let mut table = snapshot_table();
+        table.rows[0].availability_time = Some(table.rows[0].event_time);
+
+        let error = table
+            .validate()
+            .expect_err("one source event cannot carry multiple availability times");
+
+        assert!(error.to_string().contains("availability_time"), "{error}");
+    }
+
+    #[test]
+    fn deltas_validate_rejects_native_sequence_change_before_f_last() {
+        let mut table = snapshot_table();
+        for row in &mut table.rows {
+            row.source_sequence = Some("77".to_string());
+        }
+        table.rows[1].source_sequence = Some("78".to_string());
+
+        let error = table
+            .validate()
+            .expect_err("one source event cannot carry multiple native sequences");
+
+        assert!(error.to_string().contains("source_sequence"), "{error}");
+    }
+
+    #[test]
+    fn deltas_validate_accepts_consecutive_closed_empty_snapshot_events() {
+        let snapshot = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
         let last = RecordFlag::F_LAST as u8;
         let event_time = 1_700_000_000_000_000_000;
         let rows = vec![
@@ -2198,17 +2367,16 @@ mod tests {
                 DeltaSide::Buy.as_str(),
                 "0.48",
                 "5",
-                last,
+                RecordFlag::F_MBP as u8 | last,
             ),
         ];
         let table = CanonicalOrderBookDeltasTable {
             rows,
             ..snapshot_table()
         };
-        let error = table
+        table
             .validate()
-            .expect_err("consecutive CLEAR rows rejected");
-        assert!(error.to_string().contains("consecutive CLEAR"), "{error}");
+            .expect("distinct closed empty snapshot events remain replayable");
     }
 
     #[test]
@@ -2359,18 +2527,13 @@ mod tests {
             .expect("DELETE with size 0 must be accepted (level-removal)");
     }
 
-    // Fix 3 — negative test for the "CLEAR may only begin a book event" rule.
-    // The existing deltas_validate_rejects_consecutive_clear_rows test places
-    // both CLEARs at event boundaries (each carries F_LAST), so it only trips
-    // the consecutive-CLEAR ensure.  This test constructs a mid-event CLEAR
-    // (its predecessor did NOT carry F_LAST) to exercise the at_event_start
-    // ensure on line ~324 of validate_snapshot_f_last.
+    // Negative test for the "CLEAR may only begin a book event" rule.
     #[test]
     fn deltas_validate_rejects_mid_event_clear() {
         // Row 0: ADD without F_LAST — opens an event but does not close it.
         // Row 1: CLEAR — appears mid-event; predecessor is not event-closing.
         // This shape must be rejected with the "CLEAR may only begin a book
-        // event" message, not the consecutive-CLEAR message.
+        // event" message.
         let mbp = RecordFlag::F_MBP as u8;
         let snapshot_flags = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
         let last = RecordFlag::F_LAST as u8;

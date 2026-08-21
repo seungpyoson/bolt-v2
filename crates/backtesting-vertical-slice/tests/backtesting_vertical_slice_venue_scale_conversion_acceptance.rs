@@ -12,7 +12,8 @@ use backtesting_vertical_slice::source_universe_conversion_queue::write_source_u
 use backtesting_vertical_slice::source_universe_conversion_run_plan::write_source_universe_conversion_run_plan_from_spec_file;
 use backtesting_vertical_slice::source_universe_source_proofs::write_source_universe_source_proof_set_from_spec_file;
 use backtesting_vertical_slice::venue_scale_conversion_acceptance::{
-    VenueScaleConversionAcceptanceLedger, VenueScaleConversionAcceptanceStatus,
+    VENUE_SCALE_CONVERSION_ACCEPTANCE_SCHEMA_VERSION, VenueScaleConversionAcceptanceLedger,
+    VenueScaleConversionAcceptanceStatus,
     write_venue_scale_conversion_acceptance_ledger_from_spec_file,
 };
 
@@ -258,9 +259,11 @@ venue = "pmxt"
 [[venue.universe]]
 universe_id = "pmxt-polymarket-selected-source-2026-05-20"
 scope_label = "Polymarket selected source one binary option"
-status = "converted"
-selected_conversion_manifest_path = "{pmxt_conversion_manifest}"
+status = "blocked"
 selected_source_report_path = "{pmxt_selected_source_report}"
+blocking_issues = [
+  "historical_v1_delta_conversion_requires_v2_recertification",
+]
 
 [[venue.universe]]
 universe_id = "pmxt-polymarket-full-current-data"
@@ -315,9 +318,6 @@ blocking_issues = [
             bybit_object_gates = reference_root
                 .join("source-universe-object-gates/bybit-public-archive-tick-trades-2025-06-01-2026-06-01/gates/source-universe-object-gates.json")
                 .display(),
-            pmxt_conversion_manifest = reference_root
-                .join("pmxt-polymarket-selected-source-conversion/backtests/pmxt-run/conversion-manifest.json")
-                .display(),
             pmxt_selected_source_report = reference_root
                 .join("pmxt-polymarket-selected-source-conversion/selected-source/selected-source-report.json")
                 .display(),
@@ -332,17 +332,21 @@ blocking_issues = [
             .expect("ledger parses");
 
     assert_eq!(
+        ledger.schema_version,
+        VENUE_SCALE_CONVERSION_ACCEPTANCE_SCHEMA_VERSION
+    );
+    assert_eq!(
         ledger.ledger_id,
         "venue-scale-conversion-acceptance-ledger-binance-bybit-pmxt-current"
     );
     assert_eq!(ledger.status, VenueScaleConversionAcceptanceStatus::Blocked);
     assert_eq!(ledger.venue_count, 3);
     assert_eq!(ledger.universe_count, 7);
-    assert_eq!(ledger.converted_universes, 3);
+    assert_eq!(ledger.converted_universes, 2);
     assert_eq!(ledger.source_only_universes, 2);
-    assert_eq!(ledger.blocked_universes, 2);
-    assert_eq!(ledger.total_converted_canonical_rows, 4_602_457);
-    assert_eq!(ledger.total_converted_nt_catalog_rows, 4_602_458);
+    assert_eq!(ledger.blocked_universes, 3);
+    assert_eq!(ledger.total_converted_canonical_rows, 4_602_354);
+    assert_eq!(ledger.total_converted_nt_catalog_rows, 4_602_354);
     assert_eq!(ledger.total_source_only_objects, 7_908);
     assert_eq!(ledger.total_source_only_object_gates, 7_908);
     assert_eq!(ledger.total_source_only_accepted_bytes, 22_057_801_068);
@@ -564,9 +568,9 @@ blocking_issues = [
         .find(|venue| venue.venue == "pmxt")
         .expect("pmxt venue");
     assert_eq!(pmxt.status, VenueScaleConversionAcceptanceStatus::Blocked);
-    assert_eq!(pmxt.converted_universes, 1);
+    assert_eq!(pmxt.converted_universes, 0);
     assert_eq!(pmxt.source_only_universes, 0);
-    assert_eq!(pmxt.blocked_universes, 1);
+    assert_eq!(pmxt.blocked_universes, 2);
     assert_eq!(pmxt.total_source_only_objects, 0);
     assert_eq!(pmxt.total_source_only_object_gates, 0);
     assert_eq!(pmxt.total_source_only_accepted_bytes, 0);
@@ -667,17 +671,17 @@ blocking_issues = [
         .iter()
         .find(|universe| universe.universe_id == "pmxt-polymarket-selected-source-2026-05-20")
         .expect("pmxt selected universe");
-    assert_eq!(pmxt_selected.converted_canonical_rows, 103);
     assert_eq!(
-        pmxt_selected
-            .catalog_rows_by_nt_data_type
-            .get("OrderBookDelta"),
-        Some(&103)
+        pmxt_selected.status,
+        VenueScaleConversionAcceptanceStatus::Blocked
     );
     assert_eq!(
-        pmxt_selected.catalog_rows_by_nt_data_type.get("TradeTick"),
-        Some(&1)
+        pmxt_selected.blocking_issues,
+        vec!["historical_v1_delta_conversion_requires_v2_recertification"]
     );
+    assert_eq!(pmxt_selected.converted_record_count, 0);
+    assert_eq!(pmxt_selected.converted_canonical_rows, 0);
+    assert_eq!(pmxt_selected.converted_nt_catalog_rows, 0);
 }
 
 #[test]
@@ -829,15 +833,29 @@ fn venue_scale_ledger_uses_stable_manifest_identity_across_materialization_roots
     );
 }
 
-/// Regression for the selected-conversion-manifest completion-proof gate: a
-/// manifest that parses but does not attest a *finalized* conversion (zero
-/// canonical rows, or a blank catalog hash) must be rejected. Without the gate,
-/// such a stub satisfied the Converted coverage requirement through the
-/// planned == 0 path on parseability alone — the same false-positive class the
-/// ledger path closes via `status == "ready"`.
+/// A selected conversion manifest is historical conversion evidence, not the
+/// current venue-scale completion authority. Current `Converted` status must
+/// come through the ready completion-ledger path so a stale logical catalog
+/// hash cannot be silently re-certified by non-empty manifest fields.
 #[test]
-fn converted_universe_via_selected_manifest_rejects_unfinalized_manifest() {
-    fn spec_for(manifest_path: &Path, output_dir: &Path) -> String {
+fn selected_conversion_manifest_cannot_grant_current_converted_status() {
+    let temp_dir = tempdir_in_repo_target();
+    let output_dir = temp_dir.path().join("acceptance-ledger");
+    let manifest_path = temp_dir.path().join("historical-conversion-manifest.json");
+    fs::write(
+        &manifest_path,
+        r#"{
+  "canonical_rows": 42,
+  "catalog_rows_by_nt_data_type": {"OrderBookDelta": 42},
+  "catalog_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "output_catalog_uri": "file:///tmp/historical",
+  "completed_at": "2026-06-10T14:30:00Z"
+}"#,
+    )
+    .expect("write historical conversion manifest");
+    let spec_path = temp_dir.path().join("selected-manifest-spec.toml");
+    fs::write(
+        &spec_path,
         format!(
             r#"ledger_id = "venue-scale-conversion-acceptance-ledger-degenerate"
 output_dir = "{output_dir}"
@@ -854,56 +872,356 @@ selected_conversion_manifest_path = "{manifest_path}"
 "#,
             output_dir = output_dir.display(),
             manifest_path = manifest_path.display(),
-        )
-    }
+        ),
+    )
+    .expect("write selected-manifest spec");
+    let error = write_venue_scale_conversion_acceptance_ledger_from_spec_file(&spec_path)
+        .expect_err("historical selected manifest must not grant current converted status");
+    assert!(
+        format!("{error:#}").contains("selected_conversion_manifest_path"),
+        "expected unknown selected-manifest authority rejection, got: {error:#}"
+    );
+}
 
+#[test]
+fn fabricated_completion_summary_cannot_grant_current_converted_status() {
     let temp_dir = tempdir_in_repo_target();
     let output_dir = temp_dir.path().join("acceptance-ledger");
-
-    // Zero canonical rows: parses (all required fields present) but is not a
-    // finalized conversion.
-    let zero_rows_manifest = temp_dir.path().join("zero-rows-manifest.json");
+    let completion_ledger_path = temp_dir.path().join("fabricated-completion-ledger.json");
     fs::write(
-        &zero_rows_manifest,
+        &completion_ledger_path,
         r#"{
-  "canonical_rows": 0,
-  "catalog_rows_by_nt_data_type": {},
-  "catalog_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-  "output_catalog_uri": "file:///tmp/none",
-  "completed_at": "2026-06-10T14:30:00Z"
+  "ledger_id": "fabricated-completion-ledger",
+  "status": "ready",
+  "record_count": 1,
+  "total_canonical_rows": 1,
+  "total_nt_iterations": 1
 }"#,
     )
-    .expect("write zero-rows manifest");
-    let zero_spec = temp_dir.path().join("zero-rows-spec.toml");
-    fs::write(&zero_spec, spec_for(&zero_rows_manifest, &output_dir)).expect("write zero spec");
-    let error = write_venue_scale_conversion_acceptance_ledger_from_spec_file(&zero_spec)
-        .expect_err("zero-canonical-row manifest must be rejected as a completion proof");
+    .expect("write fabricated completion summary");
+    let spec_path = temp_dir.path().join("fabricated-completion-spec.toml");
+    fs::write(
+        &spec_path,
+        format!(
+            r#"ledger_id = "venue-scale-conversion-acceptance-ledger-fabricated"
+output_dir = "{output_dir}"
+
+[[venue]]
+venue_id = "fabricated-venue"
+venue = "fabricated"
+
+[[venue.universe]]
+universe_id = "fabricated-universe"
+scope_label = "fabricated completion authority"
+status = "converted"
+completion_ledger_path = "{completion_ledger_path}"
+"#,
+            output_dir = output_dir.display(),
+            completion_ledger_path = completion_ledger_path.display(),
+        ),
+    )
+    .expect("write fabricated completion spec");
+
+    let error = write_venue_scale_conversion_acceptance_ledger_from_spec_file(&spec_path)
+        .expect_err("a loose ready summary must not grant current converted authority");
     assert!(
-        format!("{error:#}").contains("zero canonical rows"),
-        "expected zero-canonical-rows rejection, got: {error:#}"
+        format!("{error:#}").contains("schema_version"),
+        "expected typed completion-ledger schema rejection, got: {error:#}"
+    );
+}
+
+#[test]
+fn completion_ledger_with_inconsistent_totals_cannot_grant_converted_status() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let temp_dir = tempdir_in_repo_target();
+    let completion_root = temp_dir.path().join("completion-ledger");
+    fs::create_dir_all(&completion_root).expect("create completion-ledger temp dir");
+    let completion_ledger_path = generate_evicted_completion_ledger(
+        &reference_root,
+        "binance-bnbusdc-2026-03-01-2026-05-31",
+        PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+        BACKFILL_CONVERSION_COMPLETION_BINANCE_LEDGER_PATH,
+        &completion_root,
+    );
+    let mut completion_ledger: serde_json::Value = serde_json::from_slice(
+        &fs::read(&completion_ledger_path).expect("read generated completion ledger"),
+    )
+    .expect("parse generated completion ledger");
+    let declared_rows = completion_ledger["total_canonical_rows"]
+        .as_u64()
+        .expect("completion ledger declares total_canonical_rows");
+    completion_ledger["total_canonical_rows"] = serde_json::json!(declared_rows + 1);
+    fs::write(
+        &completion_ledger_path,
+        serde_json::to_vec_pretty(&completion_ledger).expect("serialize inconsistent ledger"),
+    )
+    .expect("write inconsistent completion ledger");
+
+    let output_dir = temp_dir.path().join("acceptance-ledger");
+    let spec_path = temp_dir.path().join("inconsistent-completion-spec.toml");
+    fs::write(
+        &spec_path,
+        format!(
+            r#"ledger_id = "venue-scale-conversion-acceptance-ledger-inconsistent"
+output_dir = "{output_dir}"
+
+[[venue]]
+venue_id = "inconsistent-venue"
+venue = "inconsistent"
+
+[[venue.universe]]
+universe_id = "inconsistent-universe"
+scope_label = "inconsistent completion authority"
+status = "converted"
+completion_ledger_path = "{completion_ledger_path}"
+"#,
+            output_dir = output_dir.display(),
+            completion_ledger_path = completion_ledger_path.display(),
+        ),
+    )
+    .expect("write inconsistent completion spec");
+
+    let error = write_venue_scale_conversion_acceptance_ledger_from_spec_file(&spec_path)
+        .expect_err("an internally inconsistent ready ledger must not grant converted authority");
+    assert!(
+        format!("{error:#}").contains("total_canonical_rows mismatch"),
+        "expected completion total mismatch rejection, got: {error:#}"
+    );
+}
+
+#[test]
+fn completion_ledger_without_required_record_coverage_cannot_grant_converted_status() {
+    let reference_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../specs/023-nt-research-analytics-platform/reference");
+    let temp_dir = tempdir_in_repo_target();
+    let completion_root = temp_dir.path().join("completion-ledger");
+    fs::create_dir_all(&completion_root).expect("create completion-ledger temp dir");
+    let generated_completion_ledger = generate_evicted_completion_ledger(
+        &reference_root,
+        "binance-bnbusdc-2026-03-01-2026-05-31",
+        PHASE3_BINANCE_BNBUSDC_CONVERSION_BATCH_PLAN_PATH,
+        BACKFILL_CONVERSION_COMPLETION_BINANCE_LEDGER_PATH,
+        &completion_root,
+    );
+    let completion_ledger: serde_json::Value = serde_json::from_slice(
+        &fs::read(&generated_completion_ledger).expect("read generated completion ledger"),
+    )
+    .expect("parse generated completion ledger");
+
+    let assert_rejected = |case: &str, ledger: &serde_json::Value, expected_error: &str| {
+        let case_root = temp_dir.path().join(case);
+        fs::create_dir_all(&case_root).expect("create coverage case directory");
+        let completion_ledger_path = case_root.join("completion-ledger.json");
+        fs::write(
+            &completion_ledger_path,
+            serde_json::to_vec_pretty(ledger).expect("serialize incomplete ledger"),
+        )
+        .expect("write incomplete completion ledger");
+        let output_dir = case_root.join("acceptance-ledger");
+        let spec_path = case_root.join("acceptance-spec.toml");
+        fs::write(
+            &spec_path,
+            format!(
+                r#"ledger_id = "venue-scale-conversion-acceptance-ledger-{case}"
+output_dir = "{output_dir}"
+
+[[venue]]
+venue_id = "{case}-venue"
+venue = "{case}"
+
+[[venue.universe]]
+universe_id = "{case}-universe"
+scope_label = "incomplete completion-ledger coverage"
+status = "converted"
+completion_ledger_path = "{completion_ledger_path}"
+"#,
+                output_dir = output_dir.display(),
+                completion_ledger_path = completion_ledger_path.display(),
+            ),
+        )
+        .expect("write coverage case spec");
+
+        let error = write_venue_scale_conversion_acceptance_ledger_from_spec_file(&spec_path)
+            .expect_err("incomplete ready-ledger coverage must not grant converted authority");
+        assert!(
+            format!("{error:#}").contains(expected_error),
+            "expected {expected_error:?} rejection for {case}, got: {error:#}"
+        );
+    };
+
+    let mut incomplete_mapping = completion_ledger.clone();
+    let mapped = incomplete_mapping["mapping_proven_records"]
+        .as_u64()
+        .expect("completion ledger declares mapping_proven_records");
+    incomplete_mapping["records"][0]["mapping_current_bte_status"] =
+        serde_json::json!("not-current");
+    incomplete_mapping["mapping_proven_records"] = serde_json::json!(mapped - 1);
+    assert_rejected(
+        "incomplete-mapping",
+        &incomplete_mapping,
+        "does not prove catalog mapping for every record",
     );
 
-    // Blank catalog hash: a manifest with rows but no catalog hash never wrote a
-    // catalog and is not a finalized conversion.
-    let blank_hash_manifest = temp_dir.path().join("blank-hash-manifest.json");
-    fs::write(
-        &blank_hash_manifest,
-        r#"{
-  "canonical_rows": 42,
-  "catalog_rows_by_nt_data_type": {"TradeTick": 42},
-  "catalog_hash": "   ",
-  "output_catalog_uri": "file:///tmp/none",
-  "completed_at": "2026-06-10T14:30:00Z"
-}"#,
-    )
-    .expect("write blank-hash manifest");
-    let blank_spec = temp_dir.path().join("blank-hash-spec.toml");
-    fs::write(&blank_spec, spec_for(&blank_hash_manifest, &output_dir)).expect("write blank spec");
-    let error = write_venue_scale_conversion_acceptance_ledger_from_spec_file(&blank_spec)
-        .expect_err("blank-catalog-hash manifest must be rejected as a completion proof");
-    assert!(
-        format!("{error:#}").contains("catalog hash"),
-        "expected missing-catalog-hash rejection, got: {error:#}"
+    let mut incomplete_publication = completion_ledger.clone();
+    let published = incomplete_publication["published_records"]
+        .as_u64()
+        .expect("completion ledger declares published_records");
+    incomplete_publication["records"][0]["published_catalog_direct_s3"] = serde_json::json!(false);
+    incomplete_publication["published_records"] = serde_json::json!(published - 1);
+    assert_rejected(
+        "incomplete-publication",
+        &incomplete_publication,
+        "does not prove direct S3 publication for every record",
+    );
+
+    let mut empty_ledger_identity = completion_ledger.clone();
+    empty_ledger_identity["ledger_id"] = serde_json::json!("   ");
+    assert_rejected(
+        "empty-ledger-identity",
+        &empty_ledger_identity,
+        "contains an empty ledger_id",
+    );
+
+    let mut empty_batch_identity = completion_ledger.clone();
+    empty_batch_identity["batch_id"] = serde_json::json!("   ");
+    assert_rejected(
+        "empty-batch-identity",
+        &empty_batch_identity,
+        "contains an empty batch_id",
+    );
+
+    let mut empty_requirement_identity = completion_ledger.clone();
+    empty_requirement_identity["requirements"]["nt_data_type"] = serde_json::json!("   ");
+    for record in empty_requirement_identity["records"]
+        .as_array_mut()
+        .expect("completion ledger records are an array")
+    {
+        record["nt_data_type"] = serde_json::json!("   ");
+    }
+    assert_rejected(
+        "empty-requirement-identity",
+        &empty_requirement_identity,
+        "contains empty requirement nt_data_type",
+    );
+
+    for (case, field) in [
+        ("empty-archive-date", "archive_date"),
+        ("empty-source-binding", "source_binding"),
+        ("empty-table-family", "table_family"),
+        ("empty-source-proof-id", "source_proof_id"),
+        ("empty-operator-run-id", "operator_run_id"),
+        ("empty-output-prefix", "output_prefix"),
+        ("empty-published-catalog-uri", "published_catalog_uri"),
+    ] {
+        let mut empty_record_authority = completion_ledger.clone();
+        empty_record_authority["records"][0][field] = serde_json::json!("   ");
+        assert_rejected(
+            case,
+            &empty_record_authority,
+            &format!("contains empty record {field}"),
+        );
+    }
+
+    for (case, field) in [
+        ("invalid-accepted-object-hash", "accepted_object_sha256"),
+        (
+            "invalid-publication-evidence-hash",
+            "publication_evidence_hash",
+        ),
+        (
+            "invalid-catalog-mapping-hash",
+            "catalog_mapping_evaluation_hash",
+        ),
+        ("invalid-catalog-hash", "catalog_hash"),
+    ] {
+        let mut invalid_record_hash = completion_ledger.clone();
+        invalid_record_hash["records"][0][field] = serde_json::json!("not-a-sha256");
+        assert_rejected(
+            case,
+            &invalid_record_hash,
+            &format!("contains invalid record {field}"),
+        );
+    }
+
+    for (case, field) in [
+        (
+            "empty-publication-evidence-path",
+            "publication_evidence_path",
+        ),
+        (
+            "empty-catalog-mapping-path",
+            "catalog_mapping_evaluation_path",
+        ),
+    ] {
+        let mut empty_record_path = completion_ledger.clone();
+        empty_record_path["records"][0][field] = serde_json::json!("");
+        assert_rejected(
+            case,
+            &empty_record_path,
+            &format!("contains empty record {field}"),
+        );
+    }
+
+    let mut zero_source_proof_version = completion_ledger.clone();
+    zero_source_proof_version["records"][0]["source_proof_version"] = serde_json::json!(0);
+    assert_rejected(
+        "zero-source-proof-version",
+        &zero_source_proof_version,
+        "contains zero record source_proof_version",
+    );
+
+    let mut zero_accepted_bytes = completion_ledger.clone();
+    let accepted_bytes = zero_accepted_bytes["records"][0]["accepted_bytes"]
+        .as_u64()
+        .expect("completion record declares accepted_bytes");
+    let total_accepted_bytes = zero_accepted_bytes["total_accepted_bytes"]
+        .as_u64()
+        .expect("completion ledger declares total_accepted_bytes");
+    zero_accepted_bytes["records"][0]["accepted_bytes"] = serde_json::json!(0);
+    zero_accepted_bytes["total_accepted_bytes"] =
+        serde_json::json!(total_accepted_bytes - accepted_bytes);
+    assert_rejected(
+        "zero-accepted-bytes",
+        &zero_accepted_bytes,
+        "contains zero record accepted_bytes",
+    );
+
+    let mut zero_canonical_rows = completion_ledger.clone();
+    let canonical_rows = zero_canonical_rows["records"][0]["canonical_rows"]
+        .as_u64()
+        .expect("completion record declares canonical_rows");
+    let total_canonical_rows = zero_canonical_rows["total_canonical_rows"]
+        .as_u64()
+        .expect("completion ledger declares total_canonical_rows");
+    let total_nt_iterations = zero_canonical_rows["total_nt_iterations"]
+        .as_u64()
+        .expect("completion ledger declares total_nt_iterations");
+    for field in [
+        "canonical_rows",
+        "catalog_read_back_trade_ticks",
+        "published_catalog_expected_iterations",
+        "published_catalog_nt_iterations",
+    ] {
+        zero_canonical_rows["records"][0][field] = serde_json::json!(0);
+    }
+    zero_canonical_rows["total_canonical_rows"] =
+        serde_json::json!(total_canonical_rows - canonical_rows);
+    zero_canonical_rows["total_nt_iterations"] =
+        serde_json::json!(total_nt_iterations - canonical_rows);
+    assert_rejected(
+        "zero-canonical-rows",
+        &zero_canonical_rows,
+        "contains zero record canonical_rows",
+    );
+
+    let mut duplicate_record_identity = completion_ledger;
+    let duplicate_record_id = duplicate_record_identity["records"][0]["record_id"].clone();
+    duplicate_record_identity["records"][1]["record_id"] = duplicate_record_id;
+    assert_rejected(
+        "duplicate-record-identity",
+        &duplicate_record_identity,
+        "contains duplicate record_id",
     );
 }
 

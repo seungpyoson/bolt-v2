@@ -64,6 +64,7 @@ fn run_spec_for(gz_bytes: &[u8]) -> RunSpec {
         zip_member: None,
         max_member_bytes: None,
         member_suffix: None,
+        jsonl_stream: None,
     };
     spec
 }

@@ -18,6 +18,7 @@ use nautilus_event_store::{
     default_registry,
 };
 use nautilus_model::data::{InstrumentClose, OrderBookDelta};
+use nautilus_model::enums::RecordFlag;
 use nautilus_model::identifiers::InstrumentId;
 use ustr::Ustr;
 
@@ -48,7 +49,13 @@ pub(crate) struct ExecutionEvidence {
 }
 
 impl ExecutionEvidence {
-    pub(crate) fn book_delta_count_at(
+    /// Returns the number of complete `OrderBookDeltas` events observed before
+    /// the execution command boundary.
+    ///
+    /// NT's buffered delta stream publishes one bus message per `F_LAST`-closed
+    /// event, so the marker cursor is an event ordinal rather than a raw row
+    /// ordinal in the underlying `OrderBookDelta` catalog.
+    pub(crate) fn book_delta_event_count_at(
         &self,
         event_seq: u64,
         event_ts_init: UnixNanos,
@@ -61,18 +68,14 @@ impl ExecutionEvidence {
             .find(|entry| entry.identifier == instrument_id)
             .with_context(|| format!("marker dictionary is missing {instrument_id}"))?
             .slot;
-        let delta_count = snapshot_book_delta_count_at(
+        let event_count = snapshot_book_delta_event_count_at(
             &self.marker_snapshots,
             slot,
             event_seq,
             event_ts_init,
             instrument_id,
         )?;
-        ensure!(
-            delta_count <= catalog_deltas.len(),
-            "#789 event-bound book cursor {delta_count} exceeds hash-bound catalog length {} for {instrument_id}",
-            catalog_deltas.len()
-        );
+        ensure!(event_count > 0, "#789 event-bound book cursor is empty");
         let expected_id = InstrumentId::from_str(instrument_id)
             .map_err(|error| anyhow::anyhow!(error))
             .with_context(|| format!("parse executable-book instrument id {instrument_id:?}"))?;
@@ -82,7 +85,22 @@ impl ExecutionEvidence {
                 .all(|delta| delta.instrument_id == expected_id),
             "hash-bound catalog mixes instruments in the {instrument_id} stream"
         );
-        Ok(delta_count)
+        let last_flag = RecordFlag::F_LAST as u8;
+        ensure!(
+            catalog_deltas
+                .last()
+                .is_some_and(|delta| delta.flags & last_flag != 0),
+            "hash-bound catalog ends with an incomplete book-delta event for {instrument_id}"
+        );
+        let catalog_event_count = catalog_deltas
+            .iter()
+            .filter(|delta| delta.flags & last_flag != 0)
+            .count();
+        ensure!(
+            event_count <= catalog_event_count,
+            "#789 event-bound book cursor {event_count} exceeds {catalog_event_count} hash-bound catalog events for {instrument_id}"
+        );
+        Ok(event_count)
     }
 
     pub(crate) fn ensure_issue_789_causal_surface(
@@ -158,7 +176,7 @@ impl ExecutionEvidence {
     }
 }
 
-fn snapshot_book_delta_count_at(
+fn snapshot_book_delta_event_count_at(
     snapshots: &[DataCursorSnapshot],
     slot: u32,
     event_seq: u64,
@@ -403,24 +421,34 @@ mod tests {
             snapshot(2, 5, 200, 2),
             snapshot(3, 5, 500, 3),
         ];
-        let count =
-            snapshot_book_delta_count_at(&snapshots, 0, 5, UnixNanos::from(200), INSTRUMENT_ID)
-                .expect("synchronous SubmitOrder cursor");
+        let count = snapshot_book_delta_event_count_at(
+            &snapshots,
+            0,
+            5,
+            UnixNanos::from(200),
+            INSTRUMENT_ID,
+        )
+        .expect("synchronous SubmitOrder cursor");
         assert_eq!(count, 2);
     }
 
     #[test]
     fn executable_book_cursor_uses_prior_snapshot_when_submit_did_not_advance_data() {
         let snapshots = vec![snapshot(1, 4, 100, 1), snapshot(2, 5, 500, 2)];
-        let count =
-            snapshot_book_delta_count_at(&snapshots, 0, 5, UnixNanos::from(200), INSTRUMENT_ID)
-                .expect("prior event-bound cursor");
+        let count = snapshot_book_delta_event_count_at(
+            &snapshots,
+            0,
+            5,
+            UnixNanos::from(200),
+            INSTRUMENT_ID,
+        )
+        .expect("prior event-bound cursor");
         assert_eq!(count, 1);
     }
 
     #[test]
     fn executable_book_cursor_rejects_missing_stream_marker() {
-        let error = snapshot_book_delta_count_at(
+        let error = snapshot_book_delta_event_count_at(
             &[snapshot(1, 4, 100, 1)],
             1,
             5,
@@ -434,9 +462,14 @@ mod tests {
     #[test]
     fn executable_book_cursor_rejects_ambiguous_synchronous_snapshots() {
         let snapshots = vec![snapshot(1, 5, 200, 1), snapshot(2, 5, 200, 2)];
-        let error =
-            snapshot_book_delta_count_at(&snapshots, 0, 5, UnixNanos::from(200), INSTRUMENT_ID)
-                .expect_err("ambiguous synchronous snapshots must fail closed");
+        let error = snapshot_book_delta_event_count_at(
+            &snapshots,
+            0,
+            5,
+            UnixNanos::from(200),
+            INSTRUMENT_ID,
+        )
+        .expect_err("ambiguous synchronous snapshots must fail closed");
         assert!(error.to_string().contains("multiple synchronous"));
     }
 

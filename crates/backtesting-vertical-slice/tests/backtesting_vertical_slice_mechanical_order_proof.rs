@@ -70,6 +70,7 @@ fn converter_config() -> ConverterConfig {
             zip_member: None,
             max_member_bytes: None,
             member_suffix: None,
+            jsonl_stream: None,
         },
         csv: csv_mapping(),
         bars: None,
@@ -77,7 +78,7 @@ fn converter_config() -> ConverterConfig {
         jsonl_bars: None,
         deltas: None,
         quotes: None,
-        seeded_l2_quotes: None,
+        seeded_level_set: None,
     }
 }
 

@@ -28,9 +28,11 @@ use bolt_v2::{
     },
 };
 use nautilus_backtest::config::{
-    BacktestDataConfig, BacktestRunConfig, BacktestVenueConfig, NautilusDataType,
+    BacktestDataConfig, BacktestEngineConfig, BacktestRunConfig, BacktestVenueConfig,
+    NautilusDataType,
 };
 use nautilus_core::UnixNanos;
+use nautilus_data::engine::config::DataEngineConfig;
 use nautilus_execution::models::{
     fee::{FeeModelAny, MakerTakerFeeModel},
     fill::{FillModelAny, ProbabilisticFillModel},
@@ -1053,7 +1055,7 @@ impl std::fmt::Display for ManifestError {
             ),
             Self::OrderBookDeltaRequiresL2Mbp { book_type } => write!(
                 f,
-                "order-book-delta catalog inputs require venue.book_type L2_MBP; bolt converters emit L2 (F_LAST) deltas with no per-order identity, so book_type {book_type:?} (e.g. L3_MBO) would collapse every level change onto order_id 0 and silently corrupt the book"
+                "order-book-delta catalog inputs require the instrument venue's book_type L2_MBP; bolt converters emit L2 MBP deltas without per-order identity, so book_type {book_type:?} would not preserve the accepted book semantics"
             ),
             Self::NonLatestProofPinForNormalRun => {
                 write!(f, "normal runs cannot pin a non-latest source proof")
@@ -1876,11 +1878,24 @@ impl BacktestingRunManifest {
             ),
             resolved_surface(
                 "engine.config",
-                NtSurfaceClassification::Defaulted,
+                if engine.data_engine.is_some() {
+                    NtSurfaceClassification::CustomOwned
+                } else {
+                    NtSurfaceClassification::Defaulted
+                },
                 "BacktestRunConfig.engine",
                 format!(
-                    "BacktestEngineConfig::default(run_analysis={},bypass_logging={})",
-                    engine.run_analysis, engine.bypass_logging
+                    "BacktestEngineConfig(run_analysis={},bypass_logging={},data_engine.buffer_deltas={},data_engine.emit_quotes_from_book={})",
+                    engine.run_analysis,
+                    engine.bypass_logging,
+                    engine
+                        .data_engine
+                        .as_ref()
+                        .is_some_and(|config| config.buffer_deltas),
+                    engine
+                        .data_engine
+                        .as_ref()
+                        .is_some_and(|config| config.emit_quotes_from_book),
                 ),
             ),
             resolved_surface(
@@ -2394,7 +2409,11 @@ impl BacktestingRunManifest {
         )?;
         validate_artifact_root_protocol(&self.artifact_root)?;
         ensure_catalog_inputs_match_fidelity(&self.catalog_inputs, accepted.fidelity_class)?;
-        ensure_order_book_delta_inputs_require_l2_mbp(&self.catalog_inputs, &self.venue.book_type)?;
+        ensure_order_book_delta_inputs_require_l2_mbp(
+            &self.catalog_inputs,
+            &self.venue,
+            &self.additional_venues,
+        )?;
         validate_strategy_source(&self.strategy, &self.artifact_root)?;
         validate_manifest_economics(&self.strategy, self.economics.as_ref())?;
         validate_starting_balances(&self.venue.starting_balances)?;
@@ -2600,10 +2619,15 @@ impl BacktestingRunManifest {
             .end_time
             .map(|value| manifest_time_to_nanos("end_time", value))
             .transpose()?;
+        let data_engine = data_engine_config_for_catalog_inputs(&self.catalog_inputs)?;
+        let engine = BacktestEngineConfig::builder()
+            .maybe_data_engine(data_engine)
+            .build();
         BacktestRunConfig::builder()
             .id(self.run_id.clone())
             .venues(venues)
             .data(data)
+            .engine(engine)
             .maybe_start(start)
             .maybe_end(end)
             // Retain post-run engine state (orders, positions, account) so the
@@ -2621,6 +2645,35 @@ impl BacktestingRunManifest {
                 message: error.to_string(),
             })
     }
+}
+
+/// Enable NT's event-aligned delta buffering whenever a manifest replays
+/// order-book deltas.
+///
+/// The converter's per-source-event BBO is an audit/equivalence projection,
+/// not a strategy-visible output of delta replay. Pinned NT only creates a
+/// book updater after a managed book subscription and deduplicates unchanged
+/// BBO values, so `emit_quotes_from_book` cannot satisfy that projection's
+/// exact event cadence. Delta consumers receive complete `F_LAST` batches;
+/// explicit `QuoteTick` inputs remain the only quote-event authority.
+fn data_engine_config_for_catalog_inputs(
+    inputs: &[ManifestCatalogInput],
+) -> Result<Option<DataEngineConfig>, ManifestError> {
+    let mut has_order_book_deltas = false;
+    for input in inputs {
+        if parse_data_type_str(&input.data_type)? == NautilusDataType::OrderBookDelta {
+            has_order_book_deltas = true;
+        }
+    }
+    if !has_order_book_deltas {
+        return Ok(None);
+    }
+    Ok(Some(
+        DataEngineConfig::builder()
+            .buffer_deltas(true)
+            .emit_quotes_from_book(false)
+            .build(),
+    ))
 }
 
 fn catalog_input_to_nt_data_config(
@@ -2989,10 +3042,10 @@ fn ensure_unsupported_nt_catalog_query_surfaces_absent(
 
 /// Role a data type plays in a fidelity class's admittance set.
 ///
-/// `Primary` means the type satisfies the fidelity class's mandatory-presence
-/// requirement (a run under that class must carry at least one input of the
-/// primary type). `Auxiliary` means the type is admissible alongside a primary
-/// but does not by itself satisfy the fidelity class.
+/// `Primary` means the type satisfies the fidelity class's primary-position
+/// requirement (a run under that class must carry the primary type as its first
+/// input). `Auxiliary` means the type is admissible after that primary but does
+/// not by itself satisfy the fidelity class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AdmittanceRole {
     Primary,
@@ -3020,8 +3073,8 @@ struct AdmittanceRow {
 /// streams (each its own primary fidelity class, per the v3 tier map: Tier A
 /// quotes/index_prices/mark_prices). Their canonical tables and canonical->NT
 /// projections landed in S3 (`project_canonical_{quotes,index,mark}_to_catalog`
-/// and `read_back_{quotes,index,mark}`). Snapshot-seeded L2 quote archives now
-/// populate `QuoteTick` through the seeded-L2 quote adapter; the older flat
+/// and `read_back_{quotes,index,mark}`). Snapshot-seeded full-depth L2 archives now
+/// derive `QuoteTick` from the canonical full-depth delta stream; the older flat
 /// snapshot-quote, index-price, and mark-price raw normalizers still fail loud
 /// until their source-specific acquisition slices land (tracked by bolt-v2
 /// #836/#437). Auxiliary status/close pairing for the three new classes is
@@ -3043,7 +3096,8 @@ const ADMITTANCE_TABLE: &[AdmittanceRow] = &[
         fidelity: SourceProofFidelityClass::TradeReplay,
         role: AdmittanceRole::Auxiliary,
     },
-    // L2Replay: order-book deltas primary; trades + status/close auxiliary.
+    // L2Replay: order-book deltas primary; source-bound derived BBO, trades,
+    // status, and close streams are auxiliary and cannot replace the deltas.
     AdmittanceRow {
         data_type: NautilusDataType::OrderBookDelta,
         fidelity: SourceProofFidelityClass::L2Replay,
@@ -3051,6 +3105,11 @@ const ADMITTANCE_TABLE: &[AdmittanceRow] = &[
     },
     AdmittanceRow {
         data_type: NautilusDataType::TradeTick,
+        fidelity: SourceProofFidelityClass::L2Replay,
+        role: AdmittanceRole::Auxiliary,
+    },
+    AdmittanceRow {
+        data_type: NautilusDataType::QuoteTick,
         fidelity: SourceProofFidelityClass::L2Replay,
         role: AdmittanceRole::Auxiliary,
     },
@@ -3416,33 +3475,30 @@ fn ensure_data_type_matches_fidelity(
 ///    A class with no primary (e.g. `SignalOnly`, `MetadataOnly`,
 ///    `SnapshotReplay`, `ForwardCapturePending`) is unrunnable as a
 ///    catalog-input class — this replaces the former catch-all `other =>` arm.
-/// 2. At least one input must carry that primary type (must-have-presence).
+/// 2. The first input must carry that primary type. The manifest's first input
+///    is the primary catalog throughout strategy configuration, conversion
+///    lineage, result contracts, and completed-output verification, so an
+///    auxiliary input may never occupy that position.
 /// 3. Every input must be admissible under the class, via the single per-input
 ///    predicate [`ensure_data_type_matches_fidelity`].
 ///
-/// The must-have-presence error preserves the original "first input or `<none>`"
-/// string payload so existing assertions hold. The presence probe parses each
-/// input leniently (an unparseable/unsupported type is simply "not the primary");
-/// the precise [`ManifestError::UnsupportedDataType`] for such an input is then
-/// surfaced by the per-input predicate in step 3.
+/// The primary-position error preserves the original "first input or `<none>`"
+/// string payload. An unsupported first type is parsed before the role check so
+/// it still surfaces the precise [`ManifestError::UnsupportedDataType`].
 fn ensure_catalog_inputs_match_fidelity(
     inputs: &[ManifestCatalogInput],
     fidelity_class: SourceProofFidelityClass,
 ) -> Result<(), ManifestError> {
-    let primary_data_type = fidelity_primary_type(fidelity_class);
-    let has_primary = primary_data_type.is_some_and(|primary| {
-        inputs.iter().any(|input| {
-            parse_data_type_str(&input.data_type)
-                .map(|parsed| parsed == primary)
-                .unwrap_or(false)
-        })
-    });
-    if !has_primary {
+    let Some(first) = inputs.first() else {
         return Err(ManifestError::DataTypeFidelityMismatch {
-            data_type: inputs
-                .first()
-                .map(|input| input.data_type.clone())
-                .unwrap_or_else(|| "<none>".to_string()),
+            data_type: "<none>".to_string(),
+            fidelity_class,
+        });
+    };
+    let first_data_type = parse_data_type_str(&first.data_type)?;
+    if fidelity_primary_type(fidelity_class) != Some(first_data_type) {
+        return Err(ManifestError::DataTypeFidelityMismatch {
+            data_type: first.data_type.clone(),
             fidelity_class,
         });
     }
@@ -3454,37 +3510,54 @@ fn ensure_catalog_inputs_match_fidelity(
 
 /// Fail-loud fence coupling order-book-delta inputs to an L2 book type.
 ///
-/// bolt's converter emits L2 (MBP) order-book deltas flagged `F_LAST` only, with
-/// no per-order (`F_MBP`) identity — every level change carries `order_id == 0`.
-/// Under NT's `BookType::L3_MBO` (or any non-L2 book type) those `order_id == 0`
-/// UPDATE/DELETE rows collapse onto a single phantom order, silently corrupting
-/// the book with nothing failing loud at run time. The `(data_type, fidelity)`
-/// admittance table never couples `book_type` to the delta fidelity, so this is
-/// the single place that rejects the mismatch: when any catalog input parses to
-/// [`NautilusDataType::OrderBookDelta`], `venue.book_type` must be `L2_MBP`.
+/// bolt's converter emits L2 (MBP) order-book deltas with no per-order/MBO
+/// identity: `F_MBP` marks the price-level semantics and every canonical level
+/// change carries `order_id == 0`.
+/// NT's L1 book collapses the rows by side, while its L3 fallback price-hashes
+/// MBP rows and therefore cannot provide genuine per-order/MBO identity. The
+/// `(data_type, fidelity)` admittance table never couples `book_type` to the
+/// delta fidelity, so this is the single place that rejects either mismatch.
 ///
 /// `book_type` is parsed through [`parse_book_type`] (the single book-type parser)
 /// so the only admitted value is the typed [`BookType::L2_MBP`]; no book-type
 /// string literal is duplicated here.
 fn ensure_order_book_delta_inputs_require_l2_mbp(
     inputs: &[ManifestCatalogInput],
-    book_type: &str,
+    primary_venue: &ManifestVenueConfig,
+    additional_venues: &[ManifestVenueConfig],
 ) -> Result<(), ManifestError> {
-    let has_order_book_delta = inputs.iter().any(|input| {
-        parse_data_type_str(&input.data_type)
-            .map(|parsed| parsed == NautilusDataType::OrderBookDelta)
-            .unwrap_or(false)
-    });
-    if !has_order_book_delta {
-        return Ok(());
+    for input in inputs {
+        if parse_data_type_str(&input.data_type)? != NautilusDataType::OrderBookDelta {
+            continue;
+        }
+        let (instrument_id, instrument_ids) =
+            parse_and_validate_catalog_input_instrument_ids(input)?;
+        let (effective_instrument_ids, selector_field) = match instrument_ids.as_deref() {
+            Some(instrument_ids) => (instrument_ids, "catalog_inputs.instrument_ids"),
+            None => (
+                std::slice::from_ref(&instrument_id),
+                "catalog_inputs.nt_instrument_id",
+            ),
+        };
+        for instrument_id in effective_instrument_ids {
+            let venue_name = instrument_id.venue.to_string();
+            let venue = std::iter::once(primary_venue)
+                .chain(additional_venues)
+                .find(|venue| venue.nt_venue == venue_name)
+                .ok_or_else(|| ManifestError::InvalidNtConfig {
+                    field: selector_field,
+                    message: format!(
+                        "no venue config for order-book-delta instrument {instrument_id}"
+                    ),
+                })?;
+            if parse_book_type(&venue.book_type)? != BookType::L2_MBP {
+                return Err(ManifestError::OrderBookDeltaRequiresL2Mbp {
+                    book_type: venue.book_type.clone(),
+                });
+            }
+        }
     }
-    if parse_book_type(book_type)? == BookType::L2_MBP {
-        Ok(())
-    } else {
-        Err(ManifestError::OrderBookDeltaRequiresL2Mbp {
-            book_type: book_type.to_string(),
-        })
-    }
+    Ok(())
 }
 
 fn market_structure_fixture_matches_source_fixture(
@@ -3703,9 +3776,26 @@ pub fn parse_manifest_toml(text: &str) -> Result<BacktestingRunManifest> {
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::RefCell, rc::Rc, str::FromStr};
+
     use super::*;
     use crate::source_proof::{SourceProofFidelityClass, synthetic_accepted_dataset_for_tests};
+    use nautilus_common::{
+        cache::Cache,
+        clock::{Clock, TestClock},
+        msgbus::{
+            self, MessageBus, set_message_bus, stubs::get_typed_message_saving_handler, switchboard,
+        },
+    };
+    use nautilus_core::UnixNanos;
+    use nautilus_data::engine::DataEngine;
     use nautilus_execution::models::latency::LatencyModel;
+    use nautilus_model::{
+        data::{BookOrder, Data, NULL_ORDER, OrderBookDelta, OrderBookDeltas},
+        enums::{BookAction, OrderSide, RecordFlag},
+        identifiers::InstrumentId,
+        types::{Price, Quantity},
+    };
 
     const TEST_INSTRUMENT_ID: &str = "TESTPAIR.TESTVENUE";
     const TEST_BAR_TYPE: &str = "TESTPAIR.TESTVENUE-1-MINUTE-LAST-EXTERNAL";
@@ -5938,10 +6028,9 @@ mod tests {
 
     #[test]
     fn order_book_delta_input_rejected_under_l3_mbo_book_type() {
-        // bolt converters emit L2 (F_LAST) deltas with order_id 0; under
-        // BookType::L3_MBO every level change would collapse onto a single
-        // phantom order and silently corrupt the book. Pairing an
-        // OrderBookDelta input with L3_MBO must fail loud at manifest validation.
+        // bolt converters emit L2 MBP deltas without per-order identities;
+        // NT's L3 fallback price-hashes those rows but cannot recover MBO truth.
+        // Pairing the input with L3_MBO must fail loud at manifest validation.
         let mut manifest = valid_manifest();
         manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
         manifest.venue.book_type = "L3_MBO".to_string();
@@ -5987,6 +6076,237 @@ mod tests {
         manifest
             .validate(&accepted)
             .expect("OrderBookDelta under L2_MBP must pass the book-type fence");
+    }
+
+    #[test]
+    fn order_book_delta_input_uses_its_instrument_venue_book_type() {
+        let mut manifest = valid_manifest();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut okx = manifest.venue.clone();
+        okx.nt_venue = "OKX".to_string();
+        okx.book_type = "L1_MBP".to_string();
+        manifest.additional_venues.push(okx);
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.catalog_inputs[0].nt_instrument_id = "BTC-USDT.OKX".to_string();
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+
+        assert_eq!(
+            manifest.validate(&accepted).unwrap_err(),
+            ManifestError::OrderBookDeltaRequiresL2Mbp {
+                book_type: "L1_MBP".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn order_book_delta_input_uses_every_effective_selector_venue_book_type() {
+        let mut manifest = valid_manifest();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut okx = manifest.venue.clone();
+        okx.nt_venue = "OKX".to_string();
+        okx.book_type = "L1_MBP".to_string();
+        manifest.additional_venues.push(okx);
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.catalog_inputs[0].instrument_ids = Some(vec!["BTC-USDT.OKX".to_string()]);
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+
+        assert_eq!(
+            manifest.validate(&accepted).unwrap_err(),
+            ManifestError::OrderBookDeltaRequiresL2Mbp {
+                book_type: "L1_MBP".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn order_book_delta_run_config_buffers_f_last_without_claiming_quote_emission() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+
+        let run = manifest.to_nt_run_config().expect("L2 NT run config");
+        let data_engine = run
+            .engine()
+            .data_engine
+            .as_ref()
+            .expect("L2 replay must configure the NT data engine");
+        assert!(data_engine.buffer_deltas);
+        assert!(!data_engine.emit_quotes_from_book);
+    }
+
+    #[test]
+    fn order_book_delta_run_config_does_not_duplicate_explicit_quotes() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut quotes = manifest.catalog_inputs[0].clone();
+        quotes.data_type = "QuoteTick".to_string();
+        quotes.catalog_path = "/tmp/explicit-quotes".to_string();
+        manifest.catalog_inputs.push(quotes);
+
+        let run = manifest.to_nt_run_config().expect("L2 NT run config");
+        let data_engine = run
+            .engine()
+            .data_engine
+            .as_ref()
+            .expect("delta replay must retain atomic F_LAST buffering");
+        assert!(data_engine.buffer_deltas);
+        assert!(
+            !data_engine.emit_quotes_from_book,
+            "the same instrument's explicit quote stream remains the strategy-visible authority"
+        );
+    }
+
+    #[test]
+    fn unrelated_explicit_quotes_do_not_enable_synthetic_book_quotes() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut unrelated_quotes = manifest.catalog_inputs[0].clone();
+        unrelated_quotes.data_type = "QuoteTick".to_string();
+        unrelated_quotes.nt_instrument_id = "UNRELATED.TESTVENUE".to_string();
+        unrelated_quotes.catalog_path = "/tmp/unrelated-explicit-quotes".to_string();
+        manifest.catalog_inputs.push(unrelated_quotes);
+
+        let run = manifest.to_nt_run_config().expect("L2 NT run config");
+        let data_engine = run
+            .engine()
+            .data_engine
+            .as_ref()
+            .expect("delta replay must configure the NT data engine");
+        assert!(data_engine.buffer_deltas);
+        assert!(
+            !data_engine.emit_quotes_from_book,
+            "delta replay must not claim an exact quote cadence NT does not provide"
+        );
+    }
+
+    #[test]
+    fn partial_explicit_quote_coverage_never_enables_synthetic_book_quotes() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+
+        let mut second_delta = manifest.catalog_inputs[0].clone();
+        second_delta.nt_instrument_id = "SECOND.TESTVENUE".to_string();
+        second_delta.catalog_path = "/tmp/second-deltas".to_string();
+        manifest.catalog_inputs.push(second_delta);
+
+        let mut first_quotes = manifest.catalog_inputs[0].clone();
+        first_quotes.data_type = "QuoteTick".to_string();
+        first_quotes.catalog_path = "/tmp/first-explicit-quotes".to_string();
+        manifest.catalog_inputs.push(first_quotes);
+
+        let run = manifest.to_nt_run_config().expect("L2 NT run config");
+        let data_engine = run
+            .engine()
+            .data_engine
+            .as_ref()
+            .expect("delta replay data-engine config");
+        assert!(data_engine.buffer_deltas);
+        assert!(
+            !data_engine.emit_quotes_from_book,
+            "explicit quote inputs must not activate a second quote authority"
+        );
+    }
+
+    #[test]
+    fn equal_timestamp_delta_events_publish_distinct_f_last_batches() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let run = manifest.to_nt_run_config().expect("L2 NT run config");
+        let config = run
+            .engine()
+            .data_engine
+            .clone()
+            .expect("L2 replay data-engine config");
+
+        set_message_bus(Rc::new(RefCell::new(MessageBus::default())));
+        let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID).expect("instrument id");
+        let (deltas_handler, deltas_saver) =
+            get_typed_message_saving_handler::<OrderBookDeltas>(None);
+        msgbus::subscribe_book_deltas(
+            switchboard::get_book_deltas_topic(instrument_id).into(),
+            deltas_handler,
+            None,
+        );
+        let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
+        let mut engine =
+            DataEngine::new(clock, Rc::new(RefCell::new(Cache::default())), Some(config));
+
+        let timestamp = UnixNanos::from(1_700_000_000_000_000_000);
+        let flags = |values: &[RecordFlag]| {
+            values
+                .iter()
+                .fold(0u8, |combined, flag| combined | *flag as u8)
+        };
+        let order = |side, price: &str, size: &str| {
+            BookOrder::new(
+                side,
+                Price::from_str(price).expect("price"),
+                Quantity::from_str(size).expect("size"),
+                0,
+            )
+        };
+        let delta = |action, order, record_flags| {
+            OrderBookDelta::new_checked(
+                instrument_id,
+                action,
+                order,
+                record_flags,
+                0,
+                timestamp,
+                timestamp,
+            )
+            .expect("valid L2 delta")
+        };
+        let events = [
+            delta(
+                BookAction::Clear,
+                NULL_ORDER,
+                flags(&[RecordFlag::F_SNAPSHOT, RecordFlag::F_MBP]),
+            ),
+            delta(
+                BookAction::Add,
+                order(OrderSide::Buy, "100", "10"),
+                flags(&[RecordFlag::F_SNAPSHOT, RecordFlag::F_MBP]),
+            ),
+            delta(
+                BookAction::Add,
+                order(OrderSide::Sell, "102", "12"),
+                flags(&[
+                    RecordFlag::F_SNAPSHOT,
+                    RecordFlag::F_MBP,
+                    RecordFlag::F_LAST,
+                ]),
+            ),
+            delta(
+                BookAction::Update,
+                order(OrderSide::Buy, "99", "20"),
+                flags(&[RecordFlag::F_MBP, RecordFlag::F_LAST]),
+            ),
+        ];
+        for event in events {
+            engine.process_data(Data::Delta(event));
+        }
+
+        let batches = deltas_saver.get_messages();
+        assert_eq!(
+            batches.len(),
+            2,
+            "each F_LAST boundary must publish one batch"
+        );
+        assert_eq!(batches[0].deltas.len(), 3);
+        assert_eq!(batches[1].deltas.len(), 1);
+        assert_eq!(batches[0].ts_init, timestamp);
+        assert_eq!(batches[1].ts_init, timestamp);
+        assert_eq!(
+            batches[1].deltas[0].order.price,
+            Price::from_str("99").unwrap()
+        );
     }
 
     #[test]
@@ -6114,6 +6434,51 @@ mod tests {
         assert_eq!(run.data().len(), 2);
         assert_eq!(run.data()[0].data_type(), NautilusDataType::OrderBookDelta);
         assert_eq!(run.data()[1].data_type(), NautilusDataType::TradeTick);
+    }
+
+    #[test]
+    fn l2_replay_admits_derived_quotes_only_beside_primary_deltas() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut quote_input = manifest.catalog_inputs[0].clone();
+        quote_input.data_type = "QuoteTick".to_string();
+        manifest.catalog_inputs.push(quote_input);
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+
+        manifest
+            .validate(&accepted)
+            .expect("L2Replay admits derived QuoteTick only with primary OrderBookDelta");
+
+        manifest.catalog_inputs.remove(0);
+        assert_eq!(
+            manifest.validate(&accepted).unwrap_err(),
+            ManifestError::DataTypeFidelityMismatch {
+                data_type: "QuoteTick".to_string(),
+                fidelity_class: SourceProofFidelityClass::L2Replay,
+            }
+        );
+    }
+
+    #[test]
+    fn l2_replay_rejects_auxiliary_quote_before_primary_deltas() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut quote_input = manifest.catalog_inputs[0].clone();
+        quote_input.data_type = "QuoteTick".to_string();
+        manifest.catalog_inputs.insert(0, quote_input);
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+
+        assert_eq!(
+            manifest.validate(&accepted).unwrap_err(),
+            ManifestError::DataTypeFidelityMismatch {
+                data_type: "QuoteTick".to_string(),
+                fidelity_class: SourceProofFidelityClass::L2Replay,
+            }
+        );
     }
 
     #[test]

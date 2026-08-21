@@ -70,6 +70,7 @@ pub struct SeededLevelSetOutputLimits {
     pub max_selected_events: u64,
     pub max_selected_delta_rows: u64,
     pub max_emitted_bytes: u64,
+    pub max_published_bytes: u64,
 }
 
 /// Config-driven mapping for one seeded absolute-level L2 wire family.
@@ -354,6 +355,10 @@ fn validate_config(
     ] {
         ensure!(value > 0, "{name} must be positive");
     }
+    ensure!(
+        config.output.max_published_bytes > 0,
+        "output.max_published_bytes must be positive"
+    );
     ensure!(
         config.output.max_levels_per_event > 0,
         "output.max_levels_per_event must be positive"
@@ -1050,6 +1055,7 @@ mod tests {
             max_selected_events: 8,
             max_selected_delta_rows: 64,
             max_emitted_bytes: 1_000_000,
+            max_published_bytes: 2_000_000,
         }
     }
 

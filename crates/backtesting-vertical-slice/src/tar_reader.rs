@@ -51,6 +51,10 @@ const NAME_OFFSET: usize = 0;
 /// Length of the `name` field within a tar header block.
 const NAME_LEN: usize = 100;
 
+/// Byte offset and length of the optional POSIX `prefix` field.
+const PREFIX_OFFSET: usize = 345;
+const PREFIX_LEN: usize = 155;
+
 /// Byte offset of the octal `size` field within a tar header block.
 const SIZE_OFFSET: usize = 124;
 
@@ -131,13 +135,22 @@ pub fn visit_gzip_tar_members<R: Read>(
             members <= max_members,
             "tar member count {members} exceeds max_members {max_members}"
         );
-        let name = parse_name(&header);
+        let typeflag = header[TYPEFLAG_OFFSET];
+        if let Some(extension) = match typeflag {
+            b'L' => Some("GNU longname"),
+            b'K' => Some("GNU longlink"),
+            b'x' => Some("PAX extended header"),
+            b'g' => Some("PAX global extended header"),
+            _ => None,
+        } {
+            bail!("tar member {members} uses unsupported {extension} record");
+        }
+        let name = parse_name(&header).with_context(|| format!("tar member {members} name"))?;
         let size = parse_octal_size(&header)?;
         ensure!(
             size <= max_member_bytes,
             "tar member {name:?} declares {size} bytes, exceeding max_member_bytes {max_member_bytes}"
         );
-        let typeflag = header[TYPEFLAG_OFFSET];
         let is_regular_file = typeflag == b'0' || typeflag == 0;
         let matches = is_regular_file && name.ends_with(member_suffix);
 
@@ -296,11 +309,24 @@ fn padded_len(size: u64, name: &str) -> Result<u64> {
         .with_context(|| format!("tar member {name:?} padded size overflow"))
 }
 
-/// Parse the NUL-terminated `name` field of a tar header.
-fn parse_name(header: &[u8; TAR_BLOCK]) -> String {
-    let raw = &header[NAME_OFFSET..NAME_OFFSET + NAME_LEN];
-    let end = raw.iter().position(|&byte| byte == 0).unwrap_or(raw.len());
-    String::from_utf8_lossy(&raw[..end]).into_owned()
+/// Parse the strict UTF-8 POSIX `prefix/name` fields of a tar header.
+fn parse_name(header: &[u8; TAR_BLOCK]) -> Result<String> {
+    fn parse_field<'a>(raw: &'a [u8], label: &str) -> Result<&'a str> {
+        let end = raw
+            .iter()
+            .position(|&byte| byte == 0)
+            .with_context(|| format!("tar {label} field has no NUL terminator"))?;
+        std::str::from_utf8(&raw[..end]).with_context(|| format!("tar {label} field is not UTF-8"))
+    }
+
+    let name = parse_field(&header[NAME_OFFSET..NAME_OFFSET + NAME_LEN], "name")?;
+    ensure!(!name.is_empty(), "tar name field is empty");
+    let prefix = parse_field(&header[PREFIX_OFFSET..PREFIX_OFFSET + PREFIX_LEN], "prefix")?;
+    if prefix.is_empty() {
+        Ok(name.to_string())
+    } else {
+        Ok(format!("{prefix}/{name}"))
+    }
 }
 
 /// Parse the octal `size` field (bytes 124..136) of a tar header.
@@ -543,6 +569,86 @@ mod tests {
         let err = collect(gzip(&tar), ".data", 4096)
             .expect_err("a tar header with a stale checksum must fail closed");
         assert!(err.to_string().contains("checksum"), "{err}");
+    }
+
+    #[test]
+    fn rejects_gnu_longname_extension_instead_of_silently_skipping_payload() {
+        let long_name = format!("{}.data", "nested/segment".repeat(10));
+        let mut tar = Vec::new();
+        let mut longname_header = ustar_header("././@LongLink", long_name.len() as u64 + 1);
+        longname_header[TYPEFLAG_OFFSET] = b'L';
+        write_test_checksum(&mut longname_header);
+        tar.extend_from_slice(&longname_header);
+        tar.extend_from_slice(long_name.as_bytes());
+        tar.push(0);
+        let longname_padding = (TAR_BLOCK - (long_name.len() + 1) % TAR_BLOCK) % TAR_BLOCK;
+        tar.extend(std::iter::repeat_n(0u8, longname_padding));
+        push_member(&mut tar, &long_name[..NAME_LEN], b"payload");
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK * 2));
+
+        let err = collect(gzip(&tar), ".data", 4096)
+            .expect_err("unsupported GNU longname records must fail loud");
+        let message = err.to_string();
+        assert!(message.contains("member 1"), "{message}");
+        assert!(message.contains("longname"), "{message}");
+    }
+
+    #[test]
+    fn reads_real_bsdtar_gzip_with_posix_prefix_name() {
+        // Produced outside this parser with:
+        // bsdtar 3.5.3/libarchive 3.7.4
+        // `COPYFILE_DISABLE=1 tar --format=ustar -cf long.tar <120-char-dir>/sample.jsonl`
+        // followed by `gzip -n -k long.tar`. The path exceeds the legacy
+        // 100-byte name field and exercises the POSIX ustar prefix field.
+        let encoded =
+            include_str!("../tests/fixtures/tar_reader/bsdtar-3.5.3-posix-prefix.tar.gz.hex")
+                .split_whitespace()
+                .collect::<String>();
+        let archive = hex::decode(encoded).expect("committed external tar fixture hex");
+
+        let members = collect(archive, ".jsonl", 4096).expect("read externally produced tar");
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].name, format!("{}/sample.jsonl", "a".repeat(120)));
+        assert_eq!(
+            members[0].text.as_bytes(),
+            b"{\"instrument\":\"BASEQUOTE\",\"action\":\"snapshot\"}\n"
+        );
+    }
+
+    #[test]
+    fn rejects_non_utf8_member_name_instead_of_lossy_matching() {
+        let mut tar = Vec::new();
+        let mut header = ustar_header("valid.data", 7);
+        header[NAME_OFFSET] = 0xff;
+        write_test_checksum(&mut header);
+        tar.extend_from_slice(&header);
+        tar.extend_from_slice(b"payload");
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK - 7));
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK * 2));
+
+        let err = collect(gzip(&tar), ".data", 4096)
+            .expect_err("non-UTF-8 tar member names must fail loud");
+        let message = format!("{err:#}");
+        assert!(message.contains("member 1"), "{message}");
+        assert!(message.contains("UTF-8"), "{message}");
+    }
+
+    #[test]
+    fn rejects_unterminated_full_width_member_name() {
+        let mut tar = Vec::new();
+        let name = format!("{}.data", "x".repeat(NAME_LEN - ".data".len()));
+        assert_eq!(name.len(), NAME_LEN);
+        let header = ustar_header(&name, 7);
+        tar.extend_from_slice(&header);
+        tar.extend_from_slice(b"payload");
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK - 7));
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK * 2));
+
+        let err = collect(gzip(&tar), ".data", 4096)
+            .expect_err("unterminated full-width tar member names must fail loud");
+        let message = format!("{err:#}");
+        assert!(message.contains("member 1"), "{message}");
+        assert!(message.contains("NUL terminator"), "{message}");
     }
 
     #[test]

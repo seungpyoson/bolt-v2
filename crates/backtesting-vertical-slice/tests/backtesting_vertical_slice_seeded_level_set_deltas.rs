@@ -33,6 +33,7 @@ max_active_levels_per_side = 500
 max_selected_events = 10000
 max_selected_delta_rows = 1000000
 max_emitted_bytes = 1073741824
+max_published_bytes = 2147483648
 "#,
     )
     .expect("generic seeded level-set mapping parses");

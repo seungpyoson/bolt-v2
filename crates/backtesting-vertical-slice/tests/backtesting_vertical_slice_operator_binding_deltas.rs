@@ -448,6 +448,7 @@ fn seeded_level_set_mapping() -> SeededLevelSetMappingConfig {
             max_selected_events: 100,
             max_selected_delta_rows: 1_000,
             max_emitted_bytes: 1_048_576,
+            max_published_bytes: 2_097_152,
         },
     }
 }
@@ -504,6 +505,18 @@ fn assert_multi(artifacts: OperatorRunArtifacts) -> MultiTableRunArtifacts {
 
 fn read_artifact_bytes(dir: &std::path::Path, name: &str) -> Vec<u8> {
     fs::read(dir.join(name)).unwrap_or_else(|error| panic!("read artifact {name}: {error}"))
+}
+
+fn regular_path_bytes(path: &std::path::Path) -> u64 {
+    let metadata = fs::symlink_metadata(path).expect("projected path metadata");
+    if metadata.is_file() {
+        return metadata.len();
+    }
+    assert!(metadata.is_dir(), "unexpected projected path: {path:?}");
+    fs::read_dir(path)
+        .expect("projected directory")
+        .map(|entry| regular_path_bytes(&entry.expect("projected entry").path()))
+        .sum()
 }
 
 /// Run a second time on the same output dir and prove the reuse path keeps
@@ -708,7 +721,14 @@ fn seeded_level_set_run_spec_emits_full_depth_and_derived_bbo_through_existing_c
     assert_eq!(quotes.rows, 2);
     assert!(deltas.canonical_path.is_file());
     assert!(quotes.canonical_path.is_file());
-    assert_eq!(artifacts.nt_result.iterations, deltas.rows + quotes.rows);
+    assert_eq!(
+        artifacts.nt_result.iterations, deltas.rows,
+        "derived BBO is an audit artifact; only authoritative deltas enter NT replay"
+    );
+    assert_eq!(
+        artifacts.contract.catalog_data_types,
+        ["OrderBookDelta".to_string()]
+    );
     assert!(artifacts.conversion_tables_path.is_some());
 
     assert_idempotent_rerun(&spec, object_bytes, &output_dir);
@@ -780,6 +800,81 @@ fn seeded_level_set_one_sided_window_publishes_primary_deltas_without_quotes() {
     );
     assert!(artifacts.conversion_tables_path.is_none());
     assert_idempotent_rerun(&spec, object_bytes, &output_dir);
+}
+
+#[test]
+fn seeded_level_set_refuses_completion_when_projected_bytes_exceed_cap() {
+    let jsonl = "{\"instrument\":\"BASEQUOTE\",\"action\":\"snapshot\",\"time\":1700000000000,\"bids\":[[\"0.49\",\"10\",\"2\"]],\"asks\":[[\"0.51\",\"12\",\"3\"]]}\n";
+    let object_bytes = jsonl.as_bytes();
+    let (proof, object) = accepted_proof_and_object(object_bytes);
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let registry_path = write_registry(temp.path());
+    let mut converter = converter(
+        &SEEDED_LEVEL_SET_DELTAS_ADAPTER,
+        seeded_jsonl_payload(object_bytes.len() as u64),
+    );
+    converter.seeded_level_set = Some(seeded_level_set_mapping());
+    let manifest = manifest(
+        "operator-binding-seeded-published-cap",
+        NT_INSTRUMENT_ID,
+        vec![
+            delta_catalog_input(NT_INSTRUMENT_ID),
+            quote_catalog_input(NT_INSTRUMENT_ID),
+        ],
+    );
+    let mut spec = run_spec(
+        registry_path,
+        proof,
+        object,
+        RunSpecInstrumentSpecs::Single(Box::new(CatalogInstrumentSpec::Spot(spot_spec(
+            NT_INSTRUMENT_ID,
+            INSTRUMENT_ID,
+        )))),
+        RunSpecInstrumentIdentities::Single(identity(INSTRUMENT_ID, NT_INSTRUMENT_ID)),
+        converter,
+        manifest,
+    );
+    spec.selector_provenance = l2_provenance();
+
+    let measurement_dir = temp.path().join("measurement");
+    let measurement = assert_multi(
+        run_operator_from_run_spec(&spec, object_bytes, &measurement_dir)
+            .expect("measure projected bytes under the generous configured cap"),
+    );
+    let published_bytes: u64 = measurement
+        .tables
+        .iter()
+        .map(|table| regular_path_bytes(&table.subroot) + regular_path_bytes(&table.canonical_path))
+        .sum();
+    assert!(published_bytes > 1);
+
+    spec.converter
+        .seeded_level_set
+        .as_mut()
+        .expect("seeded level-set config")
+        .output
+        .max_published_bytes = published_bytes;
+    run_operator_from_run_spec(&spec, object_bytes, &temp.path().join("exact-cap"))
+        .expect("exact published-byte cap must pass");
+
+    spec.converter
+        .seeded_level_set
+        .as_mut()
+        .expect("seeded level-set config")
+        .output
+        .max_published_bytes = published_bytes - 1;
+    let output_dir = temp.path().join("cap-minus-one");
+    let error = run_operator_from_run_spec(&spec, object_bytes, &output_dir)
+        .err()
+        .expect("cap-minus-one must fail");
+    assert!(
+        error.to_string().contains("max_published_bytes"),
+        "{error:#}"
+    );
+    assert!(
+        !output_dir.join("conversion-manifest.json").exists(),
+        "an over-cap staging tree must not become a completed conversion"
+    );
 }
 
 #[test]

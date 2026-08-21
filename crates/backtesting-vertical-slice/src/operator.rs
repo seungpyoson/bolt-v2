@@ -2501,15 +2501,23 @@ fn bind_catalog_inputs(
     let declared_inputs = std::mem::take(&mut manifest.catalog_inputs);
     let mut bound_inputs = Vec::with_capacity(declared_inputs.len());
     for mut input in declared_inputs {
-        let Some(index) = find_planned_table_for_input(&input, planned, &used)? else {
-            let is_conditional_seeded_quote = adapter_kind
-                == SourceAdapterKind::SeededLevelSetDeltas
-                && input.data_type == NT_DATA_TYPE_QUOTE_TICK
-                && input.bar_spec.is_none()
-                && planned.iter().any(|table| {
-                    table.nt_instrument_id == input.nt_instrument_id
-                        && table.table.nt_data_type() == NT_DATA_TYPE_ORDER_BOOK_DELTA
-                });
+        let planned_index = find_planned_table_for_input(&input, planned, &used)?;
+        let is_conditional_seeded_quote = adapter_kind == SourceAdapterKind::SeededLevelSetDeltas
+            && input.data_type == NT_DATA_TYPE_QUOTE_TICK
+            && input.bar_spec.is_none()
+            && planned.iter().any(|table| {
+                table.nt_instrument_id == input.nt_instrument_id
+                    && table.table.nt_data_type() == NT_DATA_TYPE_ORDER_BOOK_DELTA
+            });
+        if is_conditional_seeded_quote && let Some(index) = planned_index {
+            // The per-source-event BBO is a derived audit artifact. Strategy
+            // replay consumes only the authoritative delta stream; NT buffers
+            // it through F_LAST and emits book-derived quotes without allowing
+            // a later same-timestamp delta to precede an earlier event's BBO.
+            used[index] = true;
+            continue;
+        }
+        let Some(index) = planned_index else {
             ensure!(
                 is_conditional_seeded_quote,
                 "manifest catalog input {}/{} (bar_spec {:?}) matches no projected table",
@@ -2794,6 +2802,7 @@ pub fn run_multi_table_from_run_spec(
     if let Some((manifest_hash, checkpoint_hash, primary_catalog_hash)) = completed {
         return run_multi_from_completed_output(MultiCompletedInputs {
             spec,
+            adapter_kind: adapter.kind,
             accepted: &accepted,
             accepted_proof,
             verified_sha256,
@@ -2918,6 +2927,7 @@ pub fn run_multi_table_from_run_spec(
         })?;
         catalog_hashes.push(projection.catalog_hash);
     }
+    ensure_seeded_projected_bytes_within_limit(adapter.kind, spec, &planned)?;
 
     let primary_index = *bound_indices
         .first()
@@ -2936,8 +2946,8 @@ pub fn run_multi_table_from_run_spec(
     let window_start = window_bound_nanos("start_time", local_manifest.start_time)?;
     let window_end = window_bound_nanos("end_time", local_manifest.end_time)?;
     let mut expected = 0usize;
-    for table in &planned {
-        expected += table
+    for index in &bound_indices {
+        expected += planned[*index]
             .table
             .windowed_count(window_start, window_end)
             .context("compute expected engine iterations for projected table")?;
@@ -3112,6 +3122,7 @@ pub fn run_multi_table_from_run_spec(
 
 struct MultiCompletedInputs<'a> {
     spec: &'a RunSpec,
+    adapter_kind: SourceAdapterKind,
     accepted: &'a AcceptedDataset,
     accepted_proof: SourceProofReport,
     verified_sha256: String,
@@ -3185,6 +3196,7 @@ fn run_multi_from_completed_output(
         );
         catalog_hashes.push(actual_hash);
     }
+    ensure_seeded_projected_bytes_within_limit(inputs.adapter_kind, spec, &planned)?;
     let index_records = validate_conversion_tables_index(inputs.output_dir, &conversion_manifest)?;
     if planned.len() > 1 {
         let records = index_records.as_deref().with_context(|| {
@@ -3249,8 +3261,8 @@ fn run_multi_from_completed_output(
     let window_start = window_bound_nanos("start_time", local_manifest.start_time)?;
     let window_end = window_bound_nanos("end_time", local_manifest.end_time)?;
     let mut expected = 0usize;
-    for table in &planned {
-        expected += table
+    for index in &bound_indices {
+        expected += planned[*index]
             .table
             .windowed_count(window_start, window_end)
             .context("compute expected engine iterations for projected table")?;
@@ -3732,6 +3744,61 @@ fn collect_output_files(root: &Path) -> Result<Vec<PathBuf>> {
     collect_output_files_inner(root, &mut files)?;
     files.sort();
     Ok(files)
+}
+
+fn ensure_seeded_projected_bytes_within_limit(
+    adapter_kind: SourceAdapterKind,
+    spec: &RunSpec,
+    planned: &[PlannedTable],
+) -> Result<()> {
+    if adapter_kind != SourceAdapterKind::SeededLevelSetDeltas {
+        return Ok(());
+    }
+    let limit = spec
+        .converter
+        .seeded_level_set
+        .as_ref()
+        .context("seeded level-set adapter requires converter.seeded_level_set")?
+        .output
+        .max_published_bytes;
+    let mut published_bytes = 0u64;
+    for table in planned {
+        published_bytes = published_bytes
+            .checked_add(regular_path_bytes(&table.subroot)?)
+            .context("seeded level-set published-byte total overflow")?;
+        published_bytes = published_bytes
+            .checked_add(regular_path_bytes(&table.canonical_path)?)
+            .context("seeded level-set published-byte total overflow")?;
+    }
+    ensure!(
+        published_bytes <= limit,
+        "seeded level-set projected bytes {published_bytes} exceed converter.seeded_level_set.output.max_published_bytes {limit}"
+    );
+    Ok(())
+}
+
+fn regular_path_bytes(path: &Path) -> Result<u64> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("read projected artifact metadata {}", path.display()))?;
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+    ensure!(
+        metadata.is_dir(),
+        "projected artifact path is neither a regular file nor directory: {}",
+        path.display()
+    );
+    let mut bytes = 0u64;
+    for entry in fs::read_dir(path)
+        .with_context(|| format!("read projected artifact directory {}", path.display()))?
+    {
+        let entry = entry
+            .with_context(|| format!("read projected artifact entry under {}", path.display()))?;
+        bytes = bytes
+            .checked_add(regular_path_bytes(&entry.path())?)
+            .context("projected artifact byte total overflow")?;
+    }
+    Ok(bytes)
 }
 
 fn collect_output_files_inner(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {

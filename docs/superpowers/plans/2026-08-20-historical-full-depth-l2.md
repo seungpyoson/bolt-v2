@@ -4,7 +4,7 @@
 
 **Goal:** Convert native OKX and Bybit seeded order-book archives into replayable full-depth L2 in the existing NautilusTrader catalog path while preserving the issue-789 quote behavior and keeping memory/storage bounded.
 
-**Architecture:** The only authority path remains `AcceptedDataset -> CanonicalOrderBookDeltasTable -> project_canonical_order_book_deltas_to_catalog -> NT catalog`. A config-driven seeded level-set converter scans all four supported archive containers in encounter order, maintains one capped NT L2 book, and emits only a TOML-selected event window plus one replay seed; BBO is derived once per selected source event from the NT book. After differential proof, the old raw-to-BBO `SeededL2Quotes` path is deleted.
+**Architecture:** The only replay authority path remains `AcceptedDataset -> CanonicalOrderBookDeltasTable -> project_canonical_order_book_deltas_to_catalog -> NT catalog`. A config-driven seeded level-set converter scans all four supported archive containers in encounter order, maintains one capped NT L2 book, and emits only a TOML-selected event window plus one replay seed. Per-event BBO is retained as a derived audit artifact; NT replay consumes only the delta catalog, buffers through `F_LAST`, and emits the strategy-visible quote from the completed book state. After differential proof, the old raw-to-BBO `SeededL2Quotes` path is deleted.
 
 **Tech Stack:** Rust, serde/TOML, flate2, tar, zip, NautilusTrader `OrderBookDelta`/`OrderBookDeltas`/`OrderBook`/`ParquetDataCatalog`, Arrow/Parquet, cargo test.
 
@@ -16,7 +16,7 @@
 - Keep one data path: accepted evidence to canonical full-depth L2 deltas to the existing NT catalog bridge. Do not create a raw-to-NT bypass, alternate catalog, sidecar market-data model, or second BBO implementation.
 - Select behavior from TOML. Converter code contains no OKX/Bybit branches or hardcoded instrument IDs, time windows, tuple shapes, limits, sequence policy, or action values.
 - Support `JsonlText`, `JsonlGzip`, `SingleJsonlZip`, and `TarGzipJsonl` through one bounded record visitor.
-- Bound compressed object bytes, cumulative decoded bytes, archive members, member bytes, JSON record bytes/count, levels per event, active levels per side, selected source events, selected delta rows, and emitted bytes. Exceeding any bound fails closed.
+- Bound compressed object bytes, cumulative decoded bytes, archive members, member bytes, JSON record bytes/count, levels per event, active levels per side, selected source events, selected delta rows, emitted bytes, and the aggregate regular-file bytes of every projected NT catalog plus canonical Parquet artifact. Exceeding any bound fails closed before completion.
 - Preserve archive encounter order. Never sort seeded incremental events.
 - Snapshot source events emit `CLEAR` followed by `ADD`; positive incremental levels emit `UPDATE`; zero-size levels emit `DELETE`. All L2 rows carry `F_MBP`, snapshot rows also carry `F_SNAPSHOT`, and only the final row of each source event carries `F_LAST`.
 - Set canonical `availability_time` to the source event time on every emitted row. Catalog projection uses that value for `ts_init`, preventing the issue-789 batch-timestamp freeze.
@@ -26,7 +26,7 @@
 - Retire the venue-scale selected-conversion-manifest shortcut: current `converted` status now requires a full typed current-schema Ready completion ledger with no blockers, non-empty record lineage, positive accepted-byte and canonical-row counts, valid evidence/catalog hashes and paths, complete mapping/publication coverage, and internally recomputed totals. Downgrade the committed PMXT v1 delta slice from `converted` to blocked until it is regenerated and certified under the v2 delta identity; dated source-proof records remain historical evidence only.
 - Validate configured order-count fields as nonnegative integers, but declare and test their intentional loss because NT full-depth `OrderBookDelta` cannot represent per-level order counts. Do not encode counts into `order_id` and do not emit `OrderBookDepth10`.
 - Maintain a capped NT L2 book while scanning. At the selected window boundary, emit one reconstructed snapshot seed representing the immediately preceding state; the seed establishes replay state and does not emit a quote.
-- Emit one derived quote after each selected source event only when both sides exist, matching the accepted issue-789 cardinality. Group source events by `F_LAST`; do not use NT `deltas_to_quotes`.
+- Emit one derived audit quote after each selected source event only when both sides exist, matching the accepted issue-789 cardinality. In NT replay, exclude that audit catalog, buffer the authoritative deltas through `F_LAST`, and enable NT book-derived strategy quotes. Do not use NT `deltas_to_quotes`.
 - No L3 claims, on-chain work, provider purchasing, credential work, or token-screener changes belong in this slice.
 - The final review head must contain the new path and deletion of `SeededL2Quotes`; retaining both paths is not reviewable.
 
@@ -204,6 +204,7 @@ pub struct SeededLevelSetOutputLimits {
     pub max_selected_events: u64,
     pub max_selected_delta_rows: u64,
     pub max_emitted_bytes: u64,
+    pub max_published_bytes: u64,
 }
 
 pub struct SeededLevelSetWindow {
@@ -292,7 +293,7 @@ Before deleting the legacy module, compute fixture-local golden values over quot
 
 - [x] **Step 2: Add differential tests**
 
-Run both fixtures through the new canonical-delta path and assert the golden semantic digest and row count. Add a one-sided synthetic fixture to pin the existing both-sides-present rule. Assert catalog replay yields identical quote semantics.
+Run both fixtures through the new canonical-delta path and assert the golden semantic digest and row count. Add a one-sided synthetic fixture to pin the existing both-sides-present rule. Project and read back the real full-depth delta tables, replay their `F_LAST` event groups through NT L2, and assert the resulting BBO values and timestamps equal the derived audit goldens.
 
 Run:
 
@@ -305,7 +306,7 @@ Expected: the canonical-delta-derived quotes match the immutable legacy counts a
 
 - [x] **Step 3: Switch the production operator and runner callers**
 
-Select the registered delta-family adapter through `[converter.seeded_level_set]`, pass the manifest window and TOML limits, project the canonical table through the existing bridge, and use the derived quotes for the issue-789 feed. Support all four containers through the shared record visitor.
+Select the registered delta-family adapter through `[converter.seeded_level_set]`, pass the manifest window and TOML limits, and project the canonical table through the existing bridge. Store derived quotes for audit/equivalence, but bind only the delta catalog into the NT run; configure NT to buffer through `F_LAST` and emit book-derived strategy quotes. The retained issue-789 comparison run may consume its pinned derived-quote fixtures while separately proving the real full-depth delta catalog round trip. Support all four containers through the shared record visitor.
 
 - [x] **Step 4: Delete the old path completely**
 
@@ -358,7 +359,7 @@ Exact-head verification passed after rebasing onto `origin/main`: formatting, se
 
 Use the generated large single-member archive test to report input bytes, selected event window, peak record buffer, active-level peak, selected rows, and catalog bytes. Confirm a malformed record after the selected window makes the whole conversion fail and publishes no authoritative catalog.
 
-Measured generated evidence: 9,600,017 input bytes / 100,000 records, one selected event, 113-byte peak record buffer, one active level per side, four selected delta rows, 4,280 emitted row bytes, 5,304 serialized output bytes, and 9,744 catalog bytes. The operator malformed-tail test rejects the conversion before the catalog root exists.
+Measured generated evidence: 9,600,017 input bytes / 100,000 records, one selected event, 113-byte peak record buffer, one active level per side, four selected delta rows, 4,280 emitted row bytes, 5,304 serialized output bytes, and 9,744 catalog bytes. `max_published_bytes` now caps the aggregate projected catalog and canonical Parquet bytes; the exact cap passes and cap-minus-one fails before completion. The operator malformed-tail test rejects the conversion before the catalog root exists.
 
 - [x] **Step 3: Run a current-state internal adversarial review**
 

@@ -2857,10 +2857,10 @@ mod tests {
     use bolt_v2::economics::NativeUnitId;
     use nautilus_core::{Params, UUID4, UnixNanos};
     use nautilus_model::{
-        data::{BookOrder, InstrumentClose, OrderBookDelta, TradeTick},
+        data::{BookOrder, InstrumentClose, OrderBookDelta, OrderBookDeltas, TradeTick},
         enums::{
             AccountType, AggressorSide, AssetClass, BookAction, InstrumentCloseType, OrderSide,
-            OrderStatus, OrderType, PositionAdjustmentType, PositionSide,
+            OrderStatus, OrderType, PositionAdjustmentType, PositionSide, RecordFlag,
         },
         events::{AccountState, PositionAdjusted},
         identifiers::{
@@ -2879,8 +2879,9 @@ mod tests {
 
     use super::{
         AuthoritativeValuationObservation, BacktestDecisionEvidenceWriter,
-        BacktestSelectorProvenance, OrderTerminalRecord, Position, PositiveFiniteEvidenceReadCap,
-        StrategyPreparationConfig, apply_backtest_config_override, assert_read_back_matches,
+        BacktestSelectorProvenance, OrderBook, OrderTerminalRecord, Position,
+        PositiveFiniteEvidenceReadCap, StrategyPreparationConfig, apply_backtest_config_override,
+        assert_delta_read_back_matches, assert_read_back_matches,
         canonical_resolved_taker_config_bytes, ensure_settlement_currency_funded,
         expected_iterations, issue_789_proof_fill, iterations_mismatch, load_bolt_v3_config,
         manifest_valuation_observation, prepare_strategy_client_routes, raw_taker_config,
@@ -2900,7 +2901,8 @@ mod tests {
     };
     use crate::catalog_projection::{
         CatalogInstrumentSpec, SpotInstrumentSpec, build_catalog_instrument,
-        project_canonical_index_to_catalog, project_canonical_quotes_to_catalog,
+        project_canonical_index_to_catalog, project_canonical_order_book_deltas_to_catalog,
+        project_canonical_quotes_to_catalog, read_back_order_book_deltas,
     };
     use crate::pmxt_one_off_backfill_projection::{
         PmxtBookLevel, PmxtOneOffProjectionRequest, PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow,
@@ -2921,8 +2923,8 @@ mod tests {
     };
     use crate::seeded_level_set_deltas::{
         OrderCountPolicy, SeededLevelSetCompileInput, SeededLevelSetMappingConfig,
-        SeededLevelSetOutputLimits, SeededLevelSetWindowBounds, SourceSequencePolicy,
-        normalize_seeded_level_set_window,
+        SeededLevelSetOutputLimits, SeededLevelSetWindow, SeededLevelSetWindowBounds,
+        SourceSequencePolicy, normalize_seeded_level_set_window,
     };
 
     type TerminalOrderMutation = Box<dyn Fn(&mut OrderTerminalRecord)>;
@@ -4038,6 +4040,7 @@ mod tests {
     const ISSUE_789_START_NS: i64 = 1_776_816_000_000_000_000;
     const ISSUE_789_END_NS: i64 = 1_776_816_300_000_000_000;
     const ISSUE_789_RESULT_ARTIFACT_ROLE: &str = "issue-789-result-artifact.v1";
+    const ISSUE_789_ITERATIONS: usize = 446_717;
     const ISSUE_789_CONDITION_ID: &str =
         "0xb98f764c4d5dd36580c8c9903bc75ddcb631428d84e9c1e532f0da236f77054c";
     const ISSUE_789_UP_TOKEN: &str =
@@ -4088,6 +4091,96 @@ mod tests {
         Ok(())
     }
 
+    fn assert_issue_789_delta_catalog_replay_matches_quotes(
+        name: &str,
+        window: &SeededLevelSetWindow,
+        instrument_spec: &SpotInstrumentSpec,
+        catalog_root: &Path,
+    ) -> Result<()> {
+        let quotes = window
+            .quotes
+            .as_ref()
+            .with_context(|| format!("issue #789 {name} emitted no derived BBO"))?;
+        let projection = project_canonical_order_book_deltas_to_catalog(
+            &window.deltas,
+            instrument_spec,
+            catalog_root,
+        )
+        .with_context(|| format!("project issue #789 {name} full-depth deltas"))?;
+        let read_back = read_back_order_book_deltas(catalog_root, &projection.nt_instrument_id)
+            .with_context(|| format!("read back issue #789 {name} full-depth deltas"))?;
+        assert_delta_read_back_matches(&read_back, &window.deltas, &projection.nt_instrument_id)?;
+
+        let instrument_id = InstrumentId::from_str(&projection.nt_instrument_id)
+            .with_context(|| format!("parse issue #789 {name} instrument"))?;
+        let mut book = OrderBook::new(instrument_id, nautilus_model::enums::BookType::L2_MBP);
+        let mut event = Vec::new();
+        let mut quote_index = 0usize;
+        for delta in read_back {
+            let is_last = delta.flags & RecordFlag::F_LAST as u8 != 0;
+            event.push(delta);
+            if !is_last {
+                continue;
+            }
+            let terminal = *event.last().context("closed delta event is empty")?;
+            let batch = OrderBookDeltas::new_checked(instrument_id, std::mem::take(&mut event))
+                .context("construct issue #789 replay event")?;
+            book.apply_deltas(&batch)
+                .map_err(|error| anyhow::anyhow!(error))
+                .with_context(|| format!("apply issue #789 {name} replay event"))?;
+            let (Some(bid), Some(ask), Some(bid_size), Some(ask_size)) = (
+                book.best_bid_price(),
+                book.best_ask_price(),
+                book.best_bid_size(),
+                book.best_ask_size(),
+            ) else {
+                continue;
+            };
+            let expected = quotes
+                .rows
+                .get(quote_index)
+                .with_context(|| format!("issue #789 {name} replay emitted an unexpected BBO"))?;
+            for (field, actual, expected) in [
+                ("bid", bid.as_decimal(), expected.bid.as_str()),
+                ("ask", ask.as_decimal(), expected.ask.as_str()),
+                (
+                    "bid_size",
+                    bid_size.as_decimal(),
+                    expected.bid_size.as_str(),
+                ),
+                (
+                    "ask_size",
+                    ask_size.as_decimal(),
+                    expected.ask_size.as_str(),
+                ),
+            ] {
+                ensure!(
+                    actual == Decimal::from_str(expected)?,
+                    "issue #789 {name} replay quote {quote_index} {field} {actual} != derived {expected}"
+                );
+            }
+            ensure!(
+                terminal.ts_event.as_u64() == expected.event_time as u64,
+                "issue #789 {name} replay quote {quote_index} event timestamp drift"
+            );
+            ensure!(
+                terminal.ts_init.as_u64()
+                    == expected
+                        .availability_time
+                        .context("derived BBO availability time")? as u64,
+                "issue #789 {name} replay quote {quote_index} init timestamp drift"
+            );
+            quote_index += 1;
+        }
+        ensure!(event.is_empty(), "issue #789 {name} ended without F_LAST");
+        ensure!(
+            quote_index == quotes.rows.len(),
+            "issue #789 {name} delta replay produced {quote_index} BBO rows for {} derived rows",
+            quotes.rows.len()
+        );
+        Ok(())
+    }
+
     #[test]
     fn issue_789_first_real_free_data_taker_pl() -> Result<()> {
         let tempdir = tempfile::TempDir::new().context("create issue #789 temp catalog root")?;
@@ -4099,7 +4192,7 @@ mod tests {
             "0.1",
             "0.00000001",
         );
-        let okx_quotes = seeded_quote_table(
+        let okx_window = seeded_window(
             &gunzip_pinned_fixture(
                 include_bytes!(
                     "../tests/fixtures/issue_789_first_pl/okx_btc_usdt_l2_20260422_000000_000300.jsonl.gz"
@@ -4126,7 +4219,7 @@ mod tests {
             "0.1",
             "0.000001",
         );
-        let bybit_quotes = seeded_quote_table(
+        let bybit_window = seeded_window(
             &gunzip_pinned_fixture(
                 include_bytes!(
                     "../tests/fixtures/issue_789_first_pl/bybit_btc_usdt_l2_20260422_000000_000300.jsonl.gz"
@@ -4144,6 +4237,26 @@ mod tests {
                 nt_instrument_id: "BTCUSDT-SPOT.BYBIT",
                 payload_id: "https://quote-saver.bycsi.com/orderbook/spot/BTCUSDT/2026-04-22_BTCUSDT_ob200.data.zip",
             },
+        )?;
+        let okx_quotes = okx_window
+            .quotes
+            .as_ref()
+            .context("issue #789 OKX fixture emitted no derived BBO")?;
+        let bybit_quotes = bybit_window
+            .quotes
+            .as_ref()
+            .context("issue #789 Bybit fixture emitted no derived BBO")?;
+        assert_issue_789_delta_catalog_replay_matches_quotes(
+            "OKX",
+            &okx_window,
+            &okx_spot,
+            &tempdir.path().join("okx_btc_usdt_deltas"),
+        )?;
+        assert_issue_789_delta_catalog_replay_matches_quotes(
+            "Bybit",
+            &bybit_window,
+            &bybit_spot,
+            &tempdir.path().join("bybit_btc_usdt_deltas"),
         )?;
         assert_issue_789_legacy_quote_semantics(
             "OKX",
@@ -4316,6 +4429,12 @@ mod tests {
                 "did NOT arm — guard did not provide a feed-specific reason".to_string()
             })
         };
+
+        ensure!(
+            output.result.iterations == ISSUE_789_ITERATIONS,
+            "issue #789 backtest consumed {} elements, expected {ISSUE_789_ITERATIONS}",
+            output.result.iterations
+        );
 
         println!("issue_789_result_label=production config + documented OKX/Bybit override");
         println!(
@@ -7494,6 +7613,7 @@ mod tests {
             },
             "total_orders": output.result.total_orders,
             "total_positions": output.result.total_positions,
+            "iterations": output.result.iterations,
             "resolved_config_sha256": output.resolved_config_hash,
             "execution_contract_validated_fill_count": output
                 .execution_contract_report
@@ -7587,12 +7707,12 @@ mod tests {
         Ok(text)
     }
 
-    fn seeded_quote_table(
+    fn seeded_window(
         jsonl: &str,
         mapping: SeededLevelSetMappingConfig,
         instrument_spec: &SpotInstrumentSpec,
         spec: QuoteTableSpec<'_>,
-    ) -> Result<CanonicalQuotesTable> {
+    ) -> Result<SeededLevelSetWindow> {
         let mut accepted = synthetic_accepted_dataset_for_tests();
         let payload_hash = sha256_hex(jsonl.as_bytes());
         accepted.source_binding = spec.source_binding.to_string();
@@ -7648,11 +7768,6 @@ mod tests {
             &raw_payload,
             &mapping,
         )
-        .and_then(|window| {
-            window
-                .quotes
-                .context("issue #789 fixture emitted no two-sided BBO quotes")
-        })
         .with_context(|| format!("normalize {} full-depth L2 and derived BBO", spec.venue))
     }
 
@@ -7663,6 +7778,7 @@ mod tests {
             max_selected_events: 20_000,
             max_selected_delta_rows: 1_000_000,
             max_emitted_bytes: 1_000_000_000,
+            max_published_bytes: 2_000_000_000,
         }
     }
 

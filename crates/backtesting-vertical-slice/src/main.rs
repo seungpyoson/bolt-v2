@@ -566,10 +566,10 @@ fn read_object_checked(path: &Path, expected_bytes: u64) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use backtesting_vertical_slice::backfill_execution_plan::BACKFILL_EXECUTION_PLAN_SCHEMA_VERSION;
     use backtesting_vertical_slice::hashing::sha256_hex;
     use clap::error::ErrorKind;
+    use std::fs;
 
     const COMMITTED_RUN_SPEC: &str = include_str!(
         "../../../specs/023-nt-research-analytics-platform/reference/backtesting-vertical-slice-run-spec.bnbusdc-2026-03-01.toml"

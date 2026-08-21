@@ -1,4 +1,4 @@
-//! Byte-bounding primitives for staged-object and decoded-stream reads.
+//! Filesystem-type and byte-bounding primitives for trusted operator inputs.
 //!
 //! Invariant: every I/O path that reads from a staged object or inflates a
 //! compressed member goes through one of these helpers, so an oversized input
@@ -10,7 +10,7 @@ use std::{
     fmt::Display,
     fs::{self, File},
     io::Read,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -49,7 +49,9 @@ pub fn ensure_within_limit(label: impl Display, size: u64, limit: ByteLimit) -> 
 ///
 /// The path-level check rejects static FIFOs and other special files before
 /// [`File::open`]. The descriptor-level check preserves the invariant after
-/// opening and catches ordinary path replacement races.
+/// opening for replacements whose open completes. A concurrent replacement
+/// with a writer-less FIFO can still block in `open`; that adversarial race is
+/// outside the trusted-operator threat model.
 pub fn open_regular_file(path: &Path, label: impl Display) -> Result<File> {
     let label = label.to_string();
     let path_metadata =
@@ -69,6 +71,47 @@ pub fn open_regular_file(path: &Path, label: impl Display) -> Result<File> {
         path.display()
     );
     Ok(file)
+}
+
+/// Recursively enumerate only regular files beneath `root` without following
+/// symlinks or accepting other special filesystem entries.
+pub fn collect_regular_files(root: &Path, label: impl Display) -> Result<Vec<PathBuf>> {
+    let label = label.to_string();
+    let root_metadata = fs::symlink_metadata(root)
+        .with_context(|| format!("inspect {label} root {}", root.display()))?;
+    ensure!(
+        root_metadata.file_type().is_dir(),
+        "{label} root {} is not a real directory",
+        root.display()
+    );
+    let mut files = Vec::new();
+    collect_regular_files_under(root, root, &label, &mut files)?;
+    Ok(files)
+}
+
+fn collect_regular_files_under(
+    root: &Path,
+    dir: &Path,
+    label: &str,
+    files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("read directory {}", dir.display()))? {
+        let entry =
+            entry.with_context(|| format!("read directory entry under {}", dir.display()))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("read file type for {}", path.display()))?;
+        if file_type.is_dir() {
+            collect_regular_files_under(root, &path, label, files)?;
+        } else if file_type.is_file() {
+            files.push(path);
+        } else {
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            anyhow::bail!("{label} contains non-regular file {}", relative.display());
+        }
+    }
+    Ok(())
 }
 
 pub fn read_file_with_limit(path: &Path, limit: ByteLimit) -> Result<Vec<u8>> {

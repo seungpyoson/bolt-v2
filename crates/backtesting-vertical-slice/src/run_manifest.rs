@@ -2647,59 +2647,31 @@ impl BacktestingRunManifest {
     }
 }
 
-/// Resolve NT's process-wide delta buffering and book-quote authority from the
-/// manifest's per-instrument catalog inputs.
+/// Enable NT's event-aligned delta buffering whenever a manifest replays
+/// order-book deltas.
 ///
-/// `buffer_deltas` must remain enabled for every delta replay so an `F_LAST`
-/// batch is applied atomically, even when an explicit quote stream owns the
-/// strategy-visible quote surface. NT's `emit_quotes_from_book` switch is
-/// global, however, so a manifest where only some delta instruments have an
-/// explicit quote stream is not representable without either duplicating
-/// quotes or starving an instrument. Reject that mixed authority fail closed.
+/// The converter's per-source-event BBO is an audit/equivalence projection,
+/// not a strategy-visible output of delta replay. Pinned NT only creates a
+/// book updater after a managed book subscription and deduplicates unchanged
+/// BBO values, so `emit_quotes_from_book` cannot satisfy that projection's
+/// exact event cadence. Delta consumers receive complete `F_LAST` batches;
+/// explicit `QuoteTick` inputs remain the only quote-event authority.
 fn data_engine_config_for_catalog_inputs(
     inputs: &[ManifestCatalogInput],
 ) -> Result<Option<DataEngineConfig>, ManifestError> {
-    let mut delta_instruments = BTreeSet::new();
-    let mut explicit_quote_instruments = BTreeSet::new();
-
+    let mut has_order_book_deltas = false;
     for input in inputs {
-        let target = match parse_data_type_str(&input.data_type)? {
-            NautilusDataType::OrderBookDelta => &mut delta_instruments,
-            NautilusDataType::QuoteTick => &mut explicit_quote_instruments,
-            _ => continue,
-        };
-        let (instrument_id, instrument_ids) =
-            parse_and_validate_catalog_input_instrument_ids(input)?;
-        if let Some(instrument_ids) = instrument_ids {
-            target.extend(instrument_ids.into_iter().map(|id| id.to_string()));
-        } else {
-            target.insert(instrument_id.to_string());
+        if parse_data_type_str(&input.data_type)? == NautilusDataType::OrderBookDelta {
+            has_order_book_deltas = true;
         }
     }
-
-    if delta_instruments.is_empty() {
+    if !has_order_book_deltas {
         return Ok(None);
     }
-
-    let explicit_delta_quote_count = delta_instruments
-        .intersection(&explicit_quote_instruments)
-        .count();
-    let emit_quotes_from_book = match explicit_delta_quote_count {
-        0 => true,
-        covered if covered == delta_instruments.len() => false,
-        _ => {
-            return Err(ManifestError::InvalidNtConfig {
-                field: "engine.data_engine.emit_quotes_from_book",
-                message: "delta instruments must use one quote authority: explicit QuoteTick data must cover every OrderBookDelta instrument or none"
-                    .to_string(),
-            });
-        }
-    };
-
     Ok(Some(
         DataEngineConfig::builder()
             .buffer_deltas(true)
-            .emit_quotes_from_book(emit_quotes_from_book)
+            .emit_quotes_from_book(false)
             .build(),
     ))
 }
@@ -3558,22 +3530,31 @@ fn ensure_order_book_delta_inputs_require_l2_mbp(
         if parse_data_type_str(&input.data_type)? != NautilusDataType::OrderBookDelta {
             continue;
         }
-        let (instrument_id, _) = parse_and_validate_catalog_input_instrument_ids(input)?;
-        let venue_name = instrument_id.venue.to_string();
-        let venue = std::iter::once(primary_venue)
-            .chain(additional_venues)
-            .find(|venue| venue.nt_venue == venue_name)
-            .ok_or_else(|| ManifestError::InvalidNtConfig {
-                field: "catalog_inputs.nt_instrument_id",
-                message: format!(
-                    "no venue config for order-book-delta instrument {}",
-                    input.nt_instrument_id
-                ),
-            })?;
-        if parse_book_type(&venue.book_type)? != BookType::L2_MBP {
-            return Err(ManifestError::OrderBookDeltaRequiresL2Mbp {
-                book_type: venue.book_type.clone(),
-            });
+        let (instrument_id, instrument_ids) =
+            parse_and_validate_catalog_input_instrument_ids(input)?;
+        let (effective_instrument_ids, selector_field) = match instrument_ids.as_deref() {
+            Some(instrument_ids) => (instrument_ids, "catalog_inputs.instrument_ids"),
+            None => (
+                std::slice::from_ref(&instrument_id),
+                "catalog_inputs.nt_instrument_id",
+            ),
+        };
+        for instrument_id in effective_instrument_ids {
+            let venue_name = instrument_id.venue.to_string();
+            let venue = std::iter::once(primary_venue)
+                .chain(additional_venues)
+                .find(|venue| venue.nt_venue == venue_name)
+                .ok_or_else(|| ManifestError::InvalidNtConfig {
+                    field: selector_field,
+                    message: format!(
+                        "no venue config for order-book-delta instrument {instrument_id}"
+                    ),
+                })?;
+            if parse_book_type(&venue.book_type)? != BookType::L2_MBP {
+                return Err(ManifestError::OrderBookDeltaRequiresL2Mbp {
+                    book_type: venue.book_type.clone(),
+                });
+            }
         }
     }
     Ok(())
@@ -3803,18 +3784,16 @@ mod tests {
         cache::Cache,
         clock::{Clock, TestClock},
         msgbus::{
-            self, MessageBus, TypedHandler, set_message_bus,
-            stubs::get_typed_message_saving_handler, switchboard,
+            self, MessageBus, set_message_bus, stubs::get_typed_message_saving_handler, switchboard,
         },
     };
     use nautilus_core::UnixNanos;
-    use nautilus_data::engine::{DataEngine, book::BookUpdater};
+    use nautilus_data::engine::DataEngine;
     use nautilus_execution::models::latency::LatencyModel;
     use nautilus_model::{
-        data::{BookOrder, Data, NULL_ORDER, OrderBookDelta, QuoteTick},
-        enums::{BookAction, BookType, OrderSide, RecordFlag},
+        data::{BookOrder, Data, NULL_ORDER, OrderBookDelta, OrderBookDeltas},
+        enums::{BookAction, OrderSide, RecordFlag},
         identifiers::InstrumentId,
-        orderbook::OrderBook,
         types::{Price, Quantity},
     };
 
@@ -6121,7 +6100,28 @@ mod tests {
     }
 
     #[test]
-    fn order_book_delta_run_config_buffers_f_last_and_emits_book_quotes() {
+    fn order_book_delta_input_uses_every_effective_selector_venue_book_type() {
+        let mut manifest = valid_manifest();
+        manifest.venue.book_type = "L2_MBP".to_string();
+        let mut okx = manifest.venue.clone();
+        okx.nt_venue = "OKX".to_string();
+        okx.book_type = "L1_MBP".to_string();
+        manifest.additional_venues.push(okx);
+        manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
+        manifest.catalog_inputs[0].instrument_ids = Some(vec!["BTC-USDT.OKX".to_string()]);
+        let mut accepted = accepted_dataset();
+        accepted.fidelity_class = SourceProofFidelityClass::L2Replay;
+
+        assert_eq!(
+            manifest.validate(&accepted).unwrap_err(),
+            ManifestError::OrderBookDeltaRequiresL2Mbp {
+                book_type: "L1_MBP".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn order_book_delta_run_config_buffers_f_last_without_claiming_quote_emission() {
         let mut manifest = valid_manifest();
         manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
         manifest.venue.book_type = "L2_MBP".to_string();
@@ -6133,7 +6133,7 @@ mod tests {
             .as_ref()
             .expect("L2 replay must configure the NT data engine");
         assert!(data_engine.buffer_deltas);
-        assert!(data_engine.emit_quotes_from_book);
+        assert!(!data_engine.emit_quotes_from_book);
     }
 
     #[test]
@@ -6160,7 +6160,7 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_explicit_quotes_do_not_suppress_delta_book_quotes() {
+    fn unrelated_explicit_quotes_do_not_enable_synthetic_book_quotes() {
         let mut manifest = valid_manifest();
         manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
         manifest.venue.book_type = "L2_MBP".to_string();
@@ -6178,13 +6178,13 @@ mod tests {
             .expect("delta replay must configure the NT data engine");
         assert!(data_engine.buffer_deltas);
         assert!(
-            data_engine.emit_quotes_from_book,
-            "an unrelated quote stream must not starve the delta instrument"
+            !data_engine.emit_quotes_from_book,
+            "delta replay must not claim an exact quote cadence NT does not provide"
         );
     }
 
     #[test]
-    fn mixed_explicit_and_derived_delta_quote_authority_fails_closed() {
+    fn partial_explicit_quote_coverage_never_enables_synthetic_book_quotes() {
         let mut manifest = valid_manifest();
         manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
         manifest.venue.book_type = "L2_MBP".to_string();
@@ -6199,18 +6199,21 @@ mod tests {
         first_quotes.catalog_path = "/tmp/first-explicit-quotes".to_string();
         manifest.catalog_inputs.push(first_quotes);
 
-        assert_eq!(
-            manifest.to_nt_run_config().unwrap_err(),
-            ManifestError::InvalidNtConfig {
-                field: "engine.data_engine.emit_quotes_from_book",
-                message: "delta instruments must use one quote authority: explicit QuoteTick data must cover every OrderBookDelta instrument or none"
-                    .to_string(),
-            }
+        let run = manifest.to_nt_run_config().expect("L2 NT run config");
+        let data_engine = run
+            .engine()
+            .data_engine
+            .as_ref()
+            .expect("delta replay data-engine config");
+        assert!(data_engine.buffer_deltas);
+        assert!(
+            !data_engine.emit_quotes_from_book,
+            "explicit quote inputs must not activate a second quote authority"
         );
     }
 
     #[test]
-    fn equal_timestamp_delta_events_emit_quotes_after_each_f_last_book_state() {
+    fn equal_timestamp_delta_events_publish_distinct_f_last_batches() {
         let mut manifest = valid_manifest();
         manifest.catalog_inputs[0].data_type = "OrderBookDelta".to_string();
         manifest.venue.book_type = "L2_MBP".to_string();
@@ -6223,25 +6226,16 @@ mod tests {
 
         set_message_bus(Rc::new(RefCell::new(MessageBus::default())));
         let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID).expect("instrument id");
-        let cache = Rc::new(RefCell::new(Cache::default()));
-        cache
-            .borrow_mut()
-            .add_order_book(OrderBook::new(instrument_id, BookType::L2_MBP))
-            .expect("L2 book");
-        let updater = Rc::new(BookUpdater::new(&instrument_id, cache.clone(), true));
+        let (deltas_handler, deltas_saver) =
+            get_typed_message_saving_handler::<OrderBookDeltas>(None);
         msgbus::subscribe_book_deltas(
             switchboard::get_book_deltas_topic(instrument_id).into(),
-            TypedHandler::new(updater),
-            None,
-        );
-        let (quote_handler, quote_saver) = get_typed_message_saving_handler::<QuoteTick>(None);
-        msgbus::subscribe_quotes(
-            switchboard::get_quotes_topic(instrument_id).into(),
-            quote_handler,
+            deltas_handler,
             None,
         );
         let clock: Rc<RefCell<dyn Clock>> = Rc::new(RefCell::new(TestClock::new()));
-        let mut engine = DataEngine::new(clock, cache, Some(config));
+        let mut engine =
+            DataEngine::new(clock, Rc::new(RefCell::new(Cache::default())), Some(config));
 
         let timestamp = UnixNanos::from(1_700_000_000_000_000_000);
         let flags = |values: &[RecordFlag]| {
@@ -6290,23 +6284,8 @@ mod tests {
                 ]),
             ),
             delta(
-                BookAction::Delete,
-                order(OrderSide::Buy, "100", "0"),
-                flags(&[RecordFlag::F_MBP]),
-            ),
-            delta(
-                BookAction::Add,
-                order(OrderSide::Buy, "101", "11"),
-                flags(&[RecordFlag::F_MBP]),
-            ),
-            delta(
-                BookAction::Delete,
-                order(OrderSide::Sell, "102", "0"),
-                flags(&[RecordFlag::F_MBP]),
-            ),
-            delta(
-                BookAction::Add,
-                order(OrderSide::Sell, "103", "13"),
+                BookAction::Update,
+                order(OrderSide::Buy, "99", "20"),
                 flags(&[RecordFlag::F_MBP, RecordFlag::F_LAST]),
             ),
         ];
@@ -6314,14 +6293,20 @@ mod tests {
             engine.process_data(Data::Delta(event));
         }
 
-        let quotes = quote_saver.get_messages();
-        assert_eq!(quotes.len(), 2, "one quote must follow each complete event");
-        assert_eq!(quotes[0].bid_price.as_decimal().to_string(), "100");
-        assert_eq!(quotes[0].ask_price.as_decimal().to_string(), "102");
-        assert_eq!(quotes[1].bid_price.as_decimal().to_string(), "101");
-        assert_eq!(quotes[1].ask_price.as_decimal().to_string(), "103");
-        assert_eq!(quotes[0].ts_init, timestamp);
-        assert_eq!(quotes[1].ts_init, timestamp);
+        let batches = deltas_saver.get_messages();
+        assert_eq!(
+            batches.len(),
+            2,
+            "each F_LAST boundary must publish one batch"
+        );
+        assert_eq!(batches[0].deltas.len(), 3);
+        assert_eq!(batches[1].deltas.len(), 1);
+        assert_eq!(batches[0].ts_init, timestamp);
+        assert_eq!(batches[1].ts_init, timestamp);
+        assert_eq!(
+            batches[1].deltas[0].order.price,
+            Price::from_str("99").unwrap()
+        );
     }
 
     #[test]

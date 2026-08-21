@@ -735,6 +735,57 @@ fn seeded_level_set_run_spec_emits_full_depth_and_derived_bbo_through_existing_c
 }
 
 #[test]
+fn seeded_level_set_completed_reuse_rejects_tampered_canonical_parquet() {
+    let jsonl = "{\"instrument\":\"BASEQUOTE\",\"action\":\"snapshot\",\"time\":1700000000000,\"bids\":[[\"0.49\",\"10\",\"2\"]],\"asks\":[[\"0.51\",\"12\",\"3\"]]}\n";
+    let object_bytes = jsonl.as_bytes();
+    let (proof, object) = accepted_proof_and_object(object_bytes);
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let registry_path = write_registry(temp.path());
+    let mut converter = converter(
+        &SEEDED_LEVEL_SET_DELTAS_ADAPTER,
+        seeded_jsonl_payload(object_bytes.len() as u64),
+    );
+    converter.seeded_level_set = Some(seeded_level_set_mapping());
+    let manifest = manifest(
+        "operator-binding-seeded-level-set-canonical-tamper",
+        NT_INSTRUMENT_ID,
+        vec![
+            delta_catalog_input(NT_INSTRUMENT_ID),
+            quote_catalog_input(NT_INSTRUMENT_ID),
+        ],
+    );
+    let mut spec = run_spec(
+        registry_path,
+        proof,
+        object,
+        RunSpecInstrumentSpecs::Single(Box::new(CatalogInstrumentSpec::Spot(spot_spec(
+            NT_INSTRUMENT_ID,
+            INSTRUMENT_ID,
+        )))),
+        RunSpecInstrumentIdentities::Single(identity(INSTRUMENT_ID, NT_INSTRUMENT_ID)),
+        converter,
+        manifest,
+    );
+    spec.selector_provenance = l2_provenance();
+    let output_dir = temp.path().join("out");
+    let first = assert_multi(
+        run_operator_from_run_spec(&spec, object_bytes, &output_dir).expect("initial run"),
+    );
+    let primary = first
+        .tables
+        .iter()
+        .find(|table| table.data_type == "OrderBookDelta")
+        .expect("primary delta table");
+    fs::write(&primary.canonical_path, b"tampered canonical parquet")
+        .expect("tamper canonical parquet");
+
+    let error = run_operator_from_run_spec(&spec, object_bytes, &output_dir)
+        .err()
+        .expect("completed reuse must authenticate canonical parquet");
+    assert!(error.to_string().contains("canonical"), "{error:#}");
+}
+
+#[test]
 fn seeded_level_set_one_sided_window_publishes_primary_deltas_without_quotes() {
     let jsonl = "{\"instrument\":\"BASEQUOTE\",\"action\":\"snapshot\",\"time\":1700000000000,\"bids\":[[\"0.49\",\"10\",\"2\"]],\"asks\":[]}\n\
         {\"instrument\":\"BASEQUOTE\",\"action\":\"update\",\"time\":1700000060000,\"bids\":[[\"0.49\",\"11\",\"2\"]],\"asks\":[]}\n";

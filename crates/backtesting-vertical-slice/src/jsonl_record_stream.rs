@@ -89,28 +89,22 @@ pub fn visit_jsonl_records(
             &mut visit,
         ),
         RawPayloadContainer::SingleJsonlZip => {
-            {
-                let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
-                    .context("inspect single-member JSONL ZIP")?;
-                ensure!(
-                    archive.len() == 1,
-                    "single_jsonl_zip requires exactly one member, found {}",
-                    archive.len()
-                );
-                let member = archive.by_index(0).context("inspect JSONL ZIP member")?;
-                ensure!(!member.is_dir(), "single_jsonl_zip member is a directory");
-            }
-            let mut member = crate::zip_reader::zip_member_reader(bytes)
-                .context("open single-member JSONL ZIP")?;
+            let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
+                .context("inspect single-member JSONL ZIP")?;
             ensure!(
-                member.declared_len() as u64 <= limits.max_member_bytes,
+                archive.len() == 1,
+                "single_jsonl_zip requires exactly one member, found {}",
+                archive.len()
+            );
+            let member = archive.by_index(0).context("open JSONL ZIP member")?;
+            ensure!(!member.is_dir(), "single_jsonl_zip member is a directory");
+            ensure!(
+                member.size() <= limits.max_member_bytes,
                 "ZIP JSONL member declares {} bytes, exceeding max_member_bytes {}",
-                member.declared_len(),
+                member.size(),
                 limits.max_member_bytes
             );
-            let stats = visit_single_reader(&mut member, limits, &mut visit)?;
-            member.verify().context("verify JSONL ZIP member")?;
-            Ok(stats)
+            visit_single_reader(member, limits, &mut visit)
         }
         RawPayloadContainer::TarGzipJsonl => {
             let member_suffix = limits

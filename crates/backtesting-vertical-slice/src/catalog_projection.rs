@@ -2370,6 +2370,12 @@ fn update_optional_hash_field<T: ToString>(hasher: &mut Sha256, label: &str, val
     }
 }
 
+fn update_tick_scheme_hash<T: ToString>(hasher: &mut Sha256, value: Option<&T>) {
+    if let Some(value) = value {
+        update_hash_field(hasher, "instrument.tick_scheme", &value.to_string());
+    }
+}
+
 fn update_instrument_hash(hasher: &mut Sha256, instrument: &InstrumentAny) -> Result<()> {
     match instrument {
         InstrumentAny::CurrencyPair(currency_pair) => {
@@ -2507,6 +2513,7 @@ fn update_crypto_perpetual_hash(hasher: &mut Sha256, instrument: &CryptoPerpetua
         "instrument.taker_fee",
         &instrument.taker_fee.to_string(),
     );
+    update_tick_scheme_hash(hasher, instrument.tick_scheme.as_ref());
     update_hash_field(
         hasher,
         "instrument.ts_event",
@@ -2643,6 +2650,7 @@ fn update_crypto_future_hash(hasher: &mut Sha256, instrument: &CryptoFuture) -> 
         "instrument.taker_fee",
         &instrument.taker_fee.to_string(),
     );
+    update_tick_scheme_hash(hasher, instrument.tick_scheme.as_ref());
     update_hash_field(
         hasher,
         "instrument.ts_event",
@@ -2760,6 +2768,7 @@ fn update_binary_option_hash(hasher: &mut Sha256, instrument: &BinaryOption) -> 
         "instrument.min_price",
         instrument.min_price.as_ref(),
     );
+    update_tick_scheme_hash(hasher, instrument.tick_scheme.as_ref());
     update_optional_params_hash(hasher, "instrument.info", instrument.info.as_ref())?;
     update_hash_field(
         hasher,
@@ -2876,6 +2885,7 @@ fn update_currency_pair_hash(hasher: &mut Sha256, instrument: &CurrencyPair) -> 
         "instrument.min_price",
         instrument.min_price.as_ref(),
     );
+    update_tick_scheme_hash(hasher, instrument.tick_scheme.as_ref());
     update_hash_field(
         hasher,
         "instrument.margin_init",
@@ -5760,6 +5770,28 @@ max_notional = "200000"
         assert_ne!(
             a.catalog_hash, b.catalog_hash,
             "different trade data must change the catalog hash"
+        );
+    }
+
+    #[test]
+    fn catalog_hash_changes_with_instrument_tick_scheme() {
+        let plain_root = tempfile::TempDir::new().expect("plain catalog root");
+        let scheme_root = tempfile::TempDir::new().expect("tick-scheme catalog root");
+        let plain = build_currency_pair(&spec()).expect("plain instrument");
+        let mut with_scheme = plain.clone();
+        with_scheme.tick_scheme = Some(Ustr::from("fixed_precision_1"));
+
+        ParquetDataCatalog::new(plain_root.path(), None, None, None, None)
+            .write_instruments(vec![InstrumentAny::CurrencyPair(plain)])
+            .expect("write plain instrument");
+        ParquetDataCatalog::new(scheme_root.path(), None, None, None, None)
+            .write_instruments(vec![InstrumentAny::CurrencyPair(with_scheme)])
+            .expect("write tick-scheme instrument");
+
+        assert_ne!(
+            logical_catalog_hash(plain_root.path()).expect("plain hash"),
+            logical_catalog_hash(scheme_root.path()).expect("tick-scheme hash"),
+            "runtime-relevant tick_scheme must participate in catalog identity"
         );
     }
 

@@ -145,17 +145,17 @@ pub fn visit_gzip_tar_members<R: Read>(
         } {
             bail!("tar member {members} uses unsupported {extension} record");
         }
-        ensure!(
-            typeflag == 0 || matches!(typeflag, b'0'..=b'7'),
-            "tar member {members} uses unsupported typeflag 0x{typeflag:02x}"
-        );
+        let is_regular_file = match typeflag {
+            0 | b'0' => true,
+            b'1'..=b'6' => false,
+            _ => bail!("tar member {members} uses unsupported typeflag 0x{typeflag:02x}"),
+        };
         let name = parse_name(&header).with_context(|| format!("tar member {members} name"))?;
         let size = parse_octal_size(&header)?;
         ensure!(
             size <= max_member_bytes,
             "tar member {name:?} declares {size} bytes, exceeding max_member_bytes {max_member_bytes}"
         );
-        let is_regular_file = typeflag == b'0' || typeflag == 0;
         let matches = is_regular_file && name.ends_with(member_suffix);
 
         if matches {
@@ -667,6 +667,24 @@ mod tests {
 
         let err = collect(gzip(&tar), ".data", 4096)
             .expect_err("unknown extension headers must fail before layout-dependent skipping");
+        let message = err.to_string();
+        assert!(message.contains("member 1"), "{message}");
+        assert!(message.contains("typeflag"), "{message}");
+    }
+
+    #[test]
+    fn rejects_contiguous_file_typeflag_instead_of_silently_skipping_data() {
+        let mut tar = Vec::new();
+        let mut header = ustar_header("contiguous.data", 7);
+        header[TYPEFLAG_OFFSET] = b'7';
+        write_test_checksum(&mut header);
+        tar.extend_from_slice(&header);
+        tar.extend_from_slice(b"payload");
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK - 7));
+        tar.extend(std::iter::repeat_n(0u8, TAR_BLOCK * 2));
+
+        let err = collect(gzip(&tar), ".data", 4096)
+            .expect_err("data-carrying contiguous members must fail rather than disappear");
         let message = err.to_string();
         assert!(message.contains("member 1"), "{message}");
         assert!(message.contains("typeflag"), "{message}");

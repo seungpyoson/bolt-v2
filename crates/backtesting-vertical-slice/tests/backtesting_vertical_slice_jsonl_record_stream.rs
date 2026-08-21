@@ -5,6 +5,58 @@ use backtesting_vertical_slice::{
 use flate2::{Compression, write::GzEncoder};
 use std::io::{Cursor, Write};
 
+fn orphan_local_header_zip() -> Vec<u8> {
+    const LOCAL_SIGNATURE: [u8; 4] = *b"PK\x03\x04";
+    const CENTRAL_SIGNATURE: [u8; 4] = *b"PK\x01\x02";
+    const EOCD_SIGNATURE: [u8; 4] = *b"PK\x05\x06";
+
+    let listed = b"{\"event\":\"listed\"}\n";
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    writer
+        .start_file("listed.jsonl", zip::write::FileOptions::default())
+        .expect("start listed ZIP member");
+    writer.write_all(listed).expect("write listed ZIP member");
+    let mut listed_zip = writer.finish().expect("finish listed ZIP").into_inner();
+
+    let orphan = b"{\"event\":\"orphan\"}\n";
+    let orphan_name = b"orphan.jsonl";
+    let mut crc = flate2::Crc::new();
+    crc.update(orphan);
+    let mut prefix = Vec::new();
+    prefix.extend_from_slice(&LOCAL_SIGNATURE);
+    prefix.extend_from_slice(&20u16.to_le_bytes());
+    prefix.extend_from_slice(&0u16.to_le_bytes());
+    prefix.extend_from_slice(&0u16.to_le_bytes());
+    prefix.extend_from_slice(&0u16.to_le_bytes());
+    prefix.extend_from_slice(&0u16.to_le_bytes());
+    prefix.extend_from_slice(&crc.sum().to_le_bytes());
+    prefix.extend_from_slice(&(orphan.len() as u32).to_le_bytes());
+    prefix.extend_from_slice(&(orphan.len() as u32).to_le_bytes());
+    prefix.extend_from_slice(&(orphan_name.len() as u16).to_le_bytes());
+    prefix.extend_from_slice(&0u16.to_le_bytes());
+    prefix.extend_from_slice(orphan_name);
+    prefix.extend_from_slice(orphan);
+
+    let central = listed_zip
+        .windows(CENTRAL_SIGNATURE.len())
+        .position(|window| window == CENTRAL_SIGNATURE)
+        .expect("central directory");
+    let eocd = listed_zip
+        .windows(EOCD_SIGNATURE.len())
+        .position(|window| window == EOCD_SIGNATURE)
+        .expect("EOCD");
+    let offset = u32::try_from(prefix.len()).expect("orphan prefix fits ZIP32");
+    listed_zip[central + 42..central + 46].copy_from_slice(&offset.to_le_bytes());
+    let central_offset = u32::from_le_bytes(
+        listed_zip[eocd + 16..eocd + 20]
+            .try_into()
+            .expect("EOCD central offset"),
+    ) + offset;
+    listed_zip[eocd + 16..eocd + 20].copy_from_slice(&central_offset.to_le_bytes());
+    prefix.extend_from_slice(&listed_zip);
+    prefix
+}
+
 fn limits() -> JsonlStreamLimits {
     JsonlStreamLimits {
         max_decoded_bytes: 128,
@@ -111,6 +163,24 @@ fn single_member_zip_uses_the_same_bounded_record_contract() {
     assert_eq!(stats.decoded_bytes, input.len() as u64);
     assert_eq!(stats.members, 1);
     assert_eq!(stats.records, 2);
+}
+
+#[test]
+fn single_member_zip_reads_the_central_directory_member_not_an_orphan_header() {
+    let mut visited = Vec::new();
+
+    visit_jsonl_records(
+        RawPayloadContainer::SingleJsonlZip,
+        &orphan_local_header_zip(),
+        &limits(),
+        |_, record| {
+            visited.push(record.to_vec());
+            Ok(())
+        },
+    )
+    .expect("visit the one central-directory member");
+
+    assert_eq!(visited, vec![br#"{"event":"listed"}"#.to_vec()]);
 }
 
 fn tar_gzip_fixture(members: &[(&str, &[u8])]) -> Vec<u8> {

@@ -1659,6 +1659,18 @@ enum NormalizedTable {
 }
 
 impl NormalizedTable {
+    fn write_parquet(&self, path: &Path) -> Result<()> {
+        match self {
+            Self::Trades(table) => table.write_parquet(path),
+            Self::Bars(table) => table.write_parquet(path),
+            Self::Deltas(table) => table.write_parquet(path),
+            Self::Quotes(table) => table.write_parquet(path),
+            Self::Index(table) => table.write_parquet(path),
+            Self::Mark(table) => table.write_parquet(path),
+            Self::Funding(table) => table.write_parquet(path),
+        }
+    }
+
     fn table_family(&self) -> &'static str {
         match self {
             Self::Trades(_) => TRADE_TABLE_FAMILY,
@@ -2466,6 +2478,30 @@ fn assert_planned_read_back(planned: &PlannedTable) -> Result<()> {
     }
 }
 
+fn regular_file_sha256(path: &Path, label: &str) -> Result<String> {
+    let mut file = crate::io_safety::open_regular_file(path, label)?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)
+        .with_context(|| format!("read {label} {}", path.display()))?;
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn assert_canonical_artifact_matches(planned: &PlannedTable) -> Result<()> {
+    let expected = tempfile::NamedTempFile::new().context("create canonical comparison file")?;
+    planned
+        .table
+        .write_parquet(expected.path())
+        .context("serialize expected canonical parquet")?;
+    let expected_hash = regular_file_sha256(expected.path(), "expected canonical parquet")?;
+    let actual_hash = regular_file_sha256(&planned.canonical_path, "completed canonical parquet")?;
+    ensure!(
+        actual_hash == expected_hash,
+        "completed canonical artifact {} does not match the re-normalized table",
+        planned.canonical_path.display()
+    );
+    Ok(())
+}
+
 /// Bind every manifest catalog input to exactly one projected table and
 /// rewrite its catalog path to the table's local subroot. Returns the bound
 /// local manifest and, per input, the planned-table index it bound.
@@ -2510,10 +2546,9 @@ fn bind_catalog_inputs(
                     && table.table.nt_data_type() == NT_DATA_TYPE_ORDER_BOOK_DELTA
             });
         if is_conditional_seeded_quote && let Some(index) = planned_index {
-            // The per-source-event BBO is a derived audit artifact. Strategy
-            // replay consumes only the authoritative delta stream; NT buffers
-            // it through F_LAST and emits book-derived quotes without allowing
-            // a later same-timestamp delta to precede an earlier event's BBO.
+            // The per-source-event BBO is a derived audit/equivalence artifact,
+            // not a replay input. Strategy replay consumes the authoritative
+            // delta stream as complete F_LAST-delimited event batches.
             used[index] = true;
             continue;
         }
@@ -2910,21 +2945,15 @@ pub fn run_multi_table_from_run_spec(
             .context("canonical artifact path has no parent")?;
         fs::create_dir_all(parent)
             .with_context(|| format!("create canonical artifact dir {}", parent.display()))?;
-        match &table.table {
-            NormalizedTable::Trades(canonical) => canonical.write_parquet(&table.canonical_path),
-            NormalizedTable::Bars(canonical) => canonical.write_parquet(&table.canonical_path),
-            NormalizedTable::Deltas(canonical) => canonical.write_parquet(&table.canonical_path),
-            NormalizedTable::Quotes(canonical) => canonical.write_parquet(&table.canonical_path),
-            NormalizedTable::Index(canonical) => canonical.write_parquet(&table.canonical_path),
-            NormalizedTable::Mark(canonical) => canonical.write_parquet(&table.canonical_path),
-            NormalizedTable::Funding(canonical) => canonical.write_parquet(&table.canonical_path),
-        }
-        .with_context(|| {
-            format!(
-                "write canonical artifact {}",
-                table.canonical_path.display()
-            )
-        })?;
+        table
+            .table
+            .write_parquet(&table.canonical_path)
+            .with_context(|| {
+                format!(
+                    "write canonical artifact {}",
+                    table.canonical_path.display()
+                )
+            })?;
         catalog_hashes.push(projection.catalog_hash);
     }
     ensure_seeded_projected_bytes_within_limit(adapter.kind, spec, &planned)?;
@@ -3189,11 +3218,7 @@ fn run_multi_from_completed_output(
         let actual_hash = logical_catalog_hash(&table.subroot)
             .with_context(|| format!("verify catalog hash {}", table.subroot.display()))?;
         assert_planned_read_back(table)?;
-        ensure!(
-            table.canonical_path.is_file(),
-            "completed conversion is missing canonical artifact {}",
-            table.canonical_path.display()
-        );
+        assert_canonical_artifact_matches(table)?;
         catalog_hashes.push(actual_hash);
     }
     ensure_seeded_projected_bytes_within_limit(inputs.adapter_kind, spec, &planned)?;

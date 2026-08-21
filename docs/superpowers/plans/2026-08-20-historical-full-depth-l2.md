@@ -4,7 +4,7 @@
 
 **Goal:** Convert native OKX and Bybit seeded order-book archives into replayable full-depth L2 in the existing NautilusTrader catalog path while preserving the issue-789 quote behavior and keeping memory/storage bounded.
 
-**Architecture:** The only replay authority path remains `AcceptedDataset -> CanonicalOrderBookDeltasTable -> project_canonical_order_book_deltas_to_catalog -> NT catalog`. A config-driven seeded level-set converter scans all four supported archive containers in encounter order, maintains one capped NT L2 book, and emits only a TOML-selected event window plus one replay seed. Per-event BBO is retained as a derived audit artifact; NT replay consumes only the delta catalog, buffers through `F_LAST`, and emits the strategy-visible quote from the completed book state. After differential proof, the old raw-to-BBO `SeededL2Quotes` path is deleted.
+**Architecture:** The only replay authority path remains `AcceptedDataset -> CanonicalOrderBookDeltasTable -> project_canonical_order_book_deltas_to_catalog -> NT catalog`. A config-driven seeded level-set converter scans all four supported archive containers in encounter order, maintains one capped NT L2 book, and emits only a TOML-selected event window plus one replay seed. Per-event BBO is retained as a derived audit artifact; NT replay consumes only the delta catalog and publishes complete `F_LAST`-delimited delta batches. After differential proof, the old raw-to-BBO `SeededL2Quotes` path is deleted.
 
 **Tech Stack:** Rust, serde/TOML, flate2, tar, zip, NautilusTrader `OrderBookDelta`/`OrderBookDeltas`/`OrderBook`/`ParquetDataCatalog`, Arrow/Parquet, cargo test.
 
@@ -26,7 +26,7 @@
 - Retire the venue-scale selected-conversion-manifest shortcut: current `converted` status now requires a full typed current-schema Ready completion ledger with no blockers, non-empty record lineage, positive accepted-byte and canonical-row counts, valid evidence/catalog hashes and paths, complete mapping/publication coverage, and internally recomputed totals. Downgrade the committed PMXT v1 delta slice from `converted` to blocked until it is regenerated and certified under the v2 delta identity; dated source-proof records remain historical evidence only.
 - Validate configured order-count fields as nonnegative integers, but declare and test their intentional loss because NT full-depth `OrderBookDelta` cannot represent per-level order counts. Do not encode counts into `order_id` and do not emit `OrderBookDepth10`.
 - Maintain a capped NT L2 book while scanning. At the selected window boundary, emit one reconstructed snapshot seed representing the immediately preceding state; the seed establishes replay state and does not emit a quote.
-- Emit one derived audit quote after each selected source event only when both sides exist, matching the accepted issue-789 cardinality. In NT replay, exclude that audit catalog, buffer the authoritative deltas through `F_LAST`, and enable NT book-derived strategy quotes. Do not use NT `deltas_to_quotes`.
+- Emit one derived audit quote after each selected source event only when both sides exist, matching the accepted issue-789 cardinality. In NT replay, exclude that audit catalog and buffer the authoritative deltas through `F_LAST`; delta-consuming strategies receive the complete source-event batches. Do not use NT `deltas_to_quotes` or claim that its deduplicating book-quote emitter preserves source-event cadence.
 - No L3 claims, on-chain work, provider purchasing, credential work, or token-screener changes belong in this slice.
 - The final review head must contain the new path and deletion of `SeededL2Quotes`; retaining both paths is not reviewable.
 
@@ -306,7 +306,7 @@ Expected: the canonical-delta-derived quotes match the immutable legacy counts a
 
 - [x] **Step 3: Switch the production operator and runner callers**
 
-Select the registered delta-family adapter through `[converter.seeded_level_set]`, pass the manifest window and TOML limits, and project the canonical table through the existing bridge. Store derived quotes for audit/equivalence, but bind only the delta catalog into the NT run; configure NT to buffer through `F_LAST` and emit book-derived strategy quotes. The retained issue-789 comparison run may consume its pinned derived-quote fixtures while separately proving the real full-depth delta catalog round trip. Support all four containers through the shared record visitor.
+Select the registered delta-family adapter through `[converter.seeded_level_set]`, pass the manifest window and TOML limits, and project the canonical table through the existing bridge. Store derived quotes for audit/equivalence, but bind only the delta catalog into the NT run and configure NT to buffer through `F_LAST`. The retained issue-789 comparison run may consume its pinned derived-quote fixtures while separately proving the real full-depth delta catalog round trip. Support all four containers through the shared record visitor.
 
 - [x] **Step 4: Delete the old path completely**
 

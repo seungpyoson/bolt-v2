@@ -11,6 +11,7 @@ use backtesting_vertical_slice::{
         CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
         ConversionFingerprint, ConversionOutputState, inspect_conversion_output,
     },
+    io_safety::collect_regular_files,
     pmxt_one_off_backfill_projection::{
         NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK, NT_DATA_TYPE_TRADE_TICK,
         PMXT_ONE_OFF_RESULT_CONTRACT_FILE, PmxtBookLevel, PmxtOneOffArtifactRootRunSpec,
@@ -20,7 +21,9 @@ use backtesting_vertical_slice::{
         PmxtSelectedSourceProjectionSpec, PmxtSelectedSourceSchema,
         project_pmxt_one_off_rows_to_nt, project_pmxt_selected_source_parquet_to_nt,
         run_pmxt_one_off_l2_backtest_contract, write_pmxt_one_off_conversion_projection,
-        write_pmxt_one_off_l2_artifact_root_run, write_pmxt_one_off_projection_to_catalog,
+        write_pmxt_one_off_l2_artifact_root_run,
+        write_pmxt_one_off_l2_artifact_root_run_from_spec_file,
+        write_pmxt_one_off_projection_to_catalog,
     },
     reference_fixture_index::repo_root_from_manifest_dir,
     result_contract::BacktestResultContract,
@@ -49,6 +52,8 @@ use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use nautilus_polymarket::http::models::GammaMarket;
 use parquet::arrow::ArrowWriter;
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use std::{collections::BTreeMap, fs::File, path::PathBuf, process::Command, sync::Arc};
 use ustr::Ustr;
 
@@ -56,6 +61,76 @@ const PMXT_TEST_EVENT_COUNT_LEDGER_HASH: &str =
     "1111111111111111111111111111111111111111111111111111111111111111";
 const PMXT_TEST_SELECTED_ASSET_IDS_HASH: &str =
     "2222222222222222222222222222222222222222222222222222222222222222";
+
+#[cfg(unix)]
+struct OneShotFifoWriter {
+    opened: std::sync::mpsc::Receiver<()>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+#[cfg(unix)]
+impl OneShotFifoWriter {
+    fn start(path: &std::path::Path, bytes: Vec<u8>) -> Self {
+        let path = path.to_path_buf();
+        let (opened_tx, opened) = std::sync::mpsc::sync_channel(1);
+        let thread = std::thread::spawn(move || {
+            let mut writer = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .expect("open FIFO writer");
+            opened_tx.send(()).expect("report opened FIFO writer");
+            std::io::Write::write_all(&mut writer, &bytes).expect("write FIFO payload");
+        });
+        Self { opened, thread }
+    }
+
+    fn finish(self, path: &std::path::Path) {
+        let mut cleanup_reader = match self.opened.try_recv() {
+            Ok(()) => None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                let cleanup_reader = std::fs::OpenOptions::new()
+                    .read(true)
+                    .open(path)
+                    .expect("open FIFO cleanup reader");
+                self.opened
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("FIFO writer opens for cleanup");
+                Some(cleanup_reader)
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                panic!("FIFO writer disconnected before opening")
+            }
+        };
+        if let Some(reader) = cleanup_reader.as_mut() {
+            let mut drained = Vec::new();
+            std::io::Read::read_to_end(reader, &mut drained).expect("drain FIFO payload");
+        }
+        self.thread.join().expect("FIFO writer exits");
+        drop(cleanup_reader);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn pmxt_artifact_root_spec_fifo_is_rejected_before_opening() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let spec_path = dir.path().join("pmxt-run.fifo");
+    let status = Command::new("mkfifo")
+        .arg(&spec_path)
+        .status()
+        .expect("run mkfifo");
+    assert!(status.success(), "mkfifo must create the test FIFO");
+    let writer = OneShotFifoWriter::start(&spec_path, b"not-toml".to_vec());
+
+    let error = write_pmxt_one_off_l2_artifact_root_run_from_spec_file(&spec_path)
+        .expect_err("PMXT artifact-root spec must be a regular file");
+    assert!(
+        error.to_string().contains("not a regular file"),
+        "{error:#}"
+    );
+
+    writer.finish(&spec_path);
+}
 
 #[test]
 fn pmxt_one_off_projection_uses_nt_polymarket_metadata_and_l2_parsers() {
@@ -410,6 +485,50 @@ fn pmxt_selected_source_parquet_projects_l2_rows_without_full_source_rescan() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn pmxt_selected_source_parquet_fifo_is_rejected_before_decoding() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let selected_parquet_path = dir.path().join("selected-source.parquet");
+    let selector_report_path = dir.path().join("first-proof-selector-report.json");
+    let selected_report_path = dir.path().join("selected-source-report.json");
+    write_pmxt_selected_source_fixture(&selected_parquet_path);
+    write_selector_report_fixture(&selector_report_path);
+    write_selected_source_report_with_selector(
+        &selected_report_path,
+        &selected_parquet_path,
+        &selector_report_path,
+        3,
+    );
+    let parquet_bytes = std::fs::read(&selected_parquet_path).expect("read Parquet fixture");
+    std::fs::remove_file(&selected_parquet_path).expect("remove regular Parquet fixture");
+    let status = Command::new("mkfifo")
+        .arg(&selected_parquet_path)
+        .status()
+        .expect("run mkfifo");
+    assert!(status.success(), "mkfifo must create the Parquet FIFO");
+    let writer = OneShotFifoWriter::start(&selected_parquet_path, parquet_bytes);
+
+    let error = project_pmxt_selected_source_parquet_to_nt(PmxtSelectedSourceProjectionSpec {
+        source_binding: "synthetic-pmxt-one-off-source".to_string(),
+        usage_scope: SourceProofUsageScope::OneOffBackfillData,
+        drop_quotes_missing_side: true,
+        selected_condition_id: "0xcondition".to_string(),
+        selected_token_id: "token-a".to_string(),
+        gamma_markets: gamma_markets(),
+        selected_source_parquet_path: selected_parquet_path.clone(),
+        selected_source_report_path: selected_report_path,
+        schema: pmxt_selected_source_schema(),
+    })
+    .expect_err("selected-source Parquet FIFO must be rejected");
+    assert!(
+        error.to_string().contains("not a regular file"),
+        "{error:#}"
+    );
+
+    writer.finish(&selected_parquet_path);
+}
+
 #[test]
 fn pmxt_selected_source_parquet_projects_trade_ticks_from_configured_trade_columns() {
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -597,7 +716,8 @@ fn pmxt_selected_source_projection_requires_selector_to_exclude_forbidden_event_
 fn pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_metadata() {
     let projection = pmxt_projection_fixture();
     let output_dir = tempfile::TempDir::new().expect("output dir");
-    let catalog_root = output_dir.path().join("nt-catalog");
+    let catalog_root_dir = tempfile::TempDir::new().expect("empty catalog root");
+    let catalog_root = catalog_root_dir.path().to_path_buf();
     let fingerprint = pmxt_conversion_fingerprint();
 
     let completed = write_pmxt_one_off_conversion_projection(PmxtOneOffConversionProjectionSpec {
@@ -656,6 +776,42 @@ fn pmxt_one_off_conversion_projection_writes_manifest_checkpoint_and_catalog_met
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn pmxt_fresh_projection_rejects_a_symlinked_catalog_root() {
+    let output_dir = tempfile::TempDir::new().expect("output dir");
+    let catalog_parent = tempfile::TempDir::new().expect("catalog parent");
+    let external_target = tempfile::TempDir::new().expect("external target");
+    let catalog_root = catalog_parent.path().join("catalog-root");
+    symlink(external_target.path(), &catalog_root).expect("plant catalog-root symlink");
+    let spec = PmxtOneOffConversionProjectionSpec {
+        output_dir: output_dir.path().to_path_buf(),
+        catalog_root: catalog_root.clone(),
+        projection: pmxt_projection_fixture(),
+        fingerprint: pmxt_conversion_fingerprint(),
+        normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
+        output_catalog_uri: catalog_root.display().to_string(),
+        execution_catalog_uri: catalog_root.display().to_string(),
+        direct_s3_catalog_access_proven: false,
+        completed_at: "2026-06-08T00:00:00Z".to_string(),
+    };
+
+    let error = write_pmxt_one_off_conversion_projection(spec)
+        .expect_err("fresh projection must not follow a symlinked catalog root");
+
+    assert!(
+        error.to_string().contains("not a real directory"),
+        "{error:#}"
+    );
+    assert!(
+        std::fs::read_dir(external_target.path())
+            .expect("read outside target")
+            .next()
+            .is_none(),
+        "fresh projection must not write through the catalog-root symlink"
+    );
+}
+
 #[test]
 fn pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output() {
     let projection = pmxt_projection_fixture();
@@ -695,6 +851,119 @@ fn pmxt_one_off_conversion_projection_rerun_reuses_matching_complete_output() {
         second.catalog_projection.catalog_hash,
         first.catalog_projection.catalog_hash
     );
+}
+
+#[test]
+fn pmxt_completed_reuse_recomputes_the_catalog_hash() {
+    let projection = pmxt_projection_fixture();
+    let output_dir = tempfile::TempDir::new().expect("output dir");
+    let catalog_root = output_dir.path().join("nt-catalog");
+    let spec = PmxtOneOffConversionProjectionSpec {
+        output_dir: output_dir.path().to_path_buf(),
+        catalog_root: catalog_root.clone(),
+        projection,
+        fingerprint: pmxt_conversion_fingerprint(),
+        normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
+        output_catalog_uri: catalog_root.display().to_string(),
+        execution_catalog_uri: catalog_root.display().to_string(),
+        direct_s3_catalog_access_proven: false,
+        completed_at: "2026-06-08T00:00:00Z".to_string(),
+    };
+
+    let first = write_pmxt_one_off_conversion_projection(spec.clone())
+        .expect("write initial PMXT completed output");
+    let extra_catalog = tempfile::TempDir::new().expect("extra catalog");
+    write_pmxt_one_off_projection_to_catalog(
+        extra_catalog.path(),
+        &pmxt_trade_projection_fixture(),
+    )
+    .expect("write a second valid PMXT data family");
+    let mut new_files = 0_usize;
+    for source in collect_regular_files(extra_catalog.path(), "extra PMXT test catalog").unwrap() {
+        let relative = source.strip_prefix(extra_catalog.path()).unwrap();
+        let target = catalog_root.join(relative);
+        if !target.exists() {
+            new_files += 1;
+        }
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::copy(source, target).unwrap();
+    }
+    assert!(new_files > 0, "test mutation must add valid catalog files");
+    assert!(!first.catalog_projection.catalog_hash.is_empty());
+
+    let error = write_pmxt_one_off_conversion_projection(spec)
+        .expect_err("content-mutated prior catalog must not be reused");
+    assert!(error.to_string().contains("catalog hash"), "{error:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn pmxt_completed_reuse_rejects_a_symlinked_external_catalog_root() {
+    let output_dir = tempfile::TempDir::new().expect("output dir");
+    let catalog_parent = tempfile::TempDir::new().expect("catalog parent");
+    let catalog_root = catalog_parent.path().join("catalog-root");
+    let spec = PmxtOneOffConversionProjectionSpec {
+        output_dir: output_dir.path().to_path_buf(),
+        catalog_root: catalog_root.clone(),
+        projection: pmxt_projection_fixture(),
+        fingerprint: pmxt_conversion_fingerprint(),
+        normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
+        output_catalog_uri: catalog_root.display().to_string(),
+        execution_catalog_uri: catalog_root.display().to_string(),
+        direct_s3_catalog_access_proven: false,
+        completed_at: "2026-06-08T00:00:00Z".to_string(),
+    };
+
+    write_pmxt_one_off_conversion_projection(spec.clone())
+        .expect("write initial PMXT completed output");
+    let external_target = catalog_parent.path().join("external-target");
+    std::fs::rename(&catalog_root, &external_target).expect("move prior catalog outside link");
+    symlink(&external_target, &catalog_root).expect("plant catalog-root symlink");
+
+    let error = write_pmxt_one_off_conversion_projection(spec)
+        .expect_err("symlinked catalog root must not be followed for reuse");
+    assert!(
+        error.to_string().contains("not a real directory"),
+        "{error:#}"
+    );
+    assert!(external_target.is_dir());
+}
+
+#[cfg(unix)]
+#[test]
+fn pmxt_completed_reuse_rejects_a_special_catalog_descendant() {
+    let projection = pmxt_projection_fixture();
+    let output_dir = tempfile::TempDir::new().expect("output dir");
+    let catalog_parent = tempfile::TempDir::new().expect("catalog parent");
+    let catalog_root = catalog_parent.path().join("nt-catalog");
+    let spec = PmxtOneOffConversionProjectionSpec {
+        output_dir: output_dir.path().to_path_buf(),
+        catalog_root: catalog_root.clone(),
+        projection,
+        fingerprint: pmxt_conversion_fingerprint(),
+        normalized_schema_version: "pmxt-selected-source-l2.v1".to_string(),
+        output_catalog_uri: catalog_root.display().to_string(),
+        execution_catalog_uri: catalog_root.display().to_string(),
+        direct_s3_catalog_access_proven: false,
+        completed_at: "2026-06-08T00:00:00Z".to_string(),
+    };
+
+    write_pmxt_one_off_conversion_projection(spec.clone())
+        .expect("write initial PMXT completed output");
+    let outside = tempfile::NamedTempFile::new().expect("outside target");
+    std::fs::write(outside.path(), b"outside").expect("write outside target");
+    symlink(outside.path(), catalog_root.join("linked-catalog-entry"))
+        .expect("plant catalog symlink");
+
+    let error = write_pmxt_one_off_conversion_projection(spec)
+        .expect_err("special PMXT catalog descendant must block reuse");
+    assert!(
+        error
+            .to_string()
+            .contains("non-regular file linked-catalog-entry"),
+        "{error:#}"
+    );
+    assert_eq!(std::fs::read(outside.path()).unwrap(), b"outside");
 }
 
 #[test]

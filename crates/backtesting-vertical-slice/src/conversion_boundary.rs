@@ -10,11 +10,14 @@
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
+
+use crate::io_safety::{collect_regular_files, open_regular_file};
 pub const CONVERSION_MANIFEST_FILE: &str = "conversion-manifest.json";
 pub const CONVERSION_CHECKPOINT_FILE: &str = "conversion-checkpoint.json";
 pub const CATALOG_METADATA_FILE: &str = "catalog-metadata.json";
@@ -655,14 +658,32 @@ pub fn inspect_conversion_output(
     output_dir: &Path,
     expected: &ConversionFingerprint,
 ) -> Result<ConversionOutputState> {
-    if !output_dir.exists() {
-        return Ok(ConversionOutputState::CleanNew);
-    }
-    let entries = fs::read_dir(output_dir)
-        .with_context(|| format!("read conversion output dir {}", output_dir.display()))?
-        .collect::<std::io::Result<Vec<_>>>()
+    let root_metadata = match fs::symlink_metadata(output_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ConversionOutputState::CleanNew);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("inspect conversion output root {}", output_dir.display())
+            });
+        }
+    };
+    ensure!(
+        root_metadata.file_type().is_dir(),
+        "dirty conversion output {}: output root is not a real directory",
+        output_dir.display()
+    );
+    collect_regular_files(output_dir, "conversion output")?;
+
+    let mut entries = fs::read_dir(output_dir)
         .with_context(|| format!("read conversion output dir {}", output_dir.display()))?;
-    if entries.is_empty() {
+    if entries
+        .next()
+        .transpose()
+        .with_context(|| format!("read conversion output dir {}", output_dir.display()))?
+        .is_none()
+    {
         return Ok(ConversionOutputState::CleanNew);
     }
 
@@ -774,7 +795,10 @@ pub fn write_completed_conversion_artifacts(
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
-    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let mut file = open_regular_file(path, "conversion artifact")?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 

@@ -8,6 +8,7 @@
 use std::{
     error::Error,
     fmt, fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -19,6 +20,7 @@ use crate::{
     artifact_index_commit_proof::ArtifactIndexCommitProofReport,
     backfill_accepted_tranche::{BackfillAcceptedTrancheManifest, BackfillAcceptedTrancheStatus},
     backfill_execution_plan::{BackfillExecutionPlan, BackfillExecutionPlanStatus},
+    io_safety::open_regular_file,
     run_manifest::ArtifactSubpath,
     source_catalog_mapping_readiness::{
         SourceCatalogMappingReadinessReport, SourceCatalogMappingReadinessStatus,
@@ -755,11 +757,19 @@ fn read_accepted_tranche_manifest(
 fn read_execution_plan(
     path: &Path,
 ) -> Result<(BackfillExecutionPlan, String), BackfillExecutionReadinessError> {
-    let bytes =
-        fs::read(path).map_err(|error| BackfillExecutionReadinessError::ReadExecutionPlan {
+    let mut file = open_regular_file(path, "backfill execution plan").map_err(|error| {
+        BackfillExecutionReadinessError::ReadExecutionPlan {
+            path: path.display().to_string(),
+            error: format!("{error:#}"),
+        }
+    })?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|error| {
+        BackfillExecutionReadinessError::ReadExecutionPlan {
             path: path.display().to_string(),
             error: error.to_string(),
-        })?;
+        }
+    })?;
     let hash = sha256_hex(&bytes);
     let plan = serde_json::from_slice(&bytes).map_err(|error| {
         BackfillExecutionReadinessError::ParseExecutionPlanJson {
@@ -894,4 +904,63 @@ fn source_selection_readiness_proven(report: &SourceSelectionReadinessReport) ->
         && report.claim_limits_recorded
         && report.source_proof_acceptance_error.is_none()
         && report.unmet_required_checks.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn execution_plan_fifo_retains_the_typed_read_error() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("execution-plan.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo must create the test FIFO");
+
+        let writer_path = path.clone();
+        let (opened_tx, opened) = std::sync::mpsc::sync_channel(1);
+        let writer = std::thread::spawn(move || {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .open(writer_path)
+                .expect("open FIFO writer");
+            opened_tx.send(()).expect("report opened FIFO writer");
+            std::io::Write::write_all(&mut file, b"not-json").expect("write FIFO payload");
+        });
+
+        let error = read_execution_plan(&path).expect_err("execution-plan FIFO must fail to read");
+        match error {
+            BackfillExecutionReadinessError::ReadExecutionPlan {
+                path: error_path,
+                error,
+            } => {
+                assert_eq!(error_path, path.display().to_string());
+                assert!(error.contains("not a regular file"), "{error}");
+            }
+            other => panic!("expected typed read error, got {other}"),
+        }
+
+        let cleanup_reader = match opened.try_recv() {
+            Ok(()) => None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                let cleanup_reader = fs::OpenOptions::new()
+                    .read(true)
+                    .open(&path)
+                    .expect("open FIFO cleanup reader");
+                opened
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("FIFO writer opens for cleanup");
+                Some(cleanup_reader)
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                panic!("FIFO writer disconnected before opening")
+            }
+        };
+        writer.join().expect("FIFO writer exits");
+        drop(cleanup_reader);
+    }
 }

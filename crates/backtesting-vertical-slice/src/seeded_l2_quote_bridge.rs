@@ -27,8 +27,7 @@ use crate::{
     conversion_boundary::{ConversionManifest, SeededL2QuotePlanV1},
     hashing::is_lowercase_sha256_hex,
     seeded_level_set_deltas::{
-        SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY,
-        SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION,
+        SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY, SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION,
     },
 };
 
@@ -213,8 +212,7 @@ pub(crate) fn compile_seeded_l2_quote_bridge_plan(
     for input in inputs {
         let manifest = input.conversion_manifest;
         ensure!(
-            manifest.fingerprint.converter_identity
-                == SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY
+            manifest.fingerprint.converter_identity == SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY
                 && manifest.fingerprint.converter_version
                     == SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION,
             "seeded L2 quote bridge requires the registered seeded converter identity/version"
@@ -228,12 +226,13 @@ pub(crate) fn compile_seeded_l2_quote_bridge_plan(
             .as_ref()
             .context("seeded L2 conversion manifest has no causal quote plan")?;
         durable_plan.validate()?;
-        let instrument_id = InstrumentId::from_str(&manifest.nt_instrument_id).with_context(|| {
-            format!(
-                "seeded L2 conversion manifest has invalid nt_instrument_id {:?}",
-                manifest.nt_instrument_id
-            )
-        })?;
+        let instrument_id =
+            InstrumentId::from_str(&manifest.nt_instrument_id).with_context(|| {
+                format!(
+                    "seeded L2 conversion manifest has invalid nt_instrument_id {:?}",
+                    manifest.nt_instrument_id
+                )
+            })?;
         let catalog_rows = manifest.effective_catalog_rows_by_nt_data_type();
         ensure!(
             catalog_rows.get(NT_DATA_TYPE_ORDER_BOOK_DELTA).copied() == Some(input.deltas.len()),
@@ -745,12 +744,9 @@ mod tests {
     };
     use crate::{
         catalog_projection::{NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK},
-        conversion_boundary::{
-            ConversionFingerprint, ConversionManifest, SeededL2QuotePlanV1,
-        },
+        conversion_boundary::{ConversionFingerprint, ConversionManifest, SeededL2QuotePlanV1},
         seeded_level_set_deltas::{
-            SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY,
-            SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION,
+            SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY, SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION,
         },
     };
 
@@ -860,15 +856,13 @@ mod tests {
             10,
         )];
 
-        let compiled = compile_seeded_l2_quote_bridge_plan(vec![
-            SeededL2QuoteBridgePlanInput {
-                conversion_manifest: &manifest,
-                client_id: None,
-                book_type: BookType::L2_MBP,
-                deltas: &deltas,
-                audit_quotes: &[],
-            },
-        ])
+        let compiled = compile_seeded_l2_quote_bridge_plan(vec![SeededL2QuoteBridgePlanInput {
+            conversion_manifest: &manifest,
+            client_id: None,
+            book_type: BookType::L2_MBP,
+            deltas: &deltas,
+            audit_quotes: &[],
+        }])
         .expect("compile manifest-bound plan");
 
         let entry = compiled.entries.get(&instrument_id).unwrap();

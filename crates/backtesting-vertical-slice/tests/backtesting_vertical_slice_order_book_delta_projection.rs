@@ -20,8 +20,8 @@ use backtesting_vertical_slice::{
     canonical_trades::TradesPartition,
     catalog_projection::{
         BinaryOptionInstrumentKind, BinaryOptionInstrumentSpec, DeltaReplayClock,
-        SpotInstrumentSpec,
-        project_canonical_order_book_deltas_to_catalog, read_back_order_book_deltas,
+        SpotInstrumentSpec, project_canonical_order_book_deltas_to_catalog,
+        read_back_order_book_deltas,
     },
     source_proof::SourceProofFidelityClass,
 };
@@ -220,7 +220,7 @@ fn deltas_round_trip_through_nt_catalog() {
         DeltaReplayClock::SourceAvailability,
         dir.path(),
     )
-        .expect("project");
+    .expect("project");
     assert_eq!(projection.trade_count, table.rows.len());
     assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
     assert_eq!(
@@ -320,7 +320,7 @@ fn consecutive_empty_snapshots_preserve_later_level_precision() {
         DeltaReplayClock::SourceAvailability,
         dir.path(),
     )
-        .expect("project consecutive empty snapshots");
+    .expect("project consecutive empty snapshots");
     let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID)
         .expect("read consecutive empty snapshots back");
 
@@ -547,7 +547,7 @@ fn replay_seed_precedes_same_timestamp_selected_event_after_catalog_round_trip()
         DeltaReplayClock::SourceAvailability,
         dir.path(),
     )
-        .expect("project replay seed and selected event");
+    .expect("project replay seed and selected event");
 
     let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     assert_eq!(
@@ -617,7 +617,7 @@ fn empty_book_snapshot_projects_to_single_clear_with_f_last() {
         DeltaReplayClock::SourceAvailability,
         dir.path(),
     )
-        .expect("project");
+    .expect("project");
     assert_eq!(projection.trade_count, 1);
 
     let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
@@ -648,7 +648,7 @@ fn projection_refuses_dirty_catalog_root() {
         DeltaReplayClock::SourceAvailability,
         dir.path(),
     )
-        .expect_err("dirty catalog root must be refused");
+    .expect_err("dirty catalog root must be refused");
     assert!(err.to_string().contains("not empty"), "{err}");
 }
 
@@ -686,7 +686,7 @@ fn delta_precision_widens_when_data_finer_than_tick() {
         DeltaReplayClock::SourceAvailability,
         dir.path(),
     )
-        .expect("projection widens precision instead of rejecting accepted data");
+    .expect("projection widens precision instead of rejecting accepted data");
 
     let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     // Read-back preserves the exact archived values at the widened precision.

@@ -60,9 +60,9 @@ use crate::{
         NT_DATA_TYPE_FUNDING_RATE_UPDATE, NT_DATA_TYPE_INDEX_PRICE_UPDATE,
         NT_DATA_TYPE_MARK_PRICE_UPDATE, NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK,
         NT_DATA_TYPE_TRADE_TICK, build_catalog_instrument, logical_catalog_hash,
-        project_canonical_bars_to_catalog, project_canonical_funding_rates_to_catalog,
-        project_canonical_index_to_catalog, project_canonical_mark_to_catalog,
-        order_book_delta_replay_times, project_canonical_order_book_deltas_to_catalog,
+        order_book_delta_replay_times, project_canonical_bars_to_catalog,
+        project_canonical_funding_rates_to_catalog, project_canonical_index_to_catalog,
+        project_canonical_mark_to_catalog, project_canonical_order_book_deltas_to_catalog,
         project_canonical_quotes_to_catalog, project_canonical_trades_to_catalog, read_back_bars,
         read_back_funding_rates, read_back_index, read_back_mark, read_back_order_book_deltas,
         read_back_quotes, read_back_trade_ticks, ts_init_nanos,
@@ -98,8 +98,7 @@ use crate::{
         time_window_excludes_all_data, window_bound_nanos,
     },
     seeded_l2_quote_bridge::{
-        SeededL2QuoteBridgePlan, SeededL2QuoteBridgePlanInput,
-        compile_seeded_l2_quote_bridge_plan,
+        SeededL2QuoteBridgePlan, SeededL2QuoteBridgePlanInput, compile_seeded_l2_quote_bridge_plan,
     },
     seeded_level_set_deltas::{SeededLevelSetCompileInput, SeededLevelSetWindowBounds},
     source_proof::{
@@ -1957,15 +1956,14 @@ impl NormalizedTable {
                 )?
                 .as_u64())
             }),
-            Self::Deltas(table, replay_clock) => Ok(order_book_delta_replay_times(
-                table,
-                *replay_clock,
-            )?
-            .into_iter()
-            .filter(|ts| {
-                start.is_none_or(|start| *ts >= start) && end.is_none_or(|end| *ts <= end)
-            })
-            .count()),
+            Self::Deltas(table, replay_clock) => {
+                Ok(order_book_delta_replay_times(table, *replay_clock)?
+                    .into_iter()
+                    .filter(|ts| {
+                        start.is_none_or(|start| *ts >= start) && end.is_none_or(|end| *ts <= end)
+                    })
+                    .count())
+            }
             Self::Quotes(table) => count(&table.rows, start, end, |row| {
                 Ok(ts_init_nanos(
                     row.availability_time,
@@ -2173,8 +2171,8 @@ fn normalize_tables_for_kind(
                     window.deltas,
                     DeltaReplayClock::StrictEncounterOrder,
                 ))
-                    .chain(window.quotes.into_iter().map(NormalizedTable::Quotes))
-                    .collect(),
+                .chain(window.quotes.into_iter().map(NormalizedTable::Quotes))
+                .collect(),
                 seeded_l2_quote_plan: Some(seeded_l2_quote_plan),
             })
         }
@@ -2507,12 +2505,7 @@ fn assert_planned_read_back(planned: &PlannedTable) -> Result<()> {
         NormalizedTable::Deltas(table, replay_clock) => {
             let deltas = read_back_order_book_deltas(&planned.subroot, &planned.nt_instrument_id)
                 .context("catalog read-back failed")?;
-            assert_delta_read_back_matches(
-                &deltas,
-                table,
-                &planned.nt_instrument_id,
-                *replay_clock,
-            )
+            assert_delta_read_back_matches(&deltas, table, &planned.nt_instrument_id, *replay_clock)
         }
         NormalizedTable::Quotes(table) => {
             let quotes = read_back_quotes(&planned.subroot, &planned.nt_instrument_id)

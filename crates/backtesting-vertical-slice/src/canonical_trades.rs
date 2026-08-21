@@ -2982,10 +2982,7 @@ mod tests {
                 "parquet-event-stream-to-canonical-order-book-deltas-and-trades.v1",
                 "1",
             ),
-            (
-                "snapshot-seeded-level-set-to-canonical-l2.v1",
-                "1",
-            ),
+            ("snapshot-seeded-level-set-to-canonical-l2.v1", "1"),
         ] {
             let err = require_registered_source_adapter(identity, version)
                 .expect_err("retired delta semantics must fail closed");

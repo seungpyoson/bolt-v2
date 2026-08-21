@@ -40,9 +40,8 @@ use backtesting_vertical_slice::{
     canonical_trades::{CanonicalInstrumentIdentity, CanonicalTradesTable, CsvTimestampUnit},
     catalog_projection::{
         BinaryOptionInstrumentKind, BinaryOptionInstrumentSpec, DeltaReplayClock,
-        SpotInstrumentSpec,
-        project_canonical_order_book_deltas_to_catalog, project_canonical_trades_to_catalog,
-        read_back_order_book_deltas, read_back_trade_ticks,
+        SpotInstrumentSpec, project_canonical_order_book_deltas_to_catalog,
+        project_canonical_trades_to_catalog, read_back_order_book_deltas, read_back_trade_ticks,
     },
     source_proof::{
         AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,

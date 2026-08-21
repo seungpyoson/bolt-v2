@@ -2960,11 +2960,11 @@ mod tests {
         RawPayloadContainer, TradeAggressorSide, TradesPartition,
     };
     use crate::catalog_projection::{
-        CatalogInstrumentSpec, DeltaReplayClock, SpotInstrumentSpec, build_catalog_instrument,
-        NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK,
-        order_book_delta_replay_times,
-        project_canonical_index_to_catalog, project_canonical_order_book_deltas_to_catalog,
-        project_canonical_quotes_to_catalog, read_back_order_book_deltas, read_back_quotes,
+        CatalogInstrumentSpec, DeltaReplayClock, NT_DATA_TYPE_ORDER_BOOK_DELTA,
+        NT_DATA_TYPE_QUOTE_TICK, SpotInstrumentSpec, build_catalog_instrument,
+        order_book_delta_replay_times, project_canonical_index_to_catalog,
+        project_canonical_order_book_deltas_to_catalog, project_canonical_quotes_to_catalog,
+        read_back_order_book_deltas, read_back_quotes,
     };
     use crate::conversion_boundary::{
         ConversionCheckpoint, ConversionFingerprint, ConversionManifest, SeededL2QuotePlanV1,
@@ -4306,23 +4306,21 @@ mod tests {
     fn issue_789_seeded_l2_quote_plan(
         window: &SeededLevelSetWindow,
     ) -> Result<SeededL2QuotePlanV1> {
-        let replay_times = order_book_delta_replay_times(
-            &window.deltas,
-            DeltaReplayClock::StrictEncounterOrder,
-        )?;
+        let replay_times =
+            order_book_delta_replay_times(&window.deltas, DeltaReplayClock::StrictEncounterOrder)?;
         Ok(SeededL2QuotePlanV1 {
             synthetic_seed_batches: window.synthetic_seed_batches,
             selected_source_events: window.selected_events,
             replay_start_time: i64::try_from(
                 *replay_times
-                .first()
-                .context("issue #789 seeded L2 replay has no first timestamp")?,
+                    .first()
+                    .context("issue #789 seeded L2 replay has no first timestamp")?,
             )
             .context("issue #789 first replay timestamp exceeds i64")?,
             replay_end_time: i64::try_from(
                 *replay_times
-                .last()
-                .context("issue #789 seeded L2 replay has no terminal timestamp")?,
+                    .last()
+                    .context("issue #789 seeded L2 replay has no terminal timestamp")?,
             )
             .context("issue #789 terminal replay timestamp exceeds i64")?,
         })

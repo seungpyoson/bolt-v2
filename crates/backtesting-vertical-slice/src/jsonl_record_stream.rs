@@ -98,6 +98,18 @@ pub fn visit_jsonl_records(
             );
             let member = archive.by_index(0).context("open JSONL ZIP member")?;
             ensure!(!member.is_dir(), "single_jsonl_zip member is a directory");
+            if let Some(unix_mode) = member.unix_mode() {
+                const UNIX_FILE_TYPE_MASK: u32 = 0o170000;
+                const UNIX_REGULAR_FILE_TYPE: u32 = 0o100000;
+
+                let member_type = unix_mode & UNIX_FILE_TYPE_MASK;
+                // Missing type bits retain the name-based policy above; any
+                // explicit Unix member type must identify a regular file.
+                ensure!(
+                    member_type == 0 || member_type == UNIX_REGULAR_FILE_TYPE,
+                    "single_jsonl_zip member is not a regular file (Unix mode {unix_mode:#o})"
+                );
+            }
             let declared_member_bytes = member.size();
             ensure!(
                 declared_member_bytes <= limits.max_member_bytes,

@@ -83,6 +83,28 @@ fn zip_with_false_uncompressed_size() -> Vec<u8> {
     archive
 }
 
+fn zip_with_explicit_unix_mode(mode: u32) -> Vec<u8> {
+    const CENTRAL_SIGNATURE: [u8; 4] = *b"PK\x01\x02";
+    const UNIX_SYSTEM: u16 = 3;
+
+    let input = b"{\"event\":\"listed\"}\n";
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    writer
+        .start_file("listed.jsonl", zip::write::FileOptions::default())
+        .expect("start ZIP member");
+    writer.write_all(input).expect("write ZIP member");
+    let mut archive = writer.finish().expect("finish ZIP").into_inner();
+
+    let central = archive
+        .windows(CENTRAL_SIGNATURE.len())
+        .position(|window| window == CENTRAL_SIGNATURE)
+        .expect("central directory");
+    let version_made_by = (UNIX_SYSTEM << 8) | 20;
+    archive[central + 4..central + 6].copy_from_slice(&version_made_by.to_le_bytes());
+    archive[central + 38..central + 42].copy_from_slice(&(mode << 16).to_le_bytes());
+    archive
+}
+
 fn limits() -> JsonlStreamLimits {
     JsonlStreamLimits {
         max_decoded_bytes: 128,
@@ -221,6 +243,26 @@ fn single_member_zip_rejects_false_declared_uncompressed_size() {
 
     assert!(error.to_string().contains("declares"), "{error:#}");
     assert!(error.to_string().contains("decoded"), "{error:#}");
+}
+
+#[test]
+fn single_member_zip_rejects_explicit_non_regular_unix_member_types() {
+    for (member_type, mode) in [("symlink", 0o120777), ("directory", 0o040755)] {
+        let mut callbacks = 0;
+        let error = visit_jsonl_records(
+            RawPayloadContainer::SingleJsonlZip,
+            &zip_with_explicit_unix_mode(mode),
+            &limits(),
+            |_, _| {
+                callbacks += 1;
+                Ok(())
+            },
+        )
+        .expect_err("an explicitly non-regular ZIP member must be rejected");
+
+        assert_eq!(callbacks, 0, "{member_type} member reached the visitor");
+        assert!(error.to_string().contains("regular file"), "{error:#}");
+    }
 }
 
 fn tar_gzip_fixture(members: &[(&str, &[u8])]) -> Vec<u8> {

@@ -73,6 +73,7 @@ use crate::{
         write_completed_conversion_artifacts, write_conversion_checkpoint,
         write_conversion_tables_index,
     },
+    io_safety::{collect_regular_files, open_regular_file},
     nt_catalog_capability::{
         NtCatalogCapabilityEvidence, NtCatalogCapabilityPlan, NtCatalogCapabilityProofArtifact,
         NtCatalogCapabilityRunSpec,
@@ -1268,7 +1269,10 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
 }
 
 fn read_json_artifact<T: DeserializeOwned>(path: &Path) -> Result<T> {
-    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let mut file = open_regular_file(path, "conversion artifact")?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
@@ -3602,8 +3606,10 @@ fn publish_selected_artifacts_with_storage_options(
 
     let mut published = Vec::with_capacity(targets.len());
     for (local_path, relative, object_path) in targets {
-        let bytes =
-            fs::read(local_path).with_context(|| format!("read {}", local_path.display()))?;
+        let mut file = open_regular_file(local_path, "generated output artifact")?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .with_context(|| format!("read {}", local_path.display()))?;
         let byte_len = bytes.len() as u64;
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
@@ -3765,8 +3771,7 @@ fn ensure_local_publish_root_exists(output_prefix: &str) -> Result<()> {
 }
 
 fn collect_output_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    collect_output_files_inner(root, &mut files)?;
+    let mut files = collect_regular_files(root, "generated output")?;
     files.sort();
     Ok(files)
 }
@@ -3825,23 +3830,6 @@ fn regular_path_bytes(path: &Path) -> Result<u64> {
     }
     Ok(bytes)
 }
-
-fn collect_output_files_inner(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in fs::read_dir(path).with_context(|| format!("read dir {}", path.display()))? {
-        let entry = entry.with_context(|| format!("read dir entry under {}", path.display()))?;
-        let entry_path = entry.path();
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("read file type {}", entry_path.display()))?;
-        if file_type.is_dir() {
-            collect_output_files_inner(&entry_path, files)?;
-        } else if file_type.is_file() {
-            files.push(entry_path);
-        }
-    }
-    Ok(())
-}
-
 fn artifact_relative_path(root: &Path, file: &Path) -> Result<String> {
     let relative = file
         .strip_prefix(root)
@@ -4706,6 +4694,92 @@ mod tests {
         assert_eq!(second.output.read_back_count, read_back_count);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn run_from_run_spec_rejects_a_special_completed_output_descendant() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        run_from_run_spec(&spec, &gz, dir.path()).expect("first run");
+
+        let outside = tempfile::NamedTempFile::new().expect("outside target");
+        fs::write(outside.path(), b"outside").expect("write outside target");
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("linked-output"))
+            .expect("plant output symlink");
+
+        let error = run_from_run_spec(&spec, &gz, dir.path())
+            .err()
+            .expect("standalone reuse must reject a special output descendant");
+        assert!(
+            error.to_string().contains("non-regular file linked-output"),
+            "{error:#}"
+        );
+        assert_eq!(fs::read(outside.path()).unwrap(), b"outside");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_from_run_spec_rejects_a_fifo_canonical_artifact_before_reuse() {
+        let gz = gzip(SAMPLE_CSV);
+        let spec = run_spec_for(&gz);
+        let dir = tempfile::TempDir::new().unwrap();
+        let first = run_from_run_spec(&spec, &gz, dir.path()).expect("first run");
+        let parquet_bytes = fs::read(&first.canonical_artifact_path).expect("read canonical file");
+        fs::remove_file(&first.canonical_artifact_path).expect("remove canonical file");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&first.canonical_artifact_path)
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo must create the canonical FIFO");
+
+        let fifo_path = first.canonical_artifact_path.clone();
+        let (opened_tx, opened) = std::sync::mpsc::sync_channel(1);
+        let writer = std::thread::spawn(move || {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .open(fifo_path)
+                .expect("open canonical FIFO writer");
+            opened_tx.send(()).expect("report opened FIFO writer");
+            file.write_all(&parquet_bytes)
+                .expect("write canonical bytes");
+        });
+
+        let error = run_from_run_spec(&spec, &gz, dir.path())
+            .err()
+            .expect("canonical FIFO must be rejected before completed-output reuse");
+        assert!(
+            error
+                .to_string()
+                .contains("non-regular file canonical-trades.parquet"),
+            "{error:#}"
+        );
+
+        let mut cleanup_reader = match opened.try_recv() {
+            Ok(()) => None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                let cleanup_reader = fs::OpenOptions::new()
+                    .read(true)
+                    .open(&first.canonical_artifact_path)
+                    .expect("open FIFO cleanup reader");
+                opened
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .expect("FIFO writer opens for cleanup");
+                Some(cleanup_reader)
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                panic!("FIFO writer disconnected before opening")
+            }
+        };
+        if let Some(reader) = cleanup_reader.as_mut() {
+            let mut drained = Vec::new();
+            reader
+                .read_to_end(&mut drained)
+                .expect("drain canonical FIFO payload");
+        }
+        writer.join().expect("FIFO writer exits");
+        drop(cleanup_reader);
+    }
+
     #[test]
     fn run_from_run_spec_and_publish_copies_artifacts_to_configured_prefix() {
         let gz = gzip(SAMPLE_CSV);
@@ -4786,6 +4860,42 @@ mod tests {
             fs::read(&existing).unwrap(),
             b"existing-result",
             "existing published artifact must not be overwritten"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publish_output_artifacts_rejects_special_entries_instead_of_omitting_them() {
+        let output_dir = tempfile::TempDir::new().unwrap();
+        fs::write(output_dir.path().join("result-contract.json"), b"result").unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        fs::write(outside.path(), b"outside").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path(),
+            output_dir.path().join("silently-skipped-link"),
+        )
+        .unwrap();
+        let published_root = tempfile::TempDir::new().unwrap();
+        let output_prefix = format!(
+            "file://{}/backtests/published-run",
+            published_root.path().display()
+        );
+
+        let error = publish_output_artifacts(output_dir.path(), &output_prefix)
+            .expect_err("publication must reject a special output entry");
+
+        assert!(
+            error
+                .to_string()
+                .contains("non-regular file silently-skipped-link"),
+            "{error:#}"
+        );
+        assert_eq!(fs::read(outside.path()).unwrap(), b"outside");
+        assert!(
+            !published_root
+                .path()
+                .join("backtests/published-run")
+                .exists()
         );
     }
 

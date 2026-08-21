@@ -10,7 +10,7 @@ use std::{
     error::Error,
     fmt,
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
 };
 
@@ -22,6 +22,7 @@ use crate::{
     artifact_index::LifecycleState,
     artifact_store::validate_artifact_root,
     hashing::{is_lowercase_sha256_hex, sha256_hex},
+    io_safety::open_regular_file,
     operator::{RESULT_CONTRACT_FILE, RunSpec, run_operator_from_run_spec},
     reference_artifact::{ReferenceArtifactRewrite, write_reference_artifact_with_len},
     result_contract::BacktestResultContract,
@@ -490,7 +491,10 @@ struct LoadedBacktestSweepSource {
 ///
 /// Returns an error if the run-spec TOML cannot be read or parsed.
 pub fn read_run_spec_with_hash(path: &Path) -> Result<(RunSpec, String)> {
-    let bytes = fs::read(path).with_context(|| format!("read run-spec {}", path.display()))?;
+    let mut file = open_regular_file(path, "run-spec")?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("read run-spec {}", path.display()))?;
     let hash = sha256_hex(&bytes);
     let text = std::str::from_utf8(&bytes).context("run-spec TOML is not UTF-8")?;
     let mut spec: RunSpec = toml::from_str(text).context("parse run-spec TOML")?;
@@ -511,14 +515,19 @@ pub fn read_run_spec_with_hash(path: &Path) -> Result<(RunSpec, String)> {
 /// SHA-256.
 pub fn read_accepted_object_for_run_spec(path: &Path, spec: &RunSpec) -> Result<Vec<u8>> {
     ensure_object_read_within_raw_payload_limit(spec)?;
-    let metadata = fs::metadata(path).with_context(|| format!("stat object {}", path.display()))?;
+    let mut file = open_regular_file(path, "accepted object")?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspect object {}", path.display()))?;
     let actual_bytes = metadata.len();
     ensure!(
         actual_bytes == spec.accepted_object.bytes,
         "object byte length {actual_bytes} does not match run-spec {}",
         spec.accepted_object.bytes
     );
-    let bytes = fs::read(path).with_context(|| format!("read object {}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("read object {}", path.display()))?;
     let actual_sha256 = sha256_hex(&bytes);
     ensure!(
         actual_sha256 == spec.accepted_object.sha256,
@@ -1604,6 +1613,55 @@ mod tests {
         spec.accepted_object.sha256 = sha256_hex(accepted_object_bytes);
         spec.accepted_object.bytes = accepted_object_bytes.len() as u64;
         spec
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accepted_object_fifo_is_rejected_even_for_a_zero_byte_declaration() {
+        const CHILD_FIFO_PATH: &str = "BOLT_TEST_RESEARCH_OBJECT_FIFO_CHILD_PATH";
+        if let Some(path) = std::env::var_os(CHILD_FIFO_PATH) {
+            let path = PathBuf::from(path);
+            let spec = test_run_spec("research-object-fifo", b"");
+            let error = read_accepted_object_for_run_spec(&path, &spec)
+                .expect_err("accepted-object FIFO must be rejected");
+            assert!(
+                error.to_string().contains("not a regular file"),
+                "{error:#}"
+            );
+            return;
+        }
+
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("accepted-object.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo must create the object FIFO");
+        let exact_name = "research_analytics::tests::accepted_object_fifo_is_rejected_even_for_a_zero_byte_declaration";
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg(exact_name)
+            .arg("--nocapture")
+            .env(CHILD_FIFO_PATH, &path)
+            .spawn()
+            .expect("spawn accepted-object FIFO child test");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let exit_status = loop {
+            if let Some(status) = child.try_wait().expect("poll object FIFO child") {
+                break Some(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().expect("kill blocked object FIFO child");
+                child.wait().expect("reap blocked object FIFO child");
+                break None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(
+            exit_status.is_some_and(|status| status.success()),
+            "accepted-object FIFO classification child blocked or failed"
+        );
     }
 
     fn rewrite_source_run_spec<F>(input_dir: &Path, source: &BacktestSweepSourcePair, mutate: F)

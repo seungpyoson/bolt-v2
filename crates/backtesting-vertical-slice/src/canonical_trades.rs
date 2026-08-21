@@ -26,6 +26,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::io_safety::open_regular_file;
+
 use super::source_proof::{AcceptedDataset, SourceProofFidelityClass};
 
 /// Contracted semantic schema version for normalized market-data rows.
@@ -2479,8 +2481,7 @@ impl CanonicalTradesTable {
     /// Returns an error if the artifact does not match the canonical schema or
     /// does not bind to the accepted source proof/object.
     pub fn read_parquet(path: &Path, accepted: &AcceptedDataset) -> Result<Self> {
-        let file = File::open(path)
-            .with_context(|| format!("failed to open canonical artifact {}", path.display()))?;
+        let file = open_regular_file(path, "canonical artifact")?;
         let reader = ParquetRecordBatchReaderBuilder::try_new(file)
             .context("failed to construct canonical parquet reader")?
             .build()

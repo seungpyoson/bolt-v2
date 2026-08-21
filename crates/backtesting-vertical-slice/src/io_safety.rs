@@ -217,6 +217,25 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_file_preserves_symlink_to_regular_file_contract() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let target = dir.path().join("control.toml");
+        let link = dir.path().join("control-link.toml");
+        std::fs::write(&target, b"regular bytes").expect("write regular target");
+        symlink(&target, &link).expect("create symlink to regular target");
+
+        let mut file = open_regular_file(&link, "pinned control")
+            .expect("symlink to regular file remains accepted");
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).expect("read opened target");
+
+        assert_eq!(bytes, b"regular bytes");
+    }
+
     #[test]
     fn read_to_string_with_limit_rejects_stream_larger_than_limit() {
         let err = read_to_string_with_limit(

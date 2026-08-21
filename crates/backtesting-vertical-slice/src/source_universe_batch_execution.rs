@@ -451,14 +451,34 @@ impl<F: SourceUniverseObjectFetcher> CachingSourceUniverseObjectFetcher<F> {
         record: &SourceUniverseExecutionPackRecord,
         cache_path: &Path,
     ) -> Result<Option<Vec<u8>>> {
-        let cached = match fs::read(cache_path) {
-            Ok(cached) => cached,
+        let metadata = match fs::symlink_metadata(cache_path) {
+            Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("read object cache entry {}", cache_path.display()));
+                return Err(error).with_context(|| {
+                    format!("inspect object cache entry {}", cache_path.display())
+                });
             }
         };
+        if !metadata.file_type().is_file() {
+            Self::remove_corrupt_cache_entry(cache_path)?;
+            return Ok(None);
+        }
+
+        let mut file = match open_regular_file(cache_path, "object cache entry") {
+            Ok(file) => file,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let mut cached = Vec::new();
+        file.read_to_end(&mut cached)
+            .with_context(|| format!("read object cache entry {}", cache_path.display()))?;
         if verify_object(record, &cached).is_ok() {
             return Ok(Some(cached));
         }
@@ -1846,6 +1866,8 @@ fn failure_record(
 mod tests {
     use super::*;
     use crate::source_universe_execution_pack::SOURCE_UNIVERSE_EXECUTION_PACK_SCHEMA_VERSION;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
 
     #[cfg(unix)]
     struct OneShotFifoWriter {
@@ -1901,6 +1923,105 @@ mod tests {
     }
 
     type TestCachingFetcher = CachingSourceUniverseObjectFetcher<PanicFetcher>;
+
+    fn cache_record(object_bytes: &[u8]) -> SourceUniverseExecutionPackRecord {
+        SourceUniverseExecutionPackRecord {
+            sequence: 1,
+            work_item_id: "work-item".to_string(),
+            operator_run_id: "operator-run".to_string(),
+            source_binding: "source-binding".to_string(),
+            category: "spot".to_string(),
+            symbol: "BNBUSDC".to_string(),
+            archive_date: "2026-03-01".to_string(),
+            source_uri: "s3://bucket/object.csv.gz".to_string(),
+            source_url: "https://example.com/object.csv.gz".to_string(),
+            selected_object_sha256: hex::encode(Sha256::digest(object_bytes)),
+            selected_object_bytes: object_bytes.len() as u64,
+            source_proof_id: "source-proof".to_string(),
+            source_proof_version: 1,
+            accepted_tranche_id: "accepted-tranche".to_string(),
+            output_prefix: "s3://bucket/output".to_string(),
+            run_spec_path: PathBuf::from("run-spec.toml"),
+            run_spec_sha256: "run-spec-sha".to_string(),
+            accepted_tranche_path: PathBuf::from("accepted-tranche.json"),
+            accepted_tranche_sha256: "accepted-tranche-sha".to_string(),
+            execution_plan_path: PathBuf::from("execution-plan.json"),
+            execution_plan_sha256: "execution-plan-sha".to_string(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn byte_valid_fifo_cache_entry_is_removed_and_treated_as_a_miss() {
+        const CHILD_FIFO_PATH: &str = "BOLT_TEST_CACHE_FIFO_CHILD_PATH";
+        if let Some(cache_path) = std::env::var_os(CHILD_FIFO_PATH) {
+            let cache_path = PathBuf::from(cache_path);
+            let object_bytes = b"verified-cache-bytes";
+            let record = cache_record(object_bytes);
+            let fetcher =
+                TestCachingFetcher::new(PanicFetcher, cache_path.parent().expect("cache parent"));
+            let cached = fetcher
+                .read_verified_cache_entry(&record, &cache_path)
+                .expect("classify FIFO cache entry");
+            assert_eq!(cached, None);
+            assert!(!cache_path.exists());
+            return;
+        }
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let record = cache_record(b"verified-cache-bytes");
+        let cache_path = temp_dir.path().join(&record.selected_object_sha256);
+        let status = std::process::Command::new("mkfifo")
+            .arg(&cache_path)
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo must create the cache FIFO");
+        let exact_name = "source_universe_batch_execution::tests::byte_valid_fifo_cache_entry_is_removed_and_treated_as_a_miss";
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg(exact_name)
+            .arg("--nocapture")
+            .env(CHILD_FIFO_PATH, &cache_path)
+            .spawn()
+            .expect("spawn cache FIFO child test");
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let exit_status = loop {
+            if let Some(status) = child.try_wait().expect("poll cache FIFO child") {
+                break Some(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().expect("kill blocked cache FIFO child");
+                child.wait().expect("reap blocked cache FIFO child");
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            exit_status.is_some_and(|status| status.success()),
+            "cache FIFO classification child blocked or failed"
+        );
+        assert!(!cache_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn byte_valid_symlink_cache_entry_is_removed_without_touching_its_target() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let object_bytes = b"verified-cache-bytes";
+        let record = cache_record(object_bytes);
+        let fetcher = TestCachingFetcher::new(PanicFetcher, temp_dir.path());
+        let cache_path = fetcher.cache_entry_path(&record);
+        let outside = tempfile::NamedTempFile::new().expect("outside target");
+        fs::write(outside.path(), object_bytes).expect("write outside target");
+        symlink(outside.path(), &cache_path).expect("plant cache symlink");
+
+        let cached = fetcher
+            .read_verified_cache_entry(&record, &cache_path)
+            .expect("classify symlink cache entry");
+        assert_eq!(cached, None);
+        assert!(!cache_path.exists());
+        assert_eq!(fs::read(outside.path()).unwrap(), object_bytes);
+    }
 
     #[test]
     fn remove_corrupt_cache_entry_removes_existing_file() {

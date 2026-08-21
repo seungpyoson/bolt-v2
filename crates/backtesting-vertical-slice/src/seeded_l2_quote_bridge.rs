@@ -642,6 +642,10 @@ fn compile_batches(
                 let expected = audit_quotes
                     .next()
                     .context("seeded L2 audit quote missing for two-sided source event")?;
+                ensure!(
+                    expected.ts_init == expected.ts_event,
+                    "seeded L2 audit quote ts_init does not retain source availability time"
+                );
                 // Audit evidence retains the source availability timestamp;
                 // the runtime quote carries the delta catalog's explicit
                 // transport replay clock. Every other field must be identical.
@@ -968,6 +972,71 @@ mod tests {
             entry.batches[2].disposition,
             BatchDisposition::EmitQuote(value) if value == quote(instrument_id, second_time)
         ));
+    }
+
+    #[test]
+    fn compiler_rejects_audit_quote_with_tampered_source_availability_time() {
+        let instrument_id = InstrumentId::from("BTC-USDT.OKX");
+        let timestamp = 10;
+        let deltas = vec![
+            delta(
+                instrument_id,
+                BookAction::Clear,
+                OrderSide::NoOrderSide,
+                "0",
+                "0",
+                flags(&[RecordFlag::F_SNAPSHOT, RecordFlag::F_MBP]),
+                timestamp,
+            ),
+            delta(
+                instrument_id,
+                BookAction::Add,
+                OrderSide::Buy,
+                "100",
+                "10",
+                flags(&[RecordFlag::F_SNAPSHOT, RecordFlag::F_MBP]),
+                timestamp,
+            ),
+            delta(
+                instrument_id,
+                BookAction::Add,
+                OrderSide::Sell,
+                "102",
+                "12",
+                flags(&[
+                    RecordFlag::F_SNAPSHOT,
+                    RecordFlag::F_MBP,
+                    RecordFlag::F_LAST,
+                ]),
+                timestamp,
+            ),
+        ];
+        let manifest = conversion_manifest(
+            instrument_id,
+            SeededL2QuotePlanV1 {
+                synthetic_seed_batches: 0,
+                selected_source_events: 1,
+                replay_start_time: timestamp as i64,
+                replay_end_time: timestamp as i64,
+            },
+            deltas.len(),
+            1,
+            "source-proof",
+        );
+        let mut tampered = quote(instrument_id, timestamp);
+        tampered.ts_init = UnixNanos::from(timestamp + 1);
+
+        let error = compile_seeded_l2_quote_bridge_plan(vec![SeededL2QuoteBridgePlanInput {
+            conversion_manifest: &manifest,
+            client_id: None,
+            book_type: BookType::L2_MBP,
+            deltas: &deltas,
+            audit_quotes: &[tampered],
+        }])
+        .err()
+        .expect("timestamp-tampered audit evidence must fail closed");
+
+        assert!(error.to_string().contains("source availability time"));
     }
 
     #[test]

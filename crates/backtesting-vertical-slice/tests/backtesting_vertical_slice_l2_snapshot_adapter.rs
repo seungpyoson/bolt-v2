@@ -27,7 +27,7 @@ use backtesting_vertical_slice::{
     },
     canonical_trades::{CanonicalInstrumentIdentity, CsvTimestampUnit},
     catalog_projection::{
-        SpotInstrumentSpec, project_canonical_order_book_deltas_to_catalog,
+        DeltaReplayClock, SpotInstrumentSpec, project_canonical_order_book_deltas_to_catalog,
         read_back_order_book_deltas,
     },
     source_proof::{
@@ -251,8 +251,13 @@ fn jsonl_snapshot_deltas_round_trip_to_catalog() {
     assert_eq!(table.rows.len(), 8);
 
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let projection = project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
-        .expect("project deltas");
+    let projection = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir.path(),
+    )
+    .expect("project deltas");
     assert_eq!(projection.trade_count, table.rows.len());
     assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
     assert_eq!(
@@ -298,7 +303,13 @@ fn jsonl_snapshot_deltas_round_trip_to_catalog() {
 fn jsonl_snapshot_expansion_shape_survives_round_trip() {
     let table = normalized_table();
     let dir = tempfile::TempDir::new().expect("temp dir");
-    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path()).expect("project");
+    project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir.path(),
+    )
+    .expect("project");
     let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     let last = RecordFlag::F_LAST as u8;
     // First photo: CLEAR, bid ADD, bid ADD, ask ADD (F_LAST on the ask).

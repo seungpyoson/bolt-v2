@@ -33,7 +33,7 @@ use backtesting_vertical_slice::{
     },
     canonical_trades::{CanonicalInstrumentIdentity, CsvTimestampUnit},
     catalog_projection::{
-        SpotInstrumentSpec, project_canonical_order_book_deltas_to_catalog,
+        DeltaReplayClock, SpotInstrumentSpec, project_canonical_order_book_deltas_to_catalog,
         read_back_order_book_deltas,
     },
     jsonl_record_stream::JsonlStreamLimits,
@@ -385,6 +385,7 @@ fn tar_snapshot_deltas_split_across_members_round_trip_to_catalog() {
     let projection = project_canonical_order_book_deltas_to_catalog(
         table_one,
         &spec(&INSTRUMENT_ONE),
+        DeltaReplayClock::SourceAvailability,
         dir.path(),
     )
     .expect("project instrument one");

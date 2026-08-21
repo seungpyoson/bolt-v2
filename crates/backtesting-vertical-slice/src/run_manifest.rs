@@ -2650,12 +2650,11 @@ impl BacktestingRunManifest {
 /// Enable NT's event-aligned delta buffering whenever a manifest replays
 /// order-book deltas.
 ///
-/// The converter's per-source-event BBO is an audit/equivalence projection,
-/// not a strategy-visible output of delta replay. Pinned NT only creates a
-/// book updater after a managed book subscription and deduplicates unchanged
-/// BBO values, so `emit_quotes_from_book` cannot satisfy that projection's
-/// exact event cadence. Delta consumers receive complete `F_LAST` batches;
-/// explicit `QuoteTick` inputs remain the only quote-event authority.
+/// Pinned NT's built-in quote projection deduplicates unchanged BBO values, so
+/// it cannot preserve the seeded converter's per-source-event cadence. Keep
+/// that emitter disabled: the registered seeded-L2 bridge samples NT's managed
+/// book after each complete `F_LAST` batch, while other delta-only consumers do
+/// not gain a second quote authority.
 fn data_engine_config_for_catalog_inputs(
     inputs: &[ManifestCatalogInput],
 ) -> Result<Option<DataEngineConfig>, ManifestError> {
@@ -3540,24 +3539,49 @@ fn ensure_order_book_delta_inputs_require_l2_mbp(
             ),
         };
         for instrument_id in effective_instrument_ids {
-            let venue_name = instrument_id.venue.to_string();
-            let venue = std::iter::once(primary_venue)
-                .chain(additional_venues)
-                .find(|venue| venue.nt_venue == venue_name)
-                .ok_or_else(|| ManifestError::InvalidNtConfig {
-                    field: selector_field,
-                    message: format!(
-                        "no venue config for order-book-delta instrument {instrument_id}"
-                    ),
-                })?;
-            if parse_book_type(&venue.book_type)? != BookType::L2_MBP {
+            let book_type = resolve_instrument_book_type(
+                *instrument_id,
+                primary_venue,
+                additional_venues,
+                selector_field,
+            )?;
+            if book_type != BookType::L2_MBP {
                 return Err(ManifestError::OrderBookDeltaRequiresL2Mbp {
-                    book_type: venue.book_type.clone(),
+                    book_type: format!("{book_type:?}"),
                 });
             }
         }
     }
     Ok(())
+}
+
+pub(crate) fn resolved_manifest_book_type(
+    manifest: &BacktestingRunManifest,
+    instrument_id: InstrumentId,
+) -> Result<BookType, ManifestError> {
+    resolve_instrument_book_type(
+        instrument_id,
+        &manifest.venue,
+        &manifest.additional_venues,
+        "catalog_inputs.nt_instrument_id",
+    )
+}
+
+fn resolve_instrument_book_type(
+    instrument_id: InstrumentId,
+    primary_venue: &ManifestVenueConfig,
+    additional_venues: &[ManifestVenueConfig],
+    selector_field: &'static str,
+) -> Result<BookType, ManifestError> {
+    let venue_name = instrument_id.venue.to_string();
+    let venue = std::iter::once(primary_venue)
+        .chain(additional_venues)
+        .find(|venue| venue.nt_venue == venue_name)
+        .ok_or_else(|| ManifestError::InvalidNtConfig {
+            field: selector_field,
+            message: format!("no venue config for order-book-delta instrument {instrument_id}"),
+        })?;
+    parse_book_type(&venue.book_type)
 }
 
 fn market_structure_fixture_matches_source_fixture(

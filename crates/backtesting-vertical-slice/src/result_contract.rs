@@ -20,12 +20,17 @@ use sha2::{Digest, Sha256};
 use super::{
     hashing::is_lowercase_sha256_hex,
     run_manifest::StrategySource,
+    seeded_l2_quote_bridge::SeededL2QuoteBridgeReport,
+    seeded_level_set_deltas::{
+        SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY, SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION,
+    },
     source_proof::{AcceptanceMode, SourceProofFidelityClass},
 };
 
 /// Result contract schema version.
-pub const RESULT_CONTRACT_VERSION: &str = "backtest-result-contract.v2";
+pub const RESULT_CONTRACT_VERSION: &str = "backtest-result-contract.v3";
 const RESULT_CONTRACT_V1: &str = "backtest-result-contract.v1";
+const RESULT_CONTRACT_V2: &str = "backtest-result-contract.v2";
 
 /// Phrases that would make a result contract subjective. The contract is an
 /// objective artifact; promotion/escalation belongs to Research Analytics.
@@ -236,6 +241,8 @@ pub struct BacktestResultContract {
     pub run_guard_report: Option<BacktestRunGuardReport>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub feed_labels: Vec<BacktestFeedLabel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seeded_l2_quote_bridge_report: Option<SeededL2QuoteBridgeReport>,
     pub nt_result: NautilusResultPointer,
     pub artifact_uris: ResultArtifactUris,
     pub created_at: String,
@@ -247,6 +254,7 @@ pub enum ResultContractError {
     MissingField(&'static str),
     InvalidSha256 { field: &'static str, value: String },
     UnsupportedVersion { actual: String },
+    InvalidSeededL2QuoteBridge { detail: String },
     SubjectivePromotionLanguage { field: String, phrase: String },
 }
 
@@ -264,6 +272,9 @@ impl std::fmt::Display for ResultContractError {
                 f,
                 "unsupported result contract version: expected {RESULT_CONTRACT_VERSION}, got {actual:?}"
             ),
+            Self::InvalidSeededL2QuoteBridge { detail } => {
+                write!(f, "invalid seeded L2 causal quote proof: {detail}")
+            }
             Self::SubjectivePromotionLanguage { field, phrase } => write!(
                 f,
                 "result contract field {field} contains subjective promotion language: {phrase:?}"
@@ -344,6 +355,7 @@ impl BacktestResultContract {
         }
         if self.contract_version != RESULT_CONTRACT_VERSION
             && self.contract_version != RESULT_CONTRACT_V1
+            && self.contract_version != RESULT_CONTRACT_V2
         {
             return Err(ResultContractError::UnsupportedVersion {
                 actual: self.contract_version.clone(),
@@ -411,7 +423,56 @@ impl BacktestResultContract {
         if let Some(hash) = self.selected_asset_ids_hash.as_deref() {
             validate_sha256("selected_asset_ids_hash", hash)?;
         }
+        self.validate_seeded_l2_quote_bridge_report()?;
         self.assert_objective()
+    }
+
+    fn validate_seeded_l2_quote_bridge_report(&self) -> Result<(), ResultContractError> {
+        let seeded_l2_conversion =
+            self.converter_identity == SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY;
+        if seeded_l2_conversion
+            && self.converter_version != SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION
+        {
+            return Err(ResultContractError::InvalidSeededL2QuoteBridge {
+                detail: format!(
+                    "seeded L2 causal proof requires the registered seeded converter version {SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION:?}, got {:?}",
+                    self.converter_version
+                ),
+            });
+        }
+        if self.contract_version != RESULT_CONTRACT_VERSION {
+            if seeded_l2_conversion || self.seeded_l2_quote_bridge_report.is_some() {
+                return Err(ResultContractError::InvalidSeededL2QuoteBridge {
+                    detail: format!(
+                        "the registered seeded converter requires {RESULT_CONTRACT_VERSION} and a causal quote report"
+                    ),
+                });
+            }
+            return Ok(());
+        }
+        let report = match (
+            seeded_l2_conversion,
+            self.seeded_l2_quote_bridge_report.as_ref(),
+        ) {
+            (true, Some(report)) => report,
+            (true, None) => {
+                return Err(ResultContractError::InvalidSeededL2QuoteBridge {
+                    detail: "seeded L2 conversion has no causal quote report".to_string(),
+                });
+            }
+            (false, Some(_)) => {
+                return Err(ResultContractError::InvalidSeededL2QuoteBridge {
+                    detail: "a non-seeded conversion carries a seeded L2 causal quote report"
+                        .to_string(),
+                });
+            }
+            (false, None) => return Ok(()),
+        };
+        report
+            .validate_for_conversion(&self.conversion_manifest_hash)
+            .map_err(|error| ResultContractError::InvalidSeededL2QuoteBridge {
+                detail: format!("{error:#}"),
+            })
     }
 
     /// Reject any subjective strategy-promotion/escalation language in
@@ -495,6 +556,7 @@ pub struct ResultContractInputs<'a> {
     pub config_override_report: Option<&'a BacktestConfigOverrideReport>,
     pub run_guard_report: Option<&'a BacktestRunGuardReport>,
     pub feed_labels: Vec<BacktestFeedLabel>,
+    pub seeded_l2_quote_bridge_report: Option<&'a SeededL2QuoteBridgeReport>,
     pub nt_result: &'a BacktestResult,
     pub artifact_uris: ResultArtifactUris,
     pub created_at: &'a str,
@@ -544,6 +606,7 @@ pub fn build_result_contract(
         config_override_report: inputs.config_override_report.cloned(),
         run_guard_report: inputs.run_guard_report.cloned(),
         feed_labels: inputs.feed_labels,
+        seeded_l2_quote_bridge_report: inputs.seeded_l2_quote_bridge_report.cloned(),
         nt_result: NautilusResultPointer::from_backtest_result(inputs.nt_result),
         artifact_uris: inputs.artifact_uris,
         created_at: inputs.created_at.to_string(),
@@ -626,6 +689,7 @@ mod tests {
             config_override_report: None,
             run_guard_report: None,
             feed_labels: vec![],
+            seeded_l2_quote_bridge_report: None,
             nt_result: pointer(),
             artifact_uris: ResultArtifactUris {
                 source_proof_uri: "s3://.../source-proofs/p.json".to_string(),
@@ -639,6 +703,37 @@ mod tests {
         }
     }
 
+    fn seeded_contract() -> BacktestResultContract {
+        let mut contract = contract();
+        contract.converter_identity =
+            crate::seeded_level_set_deltas::SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY.to_string();
+        contract.converter_version =
+            crate::seeded_level_set_deltas::SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION.to_string();
+        contract.catalog_data_types = vec!["OrderBookDelta".to_string()];
+        contract.fidelity_class = SourceProofFidelityClass::L2Replay;
+        contract.event_count_ledger_hash = Some(HASH_1.to_string());
+        contract.selected_asset_ids_hash = Some(HASH_2.to_string());
+        contract
+    }
+
+    fn seeded_l2_report() -> SeededL2QuoteBridgeReport {
+        SeededL2QuoteBridgeReport {
+            schema_version: "seeded-l2-quote-bridge-report.v1".to_string(),
+            plan_hash: HASH_1.to_string(),
+            instruments: vec![
+                crate::seeded_l2_quote_bridge::SeededL2QuoteBridgeInstrumentReport {
+                    nt_instrument_id: "BTC-USDT.OKX".to_string(),
+                    conversion_manifest_hash: HASH_C.to_string(),
+                    observed_event_batches: 2,
+                    observed_source_events: 2,
+                    observed_delta_rows: 4,
+                    emitted_quotes: 2,
+                    causal_trace_hash: HASH_2.to_string(),
+                },
+            ],
+        }
+    }
+
     #[test]
     fn resolved_revision_is_a_git_sha() {
         let rev = resolved_nautilus_revision().expect("revision");
@@ -648,7 +743,139 @@ mod tests {
 
     #[test]
     fn objective_contract_validates() {
+        assert_eq!(RESULT_CONTRACT_VERSION, "backtest-result-contract.v3");
         contract().validate().expect("objective contract is valid");
+    }
+
+    #[test]
+    fn seeded_converter_requires_and_accepts_its_causal_quote_proof() {
+        let missing = seeded_contract()
+            .validate()
+            .expect_err("seeded L2 conversion must carry its causal quote proof");
+        assert!(
+            matches!(
+                missing,
+                ResultContractError::InvalidSeededL2QuoteBridge { .. }
+            ),
+            "{missing}"
+        );
+
+        let mut valid = seeded_contract();
+        valid.seeded_l2_quote_bridge_report = Some(seeded_l2_report());
+        valid
+            .validate()
+            .expect("current result contract accepts a valid causal quote proof");
+
+        let mut unrelated = contract();
+        unrelated.seeded_l2_quote_bridge_report = Some(seeded_l2_report());
+        assert!(matches!(
+            unrelated.validate(),
+            Err(ResultContractError::InvalidSeededL2QuoteBridge { .. })
+        ));
+
+        let mut historical = seeded_contract();
+        historical.contract_version = RESULT_CONTRACT_V2.to_string();
+        historical.seeded_l2_quote_bridge_report = Some(seeded_l2_report());
+        assert!(matches!(
+            historical.validate(),
+            Err(ResultContractError::InvalidSeededL2QuoteBridge { .. })
+        ));
+    }
+
+    #[test]
+    fn historical_contract_cannot_be_promoted_by_binding_a_seeded_l2_proof() {
+        let mut historical = seeded_contract();
+        historical.contract_version = RESULT_CONTRACT_V2.to_string();
+        historical.seeded_l2_quote_bridge_report = Some(seeded_l2_report());
+
+        assert!(matches!(
+            historical.validate(),
+            Err(ResultContractError::InvalidSeededL2QuoteBridge { .. })
+        ));
+    }
+
+    #[test]
+    fn current_seeded_contract_cannot_downgrade_away_its_causal_proof() {
+        let mut downgraded = seeded_contract();
+        downgraded.contract_version = RESULT_CONTRACT_V2.to_string();
+
+        let error = downgraded
+            .validate()
+            .expect_err("a schema-label downgrade must not remove causal proof authority");
+        assert!(
+            error
+                .to_string()
+                .contains("requires backtest-result-contract.v3"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn seeded_l2_proof_rejects_source_events_exceeding_batches() {
+        let mut c = seeded_contract();
+        let mut report = seeded_l2_report();
+        report.instruments[0].observed_event_batches = 1;
+        report.instruments[0].observed_source_events = 2;
+        c.seeded_l2_quote_bridge_report = Some(report);
+
+        let error = c
+            .validate()
+            .expect_err("source events cannot exceed batches");
+        assert!(
+            error
+                .to_string()
+                .contains("source-event count exceeds observed event batches"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn seeded_l2_proof_rejects_more_quotes_than_source_events() {
+        let mut c = seeded_contract();
+        let mut report = seeded_l2_report();
+        report.instruments[0].emitted_quotes = 3;
+        c.seeded_l2_quote_bridge_report = Some(report);
+
+        let error = c
+            .validate()
+            .expect_err("quotes cannot exceed source events");
+        assert!(
+            error
+                .to_string()
+                .contains("emitted more quotes than source events"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn seeded_l2_proof_rejects_duplicate_instruments() {
+        let mut c = seeded_contract();
+        let mut report = seeded_l2_report();
+        report.instruments.push(report.instruments[0].clone());
+        c.seeded_l2_quote_bridge_report = Some(report);
+
+        let error = c.validate().expect_err("duplicate instruments must fail");
+        assert!(
+            error.to_string().contains("duplicate report instrument"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn seeded_l2_proof_requires_the_exact_registered_converter_version() {
+        let mut c = seeded_contract();
+        c.converter_version = "seeded-level-set-deltas.v999".to_string();
+        c.seeded_l2_quote_bridge_report = Some(seeded_l2_report());
+
+        let error = c
+            .validate()
+            .expect_err("an unregistered seeded converter version must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("requires the registered seeded converter version"),
+            "{error}"
+        );
     }
 
     #[test]

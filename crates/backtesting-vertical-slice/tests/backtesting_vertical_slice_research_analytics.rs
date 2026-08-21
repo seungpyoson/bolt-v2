@@ -165,6 +165,7 @@ fn contract(run_id: &str, result_contract_uri: &str) -> BacktestResultContract {
         config_override_report: None,
         run_guard_report: None,
         feed_labels: vec![],
+        seeded_l2_quote_bridge_report: None,
         nt_result: NautilusResultPointer {
             trader_id: "TRADER-001".to_string(),
             machine_id: "machine".to_string(),

@@ -2968,7 +2968,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_delta_semantics_retire_v1_adapter_identities() {
+    fn changed_delta_semantics_retire_superseded_adapter_identities() {
         for (identity, version) in [
             (
                 "jsonl-snapshot-deltas-to-canonical-order-book-deltas.v1",
@@ -2982,9 +2982,13 @@ mod tests {
                 "parquet-event-stream-to-canonical-order-book-deltas-and-trades.v1",
                 "1",
             ),
+            (
+                "snapshot-seeded-level-set-to-canonical-l2.v1",
+                "1",
+            ),
         ] {
             let err = require_registered_source_adapter(identity, version)
-                .expect_err("retired v1 delta semantics must fail closed");
+                .expect_err("retired delta semantics must fail closed");
             assert!(
                 err.to_string().contains("registered source adapter"),
                 "unexpected error for {identity:?}: {err}"

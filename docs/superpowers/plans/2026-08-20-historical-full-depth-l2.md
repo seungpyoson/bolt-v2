@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Convert native OKX and Bybit seeded order-book archives into replayable full-depth L2 in the existing NautilusTrader catalog path while preserving the issue-789 quote behavior and keeping memory/storage bounded.
+**Goal:** Convert config-described seeded level-set archives into replayable full-depth L2 in the existing NautilusTrader catalog path while preserving issue-789 quote behavior and keeping memory/storage bounded. OKX and Bybit are conformance fixtures, not production branches.
 
-**Architecture:** The only replay authority path remains `AcceptedDataset -> CanonicalOrderBookDeltasTable -> project_canonical_order_book_deltas_to_catalog -> NT catalog`. A config-driven seeded level-set converter scans all four supported archive containers in encounter order, maintains one capped NT L2 book, and emits only a TOML-selected event window plus one replay seed. Per-event BBO is retained as a derived audit artifact; NT replay consumes only the delta catalog and publishes complete `F_LAST`-delimited delta batches. After differential proof, the old raw-to-BBO `SeededL2Quotes` path is deleted.
+**Architecture:** The only replay authority path remains `AcceptedDataset -> CanonicalOrderBookDeltasTable -> project_canonical_order_book_deltas_to_catalog -> NT catalog`. A config-driven seeded level-set converter scans all four supported archive containers in encounter order, maintains one capped NT L2 book, and emits only a TOML-selected event window plus one replay seed. Per-event BBO is retained as derived audit evidence. NT replay consumes only the delta catalog; one registered, per-instrument bridge samples NT's managed L2 book after each complete `F_LAST` batch and publishes the strategy-visible quote cadence proven by that evidence. The old raw-to-BBO `SeededL2Quotes` path remains deleted.
 
 **Tech Stack:** Rust, serde/TOML, flate2, tar, zip, NautilusTrader `OrderBookDelta`/`OrderBookDeltas`/`OrderBook`/`ParquetDataCatalog`, Arrow/Parquet, cargo test.
 
@@ -12,21 +12,21 @@
 
 ## Global Constraints
 
-- Work only in `/Users/spson/worktrees/bolt-v2/codex/historical-full-depth-l2`; the final review branch is `codex/historical-full-depth-l2-pr`, based on exact main `ffe03465b4c654f9d228e8f9cdc9397010d42135`.
+- Tasks 1–5 were delivered by PR #1557 and became reference-only after merge. Task 6 starts from then-current `main` in its own isolated worktree and branch; no implementation continues from the merged worktree.
 - Keep one data path: accepted evidence to canonical full-depth L2 deltas to the existing NT catalog bridge. Do not create a raw-to-NT bypass, alternate catalog, sidecar market-data model, or second BBO implementation.
 - Select behavior from TOML. Converter code contains no OKX/Bybit branches or hardcoded instrument IDs, time windows, tuple shapes, limits, sequence policy, or action values.
 - Support `JsonlText`, `JsonlGzip`, `SingleJsonlZip`, and `TarGzipJsonl` through one bounded record visitor.
 - Bound compressed object bytes, cumulative decoded bytes, archive members, member bytes, JSON record bytes/count, levels per event, active levels per side, selected source events, selected delta rows, emitted bytes, and the aggregate regular-file bytes of every projected NT catalog plus canonical Parquet artifact. Exceeding any bound fails closed before completion.
 - Preserve archive encounter order. Never sort seeded incremental events.
 - Snapshot source events emit `CLEAR` followed by `ADD`; positive incremental levels emit `UPDATE`; zero-size levels emit `DELETE`. All L2 rows carry `F_MBP`, snapshot rows also carry `F_SNAPSHOT`, and only the final row of each source event carries `F_LAST`.
-- Set canonical `availability_time` to the source event time on every emitted row. Catalog projection uses that value for `ts_init`, preventing the issue-789 batch-timestamp freeze.
+- Set canonical `availability_time` to the source event time on every emitted row. The sole catalog projection owner retains source availability for existing delta families and binds seeded level-set v2 to a strict encounter-order transport clock for NT `ts_init`; the replay clock is an algorithm invariant, not a venue branch, TOML choice, or canonical timestamp mutation.
 - `CanonicalOrderBookDeltaRow.sequence` is a dense audit row ordinal. NT `OrderBookDelta.sequence` uses the numeric native source-event sequence for every row of that event, or `0` when the venue provides no native sequence.
 - Retire the three existing delta adapters' `v1` identities when applying those event/sequence semantics. Register only `v2`; old run specs fail closed instead of attributing changed output to the old provenance identity.
 - Retire the content-sorted delta-section identity by hashing NT's replay stream under the `v2` delta-record tag. Catalogs without deltas retain their identities; historical v1 delta result contracts remain historical and are not silently re-certified.
 - Retire the venue-scale selected-conversion-manifest shortcut: current `converted` status now requires a full typed current-schema Ready completion ledger with no blockers, non-empty record lineage, positive accepted-byte and canonical-row counts, valid evidence/catalog hashes and paths, complete mapping/publication coverage, and internally recomputed totals. Downgrade the committed PMXT v1 delta slice from `converted` to blocked until it is regenerated and certified under the v2 delta identity; dated source-proof records remain historical evidence only.
 - Validate configured order-count fields as nonnegative integers, but declare and test their intentional loss because NT full-depth `OrderBookDelta` cannot represent per-level order counts. Do not encode counts into `order_id` and do not emit `OrderBookDepth10`.
 - Maintain a capped NT L2 book while scanning. At the selected window boundary, emit one reconstructed snapshot seed representing the immediately preceding state; the seed establishes replay state and does not emit a quote.
-- Emit one derived audit quote after each selected source event only when both sides exist, matching the accepted issue-789 cardinality. In NT replay, exclude that audit catalog and buffer the authoritative deltas through `F_LAST`; delta-consuming strategies receive the complete source-event batches. Do not use NT `deltas_to_quotes` or claim that its deduplicating book-quote emitter preserves source-event cadence.
+- Emit one derived audit quote after each selected source event only when both sides exist, matching the accepted issue-789 cardinality. In NT replay, exclude that audit catalog, buffer the authoritative deltas through `F_LAST`, and use the registered bridge to publish one quote from NT's post-event book for each two-sided source event. The run manifest declares only the authoritative delta input; it must not carry a placeholder audit `QuoteTick` input. Do not use NT `deltas_to_quotes` or its deduplicating book-quote emitter.
 - No L3 claims, on-chain work, provider purchasing, credential work, or token-screener changes belong in this slice.
 - The final review head must contain the new path and deletion of `SeededL2Quotes`; retaining both paths is not reviewable.
 
@@ -353,7 +353,7 @@ git diff --check origin/main...HEAD
 
 Expected: every command exits zero.
 
-Exact-head verification passed after rebasing onto `origin/main`: formatting, seeded-level-set unit tests, tar-reader unit tests (including header checksum and two-block end-marker rejection), bounded JSONL record-stream tests, order-book-delta catalog projection tests, seeded-level-set operator tests, L2 manifest tests, library Clippy with warnings denied, and the full issue-789 replay over 446,717 data elements. The real-fixture regression preserved 15,148 OKX and 2,719 Bybit derived BBO rows at their pinned semantic hashes.
+This records the pre-causal-bridge PR head: exact-head verification passed after rebasing onto `origin/main`, including the full issue-789 replay over 446,717 then-authoritative data elements. Task 6 supersedes that replay-input shape and rebaselines the current delta-authoritative run to 587,788 elements while retaining 15,148 OKX-shaped and 2,719 Bybit-shaped derived BBO events.
 
 - [x] **Step 2: Run class-level boundedness and malformed-tail evidence**
 
@@ -379,3 +379,23 @@ Expected: the worktree is clean and the diff contains code plus its behavioral e
 Publish one commit through the repository's Mergify stack hook after a dry run proves it will create exactly one PR. Open one PR naming this as the historical full-depth L2 slice, state remaining broader data-provider/on-chain scope as out of scope, resolve node ID `U_kgDOEZMFhA` to the current login, and request that reviewer. Report the exact head SHA and detach; do not merge without explicit user authorization and that native approval.
 
 Published as code PR #1557 with the mandated reviewer request active. Mergify publication used one squashed commit so this slice remains one PR rather than a commit-per-PR stack.
+
+### Task 6: Close the causal strategy-quote delivery gap
+
+**Files:**
+- Add: `crates/backtesting-vertical-slice/src/seeded_l2_quote_bridge.rs`
+- Modify: the seeded converter, conversion/result contracts, run-manifest binding, operator, runner, focused integration tests, and this plan.
+
+**Interfaces:**
+- Consumes: the exact current seeded conversion manifest, authoritative NT delta catalog read-back, and derived audit BBO table.
+- Produces: a hash-bound per-instrument delivery plan, one NT-book-sampling actor, and a persisted post-run causal report.
+
+- [x] Persist `synthetic_seed_batches`, selected source-event count, and replay bounds in the existing conversion manifest. Require the plan only for the exact registered seeded converter identity/version; reject it everywhere else.
+- [x] Compile one sealed per-instrument runtime plan from exact delta-catalog read-back plus audit BBO evidence. Reject duplicate plans, non-L2 books, drifted bounds, unmatched batches, and unmatched audit quotes.
+- [x] Register one venue-neutral actor containing a per-instrument map. It subscribes to managed NT deltas, samples only NT's cache-owned book after `F_LAST`, suppresses only the compiler-bound seed, publishes after cache insertion, and never reconstructs a second book.
+- [x] Remove the placeholder audit `QuoteTick` replay declaration. The run manifest contains only the authoritative delta input; a same-instrument explicit quote input fails closed.
+- [x] Bind the actual observed batch/row/book/quote trace and counts into result-contract v3. Historical contracts remain readable but cannot acquire current causal authority.
+- [x] Preserve canonical source timestamp semantics while binding seeded level-set v2 to an explicit strict encounter-order NT replay clock in the sole projection owner. Retire v1 so pre-bridge readers fail closed. Exact read-back and composed equal-source-time replay prove both clocks; `availability_time` is never repurposed as an ordinal.
+- [x] Rebaseline issue-789 to 587,788 authoritative catalog elements while retaining exact 15,148 and 2,719 nested quote counts, source-shaped semantic hashes, and existing strategy/order/fill/P&L assertions.
+- [x] Run the final internal adversarial audit, exact-head formatting/Clippy/focused/full issue-789 verification, and diff hygiene checks.
+- [ ] Commit, push, request native review from node ID `U_kgDOEZMFhA`'s current login, and report the exact head without merging.

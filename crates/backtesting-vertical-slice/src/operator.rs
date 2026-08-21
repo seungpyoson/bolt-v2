@@ -21,6 +21,7 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use bytes::Bytes;
 use nautilus_backtest::result::BacktestResult;
+use nautilus_model::identifiers::{ClientId, InstrumentId};
 use nautilus_persistence::parquet::create_object_store_from_path;
 use object_store::{
     Error as ObjectStoreError, ObjectStore, ObjectStoreExt, PutMode, path::Path as ObjectPath,
@@ -55,23 +56,23 @@ use crate::{
         require_registered_source_adapter_for_table_family,
     },
     catalog_projection::{
-        CatalogInstrumentSpec, CatalogProjection, NT_DATA_TYPE_BAR,
+        CatalogInstrumentSpec, CatalogProjection, DeltaReplayClock, NT_DATA_TYPE_BAR,
         NT_DATA_TYPE_FUNDING_RATE_UPDATE, NT_DATA_TYPE_INDEX_PRICE_UPDATE,
         NT_DATA_TYPE_MARK_PRICE_UPDATE, NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK,
         NT_DATA_TYPE_TRADE_TICK, build_catalog_instrument, logical_catalog_hash,
         project_canonical_bars_to_catalog, project_canonical_funding_rates_to_catalog,
         project_canonical_index_to_catalog, project_canonical_mark_to_catalog,
-        project_canonical_order_book_deltas_to_catalog, project_canonical_quotes_to_catalog,
-        project_canonical_trades_to_catalog, read_back_bars, read_back_funding_rates,
-        read_back_index, read_back_mark, read_back_order_book_deltas, read_back_quotes,
-        read_back_trade_ticks, ts_init_nanos,
+        order_book_delta_replay_times, project_canonical_order_book_deltas_to_catalog,
+        project_canonical_quotes_to_catalog, project_canonical_trades_to_catalog, read_back_bars,
+        read_back_funding_rates, read_back_index, read_back_mark, read_back_order_book_deltas,
+        read_back_quotes, read_back_trade_ticks, ts_init_nanos,
     },
     conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_TABLES_FILE, ConversionCatalogMetadata,
         ConversionCheckpoint, ConversionFingerprint, ConversionManifest, ConversionOutputState,
-        ConversionTableRecord, inspect_conversion_output, validate_conversion_tables_index,
-        write_completed_conversion_artifacts, write_conversion_checkpoint,
-        write_conversion_tables_index,
+        ConversionTableRecord, SeededL2QuotePlanV1, inspect_conversion_output,
+        validate_conversion_tables_index, write_completed_conversion_artifacts,
+        write_conversion_checkpoint, write_conversion_tables_index,
     },
     io_safety::{collect_regular_files, open_regular_file},
     nt_catalog_capability::{
@@ -81,7 +82,10 @@ use crate::{
     result_contract::{
         BacktestResultContract, ResultArtifactUris, ResultContractInputs, build_result_contract,
     },
-    run_manifest::{BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE, ManifestCatalogInput},
+    run_manifest::{
+        BacktestingRunManifest, CATALOG_FS_PROTOCOL_NONE, ManifestCatalogInput,
+        resolved_manifest_book_type,
+    },
     runner::{
         BacktestRunInputs, BacktestRunOutput, assert_bar_read_back_matches,
         assert_delta_read_back_matches, assert_funding_read_back_matches,
@@ -89,8 +93,13 @@ use crate::{
         assert_quote_read_back_matches, assert_read_back_matches, assert_time_window_overlaps_data,
         expected_iterations, iterations_mismatch, market_structure_label,
         nt_extension_surface_claim_limits, result_contract_feed_labels, result_contract_warnings,
-        run_backtest, run_nt_backtest_node, run_purpose_label, time_window_excludes_all_data,
-        window_bound_nanos,
+        run_backtest, run_nt_backtest_node,
+        run_nt_backtest_node_with_optional_seeded_l2_quote_bridge, run_purpose_label,
+        time_window_excludes_all_data, window_bound_nanos,
+    },
+    seeded_l2_quote_bridge::{
+        SeededL2QuoteBridgePlan, SeededL2QuoteBridgePlanInput,
+        compile_seeded_l2_quote_bridge_plan,
     },
     seeded_level_set_deltas::{SeededLevelSetCompileInput, SeededLevelSetWindowBounds},
     source_proof::{
@@ -1202,6 +1211,7 @@ fn run_from_completed_output(inputs: CompletedOutputInputs<'_>) -> Result<RunArt
         config_override_report: config_override_report.as_ref(),
         run_guard_report: run_guard_report.as_ref(),
         feed_labels: result_contract_feed_labels(&inputs.manifest),
+        seeded_l2_quote_bridge_report: None,
         nt_result: &nt_result,
         artifact_uris: inputs.artifact_uris,
         created_at: inputs.created_at,
@@ -1655,11 +1665,16 @@ pub const TABLE_DISCRIMINANT_DEFAULT: &str = "default";
 enum NormalizedTable {
     Trades(CanonicalTradesTable),
     Bars(CanonicalBarsTable),
-    Deltas(CanonicalOrderBookDeltasTable),
+    Deltas(CanonicalOrderBookDeltasTable, DeltaReplayClock),
     Quotes(CanonicalQuotesTable),
     Index(CanonicalIndexPricesTable),
     Mark(CanonicalMarkPricesTable),
     Funding(CanonicalFundingRatesTable),
+}
+
+struct NormalizedTables {
+    tables: Vec<NormalizedTable>,
+    seeded_l2_quote_plan: Option<SeededL2QuotePlanV1>,
 }
 
 impl NormalizedTable {
@@ -1667,7 +1682,7 @@ impl NormalizedTable {
         match self {
             Self::Trades(table) => table.write_parquet(path),
             Self::Bars(table) => table.write_parquet(path),
-            Self::Deltas(table) => table.write_parquet(path),
+            Self::Deltas(table, _) => table.write_parquet(path),
             Self::Quotes(table) => table.write_parquet(path),
             Self::Index(table) => table.write_parquet(path),
             Self::Mark(table) => table.write_parquet(path),
@@ -1679,7 +1694,7 @@ impl NormalizedTable {
         match self {
             Self::Trades(_) => TRADE_TABLE_FAMILY,
             Self::Bars(_) => BAR_TABLE_FAMILY,
-            Self::Deltas(_) => DELTAS_TABLE_FAMILY,
+            Self::Deltas(_, _) => DELTAS_TABLE_FAMILY,
             Self::Quotes(_) => QUOTE_TABLE_FAMILY,
             Self::Index(_) => INDEX_PRICES_TABLE_FAMILY,
             Self::Mark(_) => MARK_PRICES_TABLE_FAMILY,
@@ -1691,7 +1706,7 @@ impl NormalizedTable {
         match self {
             Self::Trades(_) => NT_DATA_TYPE_TRADE_TICK,
             Self::Bars(_) => NT_DATA_TYPE_BAR,
-            Self::Deltas(_) => NT_DATA_TYPE_ORDER_BOOK_DELTA,
+            Self::Deltas(_, _) => NT_DATA_TYPE_ORDER_BOOK_DELTA,
             Self::Quotes(_) => NT_DATA_TYPE_QUOTE_TICK,
             Self::Index(_) => NT_DATA_TYPE_INDEX_PRICE_UPDATE,
             Self::Mark(_) => NT_DATA_TYPE_MARK_PRICE_UPDATE,
@@ -1703,7 +1718,7 @@ impl NormalizedTable {
         match self {
             Self::Trades(table) => &table.schema_version,
             Self::Bars(table) => &table.schema_version,
-            Self::Deltas(table) => &table.schema_version,
+            Self::Deltas(table, _) => &table.schema_version,
             Self::Quotes(table) => &table.schema_version,
             Self::Index(table) => &table.schema_version,
             Self::Mark(table) => &table.schema_version,
@@ -1715,7 +1730,7 @@ impl NormalizedTable {
         match self {
             Self::Trades(table) => table.fidelity_class,
             Self::Bars(table) => table.fidelity_class,
-            Self::Deltas(table) => table.fidelity_class,
+            Self::Deltas(table, _) => table.fidelity_class,
             Self::Quotes(table) => table.fidelity_class,
             Self::Index(table) => table.fidelity_class,
             Self::Mark(table) => table.fidelity_class,
@@ -1727,7 +1742,7 @@ impl NormalizedTable {
         match self {
             Self::Trades(table) => table.rows.len(),
             Self::Bars(table) => table.rows.len(),
-            Self::Deltas(table) => table.rows.len(),
+            Self::Deltas(table, _) => table.rows.len(),
             Self::Quotes(table) => table.rows.len(),
             Self::Index(table) => table.rows.len(),
             Self::Mark(table) => table.rows.len(),
@@ -1745,7 +1760,7 @@ impl NormalizedTable {
                 .rows
                 .first()
                 .and_then(|row| row.nt_instrument_id.as_deref()),
-            Self::Deltas(table) => table
+            Self::Deltas(table, _) => table
                 .rows
                 .first()
                 .and_then(|row| row.nt_instrument_id.as_deref()),
@@ -1779,7 +1794,7 @@ impl NormalizedTable {
                 .rows
                 .first()
                 .map(|row| row.canonical_instrument_key.as_str()),
-            Self::Deltas(table) => table
+            Self::Deltas(table, _) => table
                 .rows
                 .first()
                 .map(|row| row.canonical_instrument_key.as_str()),
@@ -1810,7 +1825,7 @@ impl NormalizedTable {
                 format!("{}{}", table.bar_spec.step, table.bar_spec.aggregation).to_lowercase()
             }
             Self::Trades(_)
-            | Self::Deltas(_)
+            | Self::Deltas(_, _)
             | Self::Quotes(_)
             | Self::Index(_)
             | Self::Mark(_)
@@ -1856,14 +1871,15 @@ impl NormalizedTable {
                 )?
                 .as_u64())
             }),
-            Self::Deltas(table) => fold(&table.rows, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("delta sequence {}", row.sequence),
-                )?
-                .as_u64())
-            }),
+            Self::Deltas(table, replay_clock) => {
+                let replay_times = order_book_delta_replay_times(table, *replay_clock)?;
+                Ok(replay_times.into_iter().fold(None, |range, ts| {
+                    Some(match range {
+                        Some((min, max)) => (min.min(ts), max.max(ts)),
+                        None => (ts, ts),
+                    })
+                }))
+            }
             Self::Quotes(table) => fold(&table.rows, |row| {
                 Ok(ts_init_nanos(
                     row.availability_time,
@@ -1941,14 +1957,15 @@ impl NormalizedTable {
                 )?
                 .as_u64())
             }),
-            Self::Deltas(table) => count(&table.rows, start, end, |row| {
-                Ok(ts_init_nanos(
-                    row.availability_time,
-                    row.capture_time,
-                    &format!("delta sequence {}", row.sequence),
-                )?
-                .as_u64())
-            }),
+            Self::Deltas(table, replay_clock) => Ok(order_book_delta_replay_times(
+                table,
+                *replay_clock,
+            )?
+            .into_iter()
+            .filter(|ts| {
+                start.is_none_or(|start| *ts >= start) && end.is_none_or(|end| *ts <= end)
+            })
+            .count()),
             Self::Quotes(table) => count(&table.rows, start, end, |row| {
                 Ok(ts_init_nanos(
                     row.availability_time,
@@ -2109,7 +2126,7 @@ fn normalize_tables_for_kind(
     accepted: &AcceptedDataset,
     object_bytes: &[u8],
     capture_time_nanos: i64,
-) -> Result<Vec<NormalizedTable>> {
+) -> Result<NormalizedTables> {
     match kind {
         SourceAdapterKind::SeededLevelSetDeltas => {
             let instrument = build_catalog_instrument(spec.instrument_spec.single()?)?;
@@ -2128,12 +2145,41 @@ fn normalize_tables_for_kind(
                     ingest_run_id: &spec.manifest.run_id,
                 },
             )?;
-            Ok(std::iter::once(NormalizedTable::Deltas(window.deltas))
-                .chain(window.quotes.into_iter().map(NormalizedTable::Quotes))
-                .collect())
+            let replay_times = order_book_delta_replay_times(
+                &window.deltas,
+                DeltaReplayClock::StrictEncounterOrder,
+            )?;
+            let replay_start_time = i64::try_from(
+                *replay_times
+                    .first()
+                    .context("seeded L2 replay has no first timestamp")?,
+            )
+            .context("seeded L2 first replay timestamp exceeds i64")?;
+            let replay_end_time = i64::try_from(
+                *replay_times
+                    .last()
+                    .context("seeded L2 replay has no terminal timestamp")?,
+            )
+            .context("seeded L2 terminal replay timestamp exceeds i64")?;
+            let seeded_l2_quote_plan = SeededL2QuotePlanV1 {
+                synthetic_seed_batches: window.synthetic_seed_batches,
+                selected_source_events: window.selected_events,
+                replay_start_time,
+                replay_end_time,
+            };
+            seeded_l2_quote_plan.validate()?;
+            Ok(NormalizedTables {
+                tables: std::iter::once(NormalizedTable::Deltas(
+                    window.deltas,
+                    DeltaReplayClock::StrictEncounterOrder,
+                ))
+                    .chain(window.quotes.into_iter().map(NormalizedTable::Quotes))
+                    .collect(),
+                seeded_l2_quote_plan: Some(seeded_l2_quote_plan),
+            })
         }
-        SourceAdapterKind::TarJsonlSnapshotDeltas => {
-            Ok(normalize_registered_tar_order_book_delta_converter(
+        SourceAdapterKind::TarJsonlSnapshotDeltas => Ok(NormalizedTables {
+            tables: normalize_registered_tar_order_book_delta_converter(
                 &spec.converter,
                 accepted,
                 &spec.identity.to_delta_identities(),
@@ -2142,18 +2188,22 @@ fn normalize_tables_for_kind(
                 &spec.manifest.run_id,
             )?
             .into_iter()
-            .map(NormalizedTable::Deltas)
-            .collect())
-        }
+            .map(|table| NormalizedTable::Deltas(table, DeltaReplayClock::SourceAvailability))
+            .collect(),
+            seeded_l2_quote_plan: None,
+        }),
         materialized_kind => {
             let payload = decode_object_payload(&spec.converter.raw_payload, object_bytes)?;
-            normalize_materialized_tables_for_kind(
-                materialized_kind,
-                spec,
-                accepted,
-                payload,
-                capture_time_nanos,
-            )
+            Ok(NormalizedTables {
+                tables: normalize_materialized_tables_for_kind(
+                    materialized_kind,
+                    spec,
+                    accepted,
+                    payload,
+                    capture_time_nanos,
+                )?,
+                seeded_l2_quote_plan: None,
+            })
         }
     }
 }
@@ -2231,7 +2281,7 @@ fn normalize_materialized_tables_for_kind(
                 run_id,
             )?
             .into_iter()
-            .map(NormalizedTable::Deltas)
+            .map(|table| NormalizedTable::Deltas(table, DeltaReplayClock::SourceAvailability))
             .collect()
         }
         SourceAdapterKind::TarJsonlSnapshotDeltas => anyhow::bail!(
@@ -2253,7 +2303,7 @@ fn normalize_materialized_tables_for_kind(
             )?;
             delta_tables
                 .into_iter()
-                .map(NormalizedTable::Deltas)
+                .map(|table| NormalizedTable::Deltas(table, DeltaReplayClock::SourceAvailability))
                 .chain(trade_tables.into_iter().map(NormalizedTable::Trades))
                 .collect::<Vec<_>>()
         }
@@ -2389,7 +2439,7 @@ fn plan_projected_tables(
         let bar_spec = match &table {
             NormalizedTable::Bars(_) => Some(discriminant),
             NormalizedTable::Trades(_)
-            | NormalizedTable::Deltas(_)
+            | NormalizedTable::Deltas(_, _)
             | NormalizedTable::Quotes(_)
             | NormalizedTable::Index(_)
             | NormalizedTable::Mark(_)
@@ -2454,10 +2504,15 @@ fn assert_planned_read_back(planned: &PlannedTable) -> Result<()> {
                 .context("catalog read-back failed")?;
             assert_bar_read_back_matches(&bars, table, &planned.nt_instrument_id)
         }
-        NormalizedTable::Deltas(table) => {
+        NormalizedTable::Deltas(table, replay_clock) => {
             let deltas = read_back_order_book_deltas(&planned.subroot, &planned.nt_instrument_id)
                 .context("catalog read-back failed")?;
-            assert_delta_read_back_matches(&deltas, table, &planned.nt_instrument_id)
+            assert_delta_read_back_matches(
+                &deltas,
+                table,
+                &planned.nt_instrument_id,
+                *replay_clock,
+            )
         }
         NormalizedTable::Quotes(table) => {
             let quotes = read_back_quotes(&planned.subroot, &planned.nt_instrument_id)
@@ -2518,53 +2573,39 @@ fn bind_catalog_inputs(
     let mut used = vec![false; planned.len()];
     let mut bound_indices = Vec::with_capacity(manifest.catalog_inputs.len());
     if adapter_kind == SourceAdapterKind::SeededLevelSetDeltas {
-        for delta in planned
+        let delta_instruments = planned
             .iter()
             .filter(|table| table.table.nt_data_type() == NT_DATA_TYPE_ORDER_BOOK_DELTA)
-        {
-            let declarations = manifest
-                .catalog_inputs
-                .iter()
-                .filter(|input| {
-                    input.nt_instrument_id == delta.nt_instrument_id
-                        && input.data_type == NT_DATA_TYPE_QUOTE_TICK
-                        && input.bar_spec.is_none()
-                })
-                .count();
+            .map(|table| table.nt_instrument_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        for input in &manifest.catalog_inputs {
             ensure!(
-                declarations == 1,
-                "seeded level-set manifest must declare exactly one conditional QuoteTick input for {}; found {declarations}",
-                delta.nt_instrument_id
+                !(input.data_type == NT_DATA_TYPE_QUOTE_TICK
+                    && input.bar_spec.is_none()
+                    && delta_instruments.contains(input.nt_instrument_id.as_str())),
+                "seeded level-set manifest must not declare its derived audit QuoteTick as a replay input for {}",
+                input.nt_instrument_id
             );
+        }
+        for (index, table) in planned.iter().enumerate() {
+            if table.table.nt_data_type() == NT_DATA_TYPE_QUOTE_TICK
+                && delta_instruments.contains(table.nt_instrument_id.as_str())
+            {
+                used[index] = true;
+            }
         }
     }
     let declared_inputs = std::mem::take(&mut manifest.catalog_inputs);
     let mut bound_inputs = Vec::with_capacity(declared_inputs.len());
     for mut input in declared_inputs {
         let planned_index = find_planned_table_for_input(&input, planned, &used)?;
-        let is_conditional_seeded_quote = adapter_kind == SourceAdapterKind::SeededLevelSetDeltas
-            && input.data_type == NT_DATA_TYPE_QUOTE_TICK
-            && input.bar_spec.is_none()
-            && planned.iter().any(|table| {
-                table.nt_instrument_id == input.nt_instrument_id
-                    && table.table.nt_data_type() == NT_DATA_TYPE_ORDER_BOOK_DELTA
-            });
-        if is_conditional_seeded_quote && let Some(index) = planned_index {
-            // The per-source-event BBO is a derived audit/equivalence artifact,
-            // not a replay input. Strategy replay consumes the authoritative
-            // delta stream as complete F_LAST-delimited event batches.
-            used[index] = true;
-            continue;
-        }
         let Some(index) = planned_index else {
-            ensure!(
-                is_conditional_seeded_quote,
+            anyhow::bail!(
                 "manifest catalog input {}/{} (bar_spec {:?}) matches no projected table",
                 input.nt_instrument_id,
                 input.data_type,
                 input.bar_spec
             );
-            continue;
         };
         used[index] = true;
         bound_indices.push(index);
@@ -2740,6 +2781,103 @@ fn rows_by_nt_data_type(planned: &[PlannedTable]) -> Result<BTreeMap<String, usi
     Ok(totals)
 }
 
+fn bind_seeded_l2_quote_plan(
+    manifest: ConversionManifest,
+    plan: Option<SeededL2QuotePlanV1>,
+) -> Result<ConversionManifest> {
+    match plan {
+        Some(plan) => manifest.with_seeded_l2_quote_plan(plan),
+        None => Ok(manifest),
+    }
+}
+
+fn bind_seeded_l2_replay_window(
+    manifest: &mut BacktestingRunManifest,
+    plan: Option<&SeededL2QuotePlanV1>,
+) -> Result<()> {
+    if let Some(plan) = plan {
+        plan.validate()?;
+        manifest.start_time = Some(plan.replay_start_time);
+        manifest.end_time = Some(plan.replay_end_time);
+    }
+    Ok(())
+}
+
+fn compile_operator_seeded_l2_quote_bridge_plan(
+    adapter_kind: SourceAdapterKind,
+    manifest: &BacktestingRunManifest,
+    planned: &[PlannedTable],
+    conversion_manifest: &ConversionManifest,
+) -> Result<Option<SeededL2QuoteBridgePlan>> {
+    match adapter_kind {
+        SourceAdapterKind::SeededLevelSetDeltas => {
+            let delta_tables = planned
+                .iter()
+                .filter(|table| table.table.nt_data_type() == NT_DATA_TYPE_ORDER_BOOK_DELTA)
+                .collect::<Vec<_>>();
+            let [delta_table] = delta_tables.as_slice() else {
+                anyhow::bail!(
+                    "seeded level-set conversion must project exactly one delta table; found {}",
+                    delta_tables.len()
+                );
+            };
+            let delta_inputs = manifest
+                .catalog_inputs
+                .iter()
+                .filter(|input| {
+                    input.data_type == NT_DATA_TYPE_ORDER_BOOK_DELTA
+                        && input.nt_instrument_id == delta_table.nt_instrument_id
+                })
+                .collect::<Vec<_>>();
+            let [delta_input] = delta_inputs.as_slice() else {
+                anyhow::bail!(
+                    "seeded level-set replay must bind exactly one delta input for {}; found {}",
+                    delta_table.nt_instrument_id,
+                    delta_inputs.len()
+                );
+            };
+            let audit_tables = planned
+                .iter()
+                .filter(|table| {
+                    table.table.nt_data_type() == NT_DATA_TYPE_QUOTE_TICK
+                        && table.nt_instrument_id == delta_table.nt_instrument_id
+                })
+                .collect::<Vec<_>>();
+            ensure!(
+                audit_tables.len() <= 1,
+                "seeded level-set conversion projected multiple audit quote tables for {}",
+                delta_table.nt_instrument_id
+            );
+            let deltas =
+                read_back_order_book_deltas(&delta_table.subroot, &delta_table.nt_instrument_id)
+                    .context("read seeded L2 authority for causal quote plan")?;
+            let audit_quotes = match audit_tables.first() {
+                Some(table) => read_back_quotes(&table.subroot, &table.nt_instrument_id)
+                    .context("read seeded L2 audit quotes for causal quote plan")?,
+                None => Vec::new(),
+            };
+            let instrument_id = InstrumentId::from(delta_table.nt_instrument_id.as_str());
+            let book_type = resolved_manifest_book_type(manifest, instrument_id)
+                .map_err(|error| anyhow::anyhow!(error))?;
+            compile_seeded_l2_quote_bridge_plan(vec![SeededL2QuoteBridgePlanInput {
+                conversion_manifest,
+                client_id: delta_input.client_id.as_deref().map(ClientId::from),
+                book_type,
+                deltas: &deltas,
+                audit_quotes: &audit_quotes,
+            }])
+            .map(Some)
+        }
+        _ => {
+            ensure!(
+                conversion_manifest.seeded_l2_quote_plan.is_none(),
+                "non-seeded conversion manifest carries a seeded L2 causal quote plan"
+            );
+            Ok(None)
+        }
+    }
+}
+
 /// Run the multi-table operator flow for one accepted non-trade object.
 ///
 /// One object -> N canonical tables -> N per-table catalog subroots + canonical
@@ -2816,25 +2954,27 @@ pub fn run_multi_table_from_run_spec(
     // Normalize on both paths: the completed path re-derives canonical tables
     // to re-prove read-back equality. Each registered adapter owns exactly one
     // payload boundary; seeded full-depth L2 receives the bounded raw visitor.
-    let tables = normalize_tables_for_kind(
+    let normalized = normalize_tables_for_kind(
         adapter.kind,
         spec,
         &accepted,
         object_bytes,
         capture_time_nanos,
     )?;
-    let planned = plan_projected_tables(output_dir, tables)?;
+    let seeded_l2_quote_plan = normalized.seeded_l2_quote_plan;
+    let planned = plan_projected_tables(output_dir, normalized.tables)?;
     let instrument_count = planned
         .iter()
         .map(|table| table.table.canonical_instrument_key())
         .collect::<Result<std::collections::BTreeSet<_>>>()?
         .len();
     // Manifest shape is configuration authority, so validate and bind it
-    // before creating any output or projection state. Seeded level-set runs
-    // always declare their conditional BBO input even when a one-sided window
-    // produces only the primary full-depth delta table.
-    let (local_manifest, bound_indices) =
+    // before creating any output or projection state. A seeded run declares
+    // only its authoritative delta input; the derived BBO remains an audit
+    // output and can never become a second replay authority.
+    let (mut local_manifest, bound_indices) =
         bind_catalog_inputs(&spec.manifest, &planned, adapter.kind)?;
+    bind_seeded_l2_replay_window(&mut local_manifest, seeded_l2_quote_plan.as_ref())?;
     validate_local_run_manifest(&local_manifest, &accepted)?;
     assert_tables_overlap_window(&local_manifest, &planned)?;
 
@@ -2846,6 +2986,7 @@ pub fn run_multi_table_from_run_spec(
             accepted_proof,
             verified_sha256,
             planned,
+            seeded_l2_quote_plan,
             local_manifest,
             bound_indices,
             conversion_manifest_hash: manifest_hash,
@@ -2909,11 +3050,14 @@ pub fn run_multi_table_from_run_spec(
             NormalizedTable::Bars(canonical) => {
                 project_canonical_bars_to_catalog(canonical, instrument_spec, &table.subroot)
             }
-            NormalizedTable::Deltas(canonical) => project_canonical_order_book_deltas_to_catalog(
-                canonical,
-                instrument_spec,
-                &table.subroot,
-            ),
+            NormalizedTable::Deltas(canonical, replay_clock) => {
+                project_canonical_order_book_deltas_to_catalog(
+                    canonical,
+                    instrument_spec,
+                    *replay_clock,
+                    &table.subroot,
+                )
+            }
             NormalizedTable::Quotes(canonical) => {
                 project_canonical_quotes_to_catalog(canonical, instrument_spec, &table.subroot)
             }
@@ -2971,25 +3115,8 @@ pub fn run_multi_table_from_run_spec(
     let (event_count_ledger_hash, selected_asset_ids_hash) =
         multi_selector_provenance(spec, &planned)?;
 
-    // Gate 5: ONE BacktestNode run over the N-input manifest.
-    let nt_run = run_nt_backtest_node(&local_manifest)?;
-    let nt_result = nt_run.result;
-    let config_override_report = nt_run.config_override_report;
-    let run_guard_report = nt_run.run_guard_report;
-    let window_start = window_bound_nanos("start_time", local_manifest.start_time)?;
-    let window_end = window_bound_nanos("end_time", local_manifest.end_time)?;
-    let mut expected = 0usize;
-    for index in &bound_indices {
-        expected += planned[*index]
-            .table
-            .windowed_count(window_start, window_end)
-            .context("compute expected engine iterations for projected table")?;
-    }
-    if let Some(reason) = iterations_mismatch(nt_result.iterations, expected) {
-        anyhow::bail!("backtest did not consume the accepted data: {reason}");
-    }
-
-    // Conversion trio (aggregate) + tables index.
+    // Conversion trio (aggregate) + tables index. The manifest hash is known
+    // before replay so the sealed causal quote plan can bind it directly.
     let totals = rows_by_nt_data_type(&planned)?;
     let primary_data_type_rows = *totals
         .get(primary.table.nt_data_type())
@@ -3003,18 +3130,21 @@ pub fn run_multi_table_from_run_spec(
     let conversion_checkpoint_hash = conversion_checkpoint
         .content_hash()
         .context("hash conversion checkpoint")?;
-    let conversion_manifest = ConversionManifest::completed(
-        conversion_fingerprint,
-        primary.table.schema_version().to_string(),
-        primary.table.nt_data_type().to_string(),
-        primary.nt_instrument_id.clone(),
-        primary_data_type_rows,
-        artifact_uris.nt_catalog_uri.clone(),
-        primary_catalog_hash.clone(),
-        conversion_checkpoint_hash.clone(),
-        spec.created_at_utc.clone(),
-    )
-    .with_catalog_rows_by_nt_data_type(totals);
+    let conversion_manifest = bind_seeded_l2_quote_plan(
+        ConversionManifest::completed(
+            conversion_fingerprint,
+            primary.table.schema_version().to_string(),
+            primary.table.nt_data_type().to_string(),
+            primary.nt_instrument_id.clone(),
+            primary_data_type_rows,
+            artifact_uris.nt_catalog_uri.clone(),
+            primary_catalog_hash.clone(),
+            conversion_checkpoint_hash.clone(),
+            spec.created_at_utc.clone(),
+        )
+        .with_catalog_rows_by_nt_data_type(totals),
+        seeded_l2_quote_plan,
+    )?;
     let conversion_manifest_hash = conversion_manifest
         .content_hash()
         .context("hash conversion manifest")?;
@@ -3030,6 +3160,32 @@ pub fn run_multi_table_from_run_spec(
     let conversion_catalog_metadata_hash = conversion_catalog_metadata
         .content_hash()
         .context("hash catalog metadata")?;
+
+    // Gate 5: ONE BacktestNode run over the N-input manifest. Seeded L2 runs
+    // install one typed, per-instrument bridge in that same engine path.
+    let bridge_plan = compile_operator_seeded_l2_quote_bridge_plan(
+        adapter.kind,
+        &local_manifest,
+        &planned,
+        &conversion_manifest,
+    )?;
+    let (nt_run, seeded_l2_quote_bridge_report) =
+        run_nt_backtest_node_with_optional_seeded_l2_quote_bridge(&local_manifest, bridge_plan)?;
+    let nt_result = nt_run.result;
+    let config_override_report = nt_run.config_override_report;
+    let run_guard_report = nt_run.run_guard_report;
+    let window_start = window_bound_nanos("start_time", local_manifest.start_time)?;
+    let window_end = window_bound_nanos("end_time", local_manifest.end_time)?;
+    let mut expected = 0usize;
+    for index in &bound_indices {
+        expected += planned[*index]
+            .table
+            .windowed_count(window_start, window_end)
+            .context("compute expected engine iterations for projected table")?;
+    }
+    if let Some(reason) = iterations_mismatch(nt_result.iterations, expected) {
+        anyhow::bail!("backtest did not consume the accepted data: {reason}");
+    }
 
     // Gate 6: objective result contract bound to the primary catalog input.
     let mut claim_limits = accepted.result_contract_claim_limits();
@@ -3070,6 +3226,7 @@ pub fn run_multi_table_from_run_spec(
         config_override_report: config_override_report.as_ref(),
         run_guard_report: run_guard_report.as_ref(),
         feed_labels: result_contract_feed_labels(&local_manifest),
+        seeded_l2_quote_bridge_report: seeded_l2_quote_bridge_report.as_ref(),
         nt_result: &nt_result,
         artifact_uris,
         created_at: &spec.created_at_utc,
@@ -3160,6 +3317,7 @@ struct MultiCompletedInputs<'a> {
     accepted_proof: SourceProofReport,
     verified_sha256: String,
     planned: Vec<PlannedTable>,
+    seeded_l2_quote_plan: Option<SeededL2QuotePlanV1>,
     local_manifest: BacktestingRunManifest,
     bound_indices: Vec<usize>,
     conversion_manifest_hash: String,
@@ -3196,6 +3354,10 @@ fn run_multi_from_completed_output(
     );
     let conversion_manifest: ConversionManifest =
         read_json_artifact(&inputs.conversion_manifest_path)?;
+    ensure!(
+        conversion_manifest.seeded_l2_quote_plan == inputs.seeded_l2_quote_plan,
+        "completed conversion seeded L2 quote plan does not match re-normalized accepted bytes"
+    );
     ensure!(
         conversion_manifest.content_hash()? == inputs.conversion_manifest_hash,
         "completed conversion manifest hash changed after inspection"
@@ -3283,7 +3445,14 @@ fn run_multi_from_completed_output(
     let (event_count_ledger_hash, selected_asset_ids_hash) =
         multi_selector_provenance(spec, &planned)?;
 
-    let nt_run = run_nt_backtest_node(&local_manifest)?;
+    let bridge_plan = compile_operator_seeded_l2_quote_bridge_plan(
+        inputs.adapter_kind,
+        &local_manifest,
+        &planned,
+        &conversion_manifest,
+    )?;
+    let (nt_run, seeded_l2_quote_bridge_report) =
+        run_nt_backtest_node_with_optional_seeded_l2_quote_bridge(&local_manifest, bridge_plan)?;
     let nt_result = nt_run.result;
     let config_override_report = nt_run.config_override_report;
     let run_guard_report = nt_run.run_guard_report;
@@ -3337,6 +3506,7 @@ fn run_multi_from_completed_output(
         config_override_report: config_override_report.as_ref(),
         run_guard_report: run_guard_report.as_ref(),
         feed_labels: result_contract_feed_labels(&local_manifest),
+        seeded_l2_quote_bridge_report: seeded_l2_quote_bridge_report.as_ref(),
         nt_result: &nt_result,
         artifact_uris,
         created_at: &spec.created_at_utc,

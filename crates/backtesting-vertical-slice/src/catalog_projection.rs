@@ -57,6 +57,17 @@ pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
 /// NautilusTrader data type written for the order-book-delta projection.
 pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
 
+/// How canonical source availability is mapped onto NT's replay clock.
+///
+/// `StrictEncounterOrder` is required when equal source timestamps span NT
+/// catalog batches: it preserves canonical row order without rewriting the
+/// canonical source-availability field or fabricating a venue sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeltaReplayClock {
+    SourceAvailability,
+    StrictEncounterOrder,
+}
+
 /// NautilusTrader data type written for the bar projection.
 pub const NT_DATA_TYPE_BAR: &str = "Bar";
 
@@ -1137,15 +1148,77 @@ fn ensure_clean_catalog_root(catalog_root: &Path) -> Result<()> {
 pub fn canonical_rows_to_order_book_deltas<I: Instrument + ?Sized>(
     table: &CanonicalOrderBookDeltasTable,
     instrument: &I,
+    replay_clock: DeltaReplayClock,
 ) -> Result<Vec<OrderBookDelta>> {
     let instrument_id = instrument.id();
     let price_precision = instrument.price_precision();
     let size_precision = instrument.size_precision();
+    let mut clock = DeltaReplayClockState::new(replay_clock);
     table
         .rows
         .iter()
         .map(|row| {
-            canonical_row_to_order_book_delta(instrument_id, row, price_precision, size_precision)
+            let mut delta = canonical_row_to_order_book_delta(
+                instrument_id,
+                row,
+                price_precision,
+                size_precision,
+            )?;
+            delta.ts_init = UnixNanos::from(clock.advance(delta.ts_init.as_u64())?);
+            Ok(delta)
+        })
+        .collect()
+}
+
+struct DeltaReplayClockState {
+    policy: DeltaReplayClock,
+    previous: Option<u64>,
+}
+
+impl DeltaReplayClockState {
+    fn new(policy: DeltaReplayClock) -> Self {
+        Self {
+            policy,
+            previous: None,
+        }
+    }
+
+    fn advance(&mut self, source_time: u64) -> Result<u64> {
+        let replay_time = match (self.policy, self.previous) {
+            (DeltaReplayClock::SourceAvailability, _) => source_time,
+            (DeltaReplayClock::StrictEncounterOrder, None) => source_time,
+            (DeltaReplayClock::StrictEncounterOrder, Some(previous)) => source_time.max(
+                previous
+                    .checked_add(1)
+                    .context("order-book-delta replay clock overflow")?,
+            ),
+        };
+        self.previous = Some(replay_time);
+        Ok(replay_time)
+    }
+}
+
+/// Return the exact NT replay timestamps implied by a canonical delta table.
+///
+/// The returned clock is projection metadata, not source availability. It is
+/// derived deterministically from canonical encounter order and the selected
+/// converter-level replay policy.
+pub(crate) fn order_book_delta_replay_times(
+    table: &CanonicalOrderBookDeltasTable,
+    replay_clock: DeltaReplayClock,
+) -> Result<Vec<u64>> {
+    table.validate()?;
+    let mut clock = DeltaReplayClockState::new(replay_clock);
+    table
+        .rows
+        .iter()
+        .map(|row| {
+            let source_time = ts_init_nanos(
+                row.availability_time,
+                row.capture_time,
+                &format!("delta sequence {}", row.sequence),
+            )?;
+            clock.advance(source_time.as_u64())
         })
         .collect()
 }
@@ -1276,6 +1349,7 @@ pub(crate) fn native_order_book_sequence(
 pub fn project_canonical_order_book_deltas_to_catalog<S: CatalogInstrumentSpecSource + ?Sized>(
     table: &CanonicalOrderBookDeltasTable,
     spec: &S,
+    replay_clock: DeltaReplayClock,
     catalog_root: &Path,
 ) -> Result<CatalogProjection> {
     table.validate()?;
@@ -1288,7 +1362,7 @@ pub fn project_canonical_order_book_deltas_to_catalog<S: CatalogInstrumentSpecSo
         &instrument_id,
         table.rows.iter().map(|row| row.nt_instrument_id.as_deref()),
     )?;
-    let deltas = canonical_rows_to_order_book_deltas(table, &instrument)?;
+    let deltas = canonical_rows_to_order_book_deltas(table, &instrument, replay_clock)?;
     let delta_count = deltas.len();
 
     ensure_clean_catalog_root(catalog_root)?;

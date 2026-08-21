@@ -87,7 +87,8 @@ use super::{
         TradeAggressorSide, normalize_registered_trade_converter,
     },
     catalog_projection::{
-        CatalogInstrumentSpecSource, CatalogProjection, native_order_book_sequence,
+        CatalogInstrumentSpecSource, CatalogProjection, DeltaReplayClock,
+        native_order_book_sequence, order_book_delta_replay_times,
         project_canonical_trades_to_catalog, read_back_trade_ticks, ts_event_nanos, ts_init_nanos,
     },
     conversion_boundary::{
@@ -109,6 +110,9 @@ use super::{
         STRATEGY_HURST_VPIN_DIRECTIONAL, STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
         STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES, STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
         STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategySource,
+    },
+    seeded_l2_quote_bridge::{
+        SeededL2QuoteBridgePlan, SeededL2QuoteBridgeReport, install_seeded_l2_quote_bridge,
     },
     source_proof::{AcceptedDataset, SourceProofFidelityClass},
 };
@@ -1579,13 +1583,27 @@ pub(crate) fn run_nt_backtest_node(manifest: &BacktestingRunManifest) -> Result<
     run_nt_backtest_node_with_hooks(manifest, |_| Ok(()), |_| Ok(())).map(|(output, ())| output)
 }
 
+pub(crate) fn run_nt_backtest_node_with_optional_seeded_l2_quote_bridge(
+    manifest: &BacktestingRunManifest,
+    plan: Option<SeededL2QuoteBridgePlan>,
+) -> Result<(NtBacktestNodeRun, Option<SeededL2QuoteBridgeReport>)> {
+    run_nt_backtest_node_with_hooks(
+        manifest,
+        |engine| {
+            plan.map(|plan| install_seeded_l2_quote_bridge(engine, plan))
+                .transpose()
+        },
+        |capture| capture.map(|capture| capture.finalize()).transpose(),
+    )
+}
+
 fn run_nt_backtest_node_with_hooks<C, E, B, A>(
     manifest: &BacktestingRunManifest,
     before_run: B,
     after_run: A,
 ) -> Result<(NtBacktestNodeRun, E)>
 where
-    B: FnOnce(&BacktestEngine) -> Result<C>,
+    B: FnOnce(&mut BacktestEngine) -> Result<C>,
     A: FnOnce(C) -> Result<E>,
 {
     let run_config = manifest
@@ -1648,7 +1666,7 @@ where
     };
     let capture = {
         let engine = node
-            .get_engine(&manifest.run_id)
+            .get_engine_mut(&manifest.run_id)
             .with_context(|| format!("no engine for run id {} before run", manifest.run_id))?;
         before_run(engine)?
     };
@@ -1860,6 +1878,32 @@ where
         crate::execution_evidence::run_nt_backtest_node_with_evidence(manifest)?;
     output.execution_contract_report = Some(validator(&output, &evidence)?);
     Ok(output)
+}
+
+#[cfg(test)]
+fn run_nt_backtest_node_with_execution_contract_and_seeded_l2_quote_bridge<F>(
+    manifest: &BacktestingRunManifest,
+    plan: SeededL2QuoteBridgePlan,
+    validator: F,
+) -> Result<(NtBacktestNodeRun, SeededL2QuoteBridgeReport)>
+where
+    F: FnOnce(
+        &NtBacktestNodeRun,
+        &crate::execution_evidence::ExecutionEvidence,
+    ) -> Result<crate::execution_contract::ExecutionContractReport>,
+{
+    let (mut output, (evidence, bridge_report)) = run_nt_backtest_node_with_hooks(
+        manifest,
+        |engine| {
+            Ok((
+                crate::execution_evidence::ExecutionEvidenceCapture::start(engine, manifest)?,
+                install_seeded_l2_quote_bridge(engine, plan)?,
+            ))
+        },
+        |(evidence, bridge)| Ok((evidence.finish()?, bridge.finalize()?)),
+    )?;
+    output.execution_contract_report = Some(validator(&output, &evidence)?);
+    Ok((output, bridge_report))
 }
 
 #[cfg(test)]
@@ -2100,6 +2144,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         config_override_report: config_override_report.as_ref(),
         run_guard_report: run_guard_report.as_ref(),
         feed_labels: result_contract_feed_labels(inputs.manifest),
+        seeded_l2_quote_bridge_report: None,
         nt_result: &nt_result,
         artifact_uris: inputs.artifact_uris,
         created_at: inputs.created_at,
@@ -2323,6 +2368,7 @@ pub(crate) fn assert_delta_read_back_matches(
     read_back: &[OrderBookDelta],
     table: &super::canonical_market_data::CanonicalOrderBookDeltasTable,
     expected_instrument_id: &str,
+    replay_clock: DeltaReplayClock,
 ) -> Result<()> {
     use super::canonical_market_data::{DeltaAction, DeltaSide};
     ensure!(
@@ -2331,7 +2377,13 @@ pub(crate) fn assert_delta_read_back_matches(
         read_back.len(),
         table.rows.len()
     );
-    for (index, (delta, row)) in read_back.iter().zip(table.rows.iter()).enumerate() {
+    let expected_replay_times = order_book_delta_replay_times(table, replay_clock)?;
+    for (index, ((delta, row), expected_ts_init)) in read_back
+        .iter()
+        .zip(table.rows.iter())
+        .zip(expected_replay_times)
+        .enumerate()
+    {
         ensure!(
             delta.instrument_id.to_string() == expected_instrument_id,
             "delta read-back {index} instrument {} does not match projected {expected_instrument_id}",
@@ -2356,14 +2408,9 @@ pub(crate) fn assert_delta_read_back_matches(
             "delta read-back {index} ts_event {} does not match canonical {expected_ts_event}",
             delta.ts_event.as_u64()
         );
-        // CLEAR deltas carry ts_init too, so this gate covers them as well: the
-        // expectation is the availability-or-capture receipt clock derived through
-        // the shared projection owner (NautilusTrader replays by ts_init).
-        let expected_ts_init =
-            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
         ensure!(
             delta.ts_init.as_u64() == expected_ts_init,
-            "delta read-back {index} ts_init {} does not match canonical {expected_ts_init}",
+            "delta read-back {index} ts_init {} does not match the bound replay clock {expected_ts_init}",
             delta.ts_init.as_u64()
         );
         let actual_action = match delta.action {
@@ -2866,17 +2913,18 @@ mod tests {
 
     use anyhow::{Context, Result, bail, ensure};
     use bolt_v2::economics::NativeUnitId;
+    use nautilus_backtest::node::BacktestNode;
     use nautilus_core::{Params, UUID4, UnixNanos};
     use nautilus_model::{
-        data::{BookOrder, InstrumentClose, OrderBookDelta, OrderBookDeltas, TradeTick},
+        data::{BookOrder, Data, InstrumentClose, OrderBookDelta, OrderBookDeltas, TradeTick},
         enums::{
             AccountType, AggressorSide, AssetClass, BookAction, InstrumentCloseType, OrderSide,
             OrderStatus, OrderType, PositionAdjustmentType, PositionSide, RecordFlag,
         },
         events::{AccountState, PositionAdjusted},
         identifiers::{
-            AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, Symbol, TradeId,
-            TraderId, Venue,
+            AccountId, ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, Symbol,
+            TradeId, TraderId, Venue,
         },
         instruments::{BinaryOption, Instrument, InstrumentAny},
         position::{PositionFillVoid, PositionReplayEvent},
@@ -2898,8 +2946,9 @@ mod tests {
         manifest_valuation_observation, prepare_strategy_client_routes, raw_taker_config,
         replay_executable_book_at_cursor, require_pre_run_configured_account,
         resolve_existing_input_path, run_nt_backtest_node,
-        run_nt_backtest_node_with_execution_contract, selector_provenance_hashes,
-        time_window_excludes_all_data,
+        run_nt_backtest_node_with_execution_contract,
+        run_nt_backtest_node_with_execution_contract_and_seeded_l2_quote_bridge,
+        selector_provenance_hashes, time_window_excludes_all_data,
     };
     use crate::canonical_market_data::{
         CanonicalIndexPriceRow, CanonicalIndexPricesTable, CanonicalQuotesTable,
@@ -2911,9 +2960,14 @@ mod tests {
         RawPayloadContainer, TradeAggressorSide, TradesPartition,
     };
     use crate::catalog_projection::{
-        CatalogInstrumentSpec, SpotInstrumentSpec, build_catalog_instrument,
+        CatalogInstrumentSpec, DeltaReplayClock, SpotInstrumentSpec, build_catalog_instrument,
+        NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK,
+        order_book_delta_replay_times,
         project_canonical_index_to_catalog, project_canonical_order_book_deltas_to_catalog,
-        project_canonical_quotes_to_catalog, read_back_order_book_deltas,
+        project_canonical_quotes_to_catalog, read_back_order_book_deltas, read_back_quotes,
+    };
+    use crate::conversion_boundary::{
+        ConversionCheckpoint, ConversionFingerprint, ConversionManifest, SeededL2QuotePlanV1,
     };
     use crate::pmxt_one_off_backfill_projection::{
         PmxtBookLevel, PmxtOneOffProjectionRequest, PmxtOneOffSelectedRow, PmxtOneOffSnapshotRow,
@@ -2930,12 +2984,17 @@ mod tests {
         STRATEGY_BINARY_ORACLE_MAKER, STRATEGY_MECHANICAL_TRADE_REPLAY_PROBE,
         STRATEGY_PARAM_EVIDENCE_READ_MAX_BYTES, STRATEGY_PARAM_EVIDENCE_REJECT_EPISODE_MAX_COUNT,
         STRATEGY_PARAM_ORDER_EXECUTION_MODE, StrategyConfigOverlaySource, StrategySource,
-        StrategySourceKind,
+        StrategySourceKind, resolved_manifest_book_type,
+    };
+    use crate::seeded_l2_quote_bridge::{
+        SeededL2QuoteBridgePlanInput, SeededL2QuoteBridgeReport,
+        compile_seeded_l2_quote_bridge_plan,
     };
     use crate::seeded_level_set_deltas::{
-        OrderCountPolicy, SeededLevelSetCompileInput, SeededLevelSetMappingConfig,
-        SeededLevelSetOutputLimits, SeededLevelSetWindow, SeededLevelSetWindowBounds,
-        SourceSequencePolicy, normalize_seeded_level_set_window,
+        OrderCountPolicy, SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY,
+        SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION, SeededLevelSetCompileInput,
+        SeededLevelSetMappingConfig, SeededLevelSetOutputLimits, SeededLevelSetWindow,
+        SeededLevelSetWindowBounds, SourceSequencePolicy, normalize_seeded_level_set_window,
     };
 
     type TerminalOrderMutation = Box<dyn Fn(&mut OrderTerminalRecord)>;
@@ -4051,7 +4110,7 @@ mod tests {
     const ISSUE_789_START_NS: i64 = 1_776_816_000_000_000_000;
     const ISSUE_789_END_NS: i64 = 1_776_816_300_000_000_000;
     const ISSUE_789_RESULT_ARTIFACT_ROLE: &str = "issue-789-result-artifact.v1";
-    const ISSUE_789_ITERATIONS: usize = 446_717;
+    const ISSUE_789_ITERATIONS: usize = 587_788;
     const ISSUE_789_CONDITION_ID: &str =
         "0xb98f764c4d5dd36580c8c9903bc75ddcb631428d84e9c1e532f0da236f77054c";
     const ISSUE_789_UP_TOKEN: &str =
@@ -4059,15 +4118,15 @@ mod tests {
     const ISSUE_789_DOWN_TOKEN: &str =
         "39327110184724906690545821148183414832224062782460969169826610548819991310639";
     const ISSUE_789_MARKET_SLUG: &str = "btc-updown-5m-1776816000";
-    // Canonical pretty-JSON hashes over the ordered semantic tuple rows below.
-    const ISSUE_789_OKX_LEGACY_QUOTE_ROWS: usize = 15_148;
-    const ISSUE_789_OKX_LEGACY_QUOTE_SEMANTIC_SHA256: &str =
+    // Canonical pretty-JSON hashes over the ordered BBO semantic tuple rows below.
+    const ISSUE_789_OKX_BBO_ROWS: usize = 15_148;
+    const ISSUE_789_OKX_BBO_SHA256: &str =
         "40c097a000361e032f431ee0aa05672ae994b54c99070f055644407f31e56333";
-    const ISSUE_789_BYBIT_LEGACY_QUOTE_ROWS: usize = 2_719;
-    const ISSUE_789_BYBIT_LEGACY_QUOTE_SEMANTIC_SHA256: &str =
+    const ISSUE_789_BYBIT_BBO_ROWS: usize = 2_719;
+    const ISSUE_789_BYBIT_BBO_SHA256: &str =
         "4db2659ee879bbf220d2725cc89984aadd4943e78a04590e759315954ea8b336";
 
-    fn assert_issue_789_legacy_quote_semantics(
+    fn assert_issue_789_bbo_semantics(
         name: &str,
         table: &CanonicalQuotesTable,
         expected_rows: usize,
@@ -4091,13 +4150,13 @@ mod tests {
             .collect::<Vec<_>>();
         ensure!(
             semantic_rows.len() == expected_rows,
-            "issue #789 {name} full-depth-derived BBO row count {} != legacy golden {expected_rows}",
+            "issue #789 {name} full-depth-derived BBO row count {} != source golden {expected_rows}",
             semantic_rows.len()
         );
         let actual_sha256 = crate::reference_artifact::canonical_json_sha256(&semantic_rows)?;
         ensure!(
             actual_sha256 == expected_sha256,
-            "issue #789 {name} full-depth-derived BBO semantic hash {actual_sha256} != legacy golden {expected_sha256}"
+            "issue #789 {name} BBO hash {actual_sha256} != golden {expected_sha256}"
         );
         Ok(())
     }
@@ -4107,7 +4166,7 @@ mod tests {
         window: &SeededLevelSetWindow,
         instrument_spec: &SpotInstrumentSpec,
         catalog_root: &Path,
-    ) -> Result<()> {
+    ) -> Result<crate::catalog_projection::CatalogProjection> {
         let quotes = window
             .quotes
             .as_ref()
@@ -4115,12 +4174,18 @@ mod tests {
         let projection = project_canonical_order_book_deltas_to_catalog(
             &window.deltas,
             instrument_spec,
+            DeltaReplayClock::StrictEncounterOrder,
             catalog_root,
         )
         .with_context(|| format!("project issue #789 {name} full-depth deltas"))?;
         let read_back = read_back_order_book_deltas(catalog_root, &projection.nt_instrument_id)
             .with_context(|| format!("read back issue #789 {name} full-depth deltas"))?;
-        assert_delta_read_back_matches(&read_back, &window.deltas, &projection.nt_instrument_id)?;
+        assert_delta_read_back_matches(
+            &read_back,
+            &window.deltas,
+            &projection.nt_instrument_id,
+            DeltaReplayClock::StrictEncounterOrder,
+        )?;
 
         let instrument_id = InstrumentId::from_str(&projection.nt_instrument_id)
             .with_context(|| format!("parse issue #789 {name} instrument"))?;
@@ -4175,11 +4240,12 @@ mod tests {
                 "issue #789 {name} replay quote {quote_index} event timestamp drift"
             );
             ensure!(
-                terminal.ts_init.as_u64()
-                    == expected
-                        .availability_time
-                        .context("derived BBO availability time")? as u64,
-                "issue #789 {name} replay quote {quote_index} init timestamp drift"
+                expected.availability_time == Some(expected.event_time),
+                "issue #789 {name} audit quote {quote_index} does not retain source availability"
+            );
+            ensure!(
+                terminal.ts_init.as_u64() >= terminal.ts_event.as_u64(),
+                "issue #789 {name} replay quote {quote_index} precedes its source event"
             );
             quote_index += 1;
         }
@@ -4189,7 +4255,77 @@ mod tests {
             "issue #789 {name} delta replay produced {quote_index} BBO rows for {} derived rows",
             quotes.rows.len()
         );
-        Ok(())
+        Ok(projection)
+    }
+
+    fn issue_789_seeded_conversion_manifest(
+        name: &str,
+        accepted_object_sha256: &str,
+        window: &SeededLevelSetWindow,
+        projection: &crate::catalog_projection::CatalogProjection,
+    ) -> Result<ConversionManifest> {
+        let fingerprint = ConversionFingerprint {
+            source_proof_id: format!("issue-789-{name}-full-depth-l2"),
+            source_proof_version: 1,
+            accepted_object_sha256: accepted_object_sha256.to_string(),
+            converter_identity: SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY.to_string(),
+            converter_version: SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION.to_string(),
+            converter_config_hash: sha256_hex(name.as_bytes()),
+        };
+        let checkpoint = ConversionCheckpoint::completed(
+            fingerprint.clone(),
+            window.deltas.rows.len(),
+            projection.catalog_hash.clone(),
+            "2026-04-22T00:05:00Z",
+        );
+        let checkpoint_hash = checkpoint.content_hash()?;
+        ConversionManifest::completed(
+            fingerprint,
+            NORMALIZED_SCHEMA_VERSION,
+            "OrderBookDelta",
+            projection.nt_instrument_id.clone(),
+            window.deltas.rows.len(),
+            format!("memory://issue-789/{name}/deltas"),
+            projection.catalog_hash.clone(),
+            checkpoint_hash,
+            "2026-04-22T00:05:00Z",
+        )
+        .with_catalog_rows_by_nt_data_type(BTreeMap::from([
+            (
+                NT_DATA_TYPE_ORDER_BOOK_DELTA.to_string(),
+                window.deltas.rows.len(),
+            ),
+            (
+                NT_DATA_TYPE_QUOTE_TICK.to_string(),
+                window.quotes.as_ref().map_or(0, |quotes| quotes.rows.len()),
+            ),
+        ]))
+        .with_seeded_l2_quote_plan(issue_789_seeded_l2_quote_plan(window)?)
+    }
+
+    fn issue_789_seeded_l2_quote_plan(
+        window: &SeededLevelSetWindow,
+    ) -> Result<SeededL2QuotePlanV1> {
+        let replay_times = order_book_delta_replay_times(
+            &window.deltas,
+            DeltaReplayClock::StrictEncounterOrder,
+        )?;
+        Ok(SeededL2QuotePlanV1 {
+            synthetic_seed_batches: window.synthetic_seed_batches,
+            selected_source_events: window.selected_events,
+            replay_start_time: i64::try_from(
+                *replay_times
+                .first()
+                .context("issue #789 seeded L2 replay has no first timestamp")?,
+            )
+            .context("issue #789 first replay timestamp exceeds i64")?,
+            replay_end_time: i64::try_from(
+                *replay_times
+                .last()
+                .context("issue #789 seeded L2 replay has no terminal timestamp")?,
+            )
+            .context("issue #789 terminal replay timestamp exceeds i64")?,
+        })
     }
 
     #[test]
@@ -4257,40 +4393,56 @@ mod tests {
             .quotes
             .as_ref()
             .context("issue #789 Bybit fixture emitted no derived BBO")?;
-        assert_issue_789_delta_catalog_replay_matches_quotes(
+        let okx_delta_catalog = tempdir.path().join("okx_btc_usdt_deltas");
+        let okx_delta_projection = assert_issue_789_delta_catalog_replay_matches_quotes(
             "OKX",
             &okx_window,
             &okx_spot,
-            &tempdir.path().join("okx_btc_usdt_deltas"),
+            &okx_delta_catalog,
         )?;
-        assert_issue_789_delta_catalog_replay_matches_quotes(
+        let bybit_delta_catalog = tempdir.path().join("bybit_btc_usdt_deltas");
+        let bybit_delta_projection = assert_issue_789_delta_catalog_replay_matches_quotes(
             "Bybit",
             &bybit_window,
             &bybit_spot,
-            &tempdir.path().join("bybit_btc_usdt_deltas"),
+            &bybit_delta_catalog,
         )?;
-        assert_issue_789_legacy_quote_semantics(
+        assert_issue_789_bbo_semantics(
             "OKX",
-            &okx_quotes,
-            ISSUE_789_OKX_LEGACY_QUOTE_ROWS,
-            ISSUE_789_OKX_LEGACY_QUOTE_SEMANTIC_SHA256,
+            okx_quotes,
+            ISSUE_789_OKX_BBO_ROWS,
+            ISSUE_789_OKX_BBO_SHA256,
         )?;
-        assert_issue_789_legacy_quote_semantics(
+        assert_issue_789_bbo_semantics(
             "Bybit",
-            &bybit_quotes,
-            ISSUE_789_BYBIT_LEGACY_QUOTE_ROWS,
-            ISSUE_789_BYBIT_LEGACY_QUOTE_SEMANTIC_SHA256,
+            bybit_quotes,
+            ISSUE_789_BYBIT_BBO_ROWS,
+            ISSUE_789_BYBIT_BBO_SHA256,
         )?;
 
-        let okx_catalog = tempdir.path().join("okx_btc_usdt_quotes");
-        let okx_projection =
-            project_canonical_quotes_to_catalog(&okx_quotes, &okx_spot, &okx_catalog)
-                .context("project OKX full-depth-derived BBO quotes")?;
-        let bybit_catalog = tempdir.path().join("bybit_btc_usdt_quotes");
-        let bybit_projection =
-            project_canonical_quotes_to_catalog(&bybit_quotes, &bybit_spot, &bybit_catalog)
-                .context("project Bybit full-depth-derived BBO quotes")?;
-
+        let okx_audit_catalog = tempdir.path().join("okx_btc_usdt_audit_quotes");
+        project_canonical_quotes_to_catalog(okx_quotes, &okx_spot, &okx_audit_catalog)
+            .context("project OKX full-depth-derived audit BBO quotes")?;
+        let bybit_audit_catalog = tempdir.path().join("bybit_btc_usdt_audit_quotes");
+        project_canonical_quotes_to_catalog(bybit_quotes, &bybit_spot, &bybit_audit_catalog)
+            .context("project Bybit full-depth-derived audit BBO quotes")?;
+        let okx_delta_read_back = read_back_order_book_deltas(&okx_delta_catalog, "BTC-USDT.OKX")?;
+        let bybit_delta_read_back =
+            read_back_order_book_deltas(&bybit_delta_catalog, "BTCUSDT-SPOT.BYBIT")?;
+        let okx_audit_read_back = read_back_quotes(&okx_audit_catalog, "BTC-USDT.OKX")?;
+        let bybit_audit_read_back = read_back_quotes(&bybit_audit_catalog, "BTCUSDT-SPOT.BYBIT")?;
+        let okx_conversion_manifest = issue_789_seeded_conversion_manifest(
+            "OKX",
+            ISSUE_789_OKX_FIXTURE_SHA256,
+            &okx_window,
+            &okx_delta_projection,
+        )?;
+        let bybit_conversion_manifest = issue_789_seeded_conversion_manifest(
+            "Bybit",
+            ISSUE_789_BYBIT_FIXTURE_SHA256,
+            &bybit_window,
+            &bybit_delta_projection,
+        )?;
         let gamma_markets = issue_789_gamma_markets()?;
         let pmxt_rows = issue_789_pmxt_rows()?;
         let up_projection = project_pmxt_one_off_rows_to_nt(PmxtOneOffProjectionRequest {
@@ -4325,7 +4477,7 @@ mod tests {
                 .context("write PMXT Down catalog")?;
 
         let chainlink_catalog = tempdir.path().join("chainlink_price_to_beat");
-        let chainlink_table = reconstructed_chainlink_price_to_beat_table(&okx_quotes)?;
+        let chainlink_table = reconstructed_chainlink_price_to_beat_table(okx_quotes)?;
         let chainlink_projection = project_canonical_index_to_catalog(
             &chainlink_table,
             &spot_spec(
@@ -4388,10 +4540,10 @@ mod tests {
         ];
 
         let manifest = issue_789_manifest(Issue789Catalogs {
-            okx_catalog,
-            okx_catalog_hash: okx_projection.catalog_hash.clone(),
-            bybit_catalog,
-            bybit_catalog_hash: bybit_projection.catalog_hash.clone(),
+            okx_catalog: okx_delta_catalog,
+            okx_catalog_hash: okx_delta_projection.catalog_hash.clone(),
+            bybit_catalog: bybit_delta_catalog,
+            bybit_catalog_hash: bybit_delta_projection.catalog_hash.clone(),
             chainlink_catalog,
             chainlink_catalog_hash: chainlink_projection.catalog_hash.clone(),
             up_catalog,
@@ -4400,9 +4552,73 @@ mod tests {
             down_catalog,
             down_catalog_hash: down_catalog_report.catalog_hash.clone(),
             down_instrument_id,
-            reference_rows: reconstructed_reference_rows_from_okx(&okx_quotes)?,
+            reference_rows: reconstructed_reference_rows_from_okx(okx_quotes)?,
             instrument_settlements,
         })?;
+        let okx_instrument_id = InstrumentId::from("BTC-USDT.OKX");
+        let bybit_instrument_id = InstrumentId::from("BTCUSDT-SPOT.BYBIT");
+        let bridge_plan = compile_seeded_l2_quote_bridge_plan(vec![
+            SeededL2QuoteBridgePlanInput {
+                conversion_manifest: &okx_conversion_manifest,
+                client_id: Some(ClientId::from("okx_data")),
+                book_type: resolved_manifest_book_type(&manifest, okx_instrument_id)
+                    .map_err(|error| anyhow::anyhow!(error))?,
+                deltas: &okx_delta_read_back,
+                audit_quotes: &okx_audit_read_back,
+            },
+            SeededL2QuoteBridgePlanInput {
+                conversion_manifest: &bybit_conversion_manifest,
+                client_id: Some(ClientId::from("bybit_data")),
+                book_type: resolved_manifest_book_type(&manifest, bybit_instrument_id)
+                    .map_err(|error| anyhow::anyhow!(error))?,
+                deltas: &bybit_delta_read_back,
+                audit_quotes: &bybit_audit_read_back,
+            },
+        ])?;
+
+        let run_config = manifest
+            .to_nt_run_config()
+            .map_err(|error| anyhow::anyhow!("issue #789 manifest conversion failed: {error}"))?;
+        for (instrument_id, expected) in [
+            (InstrumentId::from("BTC-USDT.OKX"), &okx_delta_read_back),
+            (
+                InstrumentId::from("BTCUSDT-SPOT.BYBIT"),
+                &bybit_delta_read_back,
+            ),
+        ] {
+            let data_config = run_config
+                .data()
+                .iter()
+                .find(|config| {
+                    config
+                        .get_instrument_ids()
+                        .is_ok_and(|ids| ids.contains(&instrument_id))
+                })
+                .with_context(|| format!("missing issue #789 data config for {instrument_id}"))?;
+            let actual =
+                BacktestNode::load_data_config(data_config, run_config.start(), run_config.end())?
+                    .into_iter()
+                    .filter_map(|data| match data {
+                        Data::Delta(delta) => Some(delta),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+            ensure!(
+                actual.len() == expected.len(),
+                "issue #789 runtime query returned {} {instrument_id} deltas, expected {}",
+                actual.len(),
+                expected.len()
+            );
+            let mismatch = actual
+                .iter()
+                .zip(expected.iter())
+                .position(|(actual, expected)| actual != expected);
+            ensure!(
+                mismatch.is_none(),
+                "issue #789 runtime query reordered {instrument_id} at row {}",
+                mismatch.unwrap_or_default()
+            );
+        }
 
         ensure_issue_789_venue_shape(&manifest.venue)?;
         let expected_binary_settlements = ensure_issue_789_binary_settlement_domain(
@@ -4419,18 +4635,42 @@ mod tests {
             &down_projection.order_book_deltas,
         )?;
 
-        let output = run_nt_backtest_node_with_execution_contract(&manifest, |output, evidence| {
-            evidence.ensure_issue_789_causal_surface(&manifest)?;
-            validate_issue_789_execution_contract(
-                output,
-                evidence,
+        let (output, bridge_report) =
+            run_nt_backtest_node_with_execution_contract_and_seeded_l2_quote_bridge(
                 &manifest,
-                &up_projection,
-                &down_projection,
-                &expected_binary_settlements,
+                bridge_plan,
+                |output, evidence| {
+                    evidence.ensure_issue_789_causal_surface(&manifest)?;
+                    validate_issue_789_execution_contract(
+                        output,
+                        evidence,
+                        &manifest,
+                        &up_projection,
+                        &down_projection,
+                        &expected_binary_settlements,
+                    )
+                },
             )
-        })
-        .context("run issue #789 first real free-data taker P/L slice")?;
+            .context("run issue #789 first real free-data taker P/L slice")?;
+        ensure!(
+            bridge_report.instruments.len() == 2,
+            "issue #789 causal bridge did not prove both seeded instruments"
+        );
+        for (instrument_id, expected_quotes) in [
+            ("BTC-USDT.OKX", ISSUE_789_OKX_BBO_ROWS),
+            ("BTCUSDT-SPOT.BYBIT", ISSUE_789_BYBIT_BBO_ROWS),
+        ] {
+            let report = bridge_report
+                .instruments
+                .iter()
+                .find(|report| report.nt_instrument_id == instrument_id)
+                .with_context(|| format!("issue #789 bridge omitted {instrument_id}"))?;
+            ensure!(
+                report.emitted_quotes == expected_quotes as u64,
+                "issue #789 bridge emitted {} {instrument_id} quotes, expected {expected_quotes}",
+                report.emitted_quotes
+            );
+        }
         let guard = output
             .run_guard_report
             .as_ref()
@@ -4474,7 +4714,7 @@ mod tests {
         );
         println!("issue_789_stats_pnls={:?}", output.result.stats_pnls);
         println!("issue_789_stats_returns={:?}", output.result.stats_returns);
-        write_issue_789_result_artifact(&output, guard)?;
+        write_issue_789_result_artifact(&output, guard, &bridge_report)?;
 
         ensure!(guard.signal_quote_received, "{}", did_not_arm());
         ensure!(guard.realized_volatility_ready, "{}", did_not_arm());
@@ -7617,6 +7857,7 @@ mod tests {
     fn write_issue_789_result_artifact(
         output: &super::NtBacktestNodeRun,
         guard: &crate::result_contract::BacktestRunGuardReport,
+        bridge_report: &SeededL2QuoteBridgeReport,
     ) -> Result<()> {
         let Ok(path) = std::env::var("BOLT_ISSUE_789_RESULT_PATH") else {
             return Ok(());
@@ -7645,6 +7886,7 @@ mod tests {
             "total_orders": output.result.total_orders,
             "total_positions": output.result.total_positions,
             "iterations": output.result.iterations,
+            "seeded_l2_quote_bridge": bridge_report,
             "resolved_config_sha256": output.resolved_config_hash,
             "execution_contract_validated_fill_count": output
                 .execution_contract_report
@@ -8392,20 +8634,20 @@ mod tests {
             // from stats_pnls. The instrument's settlement currency owns this.
             venue: issue_789_venue("POLYMARKET", "pUSD", "L2_MBP", true, true),
             additional_venues: vec![
-                issue_789_venue("OKX", "USDT", "L1_MBP", false, false),
-                issue_789_venue("BYBIT", "USDT", "L1_MBP", false, false),
+                issue_789_venue("OKX", "USDT", "L2_MBP", false, false),
+                issue_789_venue("BYBIT", "USDT", "L2_MBP", false, false),
                 issue_789_venue("CHAINLINK", "USD", "L1_MBP", false, false),
             ],
             catalog_inputs: vec![
                 catalog_input(
                     &catalogs.okx_catalog,
-                    "QuoteTick",
+                    "OrderBookDelta",
                     "BTC-USDT.OKX",
                     Some("okx_data"),
                 ),
                 catalog_input(
                     &catalogs.bybit_catalog,
-                    "QuoteTick",
+                    "OrderBookDelta",
                     "BTCUSDT-SPOT.BYBIT",
                     Some("bybit_data"),
                 ),

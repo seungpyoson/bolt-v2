@@ -1830,6 +1830,7 @@ fn run_pmxt_one_off_l2_backtest_contract_with_base(
         config_override_report: nt_run.config_override_report.as_ref(),
         run_guard_report: nt_run.run_guard_report.as_ref(),
         feed_labels: result_contract_feed_labels(spec.manifest),
+        seeded_l2_quote_bridge_report: None,
         nt_result: &nt_result,
         artifact_uris: spec.artifact_uris,
         created_at: spec.created_at,

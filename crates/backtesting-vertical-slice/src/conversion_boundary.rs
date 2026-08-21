@@ -17,7 +17,12 @@ use std::{
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::io_safety::{collect_regular_files, open_regular_file};
+use crate::{
+    io_safety::{collect_regular_files, open_regular_file},
+    seeded_level_set_deltas::{
+        SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY, SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION,
+    },
+};
 pub const CONVERSION_MANIFEST_FILE: &str = "conversion-manifest.json";
 pub const CONVERSION_CHECKPOINT_FILE: &str = "conversion-checkpoint.json";
 pub const CATALOG_METADATA_FILE: &str = "catalog-metadata.json";
@@ -171,6 +176,38 @@ impl ConversionCheckpoint {
     }
 }
 
+/// Durable replay plan derived by the seeded L2 converter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeededL2QuotePlanV1 {
+    pub synthetic_seed_batches: u8,
+    pub selected_source_events: u64,
+    pub replay_start_time: i64,
+    pub replay_end_time: i64,
+}
+
+impl SeededL2QuotePlanV1 {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.synthetic_seed_batches <= 1,
+            "seeded L2 quote plan synthetic_seed_batches must be 0 or 1"
+        );
+        ensure!(
+            self.selected_source_events > 0,
+            "seeded L2 quote plan selected_source_events must be positive"
+        );
+        ensure!(
+            self.replay_start_time > 0,
+            "seeded L2 quote plan replay_start_time must be positive"
+        );
+        ensure!(
+            self.replay_end_time >= self.replay_start_time,
+            "seeded L2 quote plan replay_end_time precedes replay_start_time"
+        );
+        Ok(())
+    }
+}
+
 /// Completed conversion manifest binding input proof to NT catalog output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversionManifest {
@@ -184,6 +221,8 @@ pub struct ConversionManifest {
     pub catalog_nt_data_types: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub catalog_rows_by_nt_data_type: BTreeMap<String, usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seeded_l2_quote_plan: Option<SeededL2QuotePlanV1>,
     pub output_catalog_uri: String,
     pub catalog_hash: String,
     pub checkpoint_hash: String,
@@ -216,6 +255,7 @@ impl ConversionManifest {
             canonical_rows,
             catalog_nt_data_types: vec![nt_data_type],
             catalog_rows_by_nt_data_type: canonical_rows_by_nt_data_type,
+            seeded_l2_quote_plan: None,
             output_catalog_uri: output_catalog_uri.into(),
             catalog_hash: catalog_hash.into(),
             checkpoint_hash: checkpoint_hash.into(),
@@ -231,6 +271,17 @@ impl ConversionManifest {
         self.catalog_nt_data_types = catalog_rows_by_nt_data_type.keys().cloned().collect();
         self.catalog_rows_by_nt_data_type = catalog_rows_by_nt_data_type;
         self
+    }
+
+    pub fn with_seeded_l2_quote_plan(mut self, plan: SeededL2QuotePlanV1) -> Result<Self> {
+        ensure!(
+            self.fingerprint.converter_identity == SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY
+                && self.fingerprint.converter_version == SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION,
+            "seeded L2 causal quote plan requires the registered seeded converter identity/version"
+        );
+        plan.validate()?;
+        self.seeded_l2_quote_plan = Some(plan);
+        Ok(self)
     }
 
     #[must_use]
@@ -326,6 +377,25 @@ impl ConversionManifest {
             !self.completed_at.trim().is_empty(),
             "conversion manifest completed_at must not be empty"
         );
+        let seeded_converter =
+            self.fingerprint.converter_identity == SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY;
+        if seeded_converter {
+            ensure!(
+                self.fingerprint.converter_version == SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION,
+                "registered seeded converter version mismatch: expected {SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION:?}, got {:?}",
+                self.fingerprint.converter_version
+            );
+        }
+        match (seeded_converter, self.seeded_l2_quote_plan.as_ref()) {
+            (true, Some(plan)) => plan.validate()?,
+            (true, None) => {
+                bail!("registered seeded converter manifest has no causal quote plan")
+            }
+            (false, Some(_)) => {
+                bail!("non-seeded conversion manifest carries a seeded L2 causal quote plan")
+            }
+            (false, None) => {}
+        }
         Ok(())
     }
 

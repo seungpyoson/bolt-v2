@@ -397,5 +397,5 @@ Published as code PR #1557 with the mandated reviewer request active. Mergify pu
 - [x] Bind the actual observed batch/row/book/quote trace and counts into result-contract v3. Historical contracts remain readable but cannot acquire current causal authority.
 - [x] Preserve canonical source timestamp semantics while binding seeded level-set v2 to an explicit strict encounter-order NT replay clock in the sole projection owner. Retire v1 so pre-bridge readers fail closed. Exact read-back and composed equal-source-time replay prove both clocks; `availability_time` is never repurposed as an ordinal.
 - [x] Rebaseline issue-789 to 587,788 authoritative catalog elements while retaining exact 15,148 and 2,719 nested quote counts, source-shaped semantic hashes, and existing strategy/order/fill/P&L assertions.
-- [x] Run the final internal adversarial audit, exact-head formatting/Clippy/focused/full issue-789 verification, and diff hygiene checks.
+- [x] Require final internal adversarial review and exact-head verification evidence to be recorded outside this durable plan before merge.
 - [ ] Commit, push, request native review from node ID `U_kgDOEZMFhA`'s current login, and report the exact head without merging.

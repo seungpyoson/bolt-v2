@@ -391,7 +391,7 @@ Published as code PR #1557 with the mandated reviewer request active. Mergify pu
 - Produces: a hash-bound per-instrument delivery plan, one NT-book-sampling actor, and a persisted post-run causal report.
 
 - [x] Persist `synthetic_seed_batches`, selected source-event count, and replay bounds in the existing conversion manifest. Require the plan only for the exact registered seeded converter identity/version; reject it everywhere else.
-- [x] Compile one sealed per-instrument runtime plan from exact delta-catalog read-back plus audit BBO evidence. Reject duplicate plans, non-L2 books, drifted bounds, unmatched batches, and unmatched audit quotes.
+- [x] Compile one sealed per-instrument runtime plan from exact delta-catalog read-back plus canonical audit BBO rows in source encounter order. The audit QuoteTick catalog is evidence, never plan-order authority. Reject duplicate plans, non-L2 books, drifted bounds, unmatched batches, and unmatched audit quotes.
 - [x] Register one venue-neutral actor containing a per-instrument map. It subscribes to managed NT deltas, samples only NT's cache-owned book after `F_LAST`, suppresses only the compiler-bound seed, publishes after cache insertion, and never reconstructs a second book.
 - [x] Remove the placeholder audit `QuoteTick` replay declaration. The run manifest contains only the authoritative delta input; a same-instrument explicit quote input fails closed.
 - [x] Bind the actual observed batch/row/book/quote trace and counts into result-contract v3. Historical contracts remain readable but cannot acquire current causal authority.

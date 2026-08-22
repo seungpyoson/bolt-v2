@@ -4427,8 +4427,9 @@ mod tests {
         let okx_delta_read_back = read_back_order_book_deltas(&okx_delta_catalog, "BTC-USDT.OKX")?;
         let bybit_delta_read_back =
             read_back_order_book_deltas(&bybit_delta_catalog, "BTCUSDT-SPOT.BYBIT")?;
-        let okx_audit_read_back = read_back_quotes(&okx_audit_catalog, "BTC-USDT.OKX")?;
-        let bybit_audit_read_back = read_back_quotes(&bybit_audit_catalog, "BTCUSDT-SPOT.BYBIT")?;
+        let _okx_audit_read_back = read_back_quotes(&okx_audit_catalog, "BTC-USDT.OKX")?;
+        let _bybit_audit_read_back =
+            read_back_quotes(&bybit_audit_catalog, "BTCUSDT-SPOT.BYBIT")?;
         let okx_conversion_manifest = issue_789_seeded_conversion_manifest(
             "OKX",
             ISSUE_789_OKX_FIXTURE_SHA256,
@@ -4562,7 +4563,7 @@ mod tests {
                 book_type: resolved_manifest_book_type(&manifest, okx_instrument_id)
                     .map_err(|error| anyhow::anyhow!(error))?,
                 deltas: &okx_delta_read_back,
-                audit_quotes: &okx_audit_read_back,
+                audit_quote_rows: &okx_quotes.rows,
             },
             SeededL2QuoteBridgePlanInput {
                 conversion_manifest: &bybit_conversion_manifest,
@@ -4570,7 +4571,7 @@ mod tests {
                 book_type: resolved_manifest_book_type(&manifest, bybit_instrument_id)
                     .map_err(|error| anyhow::anyhow!(error))?,
                 deltas: &bybit_delta_read_back,
-                audit_quotes: &bybit_audit_read_back,
+                audit_quote_rows: &bybit_quotes.rows,
             },
         ])?;
 

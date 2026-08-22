@@ -2831,9 +2831,13 @@ fn compile_operator_seeded_l2_quote_bridge_plan(
             };
             let audit_tables = planned
                 .iter()
-                .filter(|table| {
-                    table.table.nt_data_type() == NT_DATA_TYPE_QUOTE_TICK
-                        && table.nt_instrument_id == delta_table.nt_instrument_id
+                .filter_map(|table| match &table.table {
+                    NormalizedTable::Quotes(canonical)
+                        if table.nt_instrument_id == delta_table.nt_instrument_id =>
+                    {
+                        Some(canonical)
+                    }
+                    _ => None,
                 })
                 .collect::<Vec<_>>();
             ensure!(
@@ -2844,11 +2848,9 @@ fn compile_operator_seeded_l2_quote_bridge_plan(
             let deltas =
                 read_back_order_book_deltas(&delta_table.subroot, &delta_table.nt_instrument_id)
                     .context("read seeded L2 authority for causal quote plan")?;
-            let audit_quotes = match audit_tables.first() {
-                Some(table) => read_back_quotes(&table.subroot, &table.nt_instrument_id)
-                    .context("read seeded L2 audit quotes for causal quote plan")?,
-                None => Vec::new(),
-            };
+            let audit_quote_rows = audit_tables
+                .first()
+                .map_or(&[][..], |canonical| canonical.rows.as_slice());
             let instrument_id = InstrumentId::from(delta_table.nt_instrument_id.as_str());
             let book_type = resolved_manifest_book_type(manifest, instrument_id)
                 .map_err(|error| anyhow::anyhow!(error))?;
@@ -2857,7 +2859,7 @@ fn compile_operator_seeded_l2_quote_bridge_plan(
                 client_id: delta_input.client_id.as_deref().map(ClientId::from),
                 book_type,
                 deltas: &deltas,
-                audit_quotes: &audit_quotes,
+                audit_quote_rows,
             }])
             .map(Some)
         }

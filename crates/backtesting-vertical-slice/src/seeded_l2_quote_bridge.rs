@@ -24,6 +24,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     catalog_projection::{NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK},
+    canonical_market_data::CanonicalQuoteRow,
     conversion_boundary::{ConversionManifest, SeededL2QuotePlanV1},
     hashing::is_lowercase_sha256_hex,
     reference_artifact::canonical_json_sha256,
@@ -41,7 +42,7 @@ pub(crate) struct SeededL2QuoteBridgePlanInput<'a> {
     pub client_id: Option<ClientId>,
     pub book_type: BookType,
     pub deltas: &'a [OrderBookDelta],
-    pub audit_quotes: &'a [QuoteTick],
+    pub audit_quote_rows: &'a [CanonicalQuoteRow],
 }
 
 pub(crate) struct SeededL2QuoteBridgePlan {
@@ -244,8 +245,8 @@ pub(crate) fn compile_seeded_l2_quote_bridge_plan(
                 .get(NT_DATA_TYPE_QUOTE_TICK)
                 .copied()
                 .unwrap_or_default()
-                == input.audit_quotes.len(),
-            "seeded L2 conversion manifest audit quote row count does not match exact catalog read-back"
+                == input.audit_quote_rows.len(),
+            "seeded L2 conversion manifest audit quote row count does not match canonical audit evidence"
         );
         ensure!(
             !entries.contains_key(&instrument_id),
@@ -608,7 +609,7 @@ fn compile_batches(
     let mut batches = Vec::new();
     let mut rows = Vec::new();
     let mut expected_update_count = 0u64;
-    let mut audit_quotes = input.audit_quotes.iter();
+    let mut audit_quote_rows = input.audit_quote_rows.iter();
 
     for delta in input.deltas {
         ensure!(
@@ -635,22 +636,10 @@ fn compile_batches(
             (true, _) => BatchDisposition::SyntheticSeed,
             (false, None) => BatchDisposition::OneSided,
             (false, Some(derived)) => {
-                let expected = audit_quotes
+                let expected = audit_quote_rows
                     .next()
                     .context("seeded L2 audit quote missing for two-sided source event")?;
-                ensure!(
-                    expected.ts_init == expected.ts_event,
-                    "seeded L2 audit quote ts_init does not retain source availability time"
-                );
-                // Audit evidence retains the source availability timestamp;
-                // the runtime quote carries the delta catalog's explicit
-                // transport replay clock. Every other field must be identical.
-                let mut expected_at_replay_time = *expected;
-                expected_at_replay_time.ts_init = derived.ts_init;
-                ensure!(
-                    expected_at_replay_time == derived,
-                    "seeded L2 audit quote does not match NT-derived source-event BBO"
-                );
+                ensure_audit_row_matches(expected, derived)?;
                 BatchDisposition::EmitQuote(derived)
             }
         };
@@ -666,7 +655,7 @@ fn compile_batches(
         "seeded L2 delta stream ended without F_LAST"
     );
     ensure!(
-        audit_quotes.next().is_none(),
+        audit_quote_rows.next().is_none(),
         "seeded L2 audit quote has no corresponding two-sided source event"
     );
     let source_events = batches
@@ -678,6 +667,29 @@ fn compile_batches(
         "seeded L2 source-event count does not match durable conversion plan"
     );
     Ok(batches)
+}
+
+fn ensure_audit_row_matches(row: &CanonicalQuoteRow, derived: QuoteTick) -> Result<()> {
+    let derived_instrument_id = derived.instrument_id.to_string();
+    ensure!(
+        row.nt_instrument_id.as_deref() == Some(derived_instrument_id.as_str()),
+        "seeded L2 canonical audit quote instrument does not match NT-derived quote"
+    );
+    ensure!(
+        row.availability_time == Some(row.event_time),
+        "seeded L2 canonical audit quote does not retain source availability time"
+    );
+    let derived_event_time = i64::try_from(derived.ts_event.as_u64())
+        .context("seeded L2 derived quote event time exceeds i64")?;
+    ensure!(
+        row.event_time == derived_event_time
+            && row.bid == derived.bid_price.to_string()
+            && row.ask == derived.ask_price.to_string()
+            && row.bid_size == derived.bid_size.to_string()
+            && row.ask_size == derived.ask_size.to_string(),
+        "seeded L2 canonical audit quote does not match NT-derived source-event BBO"
+    );
+    Ok(())
 }
 
 fn quote_from_book(book: &OrderBook, batch: &OrderBookDeltas) -> Option<QuoteTick> {
@@ -728,7 +740,7 @@ mod tests {
 
     use nautilus_core::UnixNanos;
     use nautilus_model::{
-        data::{BookOrder, NULL_ORDER, OrderBookDelta, QuoteTick},
+        data::{BookOrder, NULL_ORDER, OrderBookDelta},
         enums::{BookAction, BookType, OrderSide, RecordFlag},
         identifiers::{ClientId, InstrumentId},
         types::{Price, Quantity},
@@ -739,6 +751,7 @@ mod tests {
     };
     use crate::{
         catalog_projection::{NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK},
+        canonical_market_data::CanonicalQuoteRow,
         conversion_boundary::{ConversionFingerprint, ConversionManifest, SeededL2QuotePlanV1},
         seeded_level_set_deltas::{
             SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY, SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION,
@@ -782,16 +795,38 @@ mod tests {
         .unwrap()
     }
 
-    fn quote(instrument_id: InstrumentId, timestamp: u64) -> QuoteTick {
-        QuoteTick::new(
-            instrument_id,
-            Price::from("100"),
-            Price::from("102"),
-            Quantity::from("10"),
-            Quantity::from("12"),
-            UnixNanos::from(timestamp),
-            UnixNanos::from(timestamp),
-        )
+    fn audit_row(
+        instrument_id: InstrumentId,
+        timestamp: i64,
+        bid: &str,
+        ask: &str,
+        bid_size: &str,
+        ask_size: &str,
+    ) -> CanonicalQuoteRow {
+        CanonicalQuoteRow {
+            schema_version: "canonical-market-data.v1".to_string(),
+            ingest_run_id: "test-run".to_string(),
+            source_binding: "test-source".to_string(),
+            venue: instrument_id.venue.to_string(),
+            product_family: "spot".to_string(),
+            product_category: "spot".to_string(),
+            instrument_id: instrument_id.symbol.to_string(),
+            canonical_instrument_key: instrument_id.to_string(),
+            venue_symbol: instrument_id.symbol.to_string(),
+            nt_instrument_id: Some(instrument_id.to_string()),
+            event_time: timestamp,
+            capture_time: timestamp,
+            availability_time: Some(timestamp),
+            source_sequence: None,
+            raw_payload_id: "memory://payload".to_string(),
+            source_proof_id: "source-proof".to_string(),
+            payload_hash: "a".repeat(64),
+            transform_hash: "b".repeat(64),
+            bid: bid.to_string(),
+            ask: ask.to_string(),
+            bid_size: bid_size.to_string(),
+            ask_size: ask_size.to_string(),
+        }
     }
 
     fn conversion_manifest(
@@ -856,7 +891,7 @@ mod tests {
             client_id: None,
             book_type: BookType::L2_MBP,
             deltas: &deltas,
-            audit_quotes: &[],
+            audit_quote_rows: &[],
         }])
         .expect("compile manifest-bound plan");
 
@@ -869,11 +904,40 @@ mod tests {
     }
 
     #[test]
-    fn compiler_preserves_every_source_event_even_when_bbo_is_unchanged() {
+    fn compiler_preserves_equal_time_encounter_order_and_unchanged_bbo() {
         let instrument_id = InstrumentId::from("BTC-USDT.OKX");
         let seed_time = 10;
-        let first_time = 20;
-        let second_time = 30;
+        let source_time = 20;
+        let mut second_delete = delta(
+            instrument_id,
+            BookAction::Delete,
+            OrderSide::Sell,
+            "102",
+            "0",
+            flags(&[RecordFlag::F_MBP]),
+            source_time,
+        );
+        second_delete.ts_init = UnixNanos::from(21);
+        let mut second_add = delta(
+            instrument_id,
+            BookAction::Add,
+            OrderSide::Sell,
+            "103",
+            "13",
+            flags(&[RecordFlag::F_MBP, RecordFlag::F_LAST]),
+            source_time,
+        );
+        second_add.ts_init = UnixNanos::from(22);
+        let mut third_event = delta(
+            instrument_id,
+            BookAction::Update,
+            OrderSide::Buy,
+            "99",
+            "20",
+            flags(&[RecordFlag::F_MBP, RecordFlag::F_LAST]),
+            source_time,
+        );
+        third_event.ts_init = UnixNanos::from(23);
         let deltas = vec![
             delta(
                 instrument_id,
@@ -910,31 +974,25 @@ mod tests {
                 instrument_id,
                 BookAction::Update,
                 OrderSide::Buy,
-                "99",
-                "20",
+                "101",
+                "11",
                 flags(&[RecordFlag::F_MBP, RecordFlag::F_LAST]),
-                first_time,
+                source_time,
             ),
-            delta(
-                instrument_id,
-                BookAction::Update,
-                OrderSide::Sell,
-                "103",
-                "21",
-                flags(&[RecordFlag::F_MBP, RecordFlag::F_LAST]),
-                second_time,
-            ),
+            second_delete,
+            second_add,
+            third_event,
         ];
         let manifest = conversion_manifest(
             instrument_id,
             SeededL2QuotePlanV1 {
                 synthetic_seed_batches: 1,
-                selected_source_events: 2,
+                selected_source_events: 3,
                 replay_start_time: seed_time as i64,
-                replay_end_time: second_time as i64,
+                replay_end_time: 23,
             },
             deltas.len(),
-            2,
+            3,
             "source-proof",
         );
         let plan = compile_seeded_l2_quote_bridge_plan(vec![SeededL2QuoteBridgePlanInput {
@@ -942,26 +1000,34 @@ mod tests {
             client_id: Some(ClientId::from("OKX")),
             book_type: BookType::L2_MBP,
             deltas: &deltas,
-            audit_quotes: &[
-                quote(instrument_id, first_time),
-                quote(instrument_id, second_time),
+            audit_quote_rows: &[
+                audit_row(instrument_id, source_time as i64, "101", "102", "11", "12"),
+                audit_row(instrument_id, source_time as i64, "101", "103", "11", "13"),
+                audit_row(instrument_id, source_time as i64, "101", "103", "11", "13"),
             ],
         }])
-        .expect("compile causal quote plan");
+        .expect("compile canonical encounter-ordered audit evidence");
 
         let entry = plan.entries.get(&instrument_id).unwrap();
-        assert_eq!(entry.batches.len(), 3);
+        assert_eq!(entry.batches.len(), 4);
         assert!(matches!(
             entry.batches[0].disposition,
             BatchDisposition::SyntheticSeed
         ));
         assert!(matches!(
             entry.batches[1].disposition,
-            BatchDisposition::EmitQuote(value) if value == quote(instrument_id, first_time)
+            BatchDisposition::EmitQuote(value)
+                if value.bid_price == Price::from("101") && value.ask_price == Price::from("102")
         ));
         assert!(matches!(
             entry.batches[2].disposition,
-            BatchDisposition::EmitQuote(value) if value == quote(instrument_id, second_time)
+            BatchDisposition::EmitQuote(value)
+                if value.bid_price == Price::from("101") && value.ask_price == Price::from("103")
+        ));
+        assert!(matches!(
+            entry.batches[3].disposition,
+            BatchDisposition::EmitQuote(value)
+                if value.bid_price == Price::from("101") && value.ask_price == Price::from("103")
         ));
     }
 
@@ -1014,15 +1080,22 @@ mod tests {
             1,
             "source-proof",
         );
-        let mut tampered = quote(instrument_id, timestamp);
-        tampered.ts_init = UnixNanos::from(timestamp + 1);
+        let mut tampered = audit_row(
+            instrument_id,
+            timestamp as i64,
+            "100",
+            "102",
+            "10",
+            "12",
+        );
+        tampered.availability_time = Some(timestamp as i64 + 1);
 
         let error = compile_seeded_l2_quote_bridge_plan(vec![SeededL2QuoteBridgePlanInput {
             conversion_manifest: &manifest,
             client_id: None,
             book_type: BookType::L2_MBP,
             deltas: &deltas,
-            audit_quotes: &[tampered],
+            audit_quote_rows: &[tampered],
         }])
         .err()
         .expect("timestamp-tampered audit evidence must fail closed");
@@ -1050,7 +1123,7 @@ mod tests {
             client_id: None,
             book_type: BookType::L1_MBP,
             deltas: &[],
-            audit_quotes: &[],
+            audit_quote_rows: &[],
         }])
         .err()
         .expect("manifest-resolved non-L2 book must fail closed");
@@ -1091,7 +1164,7 @@ mod tests {
             client_id: None,
             book_type: BookType::L2_MBP,
             deltas: &deltas,
-            audit_quotes: &[],
+            audit_quote_rows: &[],
         }])
         .err()
         .expect("tampered durable replay bounds must fail closed");
@@ -1133,7 +1206,7 @@ mod tests {
             client_id: None,
             book_type: BookType::L2_MBP,
             deltas: &deltas,
-            audit_quotes: &[],
+            audit_quote_rows: &[],
         }])
         .err()
         .expect("superseded seeded converter manifest must fail closed");
@@ -1204,14 +1277,14 @@ mod tests {
                 client_id: None,
                 book_type: BookType::L2_MBP,
                 deltas: &first_deltas,
-                audit_quotes: &[],
+                audit_quote_rows: &[],
             };
             let second_input = SeededL2QuoteBridgePlanInput {
                 conversion_manifest: &second_manifest,
                 client_id: None,
                 book_type: BookType::L2_MBP,
                 deltas: &second_deltas,
-                audit_quotes: &[],
+                audit_quote_rows: &[],
             };
             let inputs = if reverse {
                 vec![second_input, first_input]

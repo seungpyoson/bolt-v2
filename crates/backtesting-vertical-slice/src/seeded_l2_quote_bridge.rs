@@ -24,7 +24,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     canonical_market_data::CanonicalQuoteRow,
-    catalog_projection::{NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK},
+    catalog_projection::{
+        NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK,
+        ensure_quote_value_matches_canonical,
+    },
     conversion_boundary::{ConversionManifest, SeededL2QuotePlanV1},
     hashing::is_lowercase_sha256_hex,
     reference_artifact::canonical_json_sha256,
@@ -670,26 +673,13 @@ fn compile_batches(
 }
 
 fn ensure_audit_row_matches(row: &CanonicalQuoteRow, derived: QuoteTick) -> Result<()> {
-    let derived_instrument_id = derived.instrument_id.to_string();
-    ensure!(
-        row.nt_instrument_id.as_deref() == Some(derived_instrument_id.as_str()),
-        "seeded L2 canonical audit quote instrument does not match NT-derived quote"
-    );
     ensure!(
         row.availability_time == Some(row.event_time),
         "seeded L2 canonical audit quote does not retain source availability time"
     );
-    let derived_event_time = i64::try_from(derived.ts_event.as_u64())
-        .context("seeded L2 derived quote event time exceeds i64")?;
-    ensure!(
-        row.event_time == derived_event_time
-            && row.bid == derived.bid_price.to_string()
-            && row.ask == derived.ask_price.to_string()
-            && row.bid_size == derived.bid_size.to_string()
-            && row.ask_size == derived.ask_size.to_string(),
-        "seeded L2 canonical audit quote does not match NT-derived source-event BBO"
-    );
-    Ok(())
+    let instrument_id = derived.instrument_id.to_string();
+    ensure_quote_value_matches_canonical(&derived, row, &instrument_id)
+        .context("seeded L2 canonical audit quote does not match NT-derived source-event BBO")
 }
 
 fn quote_from_book(book: &OrderBook, batch: &OrderBookDeltas) -> Option<QuoteTick> {

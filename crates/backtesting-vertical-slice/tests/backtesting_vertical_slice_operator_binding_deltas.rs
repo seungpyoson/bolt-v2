@@ -667,6 +667,7 @@ fn jsonl_snapshot_deltas_run_spec_end_to_end() {
 #[test]
 fn seeded_level_set_run_spec_emits_full_depth_and_derived_bbo_through_existing_catalogs() {
     let jsonl = "{\"instrument\":\"BASEQUOTE\",\"action\":\"snapshot\",\"time\":1700000000000,\"bids\":[[\"0.49\",\"10\",\"2\"],[\"0.48\",\"7\",\"1\"]],\"asks\":[[\"0.51\",\"12\",\"3\"]]}\n\
+        {\"instrument\":\"BASEQUOTE\",\"action\":\"update\",\"time\":1700000000000,\"bids\":[[\"0.50\",\"9\",\"1\"]],\"asks\":[]}\n\
         {\"instrument\":\"BASEQUOTE\",\"action\":\"update\",\"time\":1700000000000,\"bids\":[[\"0.48\",\"8\",\"1\"]],\"asks\":[]}\n";
     let object_bytes = jsonl.as_bytes();
     let (proof, object) = accepted_proof_and_object(object_bytes);
@@ -714,10 +715,10 @@ fn seeded_level_set_run_spec_emits_full_depth_and_derived_bbo_through_existing_c
         .expect("derived BBO table");
     assert_eq!(deltas.table_family, "order_book_snapshot_deltas");
     assert_eq!(quotes.table_family, "quotes");
-    assert_eq!(deltas.rows, 5);
+    assert_eq!(deltas.rows, 6);
     assert_eq!(
-        quotes.rows, 2,
-        "a deep-only update must retain source-event quote cadence even when BBO is unchanged"
+        quotes.rows, 3,
+        "equal-time BBO changes and a later deep-only update must retain source-event quote cadence"
     );
     assert!(deltas.canonical_path.is_file());
     assert!(quotes.canonical_path.is_file());
@@ -734,9 +735,9 @@ fn seeded_level_set_run_spec_emits_full_depth_and_derived_bbo_through_existing_c
         Some(
             backtesting_vertical_slice::conversion_boundary::SeededL2QuotePlanV1 {
                 synthetic_seed_batches: 0,
-                selected_source_events: 2,
+                selected_source_events: 3,
                 replay_start_time: 1_700_000_000_000_000_000,
-                replay_end_time: 1_700_000_000_000_000_004,
+                replay_end_time: 1_700_000_000_000_000_005,
             }
         )
     );
@@ -746,8 +747,8 @@ fn seeded_level_set_run_spec_emits_full_depth_and_derived_bbo_through_existing_c
         .as_ref()
         .expect("seeded replay must prove strategy-visible causal quotes");
     assert_eq!(bridge.instruments.len(), 1);
-    assert_eq!(bridge.instruments[0].observed_source_events, 2);
-    assert_eq!(bridge.instruments[0].emitted_quotes, 2);
+    assert_eq!(bridge.instruments[0].observed_source_events, 3);
+    assert_eq!(bridge.instruments[0].emitted_quotes, 3);
     assert!(artifacts.conversion_tables_path.is_some());
 
     assert_idempotent_rerun(&spec, object_bytes, &output_dir);

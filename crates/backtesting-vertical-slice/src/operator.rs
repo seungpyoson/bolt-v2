@@ -59,13 +59,14 @@ use crate::{
         CatalogInstrumentSpec, CatalogProjection, DeltaReplayClock, NT_DATA_TYPE_BAR,
         NT_DATA_TYPE_FUNDING_RATE_UPDATE, NT_DATA_TYPE_INDEX_PRICE_UPDATE,
         NT_DATA_TYPE_MARK_PRICE_UPDATE, NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK,
-        NT_DATA_TYPE_TRADE_TICK, build_catalog_instrument, logical_catalog_hash,
-        order_book_delta_replay_times, project_canonical_bars_to_catalog,
-        project_canonical_funding_rates_to_catalog, project_canonical_index_to_catalog,
-        project_canonical_mark_to_catalog, project_canonical_order_book_deltas_to_catalog,
-        project_canonical_quotes_to_catalog, project_canonical_trades_to_catalog, read_back_bars,
-        read_back_funding_rates, read_back_index, read_back_mark, read_back_order_book_deltas,
-        read_back_quotes, read_back_trade_ticks, ts_init_nanos,
+        NT_DATA_TYPE_TRADE_TICK, QuoteCatalogReadBackOrder, assert_quote_catalog_read_back_matches,
+        build_catalog_instrument, logical_catalog_hash, order_book_delta_replay_times,
+        project_canonical_bars_to_catalog, project_canonical_funding_rates_to_catalog,
+        project_canonical_index_to_catalog, project_canonical_mark_to_catalog,
+        project_canonical_order_book_deltas_to_catalog, project_canonical_quotes_to_catalog,
+        project_canonical_trades_to_catalog, read_back_bars, read_back_funding_rates,
+        read_back_index, read_back_mark, read_back_order_book_deltas, read_back_quotes,
+        read_back_trade_ticks, ts_init_nanos,
     },
     conversion_boundary::{
         CATALOG_METADATA_FILE, CONVERSION_TABLES_FILE, ConversionCatalogMetadata,
@@ -89,11 +90,10 @@ use crate::{
     runner::{
         BacktestRunInputs, BacktestRunOutput, assert_bar_read_back_matches,
         assert_delta_read_back_matches, assert_funding_read_back_matches,
-        assert_index_read_back_matches, assert_mark_read_back_matches,
-        assert_quote_read_back_matches, assert_read_back_matches, assert_time_window_overlaps_data,
-        expected_iterations, iterations_mismatch, market_structure_label,
-        nt_extension_surface_claim_limits, result_contract_feed_labels, result_contract_warnings,
-        run_backtest, run_nt_backtest_node,
+        assert_index_read_back_matches, assert_mark_read_back_matches, assert_read_back_matches,
+        assert_time_window_overlaps_data, expected_iterations, iterations_mismatch,
+        market_structure_label, nt_extension_surface_claim_limits, result_contract_feed_labels,
+        result_contract_warnings, run_backtest, run_nt_backtest_node,
         run_nt_backtest_node_with_optional_seeded_l2_quote_bridge, run_purpose_label,
         time_window_excludes_all_data, window_bound_nanos,
     },
@@ -2484,7 +2484,7 @@ fn resolve_instrument_spec<'a>(
 
 /// Read the projected table back through NautilusTrader and prove count and
 /// content equality against the canonical rows.
-fn assert_planned_read_back(planned: &PlannedTable) -> Result<()> {
+fn assert_planned_read_back(planned: &PlannedTable, adapter_kind: SourceAdapterKind) -> Result<()> {
     match &planned.table {
         NormalizedTable::Trades(table) => {
             let ticks = read_back_trade_ticks(&planned.subroot, &planned.nt_instrument_id)
@@ -2510,7 +2510,13 @@ fn assert_planned_read_back(planned: &PlannedTable) -> Result<()> {
         NormalizedTable::Quotes(table) => {
             let quotes = read_back_quotes(&planned.subroot, &planned.nt_instrument_id)
                 .context("catalog read-back failed")?;
-            assert_quote_read_back_matches(&quotes, table, &planned.nt_instrument_id)
+            let order = match adapter_kind {
+                SourceAdapterKind::SeededLevelSetDeltas => {
+                    QuoteCatalogReadBackOrder::OrderIndependent
+                }
+                _ => QuoteCatalogReadBackOrder::Encounter,
+            };
+            assert_quote_catalog_read_back_matches(&quotes, table, &planned.nt_instrument_id, order)
         }
         NormalizedTable::Index(table) => {
             let prices = read_back_index(&planned.subroot, &planned.nt_instrument_id)
@@ -3081,7 +3087,7 @@ pub fn run_multi_table_from_run_spec(
             projection.trade_count,
             table.table.rows_len()
         );
-        assert_planned_read_back(table)?;
+        assert_planned_read_back(table, adapter.kind)?;
         let parent = table
             .canonical_path
             .parent()
@@ -3378,7 +3384,7 @@ fn run_multi_from_completed_output(
     for table in &planned {
         let actual_hash = logical_catalog_hash(&table.subroot)
             .with_context(|| format!("verify catalog hash {}", table.subroot.display()))?;
-        assert_planned_read_back(table)?;
+        assert_planned_read_back(table, inputs.adapter_kind)?;
         assert_canonical_artifact_matches(table)?;
         catalog_hashes.push(actual_hash);
     }

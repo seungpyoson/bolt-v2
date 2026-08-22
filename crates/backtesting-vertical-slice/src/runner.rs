@@ -60,7 +60,7 @@ use nautilus_model::{
     accounts::AccountAny,
     data::{
         Bar, BarSpecification, Data, FundingRateUpdate, IndexPriceUpdate, InstrumentClose,
-        MarkPriceUpdate, OrderBookDelta, QuoteTick, TradeTick,
+        MarkPriceUpdate, OrderBookDelta, TradeTick,
     },
     enums::{
         AccountType, AggregationSource, AggressorSide, BookAction, InstrumentCloseType,
@@ -2458,63 +2458,6 @@ pub(crate) fn assert_delta_read_back_matches(
             "delta read-back {index} order_id {} does not match canonical {}",
             delta.order.order_id,
             row.order_id
-        );
-    }
-    Ok(())
-}
-
-/// Prove a top-of-book quote catalog read-back is value-faithful, mirroring
-/// [`assert_read_back_matches`] for the quote family: element-wise in catalog
-/// order, every read-back quote must carry the projected instrument id and the
-/// canonical bid/ask/bid_size/ask_size decimals, with `ts_event` the event clock
-/// and `ts_init` the availability-or-capture receipt clock derived through the
-/// SAME shared projection owner the seam uses (NO DUAL PATHS) — this is the
-/// load-bearing `ts_init == capture_time` proof for the quote family.
-pub(crate) fn assert_quote_read_back_matches(
-    read_back: &[QuoteTick],
-    table: &super::canonical_market_data::CanonicalQuotesTable,
-    expected_instrument_id: &str,
-) -> Result<()> {
-    ensure!(
-        read_back.len() == table.rows.len(),
-        "quote catalog read-back count {} does not match canonical rows {}",
-        read_back.len(),
-        table.rows.len()
-    );
-    for (index, (quote, row)) in read_back.iter().zip(table.rows.iter()).enumerate() {
-        ensure!(
-            quote.instrument_id.to_string() == expected_instrument_id,
-            "quote read-back {index} instrument {} does not match projected {expected_instrument_id}",
-            quote.instrument_id
-        );
-        for (label, actual, expected) in [
-            ("bid", quote.bid_price.as_decimal(), &row.bid),
-            ("ask", quote.ask_price.as_decimal(), &row.ask),
-            ("bid_size", quote.bid_size.as_decimal(), &row.bid_size),
-            ("ask_size", quote.ask_size.as_decimal(), &row.ask_size),
-        ] {
-            let expected = Decimal::from_str(expected)
-                .with_context(|| format!("canonical {label} {expected:?}"))?;
-            ensure!(
-                actual == expected,
-                "quote read-back {index} {label} {actual} does not match canonical {expected}"
-            );
-        }
-        let label = format!("quote {}", row.event_time);
-        let expected_ts_event = ts_event_nanos(row.event_time, &label)?.as_u64();
-        ensure!(
-            quote.ts_event.as_u64() == expected_ts_event,
-            "quote read-back {index} ts_event {} does not match canonical {expected_ts_event}",
-            quote.ts_event.as_u64()
-        );
-        // ts_init is the availability-or-capture receipt clock (the clock
-        // NautilusTrader replays by), derived through the shared projection owner.
-        let expected_ts_init =
-            ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
-        ensure!(
-            quote.ts_init.as_u64() == expected_ts_init,
-            "quote read-back {index} ts_init {} does not match canonical {expected_ts_init}",
-            quote.ts_init.as_u64()
         );
     }
     Ok(())

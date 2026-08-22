@@ -57,6 +57,28 @@ pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
 /// NautilusTrader data type written for the order-book-delta projection.
 pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
 
+/// How canonical source availability is mapped onto NT's replay clock.
+///
+/// `StrictEncounterOrder` is required when equal source timestamps span NT
+/// catalog batches: it preserves canonical row order without rewriting the
+/// canonical source-availability field or fabricating a venue sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeltaReplayClock {
+    SourceAvailability,
+    StrictEncounterOrder,
+}
+
+/// Ordering contract used when proving a projected quote catalog against its
+/// canonical rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuoteCatalogReadBackOrder {
+    /// The catalog must preserve canonical encounter order.
+    Encounter,
+    /// Catalog order is not authoritative; values, source clocks, and
+    /// multiplicity must still match exactly.
+    OrderIndependent,
+}
+
 /// NautilusTrader data type written for the bar projection.
 pub const NT_DATA_TYPE_BAR: &str = "Bar";
 
@@ -1137,15 +1159,77 @@ fn ensure_clean_catalog_root(catalog_root: &Path) -> Result<()> {
 pub fn canonical_rows_to_order_book_deltas<I: Instrument + ?Sized>(
     table: &CanonicalOrderBookDeltasTable,
     instrument: &I,
+    replay_clock: DeltaReplayClock,
 ) -> Result<Vec<OrderBookDelta>> {
     let instrument_id = instrument.id();
     let price_precision = instrument.price_precision();
     let size_precision = instrument.size_precision();
+    let mut clock = DeltaReplayClockState::new(replay_clock);
     table
         .rows
         .iter()
         .map(|row| {
-            canonical_row_to_order_book_delta(instrument_id, row, price_precision, size_precision)
+            let mut delta = canonical_row_to_order_book_delta(
+                instrument_id,
+                row,
+                price_precision,
+                size_precision,
+            )?;
+            delta.ts_init = UnixNanos::from(clock.advance(delta.ts_init.as_u64())?);
+            Ok(delta)
+        })
+        .collect()
+}
+
+struct DeltaReplayClockState {
+    policy: DeltaReplayClock,
+    previous: Option<u64>,
+}
+
+impl DeltaReplayClockState {
+    fn new(policy: DeltaReplayClock) -> Self {
+        Self {
+            policy,
+            previous: None,
+        }
+    }
+
+    fn advance(&mut self, source_time: u64) -> Result<u64> {
+        let replay_time = match (self.policy, self.previous) {
+            (DeltaReplayClock::SourceAvailability, _) => source_time,
+            (DeltaReplayClock::StrictEncounterOrder, None) => source_time,
+            (DeltaReplayClock::StrictEncounterOrder, Some(previous)) => source_time.max(
+                previous
+                    .checked_add(1)
+                    .context("order-book-delta replay clock overflow")?,
+            ),
+        };
+        self.previous = Some(replay_time);
+        Ok(replay_time)
+    }
+}
+
+/// Return the exact NT replay timestamps implied by a canonical delta table.
+///
+/// The returned clock is projection metadata, not source availability. It is
+/// derived deterministically from canonical encounter order and the selected
+/// converter-level replay policy.
+pub(crate) fn order_book_delta_replay_times(
+    table: &CanonicalOrderBookDeltasTable,
+    replay_clock: DeltaReplayClock,
+) -> Result<Vec<u64>> {
+    table.validate()?;
+    let mut clock = DeltaReplayClockState::new(replay_clock);
+    table
+        .rows
+        .iter()
+        .map(|row| {
+            let source_time = ts_init_nanos(
+                row.availability_time,
+                row.capture_time,
+                &format!("delta sequence {}", row.sequence),
+            )?;
+            clock.advance(source_time.as_u64())
         })
         .collect()
 }
@@ -1276,6 +1360,7 @@ pub(crate) fn native_order_book_sequence(
 pub fn project_canonical_order_book_deltas_to_catalog<S: CatalogInstrumentSpecSource + ?Sized>(
     table: &CanonicalOrderBookDeltasTable,
     spec: &S,
+    replay_clock: DeltaReplayClock,
     catalog_root: &Path,
 ) -> Result<CatalogProjection> {
     table.validate()?;
@@ -1288,7 +1373,7 @@ pub fn project_canonical_order_book_deltas_to_catalog<S: CatalogInstrumentSpecSo
         &instrument_id,
         table.rows.iter().map(|row| row.nt_instrument_id.as_deref()),
     )?;
-    let deltas = canonical_rows_to_order_book_deltas(table, &instrument)?;
+    let deltas = canonical_rows_to_order_book_deltas(table, &instrument, replay_clock)?;
     let delta_count = deltas.len();
 
     ensure_clean_catalog_root(catalog_root)?;
@@ -1401,6 +1486,121 @@ fn canonical_row_to_quote_tick(
         ts_event,
         ts_init,
     ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct QuoteValueSemantics {
+    instrument_id: String,
+    bid: Decimal,
+    ask: Decimal,
+    bid_size: Decimal,
+    ask_size: Decimal,
+    ts_event: u64,
+}
+
+fn canonical_quote_value_semantics(
+    row: &CanonicalQuoteRow,
+    expected_instrument_id: &str,
+) -> Result<QuoteValueSemantics> {
+    ensure!(
+        row.nt_instrument_id.as_deref() == Some(expected_instrument_id),
+        "canonical quote instrument does not match projected {expected_instrument_id}"
+    );
+    let decimal = |label: &str, value: &str| {
+        Decimal::from_str(value).with_context(|| format!("canonical {label} {value:?}"))
+    };
+    let label = format!("quote {}", row.event_time);
+    Ok(QuoteValueSemantics {
+        instrument_id: expected_instrument_id.to_string(),
+        bid: decimal("bid", &row.bid)?,
+        ask: decimal("ask", &row.ask)?,
+        bid_size: decimal("bid_size", &row.bid_size)?,
+        ask_size: decimal("ask_size", &row.ask_size)?,
+        ts_event: ts_event_nanos(row.event_time, &label)?.as_u64(),
+    })
+}
+
+fn quote_value_semantics(quote: &QuoteTick) -> QuoteValueSemantics {
+    QuoteValueSemantics {
+        instrument_id: quote.instrument_id.to_string(),
+        bid: quote.bid_price.as_decimal(),
+        ask: quote.ask_price.as_decimal(),
+        bid_size: quote.bid_size.as_decimal(),
+        ask_size: quote.ask_size.as_decimal(),
+        ts_event: quote.ts_event.as_u64(),
+    }
+}
+
+/// Compare one NT quote with one canonical quote by numeric value and source
+/// event identity. Display precision is intentionally not part of the contract.
+pub(crate) fn ensure_quote_value_matches_canonical(
+    quote: &QuoteTick,
+    row: &CanonicalQuoteRow,
+    expected_instrument_id: &str,
+) -> Result<()> {
+    let actual = quote_value_semantics(quote);
+    let expected = canonical_quote_value_semantics(row, expected_instrument_id)?;
+    ensure!(
+        actual == expected,
+        "NT quote semantics {actual:?} do not match canonical {expected:?}"
+    );
+    Ok(())
+}
+
+/// Prove quote catalog read-back against canonical rows under the selected
+/// ordering contract.
+pub(crate) fn assert_quote_catalog_read_back_matches(
+    read_back: &[QuoteTick],
+    table: &CanonicalQuotesTable,
+    expected_instrument_id: &str,
+    order: QuoteCatalogReadBackOrder,
+) -> Result<()> {
+    ensure!(
+        read_back.len() == table.rows.len(),
+        "quote catalog read-back count {} does not match canonical rows {}",
+        read_back.len(),
+        table.rows.len()
+    );
+    match order {
+        QuoteCatalogReadBackOrder::Encounter => {
+            for (index, (quote, row)) in read_back.iter().zip(table.rows.iter()).enumerate() {
+                ensure_quote_value_matches_canonical(quote, row, expected_instrument_id)
+                    .with_context(|| format!("quote catalog read-back row {index}"))?;
+                let label = format!("quote {}", row.event_time);
+                let expected_ts_init =
+                    ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64();
+                ensure!(
+                    quote.ts_init.as_u64() == expected_ts_init,
+                    "quote read-back {index} ts_init {} does not match canonical {expected_ts_init}",
+                    quote.ts_init.as_u64()
+                );
+            }
+        }
+        QuoteCatalogReadBackOrder::OrderIndependent => {
+            let mut actual = read_back
+                .iter()
+                .map(|quote| (quote_value_semantics(quote), quote.ts_init.as_u64()))
+                .collect::<Vec<_>>();
+            let mut expected = table
+                .rows
+                .iter()
+                .map(|row| {
+                    let label = format!("quote {}", row.event_time);
+                    Ok((
+                        canonical_quote_value_semantics(row, expected_instrument_id)?,
+                        ts_init_nanos(row.availability_time, row.capture_time, &label)?.as_u64(),
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            actual.sort();
+            expected.sort();
+            ensure!(
+                actual == expected,
+                "quote catalog read-back semantic multiset does not match canonical rows"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Project a canonical top-of-book quote table into a NautilusTrader
@@ -4234,6 +4434,42 @@ max_notional = "200000"
                 "ts_init must equal capture_time (the receipt clock), not event_time"
             );
         }
+    }
+
+    #[test]
+    fn seeded_audit_quote_read_back_preserves_equal_timestamp_multiset() {
+        let mut table = canonical_quotes_table();
+        let event_time = table.rows[0].event_time;
+        let capture_time = table.rows[0].capture_time;
+        for row in &mut table.rows {
+            row.event_time = event_time;
+            row.capture_time = capture_time;
+            row.availability_time = Some(event_time);
+        }
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        project_canonical_quotes_to_catalog(&table, &spec(), dir.path()).expect("project");
+        let mut loaded = read_back_quotes(dir.path(), "BNBUSDC.BYBIT").expect("read back");
+        if loaded[0].bid_price.as_decimal() == Decimal::from_str(&table.rows[0].bid).unwrap() {
+            loaded.reverse();
+        }
+
+        assert!(
+            assert_quote_catalog_read_back_matches(
+                &loaded,
+                &table,
+                "BNBUSDC.BYBIT",
+                QuoteCatalogReadBackOrder::Encounter,
+            )
+            .is_err(),
+            "encounter-order verification must expose the forced tie reordering"
+        );
+        assert_quote_catalog_read_back_matches(
+            &loaded,
+            &table,
+            "BNBUSDC.BYBIT",
+            QuoteCatalogReadBackOrder::OrderIndependent,
+        )
+        .expect("seeded audit verification must preserve the equal-timestamp multiset");
     }
 
     #[test]

@@ -19,8 +19,9 @@ use backtesting_vertical_slice::{
     },
     canonical_trades::TradesPartition,
     catalog_projection::{
-        BinaryOptionInstrumentKind, BinaryOptionInstrumentSpec, SpotInstrumentSpec,
-        project_canonical_order_book_deltas_to_catalog, read_back_order_book_deltas,
+        BinaryOptionInstrumentKind, BinaryOptionInstrumentSpec, DeltaReplayClock,
+        SpotInstrumentSpec, project_canonical_order_book_deltas_to_catalog,
+        read_back_order_book_deltas,
     },
     source_proof::SourceProofFidelityClass,
 };
@@ -213,8 +214,13 @@ fn deltas_round_trip_through_nt_catalog() {
     let table = snapshot_then_delta_table();
     let dir = tempfile::TempDir::new().expect("temp dir");
 
-    let projection = project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
-        .expect("project");
+    let projection = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir.path(),
+    )
+    .expect("project");
     assert_eq!(projection.trade_count, table.rows.len());
     assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
     assert_eq!(
@@ -308,8 +314,13 @@ fn consecutive_empty_snapshots_preserve_later_level_precision() {
     let table = table_with_rows(rows);
     let dir = tempfile::TempDir::new().expect("temp dir");
 
-    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
-        .expect("project consecutive empty snapshots");
+    project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir.path(),
+    )
+    .expect("project consecutive empty snapshots");
     let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID)
         .expect("read consecutive empty snapshots back");
 
@@ -337,9 +348,13 @@ fn deltas_round_trip_through_binary_option_spec() {
     let table = snapshot_then_delta_table();
     let dir = tempfile::TempDir::new().expect("temp dir");
 
-    let projection =
-        project_canonical_order_book_deltas_to_catalog(&table, &binary_option_spec(), dir.path())
-            .expect("project via binary option spec");
+    let projection = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &binary_option_spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir.path(),
+    )
+    .expect("project via binary option spec");
     assert_eq!(projection.trade_count, table.rows.len());
     assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
     assert!(!projection.catalog_hash.is_empty());
@@ -425,7 +440,13 @@ fn zero_size_delete_round_trips_through_nt_catalog() {
     table.validate().expect("zero-size DELETE table validates");
 
     let dir = tempfile::TempDir::new().expect("temp dir");
-    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path()).expect("project");
+    project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir.path(),
+    )
+    .expect("project");
 
     let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     assert_eq!(loaded.len(), 3);
@@ -457,7 +478,13 @@ fn zero_size_delete_round_trips_through_nt_catalog() {
 fn snapshot_expands_to_clear_then_adds_with_f_last() {
     let table = snapshot_then_delta_table();
     let dir = tempfile::TempDir::new().expect("temp dir");
-    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path()).expect("project");
+    project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir.path(),
+    )
+    .expect("project");
     let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
 
     // The first delta is the snapshot Clear; the next two are Adds.
@@ -514,8 +541,13 @@ fn replay_seed_precedes_same_timestamp_selected_event_after_catalog_round_trip()
         ),
     ]);
     let dir = tempfile::TempDir::new().expect("temp dir");
-    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
-        .expect("project replay seed and selected event");
+    project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir.path(),
+    )
+    .expect("project replay seed and selected event");
 
     let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     assert_eq!(
@@ -579,8 +611,13 @@ fn empty_book_snapshot_projects_to_single_clear_with_f_last() {
         flags,
     )]);
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let projection = project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
-        .expect("project");
+    let projection = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir.path(),
+    )
+    .expect("project");
     assert_eq!(projection.trade_count, 1);
 
     let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
@@ -605,8 +642,13 @@ fn projection_refuses_dirty_catalog_root() {
     let table = snapshot_then_delta_table();
     let dir = tempfile::TempDir::new().expect("temp dir");
     std::fs::write(dir.path().join("stale.parquet"), b"stale").unwrap();
-    let err = project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
-        .expect_err("dirty catalog root must be refused");
+    let err = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir.path(),
+    )
+    .expect_err("dirty catalog root must be refused");
     assert!(err.to_string().contains("not empty"), "{err}");
 }
 
@@ -638,8 +680,13 @@ fn delta_precision_widens_when_data_finer_than_tick() {
         ),
     ]);
     let dir = tempfile::TempDir::new().expect("temp dir");
-    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
-        .expect("projection widens precision instead of rejecting accepted data");
+    project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir.path(),
+    )
+    .expect("projection widens precision instead of rejecting accepted data");
 
     let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     // Read-back preserves the exact archived values at the widened precision.
@@ -658,8 +705,20 @@ fn delta_catalog_hash_is_stable() {
     let table = snapshot_then_delta_table();
     let dir_a = tempfile::TempDir::new().unwrap();
     let dir_b = tempfile::TempDir::new().unwrap();
-    let a = project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir_a.path()).unwrap();
-    let b = project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir_b.path()).unwrap();
+    let a = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir_a.path(),
+    )
+    .unwrap();
+    let b = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir_b.path(),
+    )
+    .unwrap();
     assert_eq!(
         a.catalog_hash, b.catalog_hash,
         "same data must hash identically regardless of root"
@@ -674,10 +733,20 @@ fn delta_catalog_hash_changes_with_content() {
     table_b.rows[1].price = "0.42".to_string();
     let dir_a = tempfile::TempDir::new().unwrap();
     let dir_b = tempfile::TempDir::new().unwrap();
-    let a =
-        project_canonical_order_book_deltas_to_catalog(&table_a, &spec(), dir_a.path()).unwrap();
-    let b =
-        project_canonical_order_book_deltas_to_catalog(&table_b, &spec(), dir_b.path()).unwrap();
+    let a = project_canonical_order_book_deltas_to_catalog(
+        &table_a,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir_a.path(),
+    )
+    .unwrap();
+    let b = project_canonical_order_book_deltas_to_catalog(
+        &table_b,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir_b.path(),
+    )
+    .unwrap();
     assert_ne!(
         a.catalog_hash, b.catalog_hash,
         "different delta data must change the catalog hash"

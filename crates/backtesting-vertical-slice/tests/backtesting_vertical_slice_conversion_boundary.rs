@@ -6,8 +6,11 @@ use std::os::unix::fs::symlink;
 use backtesting_vertical_slice::conversion_boundary::{
     CATALOG_METADATA_FILE, CONVERSION_CHECKPOINT_FILE, CONVERSION_MANIFEST_FILE,
     ConversionCatalogMetadata, ConversionCheckpoint, ConversionCheckpointStage,
-    ConversionFingerprint, ConversionManifest, ConversionOutputState, inspect_conversion_output,
-    write_completed_conversion_artifacts, write_conversion_checkpoint,
+    ConversionFingerprint, ConversionManifest, ConversionOutputState, SeededL2QuotePlanV1,
+    inspect_conversion_output, write_completed_conversion_artifacts, write_conversion_checkpoint,
+};
+use backtesting_vertical_slice::seeded_level_set_deltas::{
+    SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY, SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION,
 };
 
 fn fingerprint() -> ConversionFingerprint {
@@ -20,6 +23,82 @@ fn fingerprint() -> ConversionFingerprint {
         converter_version: "1".to_string(),
         converter_config_hash: "converterconfigabc".to_string(),
     }
+}
+
+#[test]
+fn seeded_l2_quote_plan_is_required_only_for_the_registered_seeded_converter() {
+    let mut seeded_fingerprint = fingerprint();
+    seeded_fingerprint.converter_identity = SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY.to_string();
+    seeded_fingerprint.converter_version = SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION.to_string();
+    let checkpoint = completed_checkpoint(&seeded_fingerprint);
+    let checkpoint_hash = checkpoint.content_hash().unwrap();
+    let base = ConversionManifest::completed(
+        seeded_fingerprint.clone(),
+        "market_data.v1",
+        "OrderBookDelta",
+        "BASEQUOTE.TESTVENUE",
+        3,
+        "s3://bolt-parquet/nt-research-analytics/backtests/run/nt-catalog",
+        "catalog-hash",
+        checkpoint_hash.clone(),
+        "2026-06-06T00:00:00Z",
+    );
+    let plan = SeededL2QuotePlanV1 {
+        synthetic_seed_batches: 1,
+        selected_source_events: 2,
+        replay_start_time: 10,
+        replay_end_time: 20,
+    };
+    let manifest = base
+        .clone()
+        .with_seeded_l2_quote_plan(plan.clone())
+        .expect("valid causal quote plan");
+
+    assert_eq!(manifest.seeded_l2_quote_plan, Some(plan.clone()));
+    assert_ne!(
+        manifest.content_hash().unwrap(),
+        base.content_hash().unwrap()
+    );
+    manifest
+        .validate_for(&seeded_fingerprint, &checkpoint_hash)
+        .expect("registered seeded conversion accepts its bound replay plan");
+
+    let missing = base
+        .validate_for(&seeded_fingerprint, &checkpoint_hash)
+        .expect_err("registered seeded conversion cannot omit its replay plan");
+    assert!(
+        missing.to_string().contains("causal quote plan"),
+        "{missing}"
+    );
+
+    let unrelated_fingerprint = fingerprint();
+    let unrelated_checkpoint = completed_checkpoint(&unrelated_fingerprint);
+    let unrelated = completed_manifest(
+        &unrelated_fingerprint,
+        unrelated_checkpoint.content_hash().unwrap(),
+    );
+    let unrelated_error = unrelated
+        .with_seeded_l2_quote_plan(plan.clone())
+        .expect_err("unrelated converters cannot carry seeded replay authority");
+    assert!(
+        unrelated_error
+            .to_string()
+            .contains("registered seeded converter"),
+        "{unrelated_error}"
+    );
+
+    let error = base
+        .with_seeded_l2_quote_plan(SeededL2QuotePlanV1 {
+            synthetic_seed_batches: 2,
+            selected_source_events: 2,
+            replay_start_time: 10,
+            replay_end_time: 20,
+        })
+        .expect_err("only one leading synthetic seed is possible");
+    assert!(
+        error.to_string().contains("synthetic_seed_batches"),
+        "{error}"
+    );
 }
 
 fn completed_checkpoint(fingerprint: &ConversionFingerprint) -> ConversionCheckpoint {

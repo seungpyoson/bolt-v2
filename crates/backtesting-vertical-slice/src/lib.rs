@@ -71,6 +71,7 @@ pub mod research_reader;
 pub mod result_contract;
 pub mod run_manifest;
 pub mod runner;
+pub mod seeded_l2_quote_bridge;
 pub mod seeded_level_set_deltas;
 pub mod selected_source_slice;
 pub mod source_archive_discovery_seed;

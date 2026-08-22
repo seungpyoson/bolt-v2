@@ -667,7 +667,8 @@ fn jsonl_snapshot_deltas_run_spec_end_to_end() {
 #[test]
 fn seeded_level_set_run_spec_emits_full_depth_and_derived_bbo_through_existing_catalogs() {
     let jsonl = "{\"instrument\":\"BASEQUOTE\",\"action\":\"snapshot\",\"time\":1700000000000,\"bids\":[[\"0.49\",\"10\",\"2\"],[\"0.48\",\"7\",\"1\"]],\"asks\":[[\"0.51\",\"12\",\"3\"]]}\n\
-        {\"instrument\":\"BASEQUOTE\",\"action\":\"update\",\"time\":1700000060000,\"bids\":[[\"0.49\",\"0\",\"0\"],[\"0.50\",\"11\",\"2\"]],\"asks\":[[\"0.51\",\"13\",\"3\"]]}\n";
+        {\"instrument\":\"BASEQUOTE\",\"action\":\"update\",\"time\":1700000000000,\"bids\":[[\"0.50\",\"9\",\"1\"]],\"asks\":[]}\n\
+        {\"instrument\":\"BASEQUOTE\",\"action\":\"update\",\"time\":1700000000000,\"bids\":[[\"0.48\",\"8\",\"1\"]],\"asks\":[]}\n";
     let object_bytes = jsonl.as_bytes();
     let (proof, object) = accepted_proof_and_object(object_bytes);
     let temp = tempfile::TempDir::new().expect("temp dir");
@@ -680,10 +681,7 @@ fn seeded_level_set_run_spec_emits_full_depth_and_derived_bbo_through_existing_c
     let manifest = manifest(
         "operator-binding-seeded-level-set",
         NT_INSTRUMENT_ID,
-        vec![
-            delta_catalog_input(NT_INSTRUMENT_ID),
-            quote_catalog_input(NT_INSTRUMENT_ID),
-        ],
+        vec![delta_catalog_input(NT_INSTRUMENT_ID)],
     );
     let mut spec = run_spec(
         registry_path,
@@ -717,8 +715,11 @@ fn seeded_level_set_run_spec_emits_full_depth_and_derived_bbo_through_existing_c
         .expect("derived BBO table");
     assert_eq!(deltas.table_family, "order_book_snapshot_deltas");
     assert_eq!(quotes.table_family, "quotes");
-    assert_eq!(deltas.rows, 7);
-    assert_eq!(quotes.rows, 2);
+    assert_eq!(deltas.rows, 6);
+    assert_eq!(
+        quotes.rows, 3,
+        "equal-time BBO changes and a later deep-only update must retain source-event quote cadence"
+    );
     assert!(deltas.canonical_path.is_file());
     assert!(quotes.canonical_path.is_file());
     assert_eq!(
@@ -729,9 +730,87 @@ fn seeded_level_set_run_spec_emits_full_depth_and_derived_bbo_through_existing_c
         artifacts.contract.catalog_data_types,
         ["OrderBookDelta".to_string()]
     );
+    assert_eq!(
+        artifacts.conversion_manifest.seeded_l2_quote_plan,
+        Some(
+            backtesting_vertical_slice::conversion_boundary::SeededL2QuotePlanV1 {
+                synthetic_seed_batches: 0,
+                selected_source_events: 3,
+                replay_start_time: 1_700_000_000_000_000_000,
+                replay_end_time: 1_700_000_000_000_000_005,
+            }
+        )
+    );
+    let bridge = artifacts
+        .contract
+        .seeded_l2_quote_bridge_report
+        .as_ref()
+        .expect("seeded replay must prove strategy-visible causal quotes");
+    assert_eq!(bridge.instruments.len(), 1);
+    assert_eq!(bridge.instruments[0].observed_source_events, 3);
+    assert_eq!(bridge.instruments[0].emitted_quotes, 3);
     assert!(artifacts.conversion_tables_path.is_some());
 
     assert_idempotent_rerun(&spec, object_bytes, &output_dir);
+}
+
+#[test]
+fn seeded_level_set_replay_suppresses_only_the_compiler_bound_seed_batch() {
+    let jsonl = "{\"instrument\":\"BASEQUOTE\",\"action\":\"snapshot\",\"time\":1700000000000,\"bids\":[[\"0.49\",\"10\",\"2\"]],\"asks\":[[\"0.51\",\"12\",\"3\"]]}\n\
+        {\"instrument\":\"BASEQUOTE\",\"action\":\"update\",\"time\":1700000060000,\"bids\":[[\"0.49\",\"11\",\"2\"]],\"asks\":[]}\n";
+    let object_bytes = jsonl.as_bytes();
+    let (proof, object) = accepted_proof_and_object(object_bytes);
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let registry_path = write_registry(temp.path());
+    let mut converter = converter(
+        &SEEDED_LEVEL_SET_DELTAS_ADAPTER,
+        seeded_jsonl_payload(object_bytes.len() as u64),
+    );
+    converter.seeded_level_set = Some(seeded_level_set_mapping());
+    let mut manifest = manifest(
+        "operator-binding-seeded-level-set-seed",
+        NT_INSTRUMENT_ID,
+        vec![delta_catalog_input(NT_INSTRUMENT_ID)],
+    );
+    manifest.start_time = Some(1_700_000_060_000_000_000);
+    manifest.end_time = Some(1_700_000_060_000_000_000);
+    let mut spec = run_spec(
+        registry_path,
+        proof,
+        object,
+        RunSpecInstrumentSpecs::Single(Box::new(CatalogInstrumentSpec::Spot(spot_spec(
+            NT_INSTRUMENT_ID,
+            INSTRUMENT_ID,
+        )))),
+        RunSpecInstrumentIdentities::Single(identity(INSTRUMENT_ID, NT_INSTRUMENT_ID)),
+        converter,
+        manifest,
+    );
+    spec.selector_provenance = l2_provenance();
+
+    let artifacts = assert_multi(
+        run_operator_from_run_spec(&spec, object_bytes, &temp.path().join("out"))
+            .expect("operator run"),
+    );
+    assert_eq!(
+        artifacts.conversion_manifest.seeded_l2_quote_plan,
+        Some(
+            backtesting_vertical_slice::conversion_boundary::SeededL2QuotePlanV1 {
+                synthetic_seed_batches: 1,
+                selected_source_events: 1,
+                replay_start_time: 1_700_000_060_000_000_000,
+                replay_end_time: 1_700_000_060_000_000_003,
+            }
+        )
+    );
+    let bridge = artifacts
+        .contract
+        .seeded_l2_quote_bridge_report
+        .as_ref()
+        .expect("seeded replay requires a causal bridge proof");
+    assert_eq!(bridge.instruments[0].observed_event_batches, 2);
+    assert_eq!(bridge.instruments[0].observed_source_events, 1);
+    assert_eq!(bridge.instruments[0].emitted_quotes, 1);
 }
 
 #[test]
@@ -749,10 +828,7 @@ fn seeded_level_set_completed_reuse_rejects_tampered_canonical_parquet() {
     let manifest = manifest(
         "operator-binding-seeded-level-set-canonical-tamper",
         NT_INSTRUMENT_ID,
-        vec![
-            delta_catalog_input(NT_INSTRUMENT_ID),
-            quote_catalog_input(NT_INSTRUMENT_ID),
-        ],
+        vec![delta_catalog_input(NT_INSTRUMENT_ID)],
     );
     let mut spec = run_spec(
         registry_path,
@@ -801,10 +877,7 @@ fn seeded_level_set_one_sided_window_publishes_primary_deltas_without_quotes() {
     let manifest = manifest(
         "operator-binding-seeded-level-set-one-sided",
         NT_INSTRUMENT_ID,
-        vec![
-            delta_catalog_input(NT_INSTRUMENT_ID),
-            quote_catalog_input(NT_INSTRUMENT_ID),
-        ],
+        vec![delta_catalog_input(NT_INSTRUMENT_ID)],
     );
     let mut spec = run_spec(
         registry_path,
@@ -820,17 +893,19 @@ fn seeded_level_set_one_sided_window_publishes_primary_deltas_without_quotes() {
     );
     spec.selector_provenance = l2_provenance();
 
-    let mut missing_quote_declaration = spec.clone();
-    missing_quote_declaration.manifest.catalog_inputs.pop();
+    let mut dual_quote_authority = spec.clone();
+    dual_quote_authority
+        .manifest
+        .catalog_inputs
+        .push(quote_catalog_input(NT_INSTRUMENT_ID));
     let invalid_output = temp.path().join("invalid-out");
-    let error =
-        run_operator_from_run_spec(&missing_quote_declaration, object_bytes, &invalid_output)
-            .err()
-            .expect("seeded manifest without its conditional QuoteTick declaration must fail");
+    let error = run_operator_from_run_spec(&dual_quote_authority, object_bytes, &invalid_output)
+        .err()
+        .expect("seeded manifest cannot replay its derived audit QuoteTick");
     assert!(
         error
             .to_string()
-            .contains("must declare exactly one conditional QuoteTick input"),
+            .contains("must not declare its derived audit QuoteTick as a replay input"),
         "{error:#}"
     );
     assert!(
@@ -849,6 +924,14 @@ fn seeded_level_set_one_sided_window_publishes_primary_deltas_without_quotes() {
         artifacts.contract.fidelity_class,
         SourceProofFidelityClass::L2Replay
     );
+    let bridge = artifacts
+        .contract
+        .seeded_l2_quote_bridge_report
+        .as_ref()
+        .expect("one-sided seeded replay still requires a causal bridge proof");
+    assert_eq!(bridge.instruments.len(), 1);
+    assert_eq!(bridge.instruments[0].observed_source_events, 2);
+    assert_eq!(bridge.instruments[0].emitted_quotes, 0);
     assert!(artifacts.conversion_tables_path.is_none());
     assert_idempotent_rerun(&spec, object_bytes, &output_dir);
 }
@@ -868,10 +951,7 @@ fn seeded_level_set_refuses_completion_when_projected_bytes_exceed_cap() {
     let manifest = manifest(
         "operator-binding-seeded-published-cap",
         NT_INSTRUMENT_ID,
-        vec![
-            delta_catalog_input(NT_INSTRUMENT_ID),
-            quote_catalog_input(NT_INSTRUMENT_ID),
-        ],
+        vec![delta_catalog_input(NT_INSTRUMENT_ID)],
     );
     let mut spec = run_spec(
         registry_path,
@@ -945,10 +1025,7 @@ fn seeded_level_set_malformed_tail_publishes_no_catalog() {
     let mut manifest = manifest(
         "operator-binding-seeded-level-set-malformed-tail",
         NT_INSTRUMENT_ID,
-        vec![
-            delta_catalog_input(NT_INSTRUMENT_ID),
-            quote_catalog_input(NT_INSTRUMENT_ID),
-        ],
+        vec![delta_catalog_input(NT_INSTRUMENT_ID)],
     );
     manifest.start_time = Some(1_700_000_000_000_000_000);
     manifest.end_time = manifest.start_time;

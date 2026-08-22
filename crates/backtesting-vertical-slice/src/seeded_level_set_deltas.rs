@@ -35,10 +35,10 @@ use super::{
 
 /// Registered transform for snapshot-seeded absolute L2 level replacement.
 pub const SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY: &str =
-    "snapshot-seeded-level-set-to-canonical-l2.v1";
+    "snapshot-seeded-level-set-to-canonical-l2.v2";
 
 /// Version of the registered seeded level-set transform.
-pub const SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION: &str = "1";
+pub const SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION: &str = "2";
 
 /// Source-event sequence semantics selected by converter TOML.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +106,7 @@ pub struct SeededLevelSetWindow {
     pub deltas: CanonicalOrderBookDeltasTable,
     pub quotes: Option<CanonicalQuotesTable>,
     pub scan: JsonlScanStats,
+    pub synthetic_seed_batches: u8,
     pub selected_events: u64,
     pub peak_active_levels_per_side: usize,
     pub emitted_row_bytes: u64,
@@ -391,6 +392,7 @@ struct WindowCompiler<'a> {
     book: OrderBook,
     seeded: bool,
     previous_event_time: Option<i64>,
+    synthetic_seed_batches: u8,
     selected_events: u64,
     peak_active_levels_per_side: usize,
     emitted_bytes: u64,
@@ -413,6 +415,7 @@ impl<'a> WindowCompiler<'a> {
             provenance,
             seeded: false,
             previous_event_time: None,
+            synthetic_seed_batches: 0,
             selected_events: 0,
             peak_active_levels_per_side: 0,
             emitted_bytes: 0,
@@ -443,6 +446,7 @@ impl<'a> WindowCompiler<'a> {
         if selected && self.delta_rows.is_empty() && event.action == SourceEventAction::Update {
             let seed = self.seed_rows(event.event_time)?;
             self.append_delta_event(seed)?;
+            self.synthetic_seed_batches = 1;
         }
 
         let event_rows = source_event_rows(&self.provenance, &event)?;
@@ -637,6 +641,7 @@ impl<'a> WindowCompiler<'a> {
             deltas,
             quotes,
             scan,
+            synthetic_seed_batches: self.synthetic_seed_batches,
             selected_events: self.selected_events,
             peak_active_levels_per_side: self.peak_active_levels_per_side,
             emitted_row_bytes: self.emitted_bytes,
@@ -1012,7 +1017,7 @@ mod tests {
     use crate::{
         canonical_trades::{JsonlStreamConfig, RawPayloadContainer},
         catalog_projection::{
-            CatalogInstrumentSpec, SpotInstrumentSpec, build_catalog_instrument,
+            CatalogInstrumentSpec, DeltaReplayClock, SpotInstrumentSpec, build_catalog_instrument,
             canonical_rows_to_order_book_deltas, project_canonical_order_book_deltas_to_catalog,
         },
         hashing::sha256_hex,
@@ -1027,7 +1032,7 @@ mod tests {
     fn seeded_level_set_transform_hash_is_stable() {
         assert_eq!(
             seeded_level_set_transform_hash(),
-            "f729f684aa764f1e7b70753b4a38f54080ac0a0631705f38052903fe0b122272",
+            "7f3f46ac1edf01119c68c2afe903721713b922f0ea04535b01177b0cfd6927fc",
             "seeded level-set transform identity changed; bump its version deliberately"
         );
     }
@@ -1206,8 +1211,12 @@ mod tests {
                 .iter()
                 .all(|row| row.source_sequence.is_none())
         );
-        let native = canonical_rows_to_order_book_deltas(&window.deltas, &instrument())
-            .expect("project canonical rows to NT deltas");
+        let native = canonical_rows_to_order_book_deltas(
+            &window.deltas,
+            &instrument(),
+            DeltaReplayClock::SourceAvailability,
+        )
+        .expect("project canonical rows to NT deltas");
         assert!(native.iter().all(|delta| delta.sequence == 0));
         assert_eq!(quotes(&window).rows.len(), 2);
         assert_eq!(quotes(&window).rows[1].bid, "99");
@@ -1215,6 +1224,52 @@ mod tests {
         assert_eq!(
             quotes(&window).rows[1].availability_time,
             Some((BASE_MS + 1) * 1_000_000)
+        );
+    }
+
+    #[test]
+    fn equal_time_events_preserve_the_source_availability_timestamp() {
+        let input = format!(
+            "{{\"instId\":\"BTC-USDT\",\"action\":\"snapshot\",\"ts\":\"{BASE_MS}\",\"bids\":[[\"100\",\"1\",\"1\"],[\"99\",\"2\",\"1\"]],\"asks\":[[\"101\",\"3\",\"1\"],[\"102\",\"4\",\"1\"]]}}\n{{\"instId\":\"BTC-USDT\",\"action\":\"update\",\"ts\":\"{BASE_MS}\",\"bids\":[[\"100\",\"5\",\"1\"]],\"asks\":[[\"101\",\"6\",\"1\"]]}}\n"
+        );
+        let window = compile(
+            input.as_bytes(),
+            &okx_mapping(),
+            SeededLevelSetWindowBounds {
+                start_time: None,
+                end_time: None,
+            },
+        )
+        .expect("compile equal-source-time level-set events");
+
+        assert!(
+            window
+                .deltas
+                .rows
+                .iter()
+                .all(|row| { row.event_time == BASE_NS && row.availability_time == Some(BASE_NS) }),
+            "canonical timestamps must retain source semantics"
+        );
+        assert!(
+            quotes(&window)
+                .rows
+                .iter()
+                .all(|row| { row.event_time == BASE_NS && row.availability_time == Some(BASE_NS) }),
+            "derived audit quotes must retain source semantics"
+        );
+        let replay = canonical_rows_to_order_book_deltas(
+            &window.deltas,
+            &instrument(),
+            DeltaReplayClock::StrictEncounterOrder,
+        )
+        .expect("derive strict NT replay clock");
+        let replay_times = replay
+            .iter()
+            .map(|delta| delta.ts_init.as_u64())
+            .collect::<Vec<_>>();
+        assert!(
+            replay_times.windows(2).all(|pair| pair[0] < pair[1]),
+            "transport replay order must be strict: {replay_times:?}"
         );
     }
 
@@ -1244,8 +1299,12 @@ mod tests {
                 .iter()
                 .all(|row| row.source_sequence.as_deref() == Some("11"))
         );
-        let native = canonical_rows_to_order_book_deltas(&window.deltas, &instrument())
-            .expect("project canonical rows to NT deltas");
+        let native = canonical_rows_to_order_book_deltas(
+            &window.deltas,
+            &instrument(),
+            DeltaReplayClock::SourceAvailability,
+        )
+        .expect("project canonical rows to NT deltas");
         assert!(native[..3].iter().all(|delta| delta.sequence == 10));
         assert!(native[3..].iter().all(|delta| delta.sequence == 11));
     }
@@ -1328,6 +1387,7 @@ mod tests {
         let projection = project_canonical_order_book_deltas_to_catalog(
             &window.deltas,
             &spot_spec(),
+            DeltaReplayClock::StrictEncounterOrder,
             catalog.path(),
         )
         .expect("consecutive empty snapshots survive NT catalog projection and read-back");
@@ -1355,6 +1415,8 @@ mod tests {
             window.scan.records, 3,
             "records after the window are still scanned"
         );
+        assert_eq!(window.synthetic_seed_batches, 1);
+        assert_eq!(window.selected_events, 1);
         assert_eq!(quotes(&window).rows.len(), 1, "derived seed emits no quote");
         assert_eq!(quotes(&window).rows[0].bid_size, "3");
         assert_eq!(window.deltas.rows[0].action, "CLEAR");
@@ -1533,6 +1595,7 @@ mod tests {
         let projection = project_canonical_order_book_deltas_to_catalog(
             &window.deltas,
             &spot_spec(),
+            DeltaReplayClock::StrictEncounterOrder,
             catalog.path(),
         )
         .expect("project bounded selected window");

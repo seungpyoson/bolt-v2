@@ -39,9 +39,9 @@ use backtesting_vertical_slice::{
     },
     canonical_trades::{CanonicalInstrumentIdentity, CanonicalTradesTable, CsvTimestampUnit},
     catalog_projection::{
-        BinaryOptionInstrumentKind, BinaryOptionInstrumentSpec, SpotInstrumentSpec,
-        project_canonical_order_book_deltas_to_catalog, project_canonical_trades_to_catalog,
-        read_back_order_book_deltas, read_back_trade_ticks,
+        BinaryOptionInstrumentKind, BinaryOptionInstrumentSpec, DeltaReplayClock,
+        SpotInstrumentSpec, project_canonical_order_book_deltas_to_catalog,
+        project_canonical_trades_to_catalog, read_back_order_book_deltas, read_back_trade_ticks,
     },
     source_proof::{
         AcceptanceMode, AcceptanceScope, AcceptedDataset, EvidenceState, FixtureType,
@@ -412,8 +412,13 @@ fn event_stream_deltas_round_trip_to_catalog() {
     assert_eq!(table.fidelity_class, SourceProofFidelityClass::L2Replay);
 
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let projection = project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path())
-        .expect("project deltas");
+    let projection = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir.path(),
+    )
+    .expect("project deltas");
     assert_eq!(projection.trade_count, table.rows.len());
     assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
     assert_eq!(
@@ -469,9 +474,13 @@ fn event_stream_deltas_round_trip_through_binary_option_spec() {
     assert_eq!(table.fidelity_class, SourceProofFidelityClass::L2Replay);
 
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let projection =
-        project_canonical_order_book_deltas_to_catalog(&table, &binary_option_spec(), dir.path())
-            .expect("project deltas via binary option spec");
+    let projection = project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &binary_option_spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir.path(),
+    )
+    .expect("project deltas via binary option spec");
     assert_eq!(projection.trade_count, table.rows.len());
     assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
 
@@ -509,7 +518,13 @@ fn event_stream_deltas_round_trip_through_binary_option_spec() {
 fn event_stream_expansion_shape_survives_round_trip() {
     let (_accepted, table, _trades) = normalized();
     let dir = tempfile::TempDir::new().expect("temp dir");
-    project_canonical_order_book_deltas_to_catalog(&table, &spec(), dir.path()).expect("project");
+    project_canonical_order_book_deltas_to_catalog(
+        &table,
+        &spec(),
+        DeltaReplayClock::SourceAvailability,
+        dir.path(),
+    )
+    .expect("project");
     let mut loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
     loaded.sort_by_key(|delta| delta.sequence);
 

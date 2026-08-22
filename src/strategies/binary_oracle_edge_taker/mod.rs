@@ -3863,8 +3863,11 @@ impl BinaryOracleEdgeTaker {
         edge: BinaryOutcomeEdgeResult,
         probe: &ExecutableEntryProbe,
         minimum_edge_bps: f64,
-    ) -> Option<f64> {
-        let instrument_id = self.instrument_id_for_side(selected_side)?;
+    ) -> std::result::Result<f64, EntryPricingBlockReason> {
+        let unavailable = || EntryPricingBlockReason::ExecutableEntryCostUnavailable(selected_side);
+        let instrument_id = self
+            .instrument_id_for_side(selected_side)
+            .ok_or_else(unavailable)?;
         let planned_fill_legs = probe
             .vwap
             .fill_legs
@@ -3875,14 +3878,18 @@ impl BinaryOracleEdgeTaker {
                     quantity: Decimal::from_f64(leg.quantity)?,
                 })
             })
-            .collect::<Option<Vec<_>>>()?;
-        let minimum_core_edge_ratio = Decimal::from_f64(minimum_edge_bps / BPS_DENOMINATOR)?;
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(unavailable)?;
+        let minimum_core_edge_ratio =
+            Decimal::from_f64(minimum_edge_bps / BPS_DENOMINATOR).ok_or_else(unavailable)?;
         let terminal_value_entry = BoltV3TerminalValueEntry::try_new(
-            Decimal::from_f64(edge.adjusted_probability)?,
+            Decimal::from_f64(edge.adjusted_probability).ok_or_else(unavailable)?,
             BoltV3TerminalValueEntryPolicy::MinimumCoreEdgeRatio(minimum_core_edge_ratio),
         )
-        .ok()?;
-        let requested_at_ns = now_ms.checked_mul(NANOS_PER_MILLI_U64)?;
+        .map_err(|_| unavailable())?;
+        let requested_at_ns = now_ms
+            .checked_mul(NANOS_PER_MILLI_U64)
+            .ok_or_else(unavailable)?;
         let sizing_quote = self
             .context
             .order_economics()
@@ -3894,12 +3901,19 @@ impl BinaryOracleEdgeTaker {
                 requested_at_ns,
                 decision_correlation_id: &self.config.strategy_id,
             })
-            .ok()?;
+            .map_err(|error| {
+                error
+                    .admission_block_reason()
+                    .map_or_else(unavailable, |reason| {
+                        EntryPricingBlockReason::EconomicsAdmissionRejected(selected_side, reason)
+                    })
+            })?;
         sizing_quote
             .net_edge()
             .core_edge_ratio
             .to_f64()
             .filter(|value| is_positive_finite(*value))
+            .ok_or_else(unavailable)
     }
 
     fn visible_book_notional_cap(&self, side: OutcomeSide) -> Option<f64> {
@@ -7334,14 +7348,18 @@ impl BinaryOracleEdgeTaker {
                 OutcomeSide::Up => evaluation.up_executable_edge,
                 OutcomeSide::Down => evaluation.down_executable_edge,
             };
-            let expected_ev_per_notional = selected_edge.and_then(|edge| {
+            let book_impact_cap_notional = self.visible_book_notional_cap(selected_side);
+            evaluation.book_impact_cap_notional = book_impact_cap_notional;
+            let unavailable =
+                || EntryPricingBlockReason::ExecutableEntryCostUnavailable(selected_side);
+            let expected_ev_per_notional = selected_edge.ok_or_else(unavailable).and_then(|edge| {
                 let probe = self
                     .executable_entry_probe_for_side(
                         selected_side,
                         order_side,
                         self.preliminary_edge_pricing_notional_for_side(selected_side),
                     )
-                    .ok()?;
+                    .map_err(|_| unavailable())?;
                 self.economics_adjusted_entry_edge_ratio(
                     now_ms,
                     selected_side,
@@ -7350,19 +7368,19 @@ impl BinaryOracleEdgeTaker {
                     pricing_inputs.theta_scaled_min_edge_bps,
                 )
             });
-            let book_impact_cap_notional = self.visible_book_notional_cap(selected_side);
-            evaluation.expected_ev_per_notional = expected_ev_per_notional;
-            evaluation.book_impact_cap_notional = book_impact_cap_notional;
-            if expected_ev_per_notional.is_none() {
-                evaluation.pricing_blocked_by.push(
-                    EntryPricingBlockReason::ExecutableEntryCostUnavailable(selected_side),
-                );
-                evaluation.selected_side = None;
-                return evaluation;
-            }
-            if let (Some(expected_ev_per_notional), Some(book_impact_cap_notional)) =
-                (expected_ev_per_notional, book_impact_cap_notional)
-            {
+            let expected_ev_per_notional = match expected_ev_per_notional {
+                Ok(value) => value,
+                Err(reason) => {
+                    evaluation.pricing_blocked_by.push(reason);
+                    evaluation.selected_side = None;
+                    return evaluation;
+                }
+            };
+            evaluation.expected_ev_per_notional = Some(expected_ev_per_notional);
+            if let (Some(expected_ev_per_notional), Some(book_impact_cap_notional)) = (
+                evaluation.expected_ev_per_notional,
+                book_impact_cap_notional,
+            ) {
                 evaluation.sized_notional = Some(choose_robust_size(
                     &self.robust_sizing_inputs(expected_ev_per_notional, book_impact_cap_notional),
                 ));
@@ -7431,22 +7449,22 @@ impl BinaryOracleEdgeTaker {
                         evaluation.expected_ev_per_notional = None;
                         return evaluation;
                     };
-                    let Some(sized_expected_ev_per_notional) = self
+                    let sized_expected_ev_per_notional = match self
                         .economics_adjusted_entry_edge_ratio(
                             now_ms,
                             selected_side,
                             sized_executable_edge,
                             &selected_sized_probe,
                             pricing_inputs.theta_scaled_min_edge_bps,
-                        )
-                    else {
-                        evaluation.pricing_blocked_by.push(
-                            EntryPricingBlockReason::ExecutableEntryCostUnavailable(selected_side),
-                        );
-                        evaluation.selected_side = None;
-                        evaluation.sized_notional = None;
-                        evaluation.expected_ev_per_notional = None;
-                        return evaluation;
+                        ) {
+                        Ok(value) => value,
+                        Err(reason) => {
+                            evaluation.pricing_blocked_by.push(reason);
+                            evaluation.selected_side = None;
+                            evaluation.sized_notional = None;
+                            evaluation.expected_ev_per_notional = None;
+                            return evaluation;
+                        }
                     };
                     evaluation.expected_ev_per_notional = Some(sized_expected_ev_per_notional);
                     let resized_notional = choose_robust_size(&self.robust_sizing_inputs(
@@ -7515,29 +7533,24 @@ impl BinaryOracleEdgeTaker {
                         // small first pass fills cheap, the EV jump saturates the
                         // resize to the full target, and the thin full-target edge
                         // would be traded at a size it cannot support.
-                        let final_expected_ev_per_notional = self
+                        let final_expected_ev_per_notional = match self
                             .economics_adjusted_entry_edge_ratio(
                                 now_ms,
                                 selected_side,
                                 resized_executable_edge,
                                 &resized_probe,
                                 pricing_inputs.theta_scaled_min_edge_bps,
-                            );
-                        if resized_executable_edge.trade_allowed
-                            && final_expected_ev_per_notional.is_none()
-                        {
-                            evaluation.pricing_blocked_by.push(
-                                EntryPricingBlockReason::ExecutableEntryCostUnavailable(
-                                    selected_side,
-                                ),
-                            );
-                            evaluation.selected_side = None;
-                            evaluation.sized_notional = None;
-                            evaluation.expected_ev_per_notional = None;
-                            return evaluation;
-                        }
-                        let final_expected_ev_per_notional =
-                            final_expected_ev_per_notional.unwrap_or_default();
+                            ) {
+                            Ok(value) => value,
+                            Err(reason) if resized_executable_edge.trade_allowed => {
+                                evaluation.pricing_blocked_by.push(reason);
+                                evaluation.selected_side = None;
+                                evaluation.sized_notional = None;
+                                evaluation.expected_ev_per_notional = None;
+                                return evaluation;
+                            }
+                            Err(_) => 0.0,
+                        };
                         let final_supported_notional =
                             choose_robust_size(&self.robust_sizing_inputs(
                                 final_expected_ev_per_notional,

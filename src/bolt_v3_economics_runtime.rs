@@ -1700,6 +1700,59 @@ pub enum EconomicsAdmissionError {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EconomicsAdmissionBlockReason {
+    MissingAuthoritativeSnapshot,
+    UnsupportedProductEconomics,
+    InvalidAuthoritativeSnapshot,
+    RequestScopeMismatch,
+    InvalidVenueQuote,
+    InvalidEconomics,
+    AuthorityBinding,
+    EdgeBasisAuthorityMismatch,
+    ReportingAuthorityMismatch,
+    AmbiguousProductSurface,
+    ExitVsHoldComparisonRequiresRiskReduction,
+    CoreEdgeBelowMinimum,
+}
+
+impl EconomicsAdmissionError {
+    pub const fn block_reason(&self) -> EconomicsAdmissionBlockReason {
+        match self {
+            Self::Venue(VenueEconomicsUnavailable::MissingAuthoritativeSnapshot) => {
+                EconomicsAdmissionBlockReason::MissingAuthoritativeSnapshot
+            }
+            Self::Venue(VenueEconomicsUnavailable::UnsupportedProductEconomics) => {
+                EconomicsAdmissionBlockReason::UnsupportedProductEconomics
+            }
+            Self::Venue(VenueEconomicsUnavailable::InvalidAuthoritativeSnapshot) => {
+                EconomicsAdmissionBlockReason::InvalidAuthoritativeSnapshot
+            }
+            Self::Venue(VenueEconomicsUnavailable::RequestScopeMismatch) => {
+                EconomicsAdmissionBlockReason::RequestScopeMismatch
+            }
+            Self::Venue(VenueEconomicsUnavailable::InvalidQuote(_)) => {
+                EconomicsAdmissionBlockReason::InvalidVenueQuote
+            }
+            Self::Invalid(_) => EconomicsAdmissionBlockReason::InvalidEconomics,
+            Self::AuthorityBinding(_) => EconomicsAdmissionBlockReason::AuthorityBinding,
+            Self::EdgeBasisAuthorityMismatch => {
+                EconomicsAdmissionBlockReason::EdgeBasisAuthorityMismatch
+            }
+            Self::ReportingAuthorityMismatch => {
+                EconomicsAdmissionBlockReason::ReportingAuthorityMismatch
+            }
+            Self::AmbiguousProductSurface => EconomicsAdmissionBlockReason::AmbiguousProductSurface,
+            Self::ExitVsHoldComparisonRequiresRiskReduction => {
+                EconomicsAdmissionBlockReason::ExitVsHoldComparisonRequiresRiskReduction
+            }
+            Self::CoreEdgeBelowMinimum { .. } => {
+                EconomicsAdmissionBlockReason::CoreEdgeBelowMinimum
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for EconomicsAdmissionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

@@ -17,9 +17,10 @@ use rust_decimal::Decimal;
 
 use crate::{
     bolt_v3_economics_runtime::{
-        BoundExecutionEconomics, EconomicsAdmission, EconomicsAdmissionIntent,
-        EconomicsAdmissionPolicy, EconomicsSizingIntent, EconomicsSizingQuote,
-        RestingOrderEconomicsRefresh, refresh_resting_order_economics,
+        BoundExecutionEconomics, EconomicsAdmission, EconomicsAdmissionBlockReason,
+        EconomicsAdmissionError, EconomicsAdmissionIntent, EconomicsAdmissionPolicy,
+        EconomicsSizingIntent, EconomicsSizingQuote, RestingOrderEconomicsRefresh,
+        refresh_resting_order_economics,
     },
     bolt_v3_quote_lifecycle::{
         MakerQuoteLifecycleHandle, MakerQuoteLifecycleIdentity, MakerQuoteLifecycleRefinement,
@@ -58,6 +59,32 @@ pub struct BoltV3OrderEconomicsHandle {
     economics: BoundExecutionEconomics,
     tracked_orders: Arc<RwLock<TrackedMakerOrderRegistry>>,
 }
+
+#[derive(Debug)]
+pub enum BoltV3TakerEconomicsSizingError {
+    InvalidRequest(anyhow::Error),
+    Admission(EconomicsAdmissionError),
+}
+
+impl BoltV3TakerEconomicsSizingError {
+    pub const fn admission_block_reason(&self) -> Option<EconomicsAdmissionBlockReason> {
+        match self {
+            Self::InvalidRequest(_) => None,
+            Self::Admission(error) => Some(error.block_reason()),
+        }
+    }
+}
+
+impl std::fmt::Display for BoltV3TakerEconomicsSizingError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRequest(error) => error.fmt(formatter),
+            Self::Admission(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for BoltV3TakerEconomicsSizingError {}
 
 #[derive(Debug, Default)]
 struct TrackedMakerOrderRegistry {
@@ -1383,18 +1410,23 @@ impl BoltV3OrderEconomicsHandle {
     pub fn quote_taker_sizing(
         &self,
         intent: BoltV3TakerEconomicsSizingInput<'_>,
-    ) -> Result<EconomicsSizingQuote> {
+    ) -> std::result::Result<EconomicsSizingQuote, BoltV3TakerEconomicsSizingError> {
         let authority = self
             .economics
-            .request_authority(&intent.instrument_id.to_string())?;
-        anyhow::ensure!(
-            !authority.carry_required,
-            "taker entry sizing does not support a carry-bearing product surface"
-        );
-        anyhow::ensure!(
-            intent.order_side == OrderSide::Buy,
-            "terminal-value taker entry sizing requires a buy order"
-        );
+            .request_authority(&intent.instrument_id.to_string())
+            .map_err(BoltV3TakerEconomicsSizingError::Admission)?;
+        if authority.carry_required {
+            return Err(BoltV3TakerEconomicsSizingError::InvalidRequest(
+                anyhow::anyhow!(
+                    "taker entry sizing does not support a carry-bearing product surface"
+                ),
+            ));
+        }
+        if intent.order_side != OrderSide::Buy {
+            return Err(BoltV3TakerEconomicsSizingError::InvalidRequest(
+                anyhow::anyhow!("terminal-value taker entry sizing requires a buy order"),
+            ));
+        }
         let planned_fill_legs = intent
             .planned_fill_legs
             .into_iter()
@@ -1420,13 +1452,17 @@ impl BoltV3OrderEconomicsHandle {
             lifecycle_path: LifecyclePath::HoldToRedemption,
             requested_at_ns: intent.requested_at_ns,
         })
-        .map_err(|error| anyhow::anyhow!(error))?;
+        .map_err(|error| BoltV3TakerEconomicsSizingError::InvalidRequest(anyhow::anyhow!(error)))?;
         let gross_expected_value = BoltV3FinalOrderEconomicsScenario::TerminalValueEntry(
             intent.terminal_value_entry.clone(),
         )
-        .gross_expected_value(&planned_fill_legs)?;
-        let reservation_basis =
-            PlannedFillNotional::from_legs(&request.planned_fill_legs)?.amount();
+        .gross_expected_value(&planned_fill_legs)
+        .map_err(BoltV3TakerEconomicsSizingError::InvalidRequest)?;
+        let reservation_basis = PlannedFillNotional::from_legs(&request.planned_fill_legs)
+            .map_err(|error| {
+                BoltV3TakerEconomicsSizingError::InvalidRequest(anyhow::anyhow!(error))
+            })?
+            .amount();
         self.economics
             .quote_sizing(EconomicsSizingIntent::new(
                 request,
@@ -1436,7 +1472,7 @@ impl BoltV3OrderEconomicsHandle {
                 gross_expected_value,
                 reservation_basis,
             ))
-            .map_err(Into::into)
+            .map_err(BoltV3TakerEconomicsSizingError::Admission)
     }
 
     pub(crate) fn planned_exit_position(

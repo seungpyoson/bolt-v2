@@ -1,7 +1,7 @@
 use crate::{
     bolt_v3_economics_runtime::{
         AuthoritativeEconomicsInputStore, AuthoritativeValuationObservation,
-        bind_execution_economics,
+        AuthoritativeVenueEconomicsInput, bind_execution_economics,
     },
     bolt_v3_order_execution::BoltV3OrderEconomicsHandle,
     bolt_v3_providers::polymarket::{
@@ -22,10 +22,36 @@ pub(crate) fn fee_free_fixture_order_economics() -> BoltV3OrderEconomicsHandle {
     fixture_order_economics_with_platform_fee("POLYMARKET", 0.0)
 }
 
+pub(crate) fn missing_authoritative_fixture_order_economics() -> BoltV3OrderEconomicsHandle {
+    let (loaded, _) = fixture_order_economics_inputs("POLYMARKET", 0.03);
+    let bound = bind_execution_economics(
+        &loaded,
+        "POLYMARKET",
+        &AuthoritativeEconomicsInputStore::default(),
+    )
+    .expect("fixture execution economics should bind without published authority");
+    BoltV3OrderEconomicsHandle::new(bound)
+}
+
 fn fixture_order_economics_with_platform_fee(
     execution_client_id: &str,
     platform_fee_rate: f64,
 ) -> BoltV3OrderEconomicsHandle {
+    let (loaded, inputs) = fixture_order_economics_inputs(execution_client_id, platform_fee_rate);
+    let inputs = AuthoritativeEconomicsInputStore::try_new(inputs)
+        .expect("fixture economics scopes should be unique");
+    let bound = bind_execution_economics(&loaded, execution_client_id, &inputs)
+        .expect("fixture execution economics should bind");
+    BoltV3OrderEconomicsHandle::new(bound)
+}
+
+fn fixture_order_economics_inputs(
+    execution_client_id: &str,
+    platform_fee_rate: f64,
+) -> (
+    crate::bolt_v3_config::LoadedBoltV3Config,
+    Vec<AuthoritativeVenueEconomicsInput>,
+) {
     let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
         "tests/fixtures/bolt_v3/root.toml",
     ))
@@ -164,10 +190,7 @@ fn fixture_order_economics_with_platform_fee(
             )
             .expect("fixture economics scope should match its market-info snapshot")
             .with_valuation_observations([valuation()])
-        });
-    let inputs = AuthoritativeEconomicsInputStore::try_new(inputs)
-        .expect("fixture economics scopes should be unique");
-    let bound = bind_execution_economics(&loaded, execution_client_id, &inputs)
-        .expect("fixture execution economics should bind");
-    BoltV3OrderEconomicsHandle::new(bound)
+        })
+        .collect();
+    (loaded, inputs)
 }

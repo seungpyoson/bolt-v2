@@ -1287,6 +1287,57 @@ fn task6_entry_evaluation_computes_both_side_evs_from_live_state() {
 }
 
 #[test]
+fn entry_evaluation_preserves_missing_authoritative_economics_reason() {
+    let mut strategy = ready_to_trade_strategy_with_bound_economics();
+    strategy.context = strategy.context.clone().with_order_economics_for_test(
+        crate::bolt_v3_economics_test_support::missing_authoritative_fixture_order_economics(),
+    );
+    register_test_strategy_with_active_instruments(&mut strategy);
+    let cheap_outcome_price = UNIT_F64 / BPS_DENOMINATOR.sqrt();
+    set_configured_books_depth(
+        &mut strategy,
+        &[
+            (
+                BookAction::Clear,
+                OrderSide::Buy,
+                cheap_outcome_price,
+                BPS_DENOMINATOR,
+            ),
+            (
+                BookAction::Add,
+                OrderSide::Buy,
+                cheap_outcome_price,
+                BPS_DENOMINATOR,
+            ),
+            (
+                BookAction::Add,
+                OrderSide::Sell,
+                cheap_outcome_price,
+                BPS_DENOMINATOR,
+            ),
+        ],
+    );
+    strategy
+        .pricing
+        .set_selected_pricing_spot(Some(fast_spot("bybit", 3_100.4, 1_200)));
+    strategy
+        .pricing
+        .seed_ready_realized_vol(Some("<SOURCE_ID>".to_string()), 2.5, 1_200);
+
+    let evaluation = strategy.entry_evaluation_at(1_200);
+
+    assert_eq!(
+        evaluation.pricing_blocked_by,
+        vec![EntryPricingBlockReason::EconomicsAdmissionRejected(
+            OutcomeSide::Up,
+            crate::bolt_v3_economics_runtime::EconomicsAdmissionBlockReason::MissingAuthoritativeSnapshot,
+        )]
+    );
+    assert_eq!(evaluation.selected_side, None);
+    assert_eq!(evaluation.expected_ev_per_notional, None);
+}
+
+#[test]
 fn executable_edge_blocks_when_best_touch_cannot_fill_exact_notional_inside_vwap_limit() {
     let mut strategy = ready_to_trade_strategy_with_bound_economics();
     strategy.config.order_notional_target = 5.0;

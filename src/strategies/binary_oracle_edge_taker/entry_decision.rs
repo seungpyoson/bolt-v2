@@ -7,6 +7,7 @@ use nautilus_model::{
 
 use crate::bolt_v3_order_execution::BoltV3PlannedFillLeg;
 
+use crate::bolt_v3_economics_runtime::EconomicsAdmissionBlockReason;
 use crate::bolt_v3_evidence_novelty::EvidenceCanonicalState;
 use crate::{
     bolt_v3_binary_outcome_edge::{BinaryOutcomeEdgeBlockReason, BinaryOutcomeEdgeResult},
@@ -90,6 +91,7 @@ pub(super) enum EntryPricingBlockReason {
     UncertaintyBandUnavailable,
     FairProbabilityUnavailable,
     ExecutableEntryCostUnavailable(OutcomeSide),
+    EconomicsAdmissionRejected(OutcomeSide, EconomicsAdmissionBlockReason),
     ExecutableEdgeUnavailable(OutcomeSide, BinaryOutcomeEdgeBlockReason),
     /// The sized re-evaluation oscillated: the final re-priced edge does not
     /// support the resized notional, so the entry fails closed.
@@ -568,6 +570,12 @@ pub(super) fn entry_pricing_block_reason_to_evidence(
         EntryPricingBlockReason::ExecutableEntryCostUnavailable(side) => {
             EvidenceEntryPricingBlockReason::ExecutableEntryCostUnavailable(
                 outcome_side_to_evidence(*side),
+            )
+        }
+        EntryPricingBlockReason::EconomicsAdmissionRejected(side, reason) => {
+            EvidenceEntryPricingBlockReason::EconomicsAdmissionRejected(
+                outcome_side_to_evidence(*side),
+                *reason,
             )
         }
         EntryPricingBlockReason::ExecutableEdgeUnavailable(side, reason) => {

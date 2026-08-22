@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 use super::{decode, encode_line, validate_envelope, validate_recorded_at};
 use crate::bolt_v3_current_evidence::{
     facts::{
-        BinaryOutcomeEdgeBlockReason, EntryBlockReason, EntryPricingBlockReason,
-        EntryRealizedVolatilitySnapshotFact, EntrySkipFact, EntrySkipReason,
-        EvidenceSelectionPhase, ExposureOccupancy, ForcedFlatReason, OutcomeSide,
+        BinaryOutcomeEdgeBlockReason, EconomicsAdmissionBlockReason, EntryBlockReason,
+        EntryPricingBlockReason, EntryRealizedVolatilitySnapshotFact, EntrySkipFact,
+        EntrySkipReason, EvidenceSelectionPhase, ExposureOccupancy, ForcedFlatReason, OutcomeSide,
         RealizedVolAggregation, RealizedVolBlockReason, RealizedVolPricingComponent,
         RealizedVolSampleKind, RealizedVolSourceClass, RealizedVolSourceRejectReason,
         RealizedVolSourceStatus, RealizedVolatilitySourceDiagnosticFact, RvGateResult,
@@ -224,6 +224,23 @@ pub(super) enum BinaryOutcomeEdgeBlockReasonV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub(super) enum EconomicsAdmissionBlockReasonV1 {
+    MissingAuthoritativeSnapshot,
+    UnsupportedProductEconomics,
+    InvalidAuthoritativeSnapshot,
+    RequestScopeMismatch,
+    InvalidVenueQuote,
+    InvalidEconomics,
+    AuthorityBinding,
+    EdgeBasisAuthorityMismatch,
+    ReportingAuthorityMismatch,
+    AmbiguousProductSurface,
+    ExitVsHoldComparisonRequiresRiskReduction,
+    CoreEdgeBelowMinimum,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(super) enum EntryPricingBlockReasonV1 {
     SpotPriceMissing,
     ReferenceCurrentPriceStale,
@@ -234,6 +251,7 @@ pub(super) enum EntryPricingBlockReasonV1 {
     UncertaintyBandUnavailable,
     FairProbabilityUnavailable,
     ExecutableEntryCostUnavailable(OutcomeSideV1),
+    EconomicsAdmissionRejected(OutcomeSideV1, EconomicsAdmissionBlockReasonV1),
     ExecutableEdgeUnavailable(OutcomeSideV1, BinaryOutcomeEdgeBlockReasonV1),
     SizedNotionalUnsupported(OutcomeSideV1),
 }
@@ -934,6 +952,9 @@ impl From<EntryPricingBlockReason> for EntryPricingBlockReasonV1 {
             EntryPricingBlockReason::ExecutableEntryCostUnavailable(side) => {
                 Self::ExecutableEntryCostUnavailable(side.into())
             }
+            EntryPricingBlockReason::EconomicsAdmissionRejected(side, reason) => {
+                Self::EconomicsAdmissionRejected(side.into(), reason.into())
+            }
             EntryPricingBlockReason::ExecutableEdgeUnavailable(side, reason) => {
                 Self::ExecutableEdgeUnavailable(side.into(), reason.into())
             }
@@ -964,12 +985,79 @@ impl From<EntryPricingBlockReasonV1> for EntryPricingBlockReason {
             EntryPricingBlockReasonV1::ExecutableEntryCostUnavailable(side) => {
                 Self::ExecutableEntryCostUnavailable(side.into())
             }
+            EntryPricingBlockReasonV1::EconomicsAdmissionRejected(side, reason) => {
+                Self::EconomicsAdmissionRejected(side.into(), reason.into())
+            }
             EntryPricingBlockReasonV1::ExecutableEdgeUnavailable(side, reason) => {
                 Self::ExecutableEdgeUnavailable(side.into(), reason.into())
             }
             EntryPricingBlockReasonV1::SizedNotionalUnsupported(side) => {
                 Self::SizedNotionalUnsupported(side.into())
             }
+        }
+    }
+}
+
+impl From<EconomicsAdmissionBlockReason> for EconomicsAdmissionBlockReasonV1 {
+    fn from(value: EconomicsAdmissionBlockReason) -> Self {
+        match value {
+            EconomicsAdmissionBlockReason::MissingAuthoritativeSnapshot => {
+                Self::MissingAuthoritativeSnapshot
+            }
+            EconomicsAdmissionBlockReason::UnsupportedProductEconomics => {
+                Self::UnsupportedProductEconomics
+            }
+            EconomicsAdmissionBlockReason::InvalidAuthoritativeSnapshot => {
+                Self::InvalidAuthoritativeSnapshot
+            }
+            EconomicsAdmissionBlockReason::RequestScopeMismatch => Self::RequestScopeMismatch,
+            EconomicsAdmissionBlockReason::InvalidVenueQuote => Self::InvalidVenueQuote,
+            EconomicsAdmissionBlockReason::InvalidEconomics => Self::InvalidEconomics,
+            EconomicsAdmissionBlockReason::AuthorityBinding => Self::AuthorityBinding,
+            EconomicsAdmissionBlockReason::EdgeBasisAuthorityMismatch => {
+                Self::EdgeBasisAuthorityMismatch
+            }
+            EconomicsAdmissionBlockReason::ReportingAuthorityMismatch => {
+                Self::ReportingAuthorityMismatch
+            }
+            EconomicsAdmissionBlockReason::AmbiguousProductSurface => Self::AmbiguousProductSurface,
+            EconomicsAdmissionBlockReason::ExitVsHoldComparisonRequiresRiskReduction => {
+                Self::ExitVsHoldComparisonRequiresRiskReduction
+            }
+            EconomicsAdmissionBlockReason::CoreEdgeBelowMinimum => Self::CoreEdgeBelowMinimum,
+        }
+    }
+}
+
+impl From<EconomicsAdmissionBlockReasonV1> for EconomicsAdmissionBlockReason {
+    fn from(value: EconomicsAdmissionBlockReasonV1) -> Self {
+        match value {
+            EconomicsAdmissionBlockReasonV1::MissingAuthoritativeSnapshot => {
+                Self::MissingAuthoritativeSnapshot
+            }
+            EconomicsAdmissionBlockReasonV1::UnsupportedProductEconomics => {
+                Self::UnsupportedProductEconomics
+            }
+            EconomicsAdmissionBlockReasonV1::InvalidAuthoritativeSnapshot => {
+                Self::InvalidAuthoritativeSnapshot
+            }
+            EconomicsAdmissionBlockReasonV1::RequestScopeMismatch => Self::RequestScopeMismatch,
+            EconomicsAdmissionBlockReasonV1::InvalidVenueQuote => Self::InvalidVenueQuote,
+            EconomicsAdmissionBlockReasonV1::InvalidEconomics => Self::InvalidEconomics,
+            EconomicsAdmissionBlockReasonV1::AuthorityBinding => Self::AuthorityBinding,
+            EconomicsAdmissionBlockReasonV1::EdgeBasisAuthorityMismatch => {
+                Self::EdgeBasisAuthorityMismatch
+            }
+            EconomicsAdmissionBlockReasonV1::ReportingAuthorityMismatch => {
+                Self::ReportingAuthorityMismatch
+            }
+            EconomicsAdmissionBlockReasonV1::AmbiguousProductSurface => {
+                Self::AmbiguousProductSurface
+            }
+            EconomicsAdmissionBlockReasonV1::ExitVsHoldComparisonRequiresRiskReduction => {
+                Self::ExitVsHoldComparisonRequiresRiskReduction
+            }
+            EconomicsAdmissionBlockReasonV1::CoreEdgeBelowMinimum => Self::CoreEdgeBelowMinimum,
         }
     }
 }

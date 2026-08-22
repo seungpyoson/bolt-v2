@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub use crate::bolt_v3_loss_governor::LossSnapshotSource;
 
+pub use crate::bolt_v3_economics_runtime::EconomicsAdmissionBlockReason;
 pub use crate::bolt_v3_fair_value_pricing::RvGateResult;
 
 use anyhow::{Context, Result, ensure};
@@ -745,6 +746,7 @@ pub enum EntryPricingBlockReason {
     UncertaintyBandUnavailable,
     FairProbabilityUnavailable,
     ExecutableEntryCostUnavailable(OutcomeSide),
+    EconomicsAdmissionRejected(OutcomeSide, EconomicsAdmissionBlockReason),
     ExecutableEdgeUnavailable(OutcomeSide, BinaryOutcomeEdgeBlockReason),
     SizedNotionalUnsupported(OutcomeSide),
 }

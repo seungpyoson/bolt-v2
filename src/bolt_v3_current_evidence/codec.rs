@@ -1165,6 +1165,24 @@ mod tests {
             SpreadOrSlippageWipedEdge => "spread_or_slippage_wiped_edge"
         ]
     );
+    unit_wire_coverage!(
+        EconomicsAdmissionBlockReason,
+        [
+            MissingAuthoritativeSnapshot => "missing_authoritative_snapshot",
+            UnsupportedProductEconomics => "unsupported_product_economics",
+            InvalidAuthoritativeSnapshot => "invalid_authoritative_snapshot",
+            RequestScopeMismatch => "request_scope_mismatch",
+            InvalidVenueQuote => "invalid_venue_quote",
+            InvalidEconomics => "invalid_economics",
+            AuthorityBinding => "authority_binding",
+            EdgeBasisAuthorityMismatch => "edge_basis_authority_mismatch",
+            ReportingAuthorityMismatch => "reporting_authority_mismatch",
+            AmbiguousProductSurface => "ambiguous_product_surface",
+            ExitVsHoldComparisonRequiresRiskReduction =>
+                "exit_vs_hold_comparison_requires_risk_reduction",
+            CoreEdgeBelowMinimum => "core_edge_below_minimum"
+        ]
+    );
     payload_wire_coverage!(
         EntryPricingBlockReason,
         [
@@ -1183,6 +1201,10 @@ mod tests {
                 Self::FairProbabilityUnavailable => "fair_probability_unavailable",
             Self::ExecutableEntryCostUnavailable(OutcomeSide::Up) =>
                 Self::ExecutableEntryCostUnavailable(_) => "executable_entry_cost_unavailable",
+            Self::EconomicsAdmissionRejected(
+                OutcomeSide::Up,
+                EconomicsAdmissionBlockReason::MissingAuthoritativeSnapshot,
+            ) => Self::EconomicsAdmissionRejected(_, _) => "economics_admission_rejected",
             Self::ExecutableEdgeUnavailable(
                 OutcomeSide::Up,
                 BinaryOutcomeEdgeBlockReason::MissingOrderBook,
@@ -1837,6 +1859,11 @@ mod tests {
                 side,
             ));
             values.push(EntryPricingBlockReason::SizedNotionalUnsupported(side));
+            for (reason, _) in EconomicsAdmissionBlockReason::wire_coverage_values() {
+                values.push(EntryPricingBlockReason::EconomicsAdmissionRejected(
+                    side, reason,
+                ));
+            }
             for (reason, _) in BinaryOutcomeEdgeBlockReason::wire_coverage_values() {
                 values.push(EntryPricingBlockReason::ExecutableEdgeUnavailable(
                     side, reason,
@@ -3395,6 +3422,7 @@ mod tests {
         assert_domain!(ExposureOccupancy);
         assert_domain!(EntryBlockReason);
         assert_domain!(BinaryOutcomeEdgeBlockReason);
+        assert_domain!(EconomicsAdmissionBlockReason);
         assert_domain!(EntryPricingBlockReason);
         assert_domain!(RealizedVolPricingComponent);
         assert_domain!(RealizedVolAggregation);

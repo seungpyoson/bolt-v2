@@ -23,8 +23,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    catalog_projection::{NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK},
     canonical_market_data::CanonicalQuoteRow,
+    catalog_projection::{NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK},
     conversion_boundary::{ConversionManifest, SeededL2QuotePlanV1},
     hashing::is_lowercase_sha256_hex,
     reference_artifact::canonical_json_sha256,
@@ -750,8 +750,8 @@ mod tests {
         BatchDisposition, SeededL2QuoteBridgePlanInput, compile_seeded_l2_quote_bridge_plan,
     };
     use crate::{
-        catalog_projection::{NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK},
         canonical_market_data::CanonicalQuoteRow,
+        catalog_projection::{NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK},
         conversion_boundary::{ConversionFingerprint, ConversionManifest, SeededL2QuotePlanV1},
         seeded_level_set_deltas::{
             SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY, SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION,
@@ -1080,14 +1080,7 @@ mod tests {
             1,
             "source-proof",
         );
-        let mut tampered = audit_row(
-            instrument_id,
-            timestamp as i64,
-            "100",
-            "102",
-            "10",
-            "12",
-        );
+        let mut tampered = audit_row(instrument_id, timestamp as i64, "100", "102", "10", "12");
         tampered.availability_time = Some(timestamp as i64 + 1);
 
         let error = compile_seeded_l2_quote_bridge_plan(vec![SeededL2QuoteBridgePlanInput {

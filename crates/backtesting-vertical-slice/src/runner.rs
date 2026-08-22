@@ -4428,8 +4428,7 @@ mod tests {
         let bybit_delta_read_back =
             read_back_order_book_deltas(&bybit_delta_catalog, "BTCUSDT-SPOT.BYBIT")?;
         let _okx_audit_read_back = read_back_quotes(&okx_audit_catalog, "BTC-USDT.OKX")?;
-        let _bybit_audit_read_back =
-            read_back_quotes(&bybit_audit_catalog, "BTCUSDT-SPOT.BYBIT")?;
+        let _bybit_audit_read_back = read_back_quotes(&bybit_audit_catalog, "BTCUSDT-SPOT.BYBIT")?;
         let okx_conversion_manifest = issue_789_seeded_conversion_manifest(
             "OKX",
             ISSUE_789_OKX_FIXTURE_SHA256,

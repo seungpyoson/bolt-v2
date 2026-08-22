@@ -26,6 +26,7 @@ use crate::{
     catalog_projection::{NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_QUOTE_TICK},
     conversion_boundary::{ConversionManifest, SeededL2QuotePlanV1},
     hashing::is_lowercase_sha256_hex,
+    reference_artifact::canonical_json_sha256,
     seeded_level_set_deltas::{
         SEEDED_LEVEL_SET_DELTAS_TRANSFORM_IDENTITY, SEEDED_LEVEL_SET_DELTAS_TRANSFORM_VERSION,
     },
@@ -69,7 +70,7 @@ struct PlanHashEntry<'a> {
 
 #[derive(Clone, PartialEq, Eq)]
 struct BatchPlan {
-    semantic_hash: [u8; 32],
+    semantic_hash: String,
     row_count: usize,
     expected_update_count: u64,
     disposition: BatchDisposition,
@@ -285,7 +286,7 @@ fn hash_plan(entries: &BTreeMap<InstrumentId, InstrumentPlan>) -> Result<String>
     let mut hasher = Sha256::new();
     hasher.update(PLAN_HASH_DOMAIN);
     for (instrument_id, plan) in entries {
-        let bytes = serde_json::to_vec(&PlanHashEntry {
+        let entry_hash = canonical_json_sha256(&PlanHashEntry {
             nt_instrument_id: instrument_id.to_string(),
             client_id: plan.client_id.map(|client_id| client_id.to_string()),
             book_type: plan.book_type,
@@ -293,13 +294,8 @@ fn hash_plan(entries: &BTreeMap<InstrumentId, InstrumentPlan>) -> Result<String>
             durable_plan: &plan.durable_plan,
             expected_trace_hash: &plan.expected_trace_hash,
         })
-        .context("serialize seeded L2 causal quote plan entry")?;
-        hasher.update(
-            u64::try_from(bytes.len())
-                .context("seeded L2 causal quote plan entry length exceeds u64")?
-                .to_le_bytes(),
-        );
-        hasher.update(bytes);
+        .context("hash seeded L2 causal quote plan entry")?;
+        hasher.update(entry_hash.as_bytes());
     }
     Ok(hex::encode(hasher.finalize()))
 }
@@ -696,9 +692,8 @@ fn quote_from_book(book: &OrderBook, batch: &OrderBookDeltas) -> Option<QuoteTic
     ))
 }
 
-fn hash_batch(batch: &OrderBookDeltas) -> Result<[u8; 32]> {
-    let bytes = serde_json::to_vec(batch).context("serialize seeded L2 source-event batch")?;
-    Ok(Sha256::digest(bytes).into())
+fn hash_batch(batch: &OrderBookDeltas) -> Result<String> {
+    canonical_json_sha256(batch).context("hash seeded L2 source-event batch")
 }
 
 fn expected_trace_hash(batches: &[BatchPlan]) -> Result<String> {
@@ -711,7 +706,7 @@ fn expected_trace_hash(batches: &[BatchPlan]) -> Result<String> {
 }
 
 fn update_trace(hasher: &mut Sha256, batch: &BatchPlan) -> Result<()> {
-    hasher.update(batch.semantic_hash);
+    hasher.update(batch.semantic_hash.as_bytes());
     hasher.update((batch.row_count as u64).to_le_bytes());
     hasher.update(batch.expected_update_count.to_le_bytes());
     match batch.disposition {
@@ -719,13 +714,9 @@ fn update_trace(hasher: &mut Sha256, batch: &BatchPlan) -> Result<()> {
         BatchDisposition::OneSided => hasher.update([1]),
         BatchDisposition::EmitQuote(quote) => {
             hasher.update([2]);
-            let bytes = serde_json::to_vec(&quote).context("hash seeded L2 causal quote")?;
-            hasher.update(
-                u64::try_from(bytes.len())
-                    .context("seeded L2 causal quote length exceeds u64")?
-                    .to_le_bytes(),
-            );
-            hasher.update(bytes);
+            let quote_hash =
+                canonical_json_sha256(&quote).context("hash seeded L2 causal quote")?;
+            hasher.update(quote_hash.as_bytes());
         }
     }
     Ok(())
